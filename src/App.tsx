@@ -6,7 +6,7 @@
 import React, { useState, useEffect } from "react";
 import { 
   Users, Image as ImageIcon, Sliders, ShieldCheck, LogOut, 
-  Settings, FolderLock, Landmark, Cpu, Smartphone, LayoutDashboard, History, Check 
+  Settings, FolderLock, Landmark, Cpu, Smartphone, LayoutDashboard, History, Check, Menu, X 
 } from "lucide-react";
 import { AdminLogin } from "./components/AdminLogin";
 import { TraineePortal } from "./components/TraineePortal";
@@ -18,6 +18,8 @@ import { CustomSchemaBuilder } from "./components/CustomSchemaBuilder";
 import { AuditTrail } from "./components/AuditTrail";
 import { BiometricCapture } from "./components/BiometricCapture";
 import { PublicResponsePortal } from "./components/PublicResponsePortal";
+import { SettingsWorkspace } from "./components/SettingsWorkspace";
+import { DocumentVerification } from "./components/DocumentVerification";
 import { Beneficiary, CustomField, AuditLog, UserSession } from "./types";
 
 export default function App() {
@@ -29,7 +31,8 @@ export default function App() {
       return null;
     }
   });
-  const [activeTab, setActiveTab] = useState<"dashboard" | "registry" | "album" | "custom" | "audits">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings">("dashboard");
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [registryViewMode, setRegistryViewMode] = useState<"list" | "details" | "create">("list");
   const [beneficiaries, setBeneficiaries] = useState<Beneficiary[]>([]);
   const [customFields, setCustomFields] = useState<CustomField[]>([]);
@@ -274,6 +277,10 @@ export default function App() {
   const isAuthenticated = !!session?.isAuthenticated;
 
   // Determine core route template to render
+  if (normalizedHash === "#/verify-document" || normalizedHash === "#verify-document" || normalizedHash.startsWith("#/verify-document") || normalizedHash.startsWith("#verify-document") || normalizedHash.includes("verify-document")) {
+    return <DocumentVerification />;
+  }
+
   if (normalizedHash === "#/login" || normalizedHash === "#login") {
     return (
       <AdminLogin 
@@ -315,33 +322,75 @@ export default function App() {
   }
 
   return (
-    <div className="h-screen w-screen overflow-hidden bg-slate-50 flex font-sans antialiased text-slate-800">
+    <div className="h-screen w-screen overflow-hidden bg-slate-50 flex flex-col lg:flex-row font-sans antialiased text-slate-800 relative">
       
+      {/* BACKGROUND BACKDROP OVERLAY ON MOBILE */}
+      {isSidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-slate-950/60 z-30 lg:hidden no-print animate-in fade-in duration-200"
+          onClick={() => setIsSidebarOpen(false)}
+        />
+      )}
+
+      {/* STICKY HEADER NAVIGATION BAR ON MOBILE/TABLET */}
+      <header className="lg:hidden sticky top-0 z-35 bg-slate-900 text-white flex items-center justify-between px-4 py-3 border-b border-indigo-950 shadow-md no-print flex-shrink-0">
+        <button 
+          type="button"
+          onClick={() => setIsSidebarOpen(true)}
+          className="p-2 -ml-1 text-slate-350 hover:text-white hover:bg-slate-800/40 rounded-lg flex items-center justify-center cursor-pointer min-h-[44px] min-w-[44px]"
+          aria-label="Open navigation menu"
+        >
+          <Menu className="w-6 h-6" />
+        </button>
+        <div className="flex items-center gap-2">
+          <div className="p-1.5 bg-indigo-600 rounded text-white-95 bg-indigo-600 rounded text-white text-xs font-bold leading-none">
+            <Cpu className="w-4 h-4 text-white" />
+          </div>
+          <span className="text-xs font-bold font-sans tracking-tight uppercase">IDEAS-TVET IMS</span>
+        </div>
+        <div className="w-11"></div> {/* Spacer for symmetry */}
+      </header>
+
       {/* 1. LEFT SIDEBAR - FULL VIEWPORT HEIGHT */}
-      <aside className="no-print w-64 bg-slate-900 text-white flex flex-col justify-between border-r border-indigo-950 h-full flex-shrink-0 z-20">
+      <aside className={`no-print w-64 bg-slate-900 text-white flex flex-col justify-between border-r border-indigo-950 h-full flex-shrink-0 z-40 fixed inset-y-0 left-0 lg:static transform lg:translate-x-0 transition-transform duration-300 ease-in-out ${
+        isSidebarOpen ? "translate-x-0" : "-translate-x-full"
+      }`}>
         
         {/* Top: Branding Section */}
         <div>
           <div className="p-6 border-b border-indigo-950/80 space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-indigo-600 rounded-lg text-white flex-shrink-0">
-                <Cpu className="w-5 h-5 flex-shrink-0" />
-              </div>
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-1">
-                  <span className="text-[8px] font-bold tracking-widest text-indigo-400 font-mono uppercase bg-indigo-950 px-1 py-0.5 rounded leading-none">
-                    SKILLS SECTOR
-                  </span>
-                  <span className="text-[8px] font-bold tracking-widest text-emerald-400 font-mono uppercase bg-slate-950 px-1 py-0.5 rounded leading-none">
-                    TVET
-                  </span>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="p-2 bg-indigo-600 rounded-lg text-white flex-shrink-0">
+                  <Cpu className="w-5 h-5 flex-shrink-0" />
                 </div>
-                <h1 className="font-display font-bold text-slate-100 text-[10px] md:text-xs tracking-tight mt-1 leading-tight font-sans">
-                  Computer Hardware and Cell Phone Repairs
-                </h1>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-1">
+                    <span className="text-[8px] font-bold tracking-widest text-indigo-400 font-mono uppercase bg-indigo-950 px-1 py-0.5 rounded leading-none">
+                      SKILLS SECTOR
+                    </span>
+                    <span className="text-[8px] font-bold tracking-widest text-emerald-400 font-mono uppercase bg-slate-950 px-1 py-0.5 rounded leading-none">
+                      TVET
+                    </span>
+                  </div>
+                </div>
               </div>
+              
+              {/* Mobile Close Button for Sidebar */}
+              <button 
+                type="button"
+                onClick={() => setIsSidebarOpen(false)}
+                className="lg:hidden p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white cursor-pointer min-h-[44px] min-w-[44px] flex items-center justify-center"
+                aria-label="Close menu"
+              >
+                <X className="w-5 h-5" />
+              </button>
             </div>
             
+            <h1 className="font-display font-bold text-slate-100 text-[10px] md:text-xs tracking-tight leading-tight font-sans text-left">
+              Computer Hardware and Cell Phone Repairs
+            </h1>
+
             <div className="bg-slate-950/40 p-2.5 rounded-lg border border-slate-800/40">
               <p className="text-[9px] font-mono uppercase text-slate-500 font-bold tracking-wider text-left">
                 Accredited TSP Provider:
@@ -357,6 +406,7 @@ export default function App() {
             <button 
               onClick={() => {
                 setActiveTab("dashboard");
+                setIsSidebarOpen(false);
               }}
               className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
                 activeTab === "dashboard" 
@@ -373,6 +423,7 @@ export default function App() {
                 setActiveTab("registry");
                 setRegistryViewMode("list");
                 setSelectedBeneficiary(null);
+                setIsSidebarOpen(false);
               }}
               className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
                 activeTab === "registry" 
@@ -387,6 +438,7 @@ export default function App() {
             <button 
               onClick={() => {
                 setActiveTab("album");
+                setIsSidebarOpen(false);
               }}
               className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
                 activeTab === "album" 
@@ -402,6 +454,7 @@ export default function App() {
               <button 
                 onClick={() => {
                   setActiveTab("custom");
+                  setIsSidebarOpen(false);
                 }}
                 className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
                   activeTab === "custom" 
@@ -418,6 +471,7 @@ export default function App() {
               <button 
                 onClick={() => {
                   setActiveTab("audits");
+                  setIsSidebarOpen(false);
                 }}
                 className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
                   activeTab === "audits" 
@@ -446,6 +500,7 @@ export default function App() {
                       setActiveTab("registry");
                       setRegistryViewMode("create");
                       setTempCreatedPhoto(null);
+                      setIsSidebarOpen(false);
                     }}
                     className="w-full bg-yellow-500 hover:bg-yellow-400 text-slate-950 font-bold py-2.5 px-4 rounded-lg flex items-center justify-center gap-2 shadow-md transition active:scale-[97%] cursor-pointer text-xs uppercase tracking-wider font-sans group animate-pulse"
                     id="sidebar-register-cta"
@@ -464,7 +519,7 @@ export default function App() {
               <div className="h-8.5 w-8.5 rounded-full bg-indigo-950/80 border border-indigo-700/50 flex items-center justify-center text-indigo-300 font-bold text-xs uppercase font-mono flex-shrink-0">
                 {session?.username?.substring(0, 2) || "AD"}
               </div>
-              <div className="min-w-0 overflow-hidden">
+              <div className="min-w-0 overflow-hidden text-left">
                 <p className="text-[10px] font-bold text-slate-350 tracking-wide block leading-none">SYSTEM OPERATOR</p>
                 <p className="text-[9px] text-slate-500 truncate font-mono mt-1" title={session?.email}>
                   {session?.email}
@@ -475,8 +530,19 @@ export default function App() {
             <div className="grid grid-cols-2 gap-2 text-center pb-1">
               <button 
                 type="button"
-                onClick={() => alert("Administrative parameters configuration panel unlocked under operator authorization.")}
-                className="bg-slate-800/60 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/30 py-1.5 px-2 rounded-md flex items-center justify-center gap-1 transition text-[10px] font-semibold cursor-pointer"
+                onClick={() => {
+                  if (["SUPER_ADMIN", "ADMIN_OFFICER"].includes(session?.role || "")) {
+                    setActiveTab("settings");
+                    setIsSidebarOpen(false);
+                  } else {
+                    alert("Access restricted. Settings administration requires Super/Admin officer roles.");
+                  }
+                }}
+                className={`border py-1.5 px-2 rounded-md flex items-center justify-center gap-1 transition text-[10px] font-semibold cursor-pointer ${
+                  activeTab === "settings"
+                    ? "bg-indigo-600 border-indigo-500 text-white font-bold shadow-md shadow-indigo-600/20 animate-pulse"
+                    : "bg-slate-800/60 hover:bg-slate-800 border-slate-700/30 text-slate-300 hover:text-white"
+                }`}
               >
                 <Settings className="w-3 h-3 flex-shrink-0" />
                 <span>Settings</span>
@@ -501,14 +567,14 @@ export default function App() {
       <div className="flex-grow flex-1 flex flex-col h-full overflow-y-auto">
         
         {/* Navigation Indicator Line */}
-        <header className="no-print bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-between flex-shrink-0 shadow-xs">
+        <header className="no-print bg-white border-b border-slate-200 px-4 sm:px-8 py-3.5 sm:py-4 flex flex-col sm:flex-row gap-2 sm:gap-0 sm:items-center sm:justify-between flex-shrink-0 shadow-xs">
           <div className="flex items-center gap-2">
             <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
             <span className="text-[10px] font-bold font-mono tracking-wider text-slate-400 text-left">
               SECURE GOVERNMENT SYSTEM DATABASE PORTAL ACTIVE
             </span>
           </div>
-          <div className="text-[11px] font-mono text-slate-400">
+          <div className="text-[11px] font-mono text-slate-400 text-left">
             Node: <span className="text-slate-600 font-semibold font-mono">IDEAS-COHORT-A5E8</span>
           </div>
         </header>
@@ -563,6 +629,8 @@ export default function App() {
           )}
 
           {activeTab === "audits" && <AuditTrail logs={auditLogs} />}
+
+          {activeTab === "settings" && <SettingsWorkspace />}
 
         </main>
       </div>

@@ -465,7 +465,7 @@ export function Dashboard({ beneficiaries, onSelectBeneficiary, onNavigateToRegi
               No recent beneficiary registration activities logged in database.
             </div>
           ) : (
-            <table className="w-full text-left border-collapse">
+            <table className="min-w-[750px] lg:min-w-0 w-full text-left border-collapse">
               <thead>
                 <tr className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono border-b border-slate-100">
                   <th className="py-3 px-6">Beneficiary Name</th>

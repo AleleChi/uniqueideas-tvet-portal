@@ -124,7 +124,7 @@ export function NewEnrollmentForm({
       <form onSubmit={handleSubmit} className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         
         {/* LEFT COLUMN: TWO COLUMN FORM ENTRY FIELD CARD (8/12 columns) */}
-        <div className="lg:col-span-8 bg-white border border-slate-200 rounded-xl p-6 shadow-xs border-l-4 border-indigo-600 space-y-6">
+        <div className="lg:col-span-8 bg-white border border-slate-200 rounded-xl p-4 sm:p-6 shadow-xs border-l-4 border-indigo-600 space-y-6">
           
           {/* Section 1: Personal Details */}
           <div className="space-y-4">

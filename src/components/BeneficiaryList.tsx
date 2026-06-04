@@ -83,6 +83,118 @@ export function BeneficiaryList({
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 6;
 
+  // FEATURE 3: BULK SELECTION & OPERATIONS STATE
+  const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([]);
+  const [bulkProcessing, setBulkProcessing] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState("");
+
+  const handleBulkGenerateDocuments = async (docType: string) => {
+    if (selectedCandidateIds.length === 0) return;
+    setBulkProcessing(true);
+    setBulkProgress(`Initializing bulk compilation for ${selectedCandidateIds.length} candidate(s)...`);
+    try {
+      for (let i = 0; i < selectedCandidateIds.length; i++) {
+        const bId = selectedCandidateIds[i];
+        setBulkProgress(`Compiling ${docType.replace(/_/g, " ")} (${i + 1}/${selectedCandidateIds.length})...`);
+        const res = await fetch("/api/documents/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            beneficiaryId: bId,
+            documentType: docType,
+            regenerate: true
+          })
+        });
+        if (!res.ok) {
+          console.error(`Bulk compilation failed for beneficiary ${bId}`);
+        }
+        await new Promise(resolve => setTimeout(resolve, 150)); // nice processing buffer
+      }
+      alert(`Successfully processed and registered ${docType.replace(/_/g, " ")} for all ${selectedCandidateIds.length} candidates!`);
+      setSelectedCandidateIds([]);
+    } catch (e) {
+      console.error(e);
+      alert("Bulk compilation encountered a system error.");
+    } finally {
+      setBulkProcessing(false);
+      setBulkProgress("");
+    }
+  };
+
+  const handleBulkSendEmails = async () => {
+    if (selectedCandidateIds.length === 0) return;
+    setBulkProcessing(true);
+    setBulkProgress(`Checking history records for ${selectedCandidateIds.length} candidate(s)...`);
+    try {
+      let successfulCount = 0;
+      for (let i = 0; i < selectedCandidateIds.length; i++) {
+        const bId = selectedCandidateIds[i];
+        setBulkProgress(`Retrieving documents for candidate ${i + 1}/${selectedCandidateIds.length}...`);
+        
+        // 1. Fetch document history
+        const hRes = await fetch(`/api/documents/${bId}/history`);
+        if (hRes.ok) {
+          const history = await hRes.json();
+          if (history && history.length > 0) {
+            const latestDoc = history[0]; // grab the absolute latest compiled document
+            setBulkProgress(`Dispatching email for document v${latestDoc.version} (${i + 1}/${selectedCandidateIds.length})...`);
+            
+            // 2. Dispatch email
+            const emailRes = await fetch("/api/documents/email", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ documentId: latestDoc.id })
+            });
+            if (emailRes.ok) {
+              successfulCount++;
+            }
+          }
+        }
+        await new Promise(resolve => setTimeout(resolve, 150));
+      }
+      alert(`Bulk mail dispatcher processed fully. Dispatched secure payloads to ${successfulCount} candidate(s).`);
+      setSelectedCandidateIds([]);
+    } catch (e) {
+      console.error(e);
+      alert("Bulk dispatch encountered a socket error.");
+    } finally {
+      setBulkProcessing(false);
+      setBulkProgress("");
+    }
+  };
+
+  const handleBulkExportCSV = () => {
+    if (selectedCandidateIds.length === 0) return;
+    const selectedList = beneficiaries.filter(b => selectedCandidateIds.includes(b.id));
+    
+    // Generate simple compliant CSV content client-side
+    const headers = ["ID", "LastName", "FirstName", "NIN", "BVN", "State", "Batch", "Lifecycle", "Status"];
+    const rows = selectedList.map(b => [
+      b.id,
+      `"${b.lastName}"`,
+      `"${b.firstName}"`,
+      `"${b.nin}"`,
+      `"${b.bvn}"`,
+      `"${b.state}"`,
+      `"${b.batch}"`,
+      `"${b.admissionStatus || 'Draft'}"`,
+      `"${b.status}"`
+    ]);
+    
+    const csvContent = "data:text/csv;charset=utf-8," 
+      + [headers.join(","), ...rows.map(e => e.join(","))].join("\n");
+    
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `bulk_selected_tvet_candidates_${Date.now()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    alert(`Exported dynamic record set for ${selectedList.length} candidate(s).`);
+  };
+
   // Filter List Candidates
   const filteredList = beneficiaries.filter(b => {
     const query = search.toLowerCase();
@@ -351,13 +463,99 @@ export function BeneficiaryList({
 
         </div>
 
+        {/* FEATURE 3: BULK OPERATIONS PANEL */}
+        {selectedCandidateIds.length > 0 && (
+          <div id="bulk-operations-panel" className="bg-indigo-950 text-white rounded-xl p-4 flex flex-col md:flex-row items-center justify-between gap-4 animate-in slide-in-from-top duration-200">
+            <div className="flex items-center gap-3">
+              <span className="p-2 bg-indigo-900 rounded-lg text-indigo-200 text-xs font-bold leading-none animate-pulse">
+                {selectedCandidateIds.length} Chosen
+              </span>
+              <div className="text-left">
+                <h4 className="text-xs font-bold font-sans tracking-tight">Bulk Document Operations Panel</h4>
+                <p className="text-[10px] text-indigo-300 font-mono">Run sequential tasks for chosen candidate cohort</p>
+              </div>
+            </div>
+
+            {bulkProcessing && (
+              <div className="text-[10px] text-amber-300 font-mono animate-pulse bg-indigo-900 px-3 py-1.5 rounded-lg border border-indigo-800">
+                {bulkProgress}
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Document Type Selector for Bulk Compile */}
+              <select
+                id="bulk-doc-type-selector"
+                disabled={bulkProcessing}
+                onChange={(e) => {
+                  if (e.target.value) {
+                    handleBulkGenerateDocuments(e.target.value);
+                    e.target.value = "";
+                  }
+                }}
+                className="bg-indigo-900 hover:bg-indigo-850 text-white border border-indigo-805 rounded-lg py-1.5 px-3 text-xs font-bold outline-none cursor-pointer"
+              >
+                <option value="">-- Compile Documents --</option>
+                <option value="ADMISSION_LETTER">Admission Intent Letter</option>
+                <option value="ACCEPTANCE_LETTER">Acceptance Slip Confirmation</option>
+                <option value="ADMISSION_FORM">Admission Form Dossier</option>
+                <option value="PHOTO_ALBUM">Photo Album Badge</option>
+                <option value="ENROLLMENT_CONFIRMATION">Enrollment Confirmation</option>
+                <option value="COMPLETION_CERTIFICATE">Graduation Certificate</option>
+              </select>
+
+              <button
+                type="button"
+                id="bulk-send-emails-btn"
+                disabled={bulkProcessing}
+                onClick={handleBulkSendEmails}
+                className="bg-white text-indigo-950 hover:bg-slate-50 font-extrabold text-xs py-1.5 px-3 rounded-lg flex items-center gap-1.5 transition disabled:opacity-40 cursor-pointer min-h-[32px]"
+              >
+                Dispatch Emails
+              </button>
+
+              <button
+                type="button"
+                id="bulk-export-data-btn"
+                disabled={bulkProcessing}
+                onClick={handleBulkExportCSV}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-700 font-extrabold text-xs py-1.5 px-3 rounded-lg flex items-center gap-1.5 transition disabled:opacity-40 cursor-pointer min-h-[32px]"
+              >
+                Export Selected
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSelectedCandidateIds([])}
+                disabled={bulkProcessing}
+                className="bg-transparent hover:bg-indigo-900/50 text-slate-300 hover:text-white font-bold text-xs py-1.5 px-3 rounded-lg transition min-h-[32px] cursor-pointer"
+              >
+                Deselect
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* 3. WORKSHEET MAIN DATABASE TABLE VIEW (4.png rows) */}
-        <div className="border border-slate-200 rounded-lg overflow-hidden">
-          <table className="w-full text-left border-collapse">
+        <div className="border border-slate-200 rounded-lg overflow-x-auto overflow-y-hidden">
+          <table className="min-w-[900px] lg:min-w-0 w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono border-b border-slate-100">
                 <th className="py-2.5 px-4 w-12 text-center">
-                  <input type="checkbox" readOnly checked className="rounded text-indigo-600 cursor-not-allowed" />
+                  <input 
+                    type="checkbox" 
+                    checked={paginatedList.length > 0 && paginatedList.every(b => selectedCandidateIds.includes(b.id))}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        const currentIds = paginatedList.map(b => b.id);
+                        setSelectedCandidateIds(prev => Array.from(new Set([...prev, ...currentIds])));
+                      } else {
+                        const currentIds = paginatedList.map(b => b.id);
+                        setSelectedCandidateIds(prev => prev.filter(id => !currentIds.includes(id)));
+                      }
+                    }}
+                    className="rounded text-indigo-600 cursor-pointer" 
+                  />
                 </th>
                 <th className="py-2.5 px-4 w-16">Port</th>
                 <th className="py-2.5 px-4">Candidate Identification</th>
@@ -385,7 +583,18 @@ export function BeneficiaryList({
                     className="hover:bg-slate-50/70 transition cursor-pointer"
                   >
                     <td className="py-3 px-4 text-center" onClick={(e) => e.stopPropagation()}>
-                      <input type="checkbox" className="rounded border-slate-300 text-indigo-600 cursor-pointer" />
+                      <input 
+                        type="checkbox" 
+                        checked={selectedCandidateIds.includes(b.id)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedCandidateIds(prev => [...prev, b.id]);
+                          } else {
+                            setSelectedCandidateIds(prev => prev.filter(id => id !== b.id));
+                          }
+                        }}
+                        className="rounded border-slate-300 text-indigo-600 cursor-pointer" 
+                      />
                     </td>
                     
                     <td className="py-3 px-4">
@@ -507,12 +716,12 @@ export function BeneficiaryList({
         </div>
 
         {/* 4. TABLE PAGINATION CONTROL BAR (4.png matching totals indicator) */}
-        <div className="flex items-center justify-between text-xs font-mono text-slate-400 pt-1">
-          <span>
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 text-xs font-mono text-slate-400 pt-3">
+          <span className="text-center sm:text-left">
             Showing {startIndex + 1} to {Math.min(startIndex + itemsPerPage, filteredList.length)} of {filteredList.length} registered records.
           </span>
 
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center justify-center gap-1.5">
             <button 
               onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
               disabled={currentPage === 1}

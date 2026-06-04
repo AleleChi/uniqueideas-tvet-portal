@@ -7,7 +7,7 @@ import pg from "pg";
 import fs from "fs";
 import path from "path";
 import bcrypt from "bcryptjs";
-import { Beneficiary, ProgramStatus, AuditLog, CustomField } from "../types";
+import { Beneficiary, ProgramStatus, AuditLog, CustomField, OrganizationSettings, TrainingProgram } from "../types";
 
 const { Pool } = pg;
 const DB_FILE = path.join(process.cwd(), "database_ideas_tvet.json");
@@ -87,8 +87,8 @@ const SCHEMA_DDL = `
     last_name VARCHAR(150) NOT NULL,
     other_name VARCHAR(150),
     gender VARCHAR(50) NOT NULL,
-    bvn VARCHAR(50) UNIQUE NOT NULL,
-    nin VARCHAR(50) UNIQUE NOT NULL,
+    bvn VARCHAR(50) UNIQUE,
+    nin VARCHAR(50) UNIQUE,
     state VARCHAR(100) NOT NULL,
     city VARCHAR(100) NOT NULL,
     phone_number VARCHAR(50),
@@ -104,6 +104,15 @@ const SCHEMA_DDL = `
     acceptance_letter_url TEXT,
     enrollment_letter_url TEXT,
     certificate_url TEXT,
+    guardian_name VARCHAR(255),
+    guardian_address TEXT,
+    guardian_phone VARCHAR(50),
+    physical_challenge VARCHAR(255),
+    bank_account_holder VARCHAR(255),
+    bank_name VARCHAR(150),
+    bank_sort_code VARCHAR(50),
+    bank_account_number VARCHAR(50),
+    education_qualification VARCHAR(255),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP WITH TIME ZONE
@@ -199,6 +208,43 @@ const SCHEMA_DDL = `
     deleted_at TIMESTAMP WITH TIME ZONE
   );
 
+  -- Organization settings table
+  CREATE TABLE IF NOT EXISTS organization_settings (
+    id VARCHAR(50) PRIMARY KEY,
+    organization_name VARCHAR(255) NOT NULL,
+    tpm_name VARCHAR(255),
+    tpm_title VARCHAR(255),
+    contact_email VARCHAR(255),
+    contact_phone VARCHAR(50),
+    contact_address TEXT,
+    letterhead_url TEXT,
+    signature_url TEXT,
+    stamp_url TEXT,
+    watermark_text VARCHAR(255) DEFAULT 'SECURED REGISTRY DOCUMENT',
+    watermark_enabled BOOLEAN DEFAULT TRUE,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- Training Programs table
+  CREATE TABLE IF NOT EXISTS training_programs (
+    id VARCHAR(50) PRIMARY KEY,
+    name VARCHAR(255) UNIQUE NOT NULL,
+    sector VARCHAR(255),
+    code VARCHAR(50),
+    total_hours VARCHAR(50),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- Certificates table
+  CREATE TABLE IF NOT EXISTS certificates (
+    id VARCHAR(100) PRIMARY KEY,
+    beneficiary_id VARCHAR(50) REFERENCES beneficiaries(id) ON DELETE CASCADE UNIQUE,
+    certificate_no VARCHAR(100) UNIQUE NOT NULL,
+    issued_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    verify_stamp_url TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+
   -- Public session link authorization tokens
   CREATE TABLE IF NOT EXISTS public_response_tokens (
     id SERIAL PRIMARY KEY,
@@ -259,6 +305,22 @@ const SCHEMA_DDL = `
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
   );
 
+  -- Centered archive for versioned generated documents
+  CREATE TABLE IF NOT EXISTS generated_documents (
+    id VARCHAR(100) PRIMARY KEY,
+    beneficiary_id VARCHAR(50) REFERENCES beneficiaries(id) ON DELETE CASCADE,
+    document_type VARCHAR(100) NOT NULL,
+    version INT NOT NULL DEFAULT 1,
+    pdf_url TEXT NOT NULL,
+    docx_url TEXT,
+    generated_by VARCHAR(255),
+    verification_code VARCHAR(100),
+    verification_status VARCHAR(50) DEFAULT 'VALID',
+    verification_date TIMESTAMP WITH TIME ZONE,
+    email_delivery_status VARCHAR(50) DEFAULT 'Pending',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+
   -- DATABASE INDEXES (As required)
   CREATE INDEX IF NOT EXISTS idx_beneficiaries_bvn ON beneficiaries(bvn) WHERE deleted_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_beneficiaries_nin ON beneficiaries(nin) WHERE deleted_at IS NULL;
@@ -271,6 +333,7 @@ const SCHEMA_DDL = `
   CREATE INDEX IF NOT EXISTS idx_tokens_token ON public_response_tokens(token) WHERE deleted_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE deleted_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token);
+  CREATE INDEX IF NOT EXISTS idx_generated_documents_beneficiary_id ON generated_documents(beneficiary_id);
 `;
 
 /**
@@ -367,6 +430,66 @@ export async function initDb(): Promise<void> {
       ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS acceptance_letter_url TEXT;
       ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS enrollment_letter_url TEXT;
       ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS certificate_url TEXT;
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS guardian_name VARCHAR(255);
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS guardian_address TEXT;
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS guardian_phone VARCHAR(50);
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS physical_challenge VARCHAR(255);
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS bank_account_holder VARCHAR(255);
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS bank_name VARCHAR(150);
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS bank_sort_code VARCHAR(50);
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS bank_account_number VARCHAR(50);
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS education_qualification VARCHAR(255);
+      
+      ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS watermark_text VARCHAR(255) DEFAULT 'SECURED REGISTRY DOCUMENT';
+      ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS watermark_enabled BOOLEAN DEFAULT TRUE;
+    `);
+
+    // Ensure generated_documents is bootstrapped independently
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS generated_documents (
+        id VARCHAR(100) PRIMARY KEY,
+        beneficiary_id VARCHAR(50) REFERENCES beneficiaries(id) ON DELETE CASCADE,
+        document_type VARCHAR(100) NOT NULL,
+        version INT NOT NULL DEFAULT 1,
+        pdf_url TEXT NOT NULL,
+        docx_url TEXT,
+        generated_by VARCHAR(255),
+        verification_code VARCHAR(100),
+        verification_status VARCHAR(50) DEFAULT 'VALID',
+        verification_date TIMESTAMP WITH TIME ZONE,
+        email_delivery_status VARCHAR(50) DEFAULT 'Pending',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_generated_documents_beneficiary_id ON generated_documents(beneficiary_id);
+      
+      ALTER TABLE generated_documents ADD COLUMN IF NOT EXISTS verification_code VARCHAR(100);
+      ALTER TABLE generated_documents ADD COLUMN IF NOT EXISTS verification_status VARCHAR(50) DEFAULT 'VALID';
+      ALTER TABLE generated_documents ADD COLUMN IF NOT EXISTS verification_date TIMESTAMP WITH TIME ZONE;
+      ALTER TABLE generated_documents ADD COLUMN IF NOT EXISTS email_delivery_status VARCHAR(50) DEFAULT 'Pending';
+    `);
+
+    // Bootstrap default system settings
+    await pool.query(`
+      INSERT INTO organization_settings (
+        id, organization_name, tpm_name, tpm_title, contact_email, contact_phone, contact_address, letterhead_url, signature_url, stamp_url
+      ) VALUES (
+        'ideas_default',
+        'State TVET Board, Kano',
+        'Engr. Kabiru Mohammed',
+        'Technical Project Manager (TPM)',
+        'kano-tvet@ideas-initiative.org',
+        '+234 803 123 4567',
+        'No. 45 Gwarzo Road, Kano State, Nigeria',
+        '', '', ''
+      ) ON CONFLICT (id) DO NOTHING;
+    `);
+
+    // Bootstrap default training programs
+    await pool.query(`
+      INSERT INTO training_programs (id, name, sector, code, total_hours) VALUES
+      ('prog_ch_repair', 'Computer Hardware and Cell Phone Repairs', 'ICT & digital skills', 'TP-ICT-001', '350'),
+      ('prog_sol_inst', 'Solar Panel Installation and Maintenance', 'Energy & solar Tech', 'TP-ENG-002', '420')
+      ON CONFLICT (id) DO NOTHING;
     `);
 
     // Bootstrap secure user systems
@@ -761,6 +884,8 @@ export class DbRepo {
                 state, city, phone_number, email, residential_address, batch, 
                 custom_fields, tsp, program, skill_sector, status, 
                 admission_letter_url, acceptance_letter_url, enrollment_letter_url, certificate_url,
+                guardian_name, guardian_address, guardian_phone, physical_challenge,
+                bank_account_holder, bank_name, bank_sort_code, bank_account_number, education_qualification,
                 created_at, updated_at
          FROM beneficiaries
          WHERE deleted_at IS NULL
@@ -861,6 +986,17 @@ export class DbRepo {
           createdAt: row.created_at.toISOString(),
           updatedAt: row.updated_at.toISOString(),
 
+          // Supplemental Form mapping (Phase 1 Database Sync)
+          guardianName: row.guardian_name || "",
+          guardianAddress: row.guardian_address || "",
+          guardianPhone: row.guardian_phone || "",
+          physicalChallenge: row.physical_challenge || "",
+          bankAccountHolder: row.bank_account_holder || "",
+          bankName: row.bank_name || "",
+          bankSortCode: row.bank_sort_code || "",
+          bankAccountNumber: row.bank_account_number || "",
+          educationQualification: row.education_qualification || "",
+
           // Nested Adm structures
           admissionStatus: adm.admission_status || "Pending",
           admissionRef: adm.admission_ref || undefined,
@@ -940,8 +1076,10 @@ export class DbRepo {
            state, city, phone_number, email, residential_address, batch, 
            custom_fields, tsp, program, skill_sector, status,
            admission_letter_url, acceptance_letter_url, enrollment_letter_url, certificate_url,
+           guardian_name, guardian_address, guardian_phone, physical_challenge,
+           bank_account_holder, bank_name, bank_sort_code, bank_account_number, education_qualification,
            created_at, updated_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
          ON CONFLICT (id) DO UPDATE SET 
            photo = EXCLUDED.photo,
            first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name, other_name = EXCLUDED.other_name,
@@ -953,6 +1091,15 @@ export class DbRepo {
            acceptance_letter_url = EXCLUDED.acceptance_letter_url,
            enrollment_letter_url = EXCLUDED.enrollment_letter_url,
            certificate_url = EXCLUDED.certificate_url,
+           guardian_name = EXCLUDED.guardian_name,
+           guardian_address = EXCLUDED.guardian_address,
+           guardian_phone = EXCLUDED.guardian_phone,
+           physical_challenge = EXCLUDED.physical_challenge,
+           bank_account_holder = EXCLUDED.bank_account_holder,
+           bank_name = EXCLUDED.bank_name,
+           bank_sort_code = EXCLUDED.bank_sort_code,
+           bank_account_number = EXCLUDED.bank_account_number,
+           education_qualification = EXCLUDED.education_qualification,
            updated_at = NOW()`,
         [
           b.id, b.photo || "", b.firstName, b.lastName, b.otherName || "", b.gender, b.bvn, b.nin,
@@ -961,6 +1108,8 @@ export class DbRepo {
           b.program || "IDEAS-TVET", b.skillSector || "Computer Hardware and Cell Phone Repairs",
           b.status,
           b.admissionLetterUrl || "", b.acceptanceLetterUrl || "", b.enrollmentLetterUrl || "", b.certificateUrl || "",
+          b.guardianName || "", b.guardianAddress || "", b.guardianPhone || "", b.physicalChallenge || "",
+          b.bankAccountHolder || "", b.bankName || "", b.bankSortCode || "", b.bankAccountNumber || "", b.educationQualification || "",
           new Date(b.createdAt || Date.now()), new Date()
         ]
       );
@@ -1361,6 +1510,395 @@ export class DbRepo {
     } catch (e) {
       console.error("[DB Repo] Failed to get user by reset token:", e);
       return null;
+    }
+  }
+
+  /**
+   * Organization Settings Retrieval
+   */
+  static async getOrganizationSettings(): Promise<OrganizationSettings> {
+    const defaultSettings: OrganizationSettings = {
+      id: "ideas_default",
+      organizationName: "State TVET Board, Kano",
+      tpmName: "Engr. Kabiru Mohammed",
+      tpmTitle: "Technical Project Manager (TPM)",
+      contactEmail: "kano-tvet@ideas-initiative.org",
+      contactPhone: "+234 803 123 4567",
+      contactAddress: "No. 45 Gwarzo Road, Kano State, Nigeria",
+      letterheadUrl: "",
+      signatureUrl: "",
+      stampUrl: "",
+      watermarkText: "SECURED REGISTRY DOCUMENT",
+      watermarkEnabled: true
+    };
+
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return defaultSettings;
+    }
+
+    try {
+      const res = await pool.query("SELECT id, organization_name, tpm_name, tpm_title, contact_email, contact_phone, contact_address, letterhead_url, signature_url, stamp_url, watermark_text, watermark_enabled FROM organization_settings ORDER BY updated_at DESC LIMIT 1");
+      if (res.rows.length > 0) {
+        const row = res.rows[0];
+        return {
+          id: row.id,
+          organizationName: row.organization_name,
+          tpmName: row.tpm_name,
+          tpmTitle: row.tpm_title,
+          contactEmail: row.contact_email,
+          contactPhone: row.contact_phone,
+          contactAddress: row.contact_address,
+          letterheadUrl: row.letterhead_url || "",
+          signatureUrl: row.signature_url || "",
+          stampUrl: row.stamp_url || "",
+          watermarkText: row.watermark_text || "SECURED REGISTRY DOCUMENT",
+          watermarkEnabled: row.watermark_enabled !== false
+        };
+      }
+      return defaultSettings;
+    } catch (e) {
+      console.error("[DB Repo] Failed to load organization settings:", e);
+      return defaultSettings;
+    }
+  }
+
+  /**
+   * Organization Settings Updates
+   */
+  static async updateOrganizationSettings(s: OrganizationSettings): Promise<boolean> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return true;
+    }
+
+    try {
+      await pool.query(
+        `INSERT INTO organization_settings (
+          id, organization_name, tpm_name, tpm_title, contact_email, contact_phone, contact_address, letterhead_url, signature_url, stamp_url, watermark_text, watermark_enabled, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+         ON CONFLICT (id) DO UPDATE SET
+           organization_name = EXCLUDED.organization_name,
+           tpm_name = EXCLUDED.tpm_name,
+           tpm_title = EXCLUDED.tpm_title,
+           contact_email = EXCLUDED.contact_email,
+           contact_phone = EXCLUDED.contact_phone,
+           contact_address = EXCLUDED.contact_address,
+           letterhead_url = EXCLUDED.letterhead_url,
+           signature_url = EXCLUDED.signature_url,
+           stamp_url = EXCLUDED.stamp_url,
+           watermark_text = EXCLUDED.watermark_text,
+           watermark_enabled = EXCLUDED.watermark_enabled,
+           updated_at = NOW()`,
+        [
+          s.id || "ideas_default", s.organizationName, s.tpmName, s.tpmTitle,
+          s.contactEmail, s.contactPhone, s.contactAddress,
+          s.letterheadUrl, s.signatureUrl, s.stampUrl,
+          s.watermarkText || "SECURED REGISTRY DOCUMENT", s.watermarkEnabled !== false
+        ]
+      );
+      return true;
+    } catch (e) {
+      console.error("[DB Repo] Failed to save organization settings:", e);
+      return false;
+    }
+  }
+
+  /**
+   * Training Programs Retrieval
+   */
+  static async getTrainingPrograms(): Promise<TrainingProgram[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return [
+        { id: "prog_ch_repair", name: "Computer Hardware and Cell Phone Repairs", sector: "ICT & digital skills", code: "TP-ICT-001", totalHours: "350" },
+        { id: "prog_sol_inst", name: "Solar Panel Installation and Maintenance", sector: "Energy & solar Tech", code: "TP-ENG-002", totalHours: "420" }
+      ];
+    }
+
+    try {
+      const res = await pool.query("SELECT id, name, sector, code, total_hours FROM training_programs ORDER BY name ASC");
+      return res.rows.map(row => ({
+        id: row.id,
+        name: row.name,
+        sector: row.sector || "",
+        code: row.code || "",
+        totalHours: row.total_hours || ""
+      }));
+    } catch (e) {
+      console.error("[DB Repo] Failed to fetch training programs:", e);
+      return [];
+    }
+  }
+
+  /**
+   * Save a training program/batch
+   */
+  static async saveTrainingProgram(tp: TrainingProgram): Promise<boolean> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return true;
+    }
+    try {
+      await pool.query(
+        `INSERT INTO training_programs (id, name, sector, code, total_hours)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (id) DO UPDATE SET
+           name = EXCLUDED.name,
+           sector = EXCLUDED.sector,
+           code = EXCLUDED.code,
+           total_hours = EXCLUDED.total_hours`,
+        [tp.id, tp.name, tp.sector, tp.code, tp.totalHours]
+      );
+      return true;
+    } catch (e) {
+      console.error("[DB Repo] Failed to save training program:", e);
+      return false;
+    }
+  }
+
+  /**
+   * Delete a training program
+   */
+  static async deleteTrainingProgram(id: string): Promise<boolean> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return true;
+    }
+    try {
+      await pool.query("DELETE FROM training_programs WHERE id = $1", [id]);
+      return true;
+    } catch (e) {
+      console.error("[DB Repo] Failed to delete training program:", e);
+      return false;
+    }
+  }
+
+  /**
+   * Save a generated document version to the centralized database
+   */
+  static async saveGeneratedDocument(doc: any): Promise<boolean> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      // In simulation fallback mode, write to state and persist
+      const state = loadJsonState() as any;
+      if (!state.generatedDocuments) {
+        state.generatedDocuments = [];
+      }
+      state.generatedDocuments.push(doc);
+      saveJsonState(state);
+      return true;
+    }
+    try {
+      await pool.query(
+        `INSERT INTO generated_documents (
+          id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at,
+          verification_code, verification_status, verification_date, email_delivery_status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         ON CONFLICT (id) DO UPDATE SET
+           pdf_url = EXCLUDED.pdf_url,
+           docx_url = EXCLUDED.docx_url,
+           generated_by = EXCLUDED.generated_by,
+           created_at = EXCLUDED.created_at,
+           verification_code = EXCLUDED.verification_code,
+           verification_status = EXCLUDED.verification_status,
+           verification_date = EXCLUDED.verification_date,
+           email_delivery_status = EXCLUDED.email_delivery_status`,
+        [
+          doc.id, doc.beneficiaryId, doc.documentType, doc.version, doc.pdfUrl, doc.docxUrl || null, doc.generatedBy, new Date(doc.createdAt),
+          doc.verificationCode || null, doc.verificationStatus || "VALID", doc.verificationDate ? new Date(doc.verificationDate) : null, doc.emailDeliveryStatus || "Pending"
+        ]
+      );
+      return true;
+    } catch (e) {
+      console.error("[DB Repo] Failed to save generated document:", e);
+      return false;
+    }
+  }
+
+  /**
+   * Get the latest version number for a document type and beneficiary
+   */
+  static async getLatestDocumentVersion(beneficiaryId: string, documentType: string): Promise<number> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState() as any;
+      const docs = (state.generatedDocuments || []).filter(
+        (d: any) => d.beneficiaryId === beneficiaryId && d.documentType === documentType
+      );
+      if (docs.length === 0) return 0;
+      return Math.max(...docs.map((d: any) => d.version));
+    }
+    try {
+      const res = await pool.query(
+        "SELECT COALESCE(MAX(version), 0) as max_version FROM generated_documents WHERE beneficiary_id = $1 AND document_type = $2",
+        [beneficiaryId, documentType]
+      );
+      return parseInt(res.rows[0].max_version || '0');
+    } catch (e) {
+      console.error("[DB Repo] Failed to get latest document version:", e);
+      return 0;
+    }
+  }
+
+  /**
+   * Fetch all generated documents for a specific beneficiary
+   */
+  static async getGeneratedDocuments(beneficiaryId: string): Promise<any[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState() as any;
+      return (state.generatedDocuments || []).filter((d: any) => d.beneficiaryId === beneficiaryId);
+    }
+    try {
+      const res = await pool.query(
+        "SELECT id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at, verification_code, verification_status, verification_date, email_delivery_status FROM generated_documents WHERE beneficiary_id = $1 ORDER BY created_at DESC",
+        [beneficiaryId]
+      );
+      return res.rows.map(row => ({
+        id: row.id,
+        beneficiaryId: row.beneficiary_id,
+        documentType: row.document_type,
+        version: row.version,
+        pdfUrl: row.pdf_url,
+        docxUrl: row.docx_url || undefined,
+        generatedBy: row.generated_by,
+        createdAt: row.created_at ? row.created_at.toISOString() : new Date().toISOString(),
+        verificationCode: row.verification_code || undefined,
+        verificationStatus: row.verification_status || undefined,
+        verificationDate: row.verification_date ? row.verification_date.toISOString() : undefined,
+        emailDeliveryStatus: row.email_delivery_status || undefined
+      }));
+    } catch (e) {
+      console.error("[DB Repo] Failed to get generated documents:", e);
+      return [];
+    }
+  }
+
+  /**
+   * Fetch a generated document by verification code
+   */
+  static async getGeneratedDocumentByCode(code: string): Promise<any | null> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState() as any;
+      return (state.generatedDocuments || []).find((d: any) => d.verificationCode?.toLowerCase() === code.toLowerCase()) || null;
+    }
+    try {
+      const res = await pool.query(
+        "SELECT id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at, verification_code, verification_status, verification_date, email_delivery_status FROM generated_documents WHERE LOWER(verification_code) = LOWER($1)",
+        [code]
+      );
+      if (res.rows.length === 0) return null;
+      const row = res.rows[0];
+      return {
+        id: row.id,
+        beneficiaryId: row.beneficiary_id,
+        documentType: row.document_type,
+        version: row.version,
+        pdfUrl: row.pdf_url,
+        docxUrl: row.docx_url || undefined,
+        generatedBy: row.generated_by,
+        createdAt: row.created_at ? row.created_at.toISOString() : new Date().toISOString(),
+        verificationCode: row.verification_code,
+        verificationStatus: row.verification_status,
+        verificationDate: row.verification_date ? row.verification_date.toISOString() : undefined,
+        emailDeliveryStatus: row.email_delivery_status
+      };
+    } catch (e) {
+      console.error("[DB Repo] Failed to get document by code:", e);
+      return null;
+    }
+  }
+
+  /**
+   * Fetch a generated document by dynamic document ID
+   */
+  static async getGeneratedDocumentById(id: string): Promise<any | null> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState() as any;
+      return (state.generatedDocuments || []).find((d: any) => d.id === id) || null;
+    }
+    try {
+      const res = await pool.query(
+        "SELECT id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at, verification_code, verification_status, verification_date, email_delivery_status FROM generated_documents WHERE id = $1",
+        [id]
+      );
+      if (res.rows.length === 0) return null;
+      const row = res.rows[0];
+      return {
+        id: row.id,
+        beneficiaryId: row.beneficiary_id,
+        documentType: row.document_type,
+        version: row.version,
+        pdfUrl: row.pdf_url,
+        docxUrl: row.docx_url || undefined,
+        generatedBy: row.generated_by,
+        createdAt: row.created_at ? row.created_at.toISOString() : new Date().toISOString(),
+        verificationCode: row.verification_code,
+        verificationStatus: row.verification_status,
+        verificationDate: row.verification_date ? row.verification_date.toISOString() : undefined,
+        emailDeliveryStatus: row.email_delivery_status
+      };
+    } catch (e) {
+      console.error("[DB Repo] Failed to get document by id:", e);
+      return null;
+    }
+  }
+
+  /**
+   * Update generated document verification status
+   */
+  static async updateGeneratedDocumentVerificationStatus(id: string, status: string, date: Date | null): Promise<boolean> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState() as any;
+      const doc = (state.generatedDocuments || []).find((d: any) => d.id === id);
+      if (doc) {
+        doc.verificationStatus = status;
+        doc.verificationDate = date ? date.toISOString() : undefined;
+        saveJsonState(state);
+        return true;
+      }
+      return false;
+    }
+    try {
+      await pool.query(
+        "UPDATE generated_documents SET verification_status = $1, verification_date = $2 WHERE id = $3",
+        [status, date, id]
+      );
+      return true;
+    } catch (e) {
+      console.error("[DB Repo] Failed to update document verification status:", e);
+      return false;
+    }
+  }
+
+  /**
+   * Update generated document email status
+   */
+  static async updateGeneratedDocumentEmailStatus(id: string, emailStatus: string): Promise<boolean> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState() as any;
+      const doc = (state.generatedDocuments || []).find((d: any) => d.id === id);
+      if (doc) {
+        doc.emailDeliveryStatus = emailStatus;
+        saveJsonState(state);
+        return true;
+      }
+      return false;
+    }
+    try {
+      await pool.query(
+        "UPDATE generated_documents SET email_delivery_status = $1 WHERE id = $2",
+        [emailStatus, id]
+      );
+      return true;
+    } catch (e) {
+      console.error("[DB Repo] Failed to update document email status:", e);
+      return false;
     }
   }
 }

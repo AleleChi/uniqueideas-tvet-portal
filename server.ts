@@ -10,12 +10,14 @@ import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
-import { Gender, ProgramStatus, Beneficiary, CustomField, AuditLog } from "./src/types";
+import { Gender, ProgramStatus, Beneficiary, CustomField, AuditLog, DocumentType } from "./src/types";
 import { AdmissionController } from "./src/backend/admission.controller";
 import { EmailService } from "./src/backend/email.service";
 import { initDb, DbRepo } from "./src/backend/db";
 import { requireAuth, requireRole, JWT_SECRET, AuthenticatedRequest } from "./src/backend/auth.middleware";
 import { PdfService } from "./src/backend/pdf.service";
+import { CloudinaryService } from "./src/backend/cloudinary.service";
+import { DocumentService } from "./src/backend/document.service";
 
 const app = express();
 const PORT = 3000;
@@ -441,6 +443,77 @@ app.delete("/api/custom-fields/:id", requireAuth, requireRole(["SUPER_ADMIN"]), 
   }
 });
 
+// Organization settings resources (Phase 1)
+app.get("/api/organization-settings", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
+  try {
+    const settings = await DbRepo.getOrganizationSettings();
+    res.json(settings);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put("/api/organization-settings", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const settings = req.body;
+    await DbRepo.updateOrganizationSettings(settings);
+    await logAction(req.user!.email, "SETTINGS_UPDATE", `Updated organization setting for ${settings.organizationName}`);
+    res.json({ success: true, settings });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Training programs / batches resources
+app.get("/api/training-programs", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
+  try {
+    const programs = await DbRepo.getTrainingPrograms();
+    res.json(programs);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/training-programs", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const program = req.body;
+    if (!program.id) {
+      program.id = "prog_" + Date.now();
+    }
+    await DbRepo.saveTrainingProgram(program);
+    await logAction(req.user!.email, "PROGRAM_CREATE", `Created/Updated training program '${program.name}'`);
+    res.status(201).json({ success: true, program });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/training-programs/:id", requireAuth, requireRole(["SUPER_ADMIN"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    await DbRepo.deleteTrainingProgram(id);
+    await logAction(req.user!.email, "PROGRAM_DELETE", `Removed training program id: ${id}`);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Cloudinary Asset Upload proxied endpoint
+app.post("/api/upload-asset", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { fileContent, fileName, folder } = req.body;
+    if (!fileContent) {
+      return res.status(400).json({ error: "Missing required upload parameter: fileContent" });
+    }
+    const secureUrl = await CloudinaryService.uploadDocument(fileContent, fileName || "asset_image", folder || "ideas_assets");
+    res.json({ secureUrl });
+  } catch (e: any) {
+    console.error("[Upload Endpoint] Failed:", e);
+    res.status(500).json({ error: e.message || "Failed uploading asset" });
+  }
+});
+
 // Beneficiary management resource
 app.get("/api/beneficiaries", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req, res) => {
   try {
@@ -559,6 +632,108 @@ app.delete("/api/beneficiaries/:id", requireAuth, requireRole(["SUPER_ADMIN"]), 
       return res.json({ success: true, deleted: target });
     }
     res.status(404).json({ error: "Beneficiary not found" });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// --- DOCUMENT AUTOMATION API ENDPOINTS ---
+
+// Fetch generated document history for a beneficiary
+app.get("/api/documents/:beneficiaryId/history", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const history = await DocumentService.getDocumentHistory(req.params.beneficiaryId);
+    res.json(history);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Generate or Regenerate a document
+app.post("/api/documents/generate", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { beneficiaryId, documentType, regenerate } = req.body;
+    if (!beneficiaryId || !documentType) {
+      return res.status(400).json({ error: "beneficiaryId and documentType are required fields." });
+    }
+
+    const generatedBy = req.user?.email || "SYSTEM";
+    let document;
+
+    if (regenerate === true) {
+      document = await DocumentService.regenerateDocument(beneficiaryId, documentType as DocumentType, generatedBy);
+    } else {
+      document = await DocumentService.generateDocument(beneficiaryId, documentType as DocumentType, generatedBy);
+    }
+
+    res.json({ success: true, document });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Dispatch a generated document to Email
+app.post("/api/documents/email", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { documentId, recipientEmail } = req.body;
+    if (!documentId) {
+      return res.status(400).json({ error: "documentId is a required field." });
+    }
+
+    const outcome = await DocumentService.sendDocumentEmail(documentId, recipientEmail);
+    res.json(outcome);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Public Document Verification Endpoint
+app.post("/api/documents/verify", async (req, res) => {
+  try {
+    const { code, id } = req.body;
+    if (!code && !id) {
+      return res.status(400).json({ error: "Please provide a verification code or document ID." });
+    }
+
+    let doc = null;
+    if (code) {
+      doc = await DbRepo.getGeneratedDocumentByCode(code);
+    } else if (id) {
+      doc = await DbRepo.getGeneratedDocumentById(id);
+    }
+
+    if (!doc) {
+      return res.status(404).json({ error: "No matching official document found in registry database." });
+    }
+
+    // Get beneficiary name
+    const beneficiary = await DbRepo.getBeneficiaryById(doc.beneficiaryId);
+    const beneficiaryName = beneficiary 
+      ? `${beneficiary.firstName} ${beneficiary.lastName}`
+      : "Unknown Candidate";
+
+    // Mark as verified upon lookup (to demonstrate active validation tracking)
+    if (doc.verificationStatus !== "VERIFIED") {
+      try {
+        await DbRepo.updateGeneratedDocumentVerificationStatus(doc.id, "VERIFIED");
+        doc.verificationStatus = "VERIFIED";
+        doc.verificationDate = new Date().toISOString();
+      } catch (err) {}
+    }
+
+    res.json({
+      success: true,
+      documentId: doc.id,
+      beneficiaryId: doc.beneficiaryId,
+      beneficiaryName,
+      documentType: doc.documentType,
+      version: doc.version,
+      pdfUrl: doc.pdfUrl,
+      verificationCode: doc.verificationCode,
+      verificationStatus: doc.verificationStatus,
+      verificationDate: doc.verificationDate || new Date().toISOString(),
+      createdAt: doc.createdAt,
+    });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

@@ -3,12 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { 
   ArrowLeft, Edit3, Printer, ShieldCheck, CheckCircle, ClipboardList, PenTool, 
   Award, Landmark, Check, Upload, FileText, Calendar, Trash2, Mail, ExternalLink, 
   Download, FileUp, Sparkles, AlertTriangle, FileCode, CheckSquare, Info,
-  Copy, RotateCw, RefreshCw, FileSpreadsheet
+  Copy, RotateCw, RefreshCw, FileSpreadsheet, Search, Filter, X, Eye, ChevronRight
 } from "lucide-react";
 import { Beneficiary, ProgramStatus, AuditLog } from "../types";
 
@@ -35,6 +35,185 @@ export function BeneficiaryDetails({
   const [dragActive, setDragActive] = useState<string | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
   
+  // Document automation engine state
+  const [documentHistory, setDocumentHistory] = useState<any[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState<boolean>(false);
+  const [loadingDocType, setLoadingDocType] = useState<string | null>(null);
+
+  // Executive advanced UI states (Phase 2A Polish)
+  const [toasts, setToasts] = useState<{ id: string; type: "success" | "error" | "info"; message: string }[]>([]);
+  const [previewDoc, setPreviewDoc] = useState<any | null>(null);
+  const [ledgerSearch, setLedgerSearch] = useState("");
+  const [ledgerFilter, setLedgerFilter] = useState("ALL");
+  const [generatingAll, setGeneratingAll] = useState<boolean>(false);
+  const [generationProgress, setGenerationProgress] = useState<{ currentStep: string; percent: number } | null>(null);
+
+  const showToast = (message: string, type: "success" | "error" | "info" = "success") => {
+    const id = Math.random().toString(36).substring(2, 9);
+    setToasts((prev) => [...prev, { id, type, message }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 4500);
+  };
+
+  const fetchDocumentHistory = async (silently: boolean = false) => {
+    if (!silently) setLoadingHistory(true);
+    try {
+      const res = await fetch(`/api/documents/${beneficiary.id}/history`);
+      if (res.ok) {
+        const data = await res.json();
+        setDocumentHistory(data);
+        if (!silently) showToast("Document registry matching engine loaded fully.", "success");
+      }
+    } catch (e) {
+      console.error("Failed to load document version history:", e);
+      showToast("Could not contact the cryptographic registry.", "error");
+    } finally {
+      if (!silently) setLoadingHistory(false);
+    }
+  };
+
+  const handleGenerateDoc = async (documentType: string, regenerate: boolean) => {
+    setLoadingDocType(`${documentType}_${regenerate ? 'regen' : 'gen'}`);
+    showToast(`Compiling ${documentType.replace(/_/g, " ")} matching state data...`, "info");
+    try {
+      const res = await fetch("/api/documents/generate", {
+        method: "POST",
+        headers: { "Content-Type" : "application/json" },
+        body: JSON.stringify({
+          beneficiaryId: beneficiary.id,
+          documentType,
+          regenerate
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        await fetchDocumentHistory(true);
+        showToast(`${documentType.replace(/_/g, " ")} completed successfully! Assigned Version v${data.document.version}.`, "success");
+      } else {
+        const err = await res.json();
+        showToast(err.error || "Failed compiling document.", "error");
+      }
+    } catch (e) {
+      console.error(e);
+      showToast("A system error occurred during PDF compiling.", "error");
+    } finally {
+      setLoadingDocType(null);
+    }
+  };
+
+  const handleSendDocEmail = async (documentId: string) => {
+    setLoadingDocType(`email_${documentId}`);
+    showToast("Preparing secure dispatch package...", "info");
+    try {
+      const res = await fetch("/api/documents/email", {
+        method: "POST",
+        headers: { "Content-Type" : "application/json" },
+        body: JSON.stringify({ documentId })
+      });
+      if (res.ok) {
+        showToast("E-mail with secure download link successfully dispatched to candidate.", "success");
+      } else {
+        const err = await res.json();
+        showToast(err.error || "Failed dispatching email.", "error");
+      }
+    } catch (e) {
+      console.error(e);
+      showToast("System failed sending document notification.", "error");
+    } finally {
+      setLoadingDocType(null);
+    }
+  };
+
+  const handleGenerateAllDocs = async () => {
+    if (generatingAll) return;
+    setGeneratingAll(true);
+    setGenerationProgress({ currentStep: "Initializing engine...", percent: 5 });
+    showToast("Beginning sequential multi-document compilation...", "info");
+
+    const documentsToBuild = [
+      { key: "ADMISSION_LETTER", label: "Admission Letter" },
+      { key: "ACCEPTANCE_LETTER", label: "Acceptance Letter" },
+      { key: "ADMISSION_FORM", label: "Admission Form" },
+      { key: "PHOTO_ALBUM", label: "Photo Album" },
+      { key: "ENROLLMENT_CONFIRMATION", label: "Enrollment Confirmation" },
+      { key: "COMPLETION_CERTIFICATE", label: "Completion Certificate" }
+    ];
+
+    try {
+      for (let i = 0; i < documentsToBuild.length; i++) {
+        const doc = documentsToBuild[i];
+        const stepNum = i + 1;
+        const progressPct = Math.round((stepNum / documentsToBuild.length) * 100);
+        
+        setGenerationProgress({ 
+          currentStep: `Processing ${doc.label} (${stepNum}/6)...`, 
+          percent: progressPct 
+        });
+
+        const exists = documentHistory.some(h => h.documentType === doc.key);
+
+        const res = await fetch("/api/documents/generate", {
+          method: "POST",
+          headers: { "Content-Type" : "application/json" },
+          body: JSON.stringify({
+            beneficiaryId: beneficiary.id,
+            documentType: doc.key,
+            regenerate: exists
+          })
+        });
+
+        if (res.ok) {
+          showToast(`Successfully processed: ${doc.label}`, "success");
+        } else {
+          showToast(`Skipped/Failed ${doc.label}. Continuous execution online.`, "error");
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 800));
+      }
+
+      await fetchDocumentHistory(true);
+      setGenerationProgress({ currentStep: "All compiled successfully!", percent: 100 });
+      showToast("Dynamic Generation Suite complete!", "success");
+    } catch (err: any) {
+      console.error(err);
+      showToast("Sequential execution failed.", "error");
+    } finally {
+      setTimeout(() => {
+        setGeneratingAll(false);
+        setGenerationProgress(null);
+      }, 1500);
+    }
+  };
+
+  const handleExportLedgerCSV = () => {
+    if (documentHistory.length === 0) {
+      showToast("No ledger records available to export.", "info");
+      return;
+    }
+    const headers = ["Index ID", "Document Type", "Version", "Date Compiled", "Operator", "Cloudinary URL"];
+    const rows = documentHistory.map((doc, idx) => [
+      doc.id,
+      doc.documentType,
+      doc.version,
+      new Date(doc.createdAt).toISOString(),
+      doc.generatedBy,
+      doc.pdfUrl
+    ]);
+    
+    const csvContent = "data:text/csv;charset=utf-8," 
+      + [headers.join(","), ...rows.map(e => e.map(val => `"${val}"`).join(","))].join("\n");
+      
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `ideas_document_ledger_${beneficiary.id}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast("Document Ledger CSV exported successfully!", "success");
+  };
+
   // Admin decision states
   const [rejectionMode, setRejectionMode] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
@@ -91,6 +270,12 @@ export function BeneficiaryDetails({
   useEffect(() => {
     fetchEmailHealth();
   }, []);
+
+  useEffect(() => {
+    if (beneficiary?.id) {
+      fetchDocumentHistory();
+    }
+  }, [beneficiary?.id]);
 
   // Admin validation actions
   const approveVerification = async () => {
@@ -575,6 +760,95 @@ export function BeneficiaryDetails({
   return (
     <div className="space-y-6 font-sans select-none max-w-7xl mx-auto animate-in fade-in duration-300">
       
+      {/* Dynamic Toast Notification Overlay */}
+      <div className="fixed bottom-5 right-5 z-[9999] p-4 pointer-events-none flex flex-col gap-2 max-w-sm w-full">
+        {toasts.map((t) => (
+          <div 
+            key={t.id} 
+            className={`pointer-events-auto p-4 rounded-xl shadow-lg border text-xs font-medium flex items-center justify-between gap-3 animate-in slide-in-from-bottom-5 fade-in duration-200 ${
+              t.type === "success" 
+                ? "bg-emerald-50 border-emerald-150 text-emerald-900" 
+                : t.type === "error"
+                ? "bg-rose-50 border-rose-150 text-rose-900"
+                : "bg-indigo-50 border-indigo-150 text-indigo-900"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
+              <span>{t.message}</span>
+            </div>
+            <button
+              onClick={() => setToasts(prev => prev.filter(x => x.id !== t.id))}
+              className="text-slate-400 hover:text-slate-600 font-bold ml-2 cursor-pointer bg-transparent border-0"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {/* Document Preview Modal */}
+      {previewDoc && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-[9999] flex items-center justify-center p-4 pointer-events-auto">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-4xl w-full h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+              <div>
+                <h4 className="text-xs font-bold text-slate-800 uppercase tracking-tight">
+                  Document Preview Tool
+                </h4>
+                <p className="text-[10px] text-slate-500 font-mono mt-0.5 uppercase">
+                  {previewDoc.documentType.replace(/_/g, " ")} • Version v{previewDoc.version}
+                </p>
+              </div>
+              <button
+                onClick={() => setPreviewDoc(null)}
+                className="p-1.5 hover:bg-slate-100 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer transition border-0 bg-transparent flex items-center justify-center"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Content Body */}
+            <div className="flex-1 bg-slate-100 relative p-2 min-h-0">
+              <iframe
+                title="PDF Document Preview"
+                src={previewDoc.pdfUrl}
+                className="w-full h-full border-0 rounded-lg shadow-inner"
+              />
+            </div>
+
+            {/* Footer Metadata & Actions */}
+            <div className="p-4 bg-white border-t border-slate-150 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 text-[10px]">
+              <div className="font-mono text-slate-500 space-y-0.5">
+                <div>Compiled on: <span className="font-bold text-slate-700">{new Date(previewDoc.createdAt).toLocaleString("en-GB")}</span></div>
+                <div>Recorded by operator: <span className="font-bold text-slate-700">{previewDoc.generatedBy}</span></div>
+              </div>
+
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <a
+                  href={previewDoc.pdfUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-1 sm:flex-none text-center bg-slate-150 hover:bg-slate-200 border border-slate-200 text-slate-700 font-bold px-3.5 py-2 rounded-lg cursor-pointer transition"
+                >
+                  Open In New Tab
+                </a>
+                <a
+                  href={previewDoc.pdfUrl}
+                  download={`document_${previewDoc.id}.pdf`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-1 sm:flex-none text-center bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-3.5 py-2 rounded-lg cursor-pointer transition shadow-xs"
+                >
+                  Download PDF Certificate
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      
       {/* Top Header & Navigation Strip */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-3 border-b border-slate-200">
         <div className="space-y-1">
@@ -741,7 +1015,7 @@ export function BeneficiaryDetails({
         <div className="lg:col-span-8 space-y-6">
           
           {/* TAB STRIP CONTROL */}
-          <div className="bg-white border border-slate-200 rounded-xl p-1.5 flex flex-wrap gap-1 shadow-xs font-mono">
+          <div className="bg-white border border-slate-200 rounded-xl p-1.5 flex overflow-x-auto lg:flex-wrap gap-1 shadow-xs font-mono scrollbar-none items-center scroll-smooth">
             {[
               { id: "overview", label: "OVERVIEW" },
               { id: "admission", label: "ADMISSION" },
@@ -1807,6 +2081,486 @@ export function BeneficiaryDetails({
                     </div>
                   );
                 })}
+              </div>
+
+              {/* DOCUMENT AUTOMATION MODULE (PHASE 2A) */}
+              <div className="pt-6 border-t border-slate-100 font-sans p-1">
+                
+                {/* TOOLBAR */}
+                <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 pb-4 border-b border-slate-100 w-full">
+                  <div>
+                    <h5 className="text-xs font-bold uppercase text-indigo-950 flex items-center gap-1.5 font-display">
+                      <Sparkles className="w-3.5 h-3.5 text-indigo-500 animate-pulse" />
+                      Executive Document Automation Suite
+                    </h5>
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      Programmatic generation, cryptographic registration ledger, and electronic secure dispatch.
+                    </p>
+                  </div>
+                  
+                  {/* QUICK ACTION TOOLBAR */}
+                  <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
+                    <button
+                      type="button"
+                      onClick={() => fetchDocumentHistory(false)}
+                      disabled={loadingHistory}
+                      className="flex-1 lg:flex-none flex items-center justify-center gap-1.5 px-3 py-1.5 text-[9px] font-bold font-mono tracking-wider uppercase border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 rounded-lg cursor-pointer transition disabled:opacity-50"
+                    >
+                      <RotateCw className={`w-2.5 h-2.5 ${loadingHistory ? "animate-spin" : ""}`} /> Reload Ledger
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleGenerateAllDocs}
+                      disabled={generatingAll || loadingDocType !== null}
+                      className={`flex-1 lg:flex-none flex items-center justify-center gap-1.5 px-3 py-1.5 text-[9px] font-bold font-mono tracking-wider uppercase rounded-lg cursor-pointer transition ${
+                        generatingAll 
+                          ? "bg-amber-100 border border-amber-200 text-amber-800" 
+                          : "bg-indigo-905 bg-indigo-900 border border-indigo-950 text-white hover:bg-indigo-950"
+                      }`}
+                    >
+                      <Sparkles className={`w-2.5 h-2.5 ${generatingAll ? "animate-pulse" : ""}`} /> 
+                      {generatingAll ? "Running Compile..." : "Generate All Documents"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleExportLedgerCSV}
+                      disabled={documentHistory.length === 0}
+                      className="flex-1 lg:flex-none flex items-center justify-center gap-1.5 px-3 py-1.5 text-[9px] font-bold font-mono tracking-wider uppercase border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 rounded-lg cursor-pointer transition disabled:opacity-40"
+                    >
+                      <FileSpreadsheet className="w-2.5 h-2.5 text-emerald-605 text-emerald-600" /> Export CSV
+                    </button>
+                  </div>
+                </div>
+
+                {/* SEQUENTIAL STEPS IN PROGRESS */}
+                {generationProgress && (
+                  <div className="mt-4 p-4 bg-indigo-50/70 border border-indigo-150 rounded-xl space-y-2 animate-in fade-in slide-in-from-top-1 duration-200">
+                    <div className="flex justify-between items-center text-[10px] font-mono">
+                      <span className="font-bold text-indigo-900 uppercase tracking-wider animate-pulse flex items-center gap-1.5">
+                        <RotateCw className="w-3 h-3 animate-spin text-indigo-600" />
+                        {generationProgress.currentStep}
+                      </span>
+                      <span className="font-bold text-indigo-700">{generationProgress.percent}%</span>
+                    </div>
+                    <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
+                      <div 
+                        className="bg-indigo-600 h-1.5 rounded-full transition-all duration-300" 
+                        style={{ width: `${generationProgress.percent}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* METRIC CARDS GRID */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+                  {[
+                    { label: "Documents Active", val: `${new Set(documentHistory.map(h => h.documentType)).size} of 6`, desc: "Unique items compiled", icon: Sparkles, color: "text-indigo-600 bg-indigo-50 border-indigo-100" },
+                    { label: "Total Compiled Versions", val: documentHistory.length, desc: "Immutable records locked", icon: ClipboardList, color: "text-blue-600 bg-blue-50 border-blue-100" },
+                    { label: "Emails Dispatched", val: documentHistory.filter(h => h.emailDeliveryStatus === "Delivered" || h.emailDeliveryStatus === "Pending").length, desc: "Secure links distributed", icon: Mail, color: "text-emerald-600 bg-emerald-50 border-emerald-100" },
+                    { label: "Last Sync Timestamp", val: documentHistory[0] ? new Date(documentHistory[0].createdAt).toLocaleTimeString("en-GB", {hour: '2-digit', minute:'2-digit'}) : "Never", desc: documentHistory[0] ? new Date(documentHistory[0].createdAt).toLocaleDateString("en-GB") : "Awaiting build", icon: Calendar, color: "text-slate-600 bg-slate-50 border-slate-100" }
+                  ].map((card, i) => {
+                    const CardIcon = card.icon || Sparkles;
+                    return (
+                      <div key={i} className="bg-white border border-slate-150 rounded-xl p-3.5 space-y-1.5 hover:shadow-xs transition duration-200">
+                        <div className="flex justify-between items-start">
+                          <span className="text-[9px] font-bold text-slate-400 font-mono uppercase tracking-wider">{card.label}</span>
+                          <span className={`p-1 rounded-lg ${card.color.split(" ")[1]} ${card.color.split(" ")[2]}`}>
+                            <CardIcon className={`w-3.5 h-3.5 ${card.color.split(" ")[0]}`} />
+                          </span>
+                        </div>
+                        <div>
+                          <h4 className="text-base font-bold text-slate-800 leading-none tracking-tight">{card.val}</h4>
+                          <span className="text-[8px] block font-mono text-slate-400 mt-1">{card.desc}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* LEDGER STATISTICS PANEL */}
+                {documentHistory.length > 0 && (
+                  <div className="mt-4 p-3 bg-slate-50 border border-slate-205 border-slate-200 border-dashed rounded-xl flex flex-wrap gap-4 items-center justify-between text-[9px] font-mono text-slate-500">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-bold text-slate-700">Latest Build:</span>
+                      <span className="bg-slate-200 text-slate-700 font-bold px-1.5 py-0.5 rounded uppercase">
+                        {documentHistory[0]?.documentType.replace(/_/g, " ")} (v{documentHistory[0]?.version})
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-bold text-slate-700">Most Active Template:</span>
+                      <span className="bg-indigo-50 text-indigo-800 font-bold px-1.5 py-0.5 rounded">
+                        {(() => {
+                          const freq: any = {};
+                          documentHistory.forEach(h => { freq[h.documentType] = (freq[h.documentType] || 0) + 1; });
+                          let maxCode = "None";
+                          let maxVal = 0;
+                          Object.entries(freq).forEach(([k, v]: any) => {
+                            if (v > maxVal) { maxVal = v; maxCode = k; }
+                          });
+                          return `${maxCode.replace(/_/g, " ")} (${maxVal} versions)`;
+                        })()}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* DOCUMENT CARDS GRID */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
+                  {[
+                    { type: "ADMISSION_LETTER", label: "Official Admission Intent Letter", dept: "Admissions Office" },
+                    { type: "ACCEPTANCE_LETTER", label: "State Acceptance Slip Confirmation", dept: "Registrar's Office" },
+                    { type: "ADMISSION_FORM", label: "Consolidated Candidate Registration Dossier", dept: "Biometrics Center" },
+                    { type: "PHOTO_ALBUM", label: "Trainee Portfolio Photo Album Badge", dept: "Media & Portfolio" },
+                    { type: "ENROLLMENT_CONFIRMATION", label: "Official Enrollment Confirmation Slip", dept: "Central Registry" },
+                    { type: "COMPLETION_CERTIFICATE", label: "Gold Seal Graduation Completion Certificate", dept: "Central Registry" }
+                  ].map((docType) => {
+                    const docVersions = documentHistory.filter(h => h.documentType === docType.type);
+                    const latestDoc = [...docVersions].sort((a,b) => b.version - a.version)[0];
+                    const count = docVersions.length;
+
+                    // Compute dynamic status
+                    let statusLabel = "Not Generated";
+                    let statusColor = "bg-slate-100 text-slate-500 border-slate-200";
+                    
+                    if (latestDoc) {
+                      const isRecent = (Date.now() - new Date(latestDoc.createdAt).getTime()) < 24 * 60 * 60 * 1000;
+                      if (isRecent) {
+                        statusLabel = "Recently Updated";
+                        statusColor = "bg-blue-50 text-blue-700 border-blue-200 animate-pulse";
+                      } else {
+                        statusLabel = "Active";
+                        statusColor = "bg-emerald-50 text-emerald-700 border-emerald-200";
+                      }
+                    }
+
+                    // Precise Compiling States
+                    const isCompiling = loadingDocType === `${docType.type}_gen` || loadingDocType === `${docType.type}_regen`;
+
+                    return (
+                      <div key={docType.type} className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col justify-between space-y-4 hover:shadow-sm hover:border-slate-300 transition duration-200">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <span className="text-[10px] font-bold text-slate-800 tracking-tight block">
+                              {docType.label}
+                            </span>
+                            <span className="text-[8px] font-mono text-slate-400 block mt-0.5">
+                              {docType.dept} • {docType.type}
+                            </span>
+                          </div>
+                          <span className={`px-2 py-0.5 rounded-full text-[8px] font-extrabold font-mono uppercase border ${statusColor}`}>
+                            {statusLabel}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between py-1 bg-slate-50/50 rounded-lg px-2.5 text-[9px] font-mono">
+                          <span className="text-slate-400 font-medium">Recorded Compile Versions:</span>
+                          <span className="font-bold text-slate-700">{count} {count === 1 ? 'version' : 'versions'}</span>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1 font-sans">
+                          {/* Run/Compile next version button */}
+                          <button
+                            type="button"
+                            disabled={loadingDocType !== null}
+                            onClick={() => handleGenerateDoc(docType.type, count > 0)}
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[9px] uppercase tracking-wide px-3 py-1.5 rounded-lg inline-flex items-center gap-1 shadow-xs transition hover:-translate-y-px disabled:opacity-60 cursor-pointer"
+                          >
+                            <RotateCw className={`w-2.5 h-2.5 ${isCompiling ? "animate-spin" : ""}`} />
+                            {isCompiling ? "Compiling PDF..." : count > 0 ? "Regenerate" : "Compile"}
+                          </button>
+
+                          {/* Preview Link */}
+                          {latestDoc ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => setPreviewDoc(latestDoc)}
+                                className="bg-white border border-slate-200 text-slate-700 font-semibold text-[9px] uppercase tracking-wide px-2.5 py-1.5 rounded-lg inline-flex items-center gap-1 transition hover:bg-slate-50 cursor-pointer"
+                              >
+                                <Eye className="w-2.5 h-2.5 text-slate-500" /> Preview
+                              </button>
+                              <a
+                                href={latestDoc.pdfUrl}
+                                download={`document_${latestDoc.id}.pdf`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="bg-white border border-slate-200 text-slate-700 font-semibold text-[9px] uppercase tracking-wide px-2.5 py-1.5 rounded-lg inline-flex items-center gap-1 transition hover:bg-slate-50 cursor-pointer"
+                              >
+                                <Download className="w-2.5 h-2.5 text-slate-500" /> Download
+                              </a>
+                            </>
+                          ) : (
+                            <span className="text-[9px] text-slate-400 italic font-mono px-1 select-none">Awaiting Compiler</span>
+                          )}
+
+                          {/* Email Dispatch Button */}
+                          {latestDoc && (
+                            <button
+                              type="button"
+                              disabled={loadingDocType !== null}
+                              onClick={() => handleSendDocEmail(latestDoc.id)}
+                              className="border border-emerald-200 bg-emerald-50/50 hover:bg-emerald-50 text-emerald-700 font-bold text-[9px] uppercase tracking-wide px-2.5 py-1.5 rounded-lg inline-flex items-center gap-1 transition disabled:opacity-60 cursor-pointer ml-auto"
+                            >
+                              <Mail className="w-2.5 h-2.5 text-emerald-600" /> 
+                              {loadingDocType === `email_${latestDoc.id}` ? "Sending..." : "Dispatch Mail"}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* FEATURE 5: DOCUMENT ACTIVITY TIMELINE */}
+                <div id="document-activity-timeline" className="mt-8 border-t border-slate-200 pt-6">
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 text-left">
+                    <div className="flex items-center gap-1.5 pb-3 border-b border-slate-250 border-slate-200 mb-4 justify-between">
+                      <div className="flex items-center gap-2">
+                        <History className="w-4 h-4 text-indigo-600" />
+                        <h6 className="text-[10px] font-bold text-indigo-950 uppercase font-mono tracking-wider">
+                          Unified Document Lifecycle & Verification Timeline
+                        </h6>
+                      </div>
+                      <span className="text-[8px] bg-slate-200 text-slate-700 font-bold px-2 py-0.5 rounded-full font-mono uppercase">
+                        Real-Time Sync
+                      </span>
+                    </div>
+
+                    {documentHistory.length === 0 ? (
+                      <div className="py-6 text-center text-slate-400 text-[10px] font-mono uppercase tracking-wide">
+                        No system activities recorded yet. Compile a document to populate the verification trail.
+                      </div>
+                    ) : (
+                      <div className="relative pl-6 border-l-2 border-indigo-100 space-y-5 py-2">
+                        {documentHistory.slice(0, 5).map((doc, idx) => {
+                          const docName = doc.documentType.replace(/_/g, " ");
+                          const isNewest = idx === 0;
+                          return (
+                            <div key={doc.id} className="relative group animate-in fade-in duration-200">
+                              {/* Left node point indicator */}
+                              <span className={`absolute -left-[31px] top-1 w-4 h-4 rounded-full border-2 bg-white flex items-center justify-center transition-all ${
+                                isNewest 
+                                  ? "border-emerald-500 scale-110 shadow-sm" 
+                                  : "border-indigo-500"
+                              }`}>
+                                <span className={`w-1.5 h-1.5 rounded-full ${isNewest ? "bg-emerald-500 animate-pulse" : "bg-indigo-500"}`} />
+                              </span>
+
+                              <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 bg-white p-3.5 border border-slate-150 rounded-xl hover:border-slate-300 transition duration-150 shadow-3xs">
+                                <div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="text-[9px] font-extrabold uppercase font-mono bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded">
+                                      v{doc.version}
+                                    </span>
+                                    <h5 className="text-[10px] font-bold text-slate-900 tracking-tight">
+                                      {docName} compilation completed
+                                    </h5>
+                                    {doc.verificationStatus === "VERIFIED" && (
+                                      <span className="text-[7.5px] bg-emerald-55 bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded font-bold uppercase font-mono leading-none border border-emerald-200">
+                                        Verified
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="text-[9px] text-slate-450 text-slate-500 font-mono mt-1">
+                                    Registered securely by {doc.generatedBy} on {new Date(doc.createdAt).toLocaleString("en-GB")}
+                                  </p>
+                                </div>
+
+                                <div className="flex items-center gap-2 mt-2 md:mt-0">
+                                  {/* Verification status label details */}
+                                  {doc.verificationCode && (
+                                    <div className="text-right hidden md:block">
+                                      <span className="text-[7px] font-mono text-slate-400 block uppercase">Verification Code</span>
+                                      <span className="text-[9px] font-mono font-bold text-slate-700">{doc.verificationCode}</span>
+                                    </div>
+                                  )}
+
+                                  {/* Mail dispatch details */}
+                                  <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1">
+                                    <Mail className="w-3 h-3 text-slate-400" />
+                                    <div className="text-left font-mono">
+                                      <span className="text-[7px] text-slate-400 block leading-none uppercase">DISPATCH STATUS</span>
+                                      <span className={`text-[8px] font-bold ${
+                                        doc.emailDeliveryStatus === "Delivered" 
+                                          ? "text-emerald-600" 
+                                          : doc.emailDeliveryStatus === "Pending" 
+                                          ? "text-amber-600 animate-pulse" 
+                                          : doc.emailDeliveryStatus === "Failed" 
+                                          ? "text-rose-600" 
+                                          : "text-slate-500"
+                                      }`}>
+                                        {doc.emailDeliveryStatus || "NOT DISPATCHED"}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* VERSION LEDGER TRAIL TABLE & FILTERS */}
+                <div className="mt-8 border-t border-slate-200 pt-6">
+                  <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3 pb-3 mb-4">
+                    <h6 className="text-[10px] font-bold text-indigo-950 tracking-wider uppercase font-mono">
+                      Cryptographic Registry Ledger ({documentHistory.length} Total Versions)
+                    </h6>
+                    
+                    {/* FILTERS */}
+                    <div className="flex items-center gap-2 w-full md:w-auto font-sans">
+                      <div className="relative flex-1 md:flex-none">
+                        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          placeholder="Search operator..."
+                          value={ledgerSearch}
+                          onChange={(e) => setLedgerSearch(e.target.value)}
+                          className="pl-8 pr-3 py-1.5 border border-slate-200 rounded-lg text-[9px] w-full md:w-44 focus:border-indigo-500 font-mono placeholder:text-slate-400 outline-none"
+                        />
+                      </div>
+                      <div className="relative">
+                        <Filter className="w-3 h-3 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        <select
+                          value={ledgerFilter}
+                          onChange={(e) => setLedgerFilter(e.target.value)}
+                          className="pl-7 pr-4 py-1.5 border border-slate-200 rounded-lg text-[9px] bg-white font-mono focus:border-indigo-500 outline-none cursor-pointer"
+                        >
+                          <option value="ALL">All Documents</option>
+                          <option value="ADMISSION_LETTER">Admission Letter</option>
+                          <option value="ACCEPTANCE_LETTER">Acceptance Letter</option>
+                          <option value="ADMISSION_FORM">Admission Form</option>
+                          <option value="PHOTO_ALBUM">Photo Album</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  {loadingHistory ? (
+                    <div className="p-8 border border-dashed border-slate-200 rounded-xl bg-slate-50/30 text-center text-slate-400 text-[10px] font-mono tracking-wide uppercase animate-pulse">
+                      Loading programmatically compiled documents...
+                    </div>
+                  ) : (() => {
+                    const filteredHistory = documentHistory.filter(doc => {
+                      const matchesSearch = doc.generatedBy?.toLowerCase().includes(ledgerSearch.toLowerCase()) || 
+                                            doc.documentType.toLowerCase().includes(ledgerSearch.toLowerCase());
+                      const matchesFilter = ledgerFilter === "ALL" || doc.documentType === ledgerFilter;
+                      return matchesSearch && matchesFilter;
+                    });
+
+                    if (filteredHistory.length === 0) {
+                      return (
+                        <div className="p-8 border border-dashed border-slate-200 rounded-xl bg-slate-50/30 text-center text-slate-400 text-[10px] font-mono tracking-wide uppercase">
+                          No generated documents available yet.
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div className="overflow-x-auto border border-slate-150 rounded-xl bg-white shadow-3xs">
+                        <table className="min-w-full divide-y divide-slate-100 text-left text-slate-600 font-mono text-[9px]">
+                          <thead className="bg-[#f8fafc] text-slate-400 font-bold uppercase text-[8px]">
+                            <tr>
+                              <th className="px-3.5 py-2.5">Doc Type</th>
+                              <th className="px-3 py-2.5 text-center">Ver</th>
+                              <th className="px-3 py-2.5">Verification</th>
+                              <th className="px-3 py-2.5">Email Status</th>
+                              <th className="px-3 py-2.5">Date Compiled</th>
+                              <th className="px-3 py-2.5">Operator</th>
+                              <th className="px-3.5 py-2.5 text-right font-sans">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {filteredHistory.map((doc) => (
+                              <tr key={doc.id} className="hover:bg-slate-50/60 transition-colors">
+                                <td className="px-3.5 py-3 font-semibold text-slate-900">
+                                  {doc.documentType.replace(/_/g, " ")}
+                                </td>
+                                <td className="px-3 py-3 text-center font-bold">
+                                  <span className="bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded font-bold mr-1">
+                                    v{doc.version}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-3 font-mono font-semibold">
+                                  {doc.verificationCode ? (
+                                    <div className="flex flex-col gap-0.5">
+                                      <span className="text-slate-800">{doc.verificationCode}</span>
+                                      <a 
+                                        href={`/#/verify-document?code=${doc.verificationCode}`} 
+                                        target="_blank" 
+                                        rel="noopener noreferrer"
+                                        className={`w-max text-[7.5px] font-extrabold uppercase px-1.5 py-0.5 rounded leading-none border ${
+                                          doc.verificationStatus === "VERIFIED" 
+                                            ? "bg-emerald-50 text-emerald-700 border-emerald-250 cursor-pointer" 
+                                            : "bg-slate-50 text-slate-505 text-slate-600 border-slate-200 hover:bg-emerald-50 hover:text-emerald-700 cursor-pointer"
+                                        }`}
+                                      >
+                                        Status: {doc.verificationStatus || "UNVERIFIED"}
+                                      </a>
+                                    </div>
+                                  ) : (
+                                    <span className="text-slate-400 italic">Not Tracked</span>
+                                  )}
+                                </td>
+                                <td className="px-3 py-3 text-center">
+                                  {(() => {
+                                    const rawStatus = doc.emailDeliveryStatus || "NOT_SENT";
+                                    let badgeColor = "bg-slate-100 text-slate-600 border-slate-200";
+                                    if (rawStatus === "Pending") badgeColor = "bg-amber-50 text-amber-700 border-amber-200 animate-pulse";
+                                    if (rawStatus === "Delivered") badgeColor = "bg-emerald-50 text-emerald-700 border-emerald-200";
+                                    if (rawStatus === "Failed") badgeColor = "bg-rose-50 text-rose-700 border-rose-200";
+                                    return (
+                                      <span className={`px-2 py-0.5 rounded border text-[7.5px] font-extrabold font-mono uppercase ${badgeColor}`}>
+                                        {rawStatus}
+                                      </span>
+                                    );
+                                  })()}
+                                </td>
+                                <td className="px-3 py-3 text-slate-500">
+                                  {new Date(doc.createdAt).toLocaleString("en-GB")}
+                                </td>
+                                <td className="px-3 py-3 text-slate-500 italic">
+                                  {doc.generatedBy}
+                                </td>
+                                <td className="px-3.5 py-3 text-right space-x-1.5 font-sans">
+                                  <button
+                                    type="button"
+                                    onClick={() => setPreviewDoc(doc)}
+                                    className="text-indigo-600 hover:text-indigo-805 font-bold hover:underline bg-transparent border-0 inline-block p-0 cursor-pointer"
+                                  >
+                                    Preview
+                                  </button>
+                                  <span className="text-slate-205 text-slate-200">|</span>
+                                  <a
+                                    href={doc.pdfUrl}
+                                    download={`document_${doc.id}.pdf`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-slate-650 text-slate-600 hover:text-slate-800 font-bold hover:underline"
+                                  >
+                                    Download
+                                  </a>
+                                  <span className="text-slate-205 text-slate-200">|</span>
+                                  <button
+                                    type="button"
+                                    disabled={loadingDocType !== null}
+                                    onClick={() => handleSendDocEmail(doc.id)}
+                                    className="text-emerald-600 hover:text-emerald-800 font-bold hover:underline bg-transparent border-0 inline-block p-0 cursor-pointer"
+                                  >
+                                    {loadingDocType === `email_${doc.id}` ? "..." : "Resend"}
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })()}
+                </div>
               </div>
 
             </div>

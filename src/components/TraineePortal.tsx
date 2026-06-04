@@ -277,7 +277,7 @@ export function TraineePortal({ session, onLogout }: TraineePortalProps) {
       </header>
 
       {/* Main Core Student Workspace Frame */}
-      <main className="flex-grow max-w-7xl w-full mx-auto p-6 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
+      <main className="flex-grow max-w-7xl w-full mx-auto p-4 sm:p-6 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-8">
         
         {/* LEFT COLUMN: Checklists and printable documents (7 columns wide) */}
         <div className="lg:col-span-7 flex flex-col space-y-6">

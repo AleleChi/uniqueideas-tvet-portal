@@ -117,7 +117,7 @@ export function AdminLogin({ onLoginSuccess, onBackToHome }: AdminLoginProps) {
       <div className="flex-grow flex items-center justify-center py-12">
         <div 
           id="login-container-card"
-          className="w-full max-w-lg bg-white border border-slate-200/80 rounded-2xl shadow-xl p-8 md:p-10 relative border-l-4 border-yellow-500 flex flex-col space-y-6"
+          className="w-full max-w-lg bg-white border border-slate-200/80 rounded-2xl shadow-xl p-5 sm:p-8 md:p-10 relative border-l-4 border-yellow-500 flex flex-col space-y-6"
         >
           
           {/* Institutional Branding Header Section */}

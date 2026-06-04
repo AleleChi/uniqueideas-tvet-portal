@@ -137,6 +137,49 @@ export interface Beneficiary {
   status: ProgramStatus;
   createdAt: string;
   updatedAt: string;
+
+  // New Beneficiary Official Form Fields (Phase 1 Database Sync)
+  guardianName?: string;
+  guardianAddress?: string;
+  guardianPhone?: string;
+  physicalChallenge?: string;
+  bankAccountHolder?: string;
+  bankName?: string;
+  bankSortCode?: string;
+  bankAccountNumber?: string;
+  educationQualification?: string;
+}
+
+export interface OrganizationSettings {
+  id: string;
+  organizationName: string;
+  tpmName: string;
+  tpmTitle: string;
+  contactEmail: string;
+  contactPhone: string;
+  contactAddress: string;
+  letterheadUrl: string;
+  signatureUrl: string;
+  stampUrl: string;
+  watermarkText?: string;
+  watermarkEnabled?: boolean;
+  updatedAt?: string;
+}
+
+export interface TrainingProgram {
+  id: string;
+  name: string;
+  sector: string;
+  code: string;
+  totalHours: string;
+}
+
+export interface Certificate {
+  id: string;
+  beneficiaryId: string;
+  certificateNo: string;
+  issuedAt: string;
+  verifyStampUrl: string;
 }
 
 export interface AuditLog {
@@ -167,4 +210,28 @@ export interface UserSession {
   role: "SUPER_ADMIN" | "ADMIN_OFFICER" | "REVIEW_OFFICER" | "TRAINEE";
   token?: string;
   beneficiaryId?: string;
+}
+
+export enum DocumentType {
+  ADMISSION_LETTER = "ADMISSION_LETTER",
+  ACCEPTANCE_LETTER = "ACCEPTANCE_LETTER",
+  ADMISSION_FORM = "ADMISSION_FORM",
+  PHOTO_ALBUM = "PHOTO_ALBUM",
+  ENROLLMENT_CONFIRMATION = "ENROLLMENT_CONFIRMATION",
+  COMPLETION_CERTIFICATE = "COMPLETION_CERTIFICATE"
+}
+
+export interface GeneratedDocument {
+  id: string;
+  beneficiaryId: string;
+  documentType: DocumentType;
+  version: number;
+  pdfUrl: string;
+  docxUrl?: string;
+  generatedBy: string;
+  createdAt: string;
+  verificationCode?: string;
+  verificationStatus?: string;
+  verificationDate?: string;
+  emailDeliveryStatus?: string;
 }

@@ -299,7 +299,7 @@ export function ReportsWorkspace({ beneficiaries }: ReportsWorkspaceProps) {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           
           {/* Left panel: Simulated Letter Paper Mockup (7.png left) */}
-          <div className="lg:col-span-8 bg-zinc-100 border border-slate-200 rounded-xl p-8 flex items-center justify-center">
+          <div className="lg:col-span-8 bg-zinc-100 border border-slate-200 rounded-xl p-3 sm:p-8 flex items-center justify-start overflow-x-auto">
             
             <div id="pdf-reconstruction-sheet" className="w-full max-w-[595px] bg-white border border-slate-300 p-8 shadow-xl text-slate-800 relative space-y-6 select-text text-xs min-h-[700px] flex flex-col justify-between">
               
