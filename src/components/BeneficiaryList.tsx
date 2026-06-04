@@ -1,0 +1,579 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState } from "react";
+import { 
+  Search, Plus, Download, ChevronRight, Eye, ShieldAlert, Sparkles, 
+  X, Check, Save, UserPlus, AlertTriangle, Users, CameraOff, Sparkles as SparklesIcon 
+} from "lucide-react";
+import { Beneficiary, CustomField, Gender, ProgramStatus } from "../types";
+import { BeneficiaryDetails } from "./BeneficiaryDetails";
+import { NewEnrollmentForm } from "./NewEnrollmentForm";
+
+interface BeneficiaryListProps {
+  beneficiaries: Beneficiary[];
+  customFields: CustomField[];
+  onAddBeneficiary: (data: any) => Promise<void>;
+  onUpdateBeneficiary: (id: string, data: Partial<Beneficiary>) => Promise<void>;
+  onTriggerBiometrics: (beneficiary: Beneficiary) => void;
+  onDownloadCSV: () => void;
+  viewMode?: "list" | "details" | "create";
+  onViewModeChange?: (view: "list" | "details" | "create") => void;
+  tempCreatedPhoto?: string | null;
+  onClearTempPhoto?: () => void;
+  selectedBeneficiary?: Beneficiary | null;
+  onSelectBeneficiary?: (b: Beneficiary | null) => void;
+}
+
+export function BeneficiaryList({
+  beneficiaries,
+  customFields,
+  onAddBeneficiary,
+  onUpdateBeneficiary,
+  onTriggerBiometrics,
+  onDownloadCSV,
+  viewMode: externalViewMode,
+  onViewModeChange,
+  tempCreatedPhoto,
+  onClearTempPhoto,
+  selectedBeneficiary: propSelectedBeneficiary,
+  onSelectBeneficiary: propOnSelectBeneficiary
+}: BeneficiaryListProps) {
+  
+  // View mode switcher: "list" | "details" | "create"
+  const [internalViewMode, setInternalViewState] = useState<"list" | "details" | "create">("list");
+  const [internalSelectedBeneficiary, setInternalSelectedBeneficiary] = useState<Beneficiary | null>(null);
+
+  const selectedBeneficiary = propSelectedBeneficiary !== undefined ? propSelectedBeneficiary : internalSelectedBeneficiary;
+  const setSelectedBeneficiary = (b: Beneficiary | null) => {
+    setInternalSelectedBeneficiary(b);
+    if (propOnSelectBeneficiary) {
+      propOnSelectBeneficiary(b);
+    }
+  };
+
+  const totalActive = beneficiaries.length;
+  const compliantPhotos = beneficiaries.filter(b => b.status === ProgramStatus.VERIFIED).length;
+  const lockErrors = beneficiaries.filter(b => b.status !== ProgramStatus.VERIFIED).length;
+  const compliancePercent = totalActive > 0 ? Math.round((compliantPhotos / totalActive) * 100) : 100;
+
+  const liveBeneficiary = selectedBeneficiary
+    ? beneficiaries.find(b => b.id === selectedBeneficiary.id) || selectedBeneficiary
+    : null;
+
+  const viewMode = externalViewMode !== undefined ? externalViewMode : internalViewMode;
+
+  const setViewState = (val: "list" | "details" | "create") => {
+    setInternalViewState(val);
+    if (onViewModeChange) {
+      onViewModeChange(val);
+    }
+  };
+
+  // Filters State
+  const [search, setSearch] = useState("");
+  const [genderFilter, setGenderFilter] = useState("all");
+  const [batchFilter, setBatchFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [lifecycleFilter, setLifecycleFilter] = useState("all");
+
+  // Pagination page selection state
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 6;
+
+  // Filter List Candidates
+  const filteredList = beneficiaries.filter(b => {
+    const query = search.toLowerCase();
+    const matchesSearch = 
+      b.firstName.toLowerCase().includes(query) ||
+      b.lastName.toLowerCase().includes(query) ||
+      b.id.toLowerCase().includes(query) ||
+      b.bvn.includes(query) ||
+      b.nin.includes(query);
+
+    const matchesGender = genderFilter === "all" || b.gender === genderFilter;
+    const matchesStatus = 
+      statusFilter === "all" || 
+      b.status === statusFilter ||
+      (statusFilter === ProgramStatus.UNDER_REVIEW && b.status === ProgramStatus.PENDING_PHOTO) ||
+      (statusFilter === ProgramStatus.ENROLLED && b.status === ProgramStatus.VERIFIED);
+    const matchesBatch = batchFilter === "all" || b.batch === batchFilter;
+    
+    const bLife = b.admissionStatus || "Draft";
+    const matchesLifecycle = lifecycleFilter === "all" || 
+      (lifecycleFilter === "Draft" && (bLife === "Draft" || bLife === "Pending")) ||
+      bLife.toLowerCase() === lifecycleFilter.toLowerCase();
+
+    return matchesSearch && matchesGender && matchesStatus && matchesBatch && matchesLifecycle;
+  });
+
+  // Calculate paginated index subset
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const paginatedList = filteredList.slice(startIndex, startIndex + itemsPerPage);
+  const totalPages = Math.ceil(filteredList.length / itemsPerPage) || 1;
+
+  // Form saving actions
+  const handleAddNewCandidate = async (formData: Partial<Beneficiary>) => {
+    try {
+      await onAddBeneficiary({
+        ...formData,
+        otherName: "",
+        city: formData.city || (formData.state?.includes("Imo") ? "Owerri" : (formData.state?.includes("Lagos") ? "Ikeja" : "Kano Central"))
+      });
+      setViewState("list");
+      setSelectedBeneficiary(null);
+      if (onClearTempPhoto) onClearTempPhoto();
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleUpdateCandidate = async (formData: Partial<Beneficiary>) => {
+    if (liveBeneficiary) {
+      try {
+        await onUpdateBeneficiary(liveBeneficiary.id, formData);
+        setViewState("list");
+        setSelectedBeneficiary(null);
+        if (onClearTempPhoto) onClearTempPhoto();
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  };
+
+  // Switch to screen views
+  const handleLaunchDetails = (b: Beneficiary) => {
+    setSelectedBeneficiary(b);
+    setViewState("details");
+  };
+
+  const handleLaunchCreate = () => {
+    setSelectedBeneficiary(null);
+    setViewState("create");
+  };
+
+  // If viewing Details screen matching 5.png
+  if (viewMode === "details" && liveBeneficiary) {
+    return (
+      <BeneficiaryDetails 
+        beneficiary={liveBeneficiary}
+        onBack={() => { setViewState("list"); setSelectedBeneficiary(null); }}
+        onTriggerBiometrics={() => onTriggerBiometrics(liveBeneficiary)}
+        onEdit={() => setViewState("create")}
+        onUpdate={(data) => onUpdateBeneficiary(liveBeneficiary.id, data)}
+      />
+    );
+  }
+
+  // If viewing Enrollment screen matching 9.png
+  if (viewMode === "create") {
+    return (
+      <NewEnrollmentForm 
+        customFields={customFields}
+        beneficiaries={beneficiaries}
+        onCancel={() => { 
+          setViewState("list"); 
+          setSelectedBeneficiary(null); 
+          if (onClearTempPhoto) onClearTempPhoto();
+        }}
+        onSave={liveBeneficiary ? handleUpdateCandidate : handleAddNewCandidate}
+        onTriggerCapture={() => {
+          // If we editing, trigger photo snap, else mock register snap
+          onTriggerBiometrics(liveBeneficiary || { id: "TEMP", firstName: "Prospect", lastName: "Enroll" } as any);
+        }}
+        preloadedPhoto={tempCreatedPhoto || (liveBeneficiary ? liveBeneficiary.photo : null)}
+        beneficiary={liveBeneficiary}
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-6 relative max-w-7xl mx-auto font-sans select-none pb-12 animate-in fade-in duration-200">
+      
+      {/* 1. TOP STATS CARDS ROW (4.png Header stats) */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+        
+        {/* Stat Card 1: Total Active */}
+        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs border-l-4 border-indigo-600 flex items-center justify-between">
+          <div className="space-y-0.5">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono">
+              TOTAL ACTIVE
+            </span>
+            <span className="font-display font-bold text-2xl text-slate-900 tracking-tight block">
+              {totalActive.toLocaleString()}
+            </span>
+            <p className="text-[10px] text-slate-500 font-medium">In Repair Tracks</p>
+          </div>
+          <div className="h-10 w-10 bg-indigo-50 border border-indigo-100 rounded-xl flex items-center justify-center text-indigo-600">
+            <Users className="w-5 h-5" />
+          </div>
+        </div>
+
+        {/* Stat Card 2: Compliant Profile */}
+        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs border-l-4 border-emerald-500 flex items-center justify-between">
+          <div className="space-y-0.5">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono">
+              COMPLIANT PHOTOS
+            </span>
+            <span className="font-display font-bold text-2xl text-slate-900 tracking-tight block">
+              {compliantPhotos.toLocaleString()}
+            </span>
+            <p className="text-[10px] text-emerald-600 font-semibold uppercase">● {compliancePercent}% Locks Met</p>
+          </div>
+          <div className="h-10 w-10 bg-emerald-55 bg-emerald-50 border border-emerald-100 rounded-xl flex items-center justify-center text-emerald-600">
+            <Check className="w-5 h-5" />
+          </div>
+        </div>
+
+        {/* Stat Card 3: Biometric lock error (Red warning) */}
+        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs border-l-4 border-rose-500 flex items-center justify-between">
+          <div className="space-y-0.5">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono">
+              BIOMETRIC LOCK ERROR
+            </span>
+            <span className="font-display font-bold text-2xl text-slate-900 tracking-tight block">
+              {lockErrors.toLocaleString()}
+            </span>
+            <p className="text-[10px] text-rose-600 font-semibold uppercase">● Needs Capture</p>
+          </div>
+          <div className="h-10 w-10 bg-rose-50 border border-rose-100 rounded-xl flex items-center justify-center text-rose-500">
+            <CameraOff className="w-5 h-5" />
+          </div>
+        </div>
+
+      </div>
+
+      {/* 2. TABULAR WORKSHEET CONTROLS BAR (4.png filter layout) */}
+      <div className="bg-white border border-slate-200/90 rounded-xl p-4 shadow-xs space-y-4">
+        
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          
+          <div className="flex flex-wrap items-center gap-3 flex-1">
+            <h3 className="font-display font-bold text-slate-800 text-sm uppercase tracking-wider mr-2">
+              All Candidates
+            </h3>
+
+            {/* Keyword search filter */}
+            <div className="relative flex-1 min-w-[240px] max-w-sm">
+              <input 
+                type="text" 
+                placeholder="Search Computer Hardware & Cell Phone Rep..."
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setCurrentPage(1); }}
+                className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-1.5 pl-9 pr-4 text-xs font-medium text-slate-700 placeholder:text-slate-400 focus:outline-none transition"
+              />
+              <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+            </div>
+
+            {/* Genders Filter */}
+            <select
+              value={genderFilter}
+              onChange={(e) => { setGenderFilter(e.target.value); setCurrentPage(1); }}
+              className="bg-slate-50 hover:bg-slate-100 border border-slate-200 py-1.5 px-3 rounded-lg text-xs font-semibold text-slate-600 cursor-pointer focus:outline-none"
+            >
+              <option value="all">All Genders</option>
+              <option value="MALE">Male Candidates Only</option>
+              <option value="FEMALE">Female Candidates Only</option>
+            </select>
+
+            {/* Period filter */}
+            <select
+              value={batchFilter}
+              onChange={(e) => { setBatchFilter(e.target.value); setCurrentPage(1); }}
+              className="bg-slate-50 hover:bg-slate-100 border border-slate-200 py-1.5 px-3 rounded-lg text-xs font-semibold text-slate-600 cursor-pointer focus:outline-none"
+            >
+              <option value="all">All Batches</option>
+              {Array.from(new Set(beneficiaries.map(b => b.batch).filter(Boolean))).sort().map(b => (
+                <option key={b} value={b}>{b}</option>
+              ))}
+            </select>
+
+            {/* Status Level */}
+            <select
+              value={statusFilter}
+              onChange={(e) => { setStatusFilter(e.target.value); setCurrentPage(1); }}
+              className="bg-slate-50 hover:bg-slate-100 border border-slate-200 py-1.5 px-3 rounded-lg text-xs font-semibold text-slate-600 cursor-pointer focus:outline-none"
+            >
+              <option value="all">All Status levels</option>
+              <option value={ProgramStatus.DRAFT}>Draft Only</option>
+              <option value={ProgramStatus.UNDER_REVIEW}>Under Review</option>
+              <option value={ProgramStatus.ENROLLED}>Enrolled Only</option>
+              <option value={ProgramStatus.IN_TRAINING}>In Training</option>
+              <option value={ProgramStatus.GRADUATED}>Graduated Only</option>
+              <option value={ProgramStatus.ALUMNI}>Alumni Only</option>
+              <option value={ProgramStatus.FLAGGED}>Flagged Profiles</option>
+            </select>
+
+            {/* Lifecycle Stage dropdown */}
+            <select
+              value={lifecycleFilter}
+              onChange={(e) => { setLifecycleFilter(e.target.value); setCurrentPage(1); }}
+              className="bg-slate-50 hover:bg-slate-100 border border-slate-200 py-1.5 px-3 rounded-lg text-xs font-semibold text-slate-600 cursor-pointer focus:outline-none"
+            >
+              <option value="all">All Lifecycle Stages</option>
+              <option value="Draft">Draft</option>
+              <option value="Admission Generated">Admission Generated</option>
+              <option value="Admission Sent">Admission Sent</option>
+              <option value="Offer Viewed">Offer Viewed</option>
+              <option value="Acceptance Pending">Acceptance Pending</option>
+              <option value="Acceptance Uploaded">Acceptance Uploaded</option>
+              <option value="Under Review">Under Review</option>
+              <option value="Accepted">Accepted</option>
+              <option value="Enrolled">Enrolled</option>
+              <option value="Training In Progress">Training In Progress</option>
+              <option value="Training Completed">Training Completed</option>
+              <option value="Certified">Certified</option>
+              <option value="Alumni">Alumni</option>
+            </select>
+
+          </div>
+
+          <div className="flex items-center gap-2 self-end lg:self-auto">
+            <button
+              type="button"
+              onClick={handleLaunchCreate}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-555 py-2 px-4 rounded-lg text-xs font-bold shadow-xs flex items-center gap-1.5 transition outline-none cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add Beneficiary
+            </button>
+            <button
+              type="button"
+              onClick={onDownloadCSV}
+              className="bg-white hover:bg-slate-50 border border-slate-250 border-slate-200 text-slate-700 py-2 px-4 rounded-lg text-xs font-bold shadow-xs flex items-center gap-1.5 transition outline-none cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5 text-slate-400" />
+              Export Excel Data
+            </button>
+          </div>
+
+        </div>
+
+        {/* 3. WORKSHEET MAIN DATABASE TABLE VIEW (4.png rows) */}
+        <div className="border border-slate-200 rounded-lg overflow-hidden">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono border-b border-slate-100">
+                <th className="py-2.5 px-4 w-12 text-center">
+                  <input type="checkbox" readOnly checked className="rounded text-indigo-600 cursor-not-allowed" />
+                </th>
+                <th className="py-2.5 px-4 w-16">Port</th>
+                <th className="py-2.5 px-4">Candidate Identification</th>
+                <th className="py-2.5 px-4">NIN Number</th>
+                <th className="py-2.5 px-4">BVN Number</th>
+                <th className="py-2.5 px-4">Location State</th>
+                <th className="py-2.5 px-4">Level batch</th>
+                <th className="py-2.5 px-4">Lifecycle Step</th>
+                <th className="py-2.5 px-4">Bio Lock Score</th>
+                <th className="py-2.5 px-4 text-right">View Detail</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-150 text-xs font-medium text-slate-700">
+              {paginatedList.length === 0 ? (
+                <tr>
+                  <td colSpan={10} className="py-12 text-center text-slate-400 font-mono">
+                    No beneficiary profile match in program subset coordinates.
+                  </td>
+                </tr>
+              ) : (
+                paginatedList.map((b) => (
+                  <tr 
+                    key={b.id}
+                    onClick={() => handleLaunchDetails(b)}
+                    className="hover:bg-slate-50/70 transition cursor-pointer"
+                  >
+                    <td className="py-3 px-4 text-center" onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" className="rounded border-slate-300 text-indigo-600 cursor-pointer" />
+                    </td>
+                    
+                    <td className="py-3 px-4">
+                      <img 
+                        src={b.photo} 
+                        alt="Port" 
+                        referrerPolicy="no-referrer"
+                        className="w-10 h-10 rounded-full object-cover border border-slate-200 shadow-xs"
+                      />
+                    </td>
+
+                    <td className="py-3 px-4">
+                      <p className="font-sans font-bold text-slate-900 text-sm leading-normal">
+                        {b.lastName}, {b.firstName}
+                      </p>
+                      <p className="text-[10px] text-slate-400 font-mono tracking-wide">
+                        {b.id}
+                      </p>
+                    </td>
+
+                    <td className="py-3 px-4 font-mono text-[11px] text-slate-600">
+                      {b.nin.substring(0, 4)}-****-****
+                    </td>
+
+                    <td className="py-3 px-4 font-mono text-[11px] text-slate-600">
+                      {b.bvn.substring(0, 3)}****{b.bvn.substring(7)}
+                    </td>
+
+                    <td className="py-3 px-4 font-sans text-[11px] text-slate-600">
+                      {b.state.replace(" State", "")}
+                    </td>
+
+                    <td className="py-3 px-4 font-sans text-xs text-indigo-700 font-semibold uppercase">
+                      {b.batch.replace("Batch ", "")}
+                    </td>
+
+                    <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                      {(() => {
+                        const step = b.admissionStatus || "Draft";
+                        let style = "bg-slate-100 text-slate-700 border-slate-200";
+                        if (step === "Admission Generated") style = "bg-indigo-50 text-indigo-700 border-indigo-100";
+                        else if (step === "Admission Sent") style = "bg-blue-50 text-blue-700 border-blue-100";
+                        else if (step === "Offer Viewed") style = "bg-cyan-50 text-cyan-700 border-cyan-100";
+                        else if (step === "Acceptance Pending") style = "bg-amber-50 text-amber-700 border-amber-100";
+                        else if (step === "Acceptance Uploaded") style = "bg-purple-50 text-purple-700 border-purple-100";
+                        else if (step === "Under Review") style = "bg-yellow-50 text-yellow-800 border-yellow-200";
+                        else if (step === "Accepted") style = "bg-green-50 text-green-700 border-green-100";
+                        else if (step === "Enrolled") style = "bg-emerald-50 text-emerald-700 border-emerald-105 border-emerald-100";
+                        else if (step === "Training In Progress") style = "bg-indigo-950/10 text-indigo-950 border-indigo-950/20";
+                        else if (step === "Training Completed") style = "bg-purple-950/10 text-purple-950 border-purple-950/20";
+                        else if (step === "Certified") style = "bg-amber-500/10 text-amber-705 text-amber-700 border-amber-500/20";
+                        else if (step === "Alumni") style = "bg-teal-50 text-teal-700 border-teal-100";
+                        
+                        return (
+                          <span className={`border px-2 py-0.5 rounded font-mono text-[9px] font-bold uppercase ${style}`}>
+                            {step}
+                          </span>
+                        );
+                      })()}
+                    </td>
+
+                    <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                      {(() => {
+                        let text = "Pending";
+                        let style = "bg-amber-50 text-amber-700 border-amber-100";
+                        let dotColor = "bg-amber-500";
+                        let pulse = false;
+
+                        if (b.status === ProgramStatus.DRAFT) {
+                          text = "Draft";
+                          style = "bg-slate-50 text-slate-600 border-slate-200";
+                          dotColor = "bg-slate-400";
+                        } else if (b.status === ProgramStatus.UNDER_REVIEW || b.status === ProgramStatus.PENDING_PHOTO) {
+                          text = "Under Review";
+                          style = "bg-orange-50 text-orange-700 border-orange-200";
+                          dotColor = "bg-orange-500";
+                        } else if (b.status === ProgramStatus.ENROLLED || b.status === ProgramStatus.VERIFIED) {
+                          text = "Enrolled";
+                          style = "bg-blue-50 text-blue-700 border-blue-200";
+                          dotColor = "bg-blue-500";
+                          pulse = true;
+                        } else if (b.status === ProgramStatus.IN_TRAINING) {
+                          text = "In Training";
+                          style = "bg-purple-50 text-purple-700 border-purple-200";
+                          dotColor = "bg-purple-500";
+                          pulse = true;
+                        } else if (b.status === ProgramStatus.GRADUATED) {
+                          text = "Graduated";
+                          style = "bg-emerald-50 text-emerald-700 border-emerald-200";
+                          dotColor = "bg-emerald-500";
+                        } else if (b.status === ProgramStatus.ALUMNI) {
+                          text = "Alumni";
+                          style = "bg-teal-50 text-teal-700 border-teal-200";
+                          dotColor = "bg-teal-500";
+                        } else if (b.status === ProgramStatus.FLAGGED) {
+                          text = "NIN Mismatch";
+                          style = "bg-rose-50 text-rose-700 border-rose-200";
+                          dotColor = "bg-rose-500";
+                        }
+
+                        return (
+                          <span className={`${style} border font-semibold px-2 py-0.5 rounded text-[10px] tracking-wide inline-flex items-center gap-1`}>
+                            <span className={`h-1.5 w-1.5 rounded-full ${dotColor} ${pulse ? "animate-pulse" : ""}`}></span>
+                            {text}
+                          </span>
+                        );
+                      })()}
+                    </td>
+
+                    <td className="py-3 px-4 text-right">
+                      <ChevronRight className="w-4 h-4 text-slate-300 hover:text-indigo-600 inline-block" />
+                    </td>
+
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* 4. TABLE PAGINATION CONTROL BAR (4.png matching totals indicator) */}
+        <div className="flex items-center justify-between text-xs font-mono text-slate-400 pt-1">
+          <span>
+            Showing {startIndex + 1} to {Math.min(startIndex + itemsPerPage, filteredList.length)} of {filteredList.length} registered records.
+          </span>
+
+          <div className="flex items-center gap-1.5">
+            <button 
+              onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+              disabled={currentPage === 1}
+              className="px-3 py-1 bg-white border border-slate-205 border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 transition cursor-pointer select-none"
+            >
+              Previous
+            </button>
+            
+            <div className="flex items-center gap-1">
+              {Array.from({ length: totalPages }).map((_, i) => (
+                <button
+                  key={i}
+                  onClick={() => setCurrentPage(i + 1)}
+                  className={`h-6.5 w-6.5 rounded-lg flex items-center justify-center font-bold transition text-[11px] cursor-pointer ${
+                    currentPage === i + 1 
+                      ? "bg-indigo-950 text-white shadow-xs" 
+                      : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+                  }`}
+                >
+                  {i + 1}
+                </button>
+              ))}
+            </div>
+
+            <button 
+              onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+              disabled={currentPage === totalPages}
+              className="px-3 py-1 bg-white border border-slate-205 border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 transition cursor-pointer select-none"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+      {/* 5. TVET FEDERAL RULE COMPLIANCE SUMMARY NOTE BANNER (4.png bottom guidelines) */}
+      <div className="bg-slate-100 border border-slate-200 p-4 rounded-xl shadow-xs text-xs font-mono text-slate-500 leading-relaxed">
+        <div className="flex items-start gap-2 max-w-4xl text-left">
+          <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="font-bold text-slate-700 uppercase mb-0.5 tracking-wider">Administrative Audit Notice</p>
+            <p>
+              According to Federal TVET Audit Mandates, all candidate profiles must carry a fully validated biometric stamp. Any record on Hold status will have disbursements temporarily delayed. Ensure NIN credentials are verified before photo capture initialization.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* 6. FLOATING YELLOW ACTION BUTTON (4.png bottom-right corner FAB button) */}
+      <div className="fixed bottom-6 right-6 z-30">
+        <button 
+          onClick={handleLaunchCreate}
+          className="bg-yellow-500 hover:bg-yellow-400 text-slate-950 font-bold py-3.5 px-6 rounded-full flex items-center justify-center gap-2 shadow-2xl transition active:scale-[97%] cursor-pointer group"
+          id="fab-register-candidate"
+        >
+          <UserPlus className="w-5 h-5 text-slate-950 group-hover:scale-110 transition" />
+          <span className="text-xs">Register Candidate</span>
+        </button>
+      </div>
+
+    </div>
+  );
+}

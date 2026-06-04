@@ -1,0 +1,10 @@
+{
+  "name": "IDEAS-TVET Governance System",
+  "description": "Beneficiary Photo Album Management System for Unique Technology Nig. Ltd under the IDEAS-TVET Program (Computer Hardware and Cell Phone Repairs).",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

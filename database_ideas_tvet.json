@@ -1,0 +1,98 @@
+{
+  "customFields": [
+    {
+      "id": "cf_lga",
+      "name": "lga",
+      "label": "Local Government Area (LGA)",
+      "type": "text",
+      "required": true
+    },
+    {
+      "id": "cf_ward",
+      "name": "ward",
+      "label": "Ward Name",
+      "type": "text",
+      "required": false
+    },
+    {
+      "id": "cf_bank",
+      "name": "bankName",
+      "label": "Bank Name",
+      "type": "text",
+      "required": true
+    },
+    {
+      "id": "cf_acc_num",
+      "name": "accountNumber",
+      "label": "Account Number",
+      "type": "text",
+      "required": true
+    },
+    {
+      "id": "cf_location",
+      "name": "trainingLocation",
+      "label": "Training Location Hub",
+      "type": "text",
+      "required": true
+    }
+  ],
+  "beneficiaries": [],
+  "auditLogs": [
+    {
+      "id": "log_1780562108721_410",
+      "timestamp": "2026-06-04T08:35:08.721Z",
+      "username": "admin@uniqueideas.dontechservicesconst.com",
+      "role": "Operations Manager",
+      "action": "SECURITY_FAILED",
+      "details": "Authentication failed: Email not registered"
+    },
+    {
+      "id": "log_1780562107992_979",
+      "timestamp": "2026-06-04T08:35:07.992Z",
+      "username": "admin@uniqueideas.dontechservicesconst.com",
+      "role": "Operations Manager",
+      "action": "SECURITY_FAILED",
+      "details": "Authentication failed: Email not registered"
+    },
+    {
+      "id": "log_1780562107249_38",
+      "timestamp": "2026-06-04T08:35:07.249Z",
+      "username": "admin@uniqueideas.dontechservicesconst.com",
+      "role": "Operations Manager",
+      "action": "SECURITY_FAILED",
+      "details": "Authentication failed: Email not registered"
+    },
+    {
+      "id": "log_1780562106219_325",
+      "timestamp": "2026-06-04T08:35:06.219Z",
+      "username": "admin@uniqueideas.dontechservicesconst.com",
+      "role": "Operations Manager",
+      "action": "SECURITY_FAILED",
+      "details": "Authentication failed: Email not registered"
+    },
+    {
+      "id": "log_1780562104869_1",
+      "timestamp": "2026-06-04T08:35:04.869Z",
+      "username": "admin@uniqueideas.dontechservicesconst.com",
+      "role": "Operations Manager",
+      "action": "SECURITY_FAILED",
+      "details": "Authentication failed: Email not registered"
+    },
+    {
+      "id": "log_1780562096344_220",
+      "timestamp": "2026-06-04T08:34:56.344Z",
+      "username": "admin@uniqueideas.dontechservicesconst.com",
+      "role": "Operations Manager",
+      "action": "SECURITY_FAILED",
+      "details": "Authentication failed: Email not registered"
+    },
+    {
+      "id": "log_1780562087949_293",
+      "timestamp": "2026-06-04T08:34:47.949Z",
+      "username": "admin@uniqueideas.dontechservicesconst.com",
+      "role": "Operations Manager",
+      "action": "SECURITY_FAILED",
+      "details": "Authentication failed: Email not registered"
+    }
+  ]
+}
