@@ -233,5 +233,6 @@ export interface GeneratedDocument {
   verificationCode?: string;
   verificationStatus?: string;
   verificationDate?: string;
+  verifiedAt?: string;
   emailDeliveryStatus?: string;
 }

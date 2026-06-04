@@ -13,24 +13,33 @@ function initCloudinary() {
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
   const apiKey = process.env.CLOUDINARY_API_KEY;
   const apiSecret = process.env.CLOUDINARY_API_SECRET;
-  const cloudinaryUrl = process.env.CLOUDINARY_URL;
+  let cloudinaryUrl = process.env.CLOUDINARY_URL;
 
   if (cloudinaryUrl) {
-    cloudinary.config({
-      cloudinary_url: cloudinaryUrl
-    });
-    isCloudinaryConfigured = true;
-    console.log("[Cloudinary] Initialized with CLOUDINARY_URL.");
-  } else if (cloudName && apiKey && apiSecret) {
-    cloudinary.config({
-      cloud_name: cloudName,
-      api_key: apiKey,
-      api_secret: apiSecret
-    });
-    isCloudinaryConfigured = true;
-    console.log("[Cloudinary] Initialized with credentials.");
-  } else {
-    console.warn("[Cloudinary] Config missing. Working in simulation/fallback mode.");
+    cloudinaryUrl = cloudinaryUrl.trim();
+  }
+
+  try {
+    if (cloudinaryUrl && cloudinaryUrl.startsWith("cloudinary://")) {
+      cloudinary.config({
+        cloudinary_url: cloudinaryUrl
+      });
+      isCloudinaryConfigured = true;
+      console.log("[Cloudinary] Initialized with CLOUDINARY_URL.");
+    } else if (cloudName && apiKey && apiSecret) {
+      cloudinary.config({
+        cloud_name: cloudName,
+        api_key: apiKey,
+        api_secret: apiSecret
+      });
+      isCloudinaryConfigured = true;
+      console.log("[Cloudinary] Initialized with credentials.");
+    } else {
+      console.warn("[Cloudinary] Config missing or invalid. Working in simulation/fallback mode.");
+      isCloudinaryConfigured = false;
+    }
+  } catch (err: any) {
+    console.error("[Cloudinary Error] Failed to configure Cloudinary:", err.message || err);
     isCloudinaryConfigured = false;
   }
 }

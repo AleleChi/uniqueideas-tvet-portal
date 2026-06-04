@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import "./src/backend/bootstrap";
 import express from "express";
 import path from "path";
 import cookieParser from "cookie-parser";
@@ -12,6 +13,7 @@ import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
 import { Gender, ProgramStatus, Beneficiary, CustomField, AuditLog, DocumentType } from "./src/types";
 import { AdmissionController } from "./src/backend/admission.controller";
+import { AdmissionService } from "./src/backend/admission.service";
 import { EmailService } from "./src/backend/email.service";
 import { initDb, DbRepo } from "./src/backend/db";
 import { requireAuth, requireRole, JWT_SECRET, AuthenticatedRequest } from "./src/backend/auth.middleware";
@@ -368,6 +370,113 @@ app.post("/api/admissions/send-offer", requireAuth, requireRole(["SUPER_ADMIN", 
 app.get("/api/admissions/validate-token", AdmissionController.validateToken);
 app.get("/api/admissions/secure-link", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), AdmissionController.getSecureLink);
 app.post("/api/admissions/submit-response", AdmissionController.submitResponse);
+function isValidTransition(oldStatus: string | undefined, newStatus: string): boolean {
+  if (oldStatus === newStatus) return true;
+  
+  // Normalizing states:
+  // "Acceptance Uploaded" -> Submitted
+  // "Under Review" -> Under Review
+  // "Accepted" -> Approved
+  // "Acceptance Rejected" -> Rejected
+
+  if (!oldStatus || ["Draft", "Pending", "Admission Generated", "Admission Sent", "Offer Viewed", "Acceptance Pending"].includes(oldStatus)) {
+    return true;
+  }
+
+  if (oldStatus === "Acceptance Uploaded") {
+    return ["Under Review", "Accepted", "Acceptance Rejected"].includes(newStatus);
+  }
+
+  if (oldStatus === "Under Review") {
+    return ["Accepted", "Acceptance Rejected"].includes(newStatus);
+  }
+
+  if (oldStatus === "Accepted") {
+    return ["Under Review"].includes(newStatus);
+  }
+
+  if (oldStatus === "Acceptance Rejected") {
+    return ["Under Review"].includes(newStatus);
+  }
+
+  return true; // Default fallback for administrative updates
+}
+
+app.post("/api/admissions/transition-status", requireAuth, requireRole(["SUPER_ADMIN", "REVIEW_OFFICER", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { beneficiaryId, newStatus, reason, isUndo } = req.body;
+    if (!beneficiaryId || !newStatus) {
+      return res.status(400).json({ error: "Missing required parameters: beneficiaryId and newStatus" });
+    }
+
+    const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
+    if (!beneficiary) {
+      return res.status(404).json({ error: "Beneficiary not found" });
+    }
+
+    const oldStatus = beneficiary.admissionStatus || "Pending";
+
+    // Enforce validation bounds unless it is an administrative undo bypassing
+    if (!isUndo && !isValidTransition(oldStatus, newStatus)) {
+      return res.status(400).json({ 
+        error: `Invalid transition from status '${oldStatus}' to '${newStatus}'. This action is blocked by enterprise admission guidelines.` 
+      });
+    }
+
+    const operatorEmail = req.user!.email;
+    const operatorId = req.user!.id;
+    let updatedBeneficiary: Beneficiary;
+
+    if (newStatus === "Accepted") {
+      updatedBeneficiary = await AdmissionService.approveAcceptance(beneficiaryId, operatorEmail);
+    } else if (newStatus === "Acceptance Rejected") {
+      updatedBeneficiary = await AdmissionService.rejectAcceptance(beneficiaryId, operatorEmail, reason || "No reason specified");
+    } else if (newStatus === "Under Review") {
+      beneficiary.admissionStatus = "Under Review";
+      
+      // If we are revoking approval, we should also reset verification status to PENDING_PHOTO for back-comp
+      beneficiary.status = ProgramStatus.PENDING_PHOTO;
+      beneficiary.updatedAt = new Date().toISOString();
+      await DbRepo.upsertBeneficiary(beneficiary);
+      updatedBeneficiary = beneficiary;
+    } else if (isUndo) {
+      // Direct restoration
+      beneficiary.admissionStatus = newStatus;
+      if (newStatus === "Accepted") {
+        beneficiary.status = ProgramStatus.VERIFIED;
+      } else {
+        beneficiary.status = ProgramStatus.PENDING_PHOTO;
+      }
+      beneficiary.updatedAt = new Date().toISOString();
+      await DbRepo.upsertBeneficiary(beneficiary);
+      updatedBeneficiary = beneficiary;
+    } else {
+      return res.status(400).json({ error: `Unsupported state transition option: ${newStatus}` });
+    }
+
+    // Capture the transition or undo audit log securely
+    const auditAction = isUndo ? "ACCEPTANCE_UNDO" : "ACCEPTANCE_TRANSITION";
+    const auditMsg = isUndo 
+      ? `Operator undone status transition. Reverted Trainee '${updatedBeneficiary.firstName} ${updatedBeneficiary.lastName}' (ID: ${updatedBeneficiary.id}) back to '${newStatus}'.`
+      : `Transitioned verification status of Trainee '${updatedBeneficiary.firstName} ${updatedBeneficiary.lastName}' (ID: ${updatedBeneficiary.id}) from '${oldStatus}' to '${newStatus}'. Reason: ${reason || "None"}.`;
+
+    const newLog: AuditLog = {
+      id: "log_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+      timestamp: new Date().toISOString(),
+      username: operatorEmail,
+      role: req.user!.role,
+      action: auditAction,
+      details: `Transition details - User ID: ${operatorId}, Email: ${operatorEmail}, Previous: ${oldStatus}, New: ${newStatus}, Timestamp: ${new Date().toISOString()}, Reason: ${reason || "None"}. ${auditMsg}`
+    };
+    await DbRepo.saveAuditLog(newLog);
+
+    return res.status(200).json({ success: true, beneficiary: updatedBeneficiary });
+  } catch (err: any) {
+    console.error("[Transition status API Route failed]:", err);
+    return res.status(500).json({ error: err.message || "Could not execute requested state transition." });
+  }
+});
+
 app.post("/api/admissions/approve-acceptance", requireAuth, requireRole(["SUPER_ADMIN", "REVIEW_OFFICER"]), AdmissionController.approveAcceptance);
 app.post("/api/admissions/reject-acceptance", requireAuth, requireRole(["SUPER_ADMIN", "REVIEW_OFFICER"]), AdmissionController.rejectAcceptance);
 
@@ -606,6 +715,26 @@ app.put("/api/beneficiaries/:id", requireAuth, async (req: AuthenticatedRequest,
     if (original) {
       const data = req.body;
       
+      if (data.admissionStatus && data.admissionStatus !== original.admissionStatus) {
+        if (!isValidTransition(original.admissionStatus, data.admissionStatus)) {
+          return res.status(400).json({ 
+            error: `Invalid status transition from '${original.admissionStatus || "Pending"}' to '${data.admissionStatus}'. This transition is blocked by workflow rules.` 
+          });
+        }
+        
+        const operatorEmail = req.user!.email;
+        const operatorId = req.user!.id;
+        const newLog: AuditLog = {
+          id: "log_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+          timestamp: new Date().toISOString(),
+          username: operatorEmail,
+          role: req.user!.role,
+          action: "ACCEPTANCE_TRANSITION",
+          details: `Transition details - User ID: ${operatorId}, Email: ${operatorEmail}, Previous: ${original.admissionStatus || "Pending"}, New: ${data.admissionStatus}, Timestamp: ${new Date().toISOString()}, Reason: Direct profile modification.`
+        };
+        await DbRepo.saveAuditLog(newLog);
+      }
+
       const updated: Beneficiary = {
         ...original,
         ...data,
@@ -715,7 +844,7 @@ app.post("/api/documents/verify", async (req, res) => {
     // Mark as verified upon lookup (to demonstrate active validation tracking)
     if (doc.verificationStatus !== "VERIFIED") {
       try {
-        await DbRepo.updateGeneratedDocumentVerificationStatus(doc.id, "VERIFIED");
+        await DbRepo.updateGeneratedDocumentVerificationStatus(doc.id, "VERIFIED", new Date());
         doc.verificationStatus = "VERIFIED";
         doc.verificationDate = new Date().toISOString();
       } catch (err) {}
@@ -736,6 +865,57 @@ app.post("/api/documents/verify", async (req, res) => {
     });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// GET REST Dynamic Verification Endpoint by Code
+app.get("/api/documents/verify/:verificationCode", async (req, res) => {
+  try {
+    const { verificationCode } = req.params;
+    if (!verificationCode) {
+      return res.status(400).json({ valid: false, error: "Verification code is required." });
+    }
+
+    const doc = await DbRepo.getGeneratedDocumentByCode(verificationCode);
+    if (!doc) {
+      return res.json({ valid: false });
+    }
+
+    // Lookup beneficiary for candidate name display
+    const beneficiary = await DbRepo.getBeneficiaryById(doc.beneficiaryId);
+    const beneficiaryName = beneficiary
+      ? `${beneficiary.firstName} ${beneficiary.lastName}`
+      : "Unknown Candidate";
+
+    // Mark as verified upon lookup
+    if (doc.verificationStatus !== "VERIFIED") {
+      try {
+        await DbRepo.updateGeneratedDocumentVerificationStatus(doc.id, "VERIFIED", new Date());
+        doc.verificationStatus = "VERIFIED";
+        doc.verificationDate = new Date().toISOString();
+        doc.verifiedAt = new Date().toISOString();
+      } catch (err) {}
+    }
+
+    // Return verification-safe fields only (Strict: No BVN, NIN, Phone, Email)
+    res.json({
+      valid: true,
+      document: {
+        id: doc.id,
+        beneficiaryId: doc.beneficiaryId,
+        beneficiaryName,
+        documentType: doc.documentType,
+        version: doc.version,
+        pdfUrl: doc.pdfUrl,
+        verificationCode: doc.verificationCode,
+        verificationStatus: doc.verificationStatus,
+        verificationDate: doc.verificationDate || doc.verifiedAt || new Date().toISOString(),
+        verifiedAt: doc.verifiedAt || doc.verificationDate || new Date().toISOString(),
+        createdAt: doc.createdAt
+      }
+    });
+  } catch (e: any) {
+    res.status(500).json({ valid: false, error: e.message });
   }
 });
 

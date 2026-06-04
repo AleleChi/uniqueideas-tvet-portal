@@ -4,9 +4,8 @@
  */
 
 import React, { useState, useEffect } from "react";
-import { 
-  UserSession, Beneficiary, ProgramStatus, Gender 
-} from "../types";
+import { UserSession, Beneficiary, ProgramStatus, Gender } from "../types";
+import { authFetch, downloadWithAuth } from "../utils/authFetch";
 import { 
   LogOut, FileText, Download, CheckCircle, Clock, AlertCircle, 
   Send, User, ShieldAlert, KeyRound, Key, RefreshCw, Eye, EyeOff, UploadCloud, CheckCircle2 
@@ -53,7 +52,7 @@ export function TraineePortal({ session, onLogout }: TraineePortalProps) {
     setIsLoading(true);
     setErrorMessage("");
     try {
-      const res = await fetch(`/api/beneficiaries/${session.beneficiaryId}`);
+      const res = await authFetch(`/api/beneficiaries/${session.beneficiaryId}`);
       if (res.ok) {
         const data = await res.json();
         setCandidate(data);
@@ -124,7 +123,7 @@ export function TraineePortal({ session, onLogout }: TraineePortalProps) {
         acceptanceLetterUploadedAt: new Date().toISOString()
       };
 
-      const res = await fetch(`/api/beneficiaries/${session.beneficiaryId}`, {
+      const res = await authFetch(`/api/beneficiaries/${session.beneficiaryId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
@@ -160,7 +159,7 @@ export function TraineePortal({ session, onLogout }: TraineePortalProps) {
 
     setPwdLoading(true);
     try {
-      const res = await fetch("/api/auth/change-password", {
+      const res = await authFetch("/api/auth/change-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ currentPassword, newPassword })

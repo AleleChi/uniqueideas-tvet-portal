@@ -18,25 +18,32 @@ export function DocumentVerification() {
     setVerifiedDoc(null);
 
     try {
-      const payload: Record<string, string> = {};
       if (type === "code") {
-        payload.code = queryVal.trim();
+        const res = await fetch(`/api/documents/verify/${encodeURIComponent(queryVal.trim())}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.valid) {
+            setVerifiedDoc(data.document);
+          } else {
+            setError("No matching official document found in registry database.");
+          }
+        } else {
+          setError("Document could not be verified within the centralized registry.");
+        }
       } else {
-        payload.id = queryVal.trim();
-      }
+        const res = await fetch("/api/documents/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: queryVal.trim() })
+        });
 
-      const res = await fetch("/api/documents/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setVerifiedDoc(data);
-      } else {
-        const errData = await res.json();
-        setError(errData.error || "Document could not be verified within the centralized registry.");
+        if (res.ok) {
+          const data = await res.json();
+          setVerifiedDoc(data);
+        } else {
+          const errData = await res.json();
+          setError(errData.error || "Document could not be verified within the centralized registry.");
+        }
       }
     } catch (e: any) {
       setError("Network error failed to communicate with registry verification servers.");
@@ -176,27 +183,31 @@ export function DocumentVerification() {
           </button>
         </form>
 
-        {/* Error notification display */}
+        {/* Error notification display (INVALID BANNER) */}
         {error && (
-          <div id="verification-error" className="mt-6 flex gap-3 p-4 bg-red-950/40 border border-red-500/30 rounded-xl text-red-200 text-xs text-left animate-in fade-in duration-200">
-            <ShieldAlert className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
-            <div>
-              <strong className="text-red-300 font-semibold block text-sm mb-0.5">Verification Warning!</strong>
-              {error} Please check the alphanumeric string for typographical errors or scan the valid QR code watermark.
+          <div id="verification-error" className="mt-6 border border-rose-500/50 bg-rose-950/40 rounded-xl overflow-hidden shadow-lg animate-in fade-in duration-200 text-left">
+            <div className="bg-rose-950/80 border-b border-rose-500/20 px-5 py-3.5 flex items-center gap-2 text-rose-400">
+              <ShieldAlert className="w-5 h-5 flex-shrink-0" />
+              <span className="text-xs font-bold font-mono tracking-wider uppercase">INVALID DOCUMENT BANNER</span>
+            </div>
+            <div className="p-5 text-rose-250 text-xs">
+              <p className="font-semibold text-rose-300 text-sm mb-1">Verification Rejected</p>
+              <p className="opacity-90">{error}</p>
+              <p className="opacity-75 mt-2">The specified cryptographic signature or document tracker could not be reconciled against active system registry records.</p>
             </div>
           </div>
         )}
 
-        {/* Document verification result profile display (FEATURE 1 success card) */}
+        {/* Document verification result profile display (VERIFIED BANNER success card) */}
         {verifiedDoc && (
           <div id="verification-success-card" className="mt-6 bg-slate-900 border border-emerald-500/35 rounded-xl overflow-hidden shadow-lg animate-in fade-in zoom-in-95 duration-200">
             <div className="bg-emerald-950/80 border-b border-emerald-500/20 px-5 py-3.5 flex items-center justify-between">
               <div className="flex items-center gap-2 text-emerald-400">
                 <CheckCircle className="w-5 h-5" />
-                <span className="text-xs font-bold font-mono tracking-wider">OFFICIAL REGISTER RECORD MATCHED</span>
+                <span className="text-xs font-bold font-mono tracking-wider uppercase">VERIFIED STATUS BANNER</span>
               </div>
               <span className="text-[10px] bg-emerald-600/20 border border-emerald-500/30 text-emerald-300 font-extrabold font-mono uppercase px-2 py-0.5 rounded-full shadow-inner animate-pulse">
-                STATUS: {verifiedDoc.verificationStatus}
+                STATUS: {verifiedDoc.verificationStatus || "VERIFIED"}
               </span>
             </div>
 

@@ -8,9 +8,11 @@ import {
   ArrowLeft, Edit3, Printer, ShieldCheck, CheckCircle, ClipboardList, PenTool, 
   Award, Landmark, Check, Upload, FileText, Calendar, Trash2, Mail, ExternalLink, 
   Download, FileUp, Sparkles, AlertTriangle, FileCode, CheckSquare, Info,
-  Copy, RotateCw, RefreshCw, FileSpreadsheet, Search, Filter, X, Eye, ChevronRight
+  Copy, RotateCw, RefreshCw, FileSpreadsheet, Search, Filter, X, Eye, ChevronRight,
+  Lock, Unlock
 } from "lucide-react";
 import { Beneficiary, ProgramStatus, AuditLog } from "../types";
+import { authFetch, downloadWithAuth } from "../utils/authFetch";
 
 interface BeneficiaryDetailsProps {
   beneficiary: Beneficiary;
@@ -41,14 +43,134 @@ export function BeneficiaryDetails({
   const [loadingDocType, setLoadingDocType] = useState<string | null>(null);
 
   // Executive advanced UI states (Phase 2A Polish)
-  const [toasts, setToasts] = useState<{ id: string; type: "success" | "error" | "info"; message: string }[]>([]);
+  const [toasts, setToasts] = useState<{ id: string; type: "success" | "error" | "info" | "warning"; message: string }[]>([]);
   const [previewDoc, setPreviewDoc] = useState<any | null>(null);
   const [ledgerSearch, setLedgerSearch] = useState("");
   const [ledgerFilter, setLedgerFilter] = useState("ALL");
   const [generatingAll, setGeneratingAll] = useState<boolean>(false);
   const [generationProgress, setGenerationProgress] = useState<{ currentStep: string; percent: number } | null>(null);
 
-  const showToast = (message: string, type: "success" | "error" | "info" = "success") => {
+  // Hardened Admission Acceptance State Transition States
+  const [transitionModal, setTransitionModal] = useState<{
+    isOpen: boolean;
+    targetStatus: "Under Review" | "Accepted" | "Acceptance Rejected";
+    title: string;
+    description: string;
+    requiresReason: boolean;
+  } | null>(null);
+  const [transitionReason, setTransitionReason] = useState("");
+  const [transitionLoading, setTransitionLoading] = useState(false);
+
+  // Undo tracker state
+  const [undoState, setUndoState] = useState<{
+    beneficiaryId: string;
+    previousStatus: string;
+    timestamp: number;
+  } | null>(null);
+  const [undoCountdown, setUndoCountdown] = useState(10);
+
+  useEffect(() => {
+    if (!undoState) return;
+    
+    setUndoCountdown(10);
+    const interval = setInterval(() => {
+      setUndoCountdown((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          setUndoState(null);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    
+    return () => clearInterval(interval);
+  }, [undoState]);
+
+  const handleStatusTransition = async (
+    targetStatus: "Under Review" | "Accepted" | "Acceptance Rejected",
+    reason: string = ""
+  ) => {
+    setTransitionLoading(true);
+    const oldStatus = beneficiary.admissionStatus || "Pending";
+    try {
+      const res = await authFetch("/api/admissions/transition-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          beneficiaryId: beneficiary.id,
+          newStatus: targetStatus,
+          reason: reason || undefined
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const updatedBeneficiary = data.beneficiary;
+        
+        // Success Toast
+        showToast(
+          `Trainee status transitioned to '${targetStatus === "Acceptance Rejected" ? "Acceptance Rejected" : targetStatus}' successfully!`, 
+          "success"
+        );
+        
+        // Save previous status in undo tracker before applying update
+        setUndoState({
+          beneficiaryId: beneficiary.id,
+          previousStatus: oldStatus,
+          timestamp: Date.now()
+        });
+
+        // Trigger parent state update
+        await onUpdate(updatedBeneficiary);
+        setTransitionModal(null);
+        setTransitionReason("");
+        setRejectionMode(false);
+      } else {
+        const err = await res.json();
+        showToast(err.error || "Failed to process transition.", "error");
+      }
+    } catch (e) {
+      console.error(e);
+      showToast("A system error occurred during state transition.", "error");
+    } finally {
+      setTransitionLoading(false);
+    }
+  };
+
+  const handleUndoStatus = async () => {
+    if (!undoState) return;
+    const targetStatus = undoState.previousStatus;
+    showToast(`Undoing and reverting status back to '${targetStatus}'...`, "info");
+    
+    try {
+      const res = await authFetch("/api/admissions/transition-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          beneficiaryId: undoState.beneficiaryId,
+          newStatus: targetStatus,
+          isUndo: true,
+          reason: "Operator initiated instant workflow undo."
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        showToast("Workflow transition reverted successfully!", "success");
+        await onUpdate(data.beneficiary);
+        setUndoState(null); // Clear undo state
+      } else {
+        const err = await res.json();
+        showToast(err.error || "Failed to execute undo reversion.", "error");
+      }
+    } catch (e) {
+      console.error(e);
+      showToast("A system error occurred while undoging.", "error");
+    }
+  };
+
+  const showToast = (message: string, type: "success" | "error" | "info" | "warning" = "success") => {
     const id = Math.random().toString(36).substring(2, 9);
     setToasts((prev) => [...prev, { id, type, message }]);
     setTimeout(() => {
@@ -59,7 +181,7 @@ export function BeneficiaryDetails({
   const fetchDocumentHistory = async (silently: boolean = false) => {
     if (!silently) setLoadingHistory(true);
     try {
-      const res = await fetch(`/api/documents/${beneficiary.id}/history`);
+      const res = await authFetch(`/api/documents/${beneficiary.id}/history`);
       if (res.ok) {
         const data = await res.json();
         setDocumentHistory(data);
@@ -77,7 +199,7 @@ export function BeneficiaryDetails({
     setLoadingDocType(`${documentType}_${regenerate ? 'regen' : 'gen'}`);
     showToast(`Compiling ${documentType.replace(/_/g, " ")} matching state data...`, "info");
     try {
-      const res = await fetch("/api/documents/generate", {
+      const res = await authFetch("/api/documents/generate", {
         method: "POST",
         headers: { "Content-Type" : "application/json" },
         body: JSON.stringify({
@@ -106,7 +228,7 @@ export function BeneficiaryDetails({
     setLoadingDocType(`email_${documentId}`);
     showToast("Preparing secure dispatch package...", "info");
     try {
-      const res = await fetch("/api/documents/email", {
+      const res = await authFetch("/api/documents/email", {
         method: "POST",
         headers: { "Content-Type" : "application/json" },
         body: JSON.stringify({ documentId })
@@ -125,6 +247,20 @@ export function BeneficiaryDetails({
     }
   };
 
+  // Memoized filtered history for both UI list and CSV export actions
+  const filteredHistory = useMemo(() => {
+    return documentHistory.filter(doc => {
+      const docName = doc.documentType?.replace(/_/g, " ") || "";
+      const matchesSearch = 
+        (doc.generatedBy?.toLowerCase() || "").includes(ledgerSearch.toLowerCase()) || 
+        (doc.documentType?.toLowerCase() || "").includes(ledgerSearch.toLowerCase()) ||
+        docName.toLowerCase().includes(ledgerSearch.toLowerCase()) ||
+        (doc.verificationCode?.toLowerCase() || "").includes(ledgerSearch.toLowerCase());
+      const matchesFilter = ledgerFilter === "ALL" || doc.documentType === ledgerFilter;
+      return matchesSearch && matchesFilter;
+    });
+  }, [documentHistory, ledgerSearch, ledgerFilter]);
+
   const handleGenerateAllDocs = async () => {
     if (generatingAll) return;
     setGeneratingAll(true);
@@ -135,25 +271,23 @@ export function BeneficiaryDetails({
       { key: "ADMISSION_LETTER", label: "Admission Letter" },
       { key: "ACCEPTANCE_LETTER", label: "Acceptance Letter" },
       { key: "ADMISSION_FORM", label: "Admission Form" },
-      { key: "PHOTO_ALBUM", label: "Photo Album" },
-      { key: "ENROLLMENT_CONFIRMATION", label: "Enrollment Confirmation" },
-      { key: "COMPLETION_CERTIFICATE", label: "Completion Certificate" }
+      { key: "PHOTO_ALBUM", label: "Photo Album" }
     ];
 
     try {
       for (let i = 0; i < documentsToBuild.length; i++) {
         const doc = documentsToBuild[i];
         const stepNum = i + 1;
-        const progressPct = Math.round((stepNum / documentsToBuild.length) * 100);
+        const progressPct = Math.round(((i) / documentsToBuild.length) * 100);
         
         setGenerationProgress({ 
-          currentStep: `Processing ${doc.label} (${stepNum}/6)...`, 
+          currentStep: `Compiling ${doc.label} (Step ${stepNum} of 4)...`, 
           percent: progressPct 
         });
 
         const exists = documentHistory.some(h => h.documentType === doc.key);
 
-        const res = await fetch("/api/documents/generate", {
+        const res = await authFetch("/api/documents/generate", {
           method: "POST",
           headers: { "Content-Type" : "application/json" },
           body: JSON.stringify({
@@ -172,13 +306,14 @@ export function BeneficiaryDetails({
         await new Promise(resolve => setTimeout(resolve, 800));
       }
 
-      await fetchDocumentHistory(true);
       setGenerationProgress({ currentStep: "All compiled successfully!", percent: 100 });
       showToast("Dynamic Generation Suite complete!", "success");
     } catch (err: any) {
       console.error(err);
       showToast("Sequential execution failed.", "error");
     } finally {
+      // Refresh ledger after completion
+      await fetchDocumentHistory(true);
       setTimeout(() => {
         setGeneratingAll(false);
         setGenerationProgress(null);
@@ -187,31 +322,31 @@ export function BeneficiaryDetails({
   };
 
   const handleExportLedgerCSV = () => {
-    if (documentHistory.length === 0) {
-      showToast("No ledger records available to export.", "info");
+    if (filteredHistory.length === 0) {
+      showToast("No filtered ledger records available to export.", "info");
       return;
     }
-    const headers = ["Index ID", "Document Type", "Version", "Date Compiled", "Operator", "Cloudinary URL"];
-    const rows = documentHistory.map((doc, idx) => [
-      doc.id,
-      doc.documentType,
-      doc.version,
+    const headers = ["Document Type", "Version", "Generated By", "Created At", "PDF URL"];
+    const rows = filteredHistory.map((doc) => [
+      doc.documentType ? doc.documentType.replace(/_/g, " ") : "",
+      `v${doc.version}`,
+      doc.generatedBy || "N/A",
       new Date(doc.createdAt).toISOString(),
-      doc.generatedBy,
-      doc.pdfUrl
+      doc.pdfUrl || ""
     ]);
     
+    // Safely wrap fields in double quotes and build content
     const csvContent = "data:text/csv;charset=utf-8," 
-      + [headers.join(","), ...rows.map(e => e.map(val => `"${val}"`).join(","))].join("\n");
+      + [headers.join(","), ...rows.map(e => e.map(val => `"${String(val).replace(/"/g, '""')}"`).join(","))].join("\n");
       
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `ideas_document_ledger_${beneficiary.id}.csv`);
+    link.setAttribute("download", `ideas_filtered_document_ledger_${beneficiary.id}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    showToast("Document Ledger CSV exported successfully!", "success");
+    showToast("Document Ledger CSV exported successfully for currently filtered rows!", "success");
   };
 
   // Admin decision states
@@ -239,25 +374,26 @@ export function BeneficiaryDetails({
 
   const copySecureResponseLink = async () => {
     try {
-      const res = await fetch(`/api/admissions/secure-link?beneficiaryId=${beneficiary.id}&origin=${encodeURIComponent(window.location.origin)}`);
+      const res = await authFetch(`/api/admissions/secure-link?beneficiaryId=${beneficiary.id}&origin=${encodeURIComponent(window.location.origin)}`);
       if (res.ok) {
         const data = await res.json();
         copyToClipboard(data.secureLink);
         setCopiedLink(true);
         setTimeout(() => setCopiedLink(false), 2000);
+        showToast("Secure response link copied to clipboard successfully!", "success");
       } else {
-        alert("Failed to retrieve the secure response link.");
+        showToast("Failed to retrieve the secure response link.", "error");
       }
     } catch (e) {
       console.error(e);
-      alert("A system network error occurred while retrieving secure link.");
+      showToast("A system network error occurred while retrieving secure link.", "error");
     }
   };
 
   // Load email service health metrics
   const fetchEmailHealth = async () => {
     try {
-      const res = await fetch("/api/admissions/email-health");
+      const res = await authFetch("/api/admissions/email-health");
       if (res.ok) {
         const data = await res.json();
         setEmailHealth(data);
@@ -278,58 +414,54 @@ export function BeneficiaryDetails({
   }, [beneficiary?.id]);
 
   // Admin validation actions
-  const approveVerification = async () => {
-    if (!confirm("Are you sure you want to approve and verify this trainee? This will mark them as Accepted and verify their profiles.")) return;
-    try {
-      const res = await fetch("/api/admissions/approve-acceptance", {
-        method: "POST",
-        headers: { "Content-Type" : "application/json" },
-        body: JSON.stringify({ beneficiaryId: beneficiary.id, adminUser: "admission@uniqueideas.dontechservicesconst.com" })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        await onUpdate(data.beneficiary);
-        alert("Acceptance documents audited and approved! Trainee successfully verified.");
-      } else {
-        const err = await res.json();
-        alert(err.error || "Failed to approve documents.");
-      }
-    } catch (e) {
-      console.error(e);
-      alert("A system error occurred.");
-    }
+  const approveVerification = () => {
+    setTransitionModal({
+      isOpen: true,
+      targetStatus: "Accepted",
+      title: "Approve & Accept Trainee",
+      description: "Are you sure you want to approve and verify this trainee? This will mark them as Accepted and compile their official enrollment confirmation.",
+      requiresReason: false
+    });
   };
 
-  const submitRejection = async () => {
-    if (!rejectReason.trim()) {
-      alert("Please enter a clear reason for the rejection.");
-      return;
-    }
-    try {
-      const res = await fetch("/api/admissions/reject-acceptance", {
-        method: "POST",
-        headers: { "Content-Type" : "application/json" },
-        body: JSON.stringify({ beneficiaryId: beneficiary.id, adminUser: "admission@uniqueideas.dontechservicesconst.com", reason: rejectReason })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        await onUpdate(data.beneficiary);
-        setRejectionMode(false);
-        setRejectReason("");
-        alert("Acceptance documents declined. Status updated to Acceptance Rejected.");
-      } else {
-        const err = await res.json();
-        alert(err.error || "Failed to submit rejection.");
-      }
-    } catch (e) {
-      console.error(e);
-      alert("A system error occurred.");
-    }
+  const submitRejection = () => {
+    setTransitionModal({
+      isOpen: true,
+      targetStatus: "Acceptance Rejected",
+      title: "Decline/Reject Acceptance Documents",
+      description: "Please specify a clear reason for rejecting this candidate's signed acceptance letter or biometrics profiles.",
+      requiresReason: true
+    });
   };
 
-  const markUnderReview = async () => {
-    await onUpdate({ admissionStatus: "Under Review" });
-    await logActionToBackend("BENEFICIARY_UPDATE", `Marked candidate verification status as UNDER REVIEW for candidate ID ${beneficiary.id}`);
+  const markUnderReview = () => {
+    setTransitionModal({
+      isOpen: true,
+      targetStatus: "Under Review",
+      title: "Mark Under Review",
+      description: "Move this candidate to Under Review to audit their submitted credentials?",
+      requiresReason: false
+    });
+  };
+
+  const revokeApproval = () => {
+    setTransitionModal({
+      isOpen: true,
+      targetStatus: "Under Review",
+      title: "Revoke Acceptance Approval",
+      description: "Are you sure you want to revoke acceptance approval? This action will set the candidate status back to Under Review.",
+      requiresReason: false
+    });
+  };
+
+  const reopenReview = () => {
+    setTransitionModal({
+      isOpen: true,
+      targetStatus: "Under Review",
+      title: "Reopen Candidate Review",
+      description: "Reopen review for this rejected candidate? This will transition their status back to Under Review.",
+      requiresReason: false
+    });
   };
   
   // Local states for inputs to avoid typing lag
@@ -365,7 +497,7 @@ export function BeneficiaryDetails({
 
   const fetchAuditLogs = async () => {
     try {
-      const res = await fetch("/api/audit-logs");
+      const res = await authFetch("/api/audit-logs");
       if (res.ok) {
         const data = await res.json();
         // Filter actions belonging to this beneficiary id or matching full name
@@ -508,7 +640,7 @@ export function BeneficiaryDetails({
         });
       }
 
-      const res = await fetch("/api/admissions/send-offer", {
+      const res = await authFetch("/api/admissions/send-offer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -522,20 +654,20 @@ export function BeneficiaryDetails({
         if (data.success) {
           setEmailStatus("sent");
           await onUpdate(data.beneficiary);
-          alert(`Offer letter dispatched successfully!\n\nLink for student (No login required):\n${data.secureLink}`);
+          showToast(`Offer letter dispatched successfully! Student Link: ${data.secureLink}`, "success");
         } else {
           setEmailStatus("idle");
           await onUpdate(data.beneficiary);
-          alert(`SMTP Delivery Failed: ${data.smtpErrorDetails || "Unknown SMTP error check."}`);
+          showToast(`SMTP Delivery Failed: ${data.smtpErrorDetails || "Unknown SMTP error check."}`, "error");
         }
       } else {
         const err = await res.json();
-        alert(err.error || "Failed to trigger automated offer dispatch.");
+        showToast(err.error || "Failed to trigger automated offer dispatch.", "error");
         setEmailStatus("idle");
       }
     } catch (e) {
       console.error(e);
-      alert("A system network error occurred while dispatching the offer.");
+      showToast("A system network error occurred while dispatching the offer.", "error");
       setEmailStatus("idle");
     }
   };
@@ -566,7 +698,7 @@ export function BeneficiaryDetails({
       ...(status === "Verified" && beneficiary.admissionStatus === "Admitted" ? { admissionStatus: "Admission Sent" } : {})
     });
     await logActionToBackend("ADMISSION_FORM_SAVE", `Saved admission registration profile form data as: [${status.toUpperCase()}] for candidate ID ${beneficiary.id}`);
-    alert(`Admission registration form data saved successfully as ${status}!`);
+    showToast(`Admission registration form data saved successfully as ${status}!`, "success");
   };
 
   // Logging Daily Attendance
@@ -584,7 +716,7 @@ export function BeneficiaryDetails({
     
     // Check if duplicate date
     if (currentLogs.some(l => l.date === attendanceDate)) {
-      alert("An attendance record already exists for the selected date. Please choose another date or delete the existing record.");
+      showToast("An attendance record already exists for the selected date. Please choose another date or delete the existing record.", "warning");
       return;
     }
 
@@ -1232,9 +1364,9 @@ export function BeneficiaryDetails({
                         if (confirm(`Elevate beneficiary to [${newStatus}] lifecycle stage?`)) {
                           try {
                             await onUpdate({ admissionStatus: newStatus });
-                            alert(`Beneficiary successfully advanced/reverted to stage: ${newStatus}`);
+                            showToast(`Beneficiary successfully advanced/reverted to stage: ${newStatus}`, "success");
                           } catch (err: any) {
-                            alert(`Failed to update stage: ${err.message}`);
+                            showToast(`Failed to update stage: ${err.message}`, "error");
                           }
                         }
                       }}
@@ -1476,7 +1608,7 @@ export function BeneficiaryDetails({
                 {/* DELIVERY HISTORY SECTION */}
                 <div className="space-y-2 mt-2 pt-3 border-t border-slate-150">
                   <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest block font-semibold">Complete SMTP Delivery Transmission History</span>
-                  {beneficiary.emailDeliveryHistory && beneficiary.emailDeliveryHistory.length > 0 ? (
+                  {beneficiary.emailDeliveryHistory && Array.isArray(beneficiary.emailDeliveryHistory) && beneficiary.emailDeliveryHistory.length > 0 ? (
                     <div className="border border-slate-200 rounded-lg overflow-hidden bg-white shadow-xs">
                       <table className="w-full text-left font-mono text-[10px] text-slate-650 border-collapse">
                         <thead>
@@ -1488,7 +1620,7 @@ export function BeneficiaryDetails({
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-150">
-                          {beneficiary.emailDeliveryHistory.map((d, dIdx) => (
+                          {(beneficiary.emailDeliveryHistory || []).map((d, dIdx) => (
                             <tr key={dIdx} className="hover:bg-slate-50">
                               <td className="p-2.5 text-slate-500 whitespace-nowrap">{new Date(d.dateSent).toLocaleString()}</td>
                               <td className="p-2.5 font-sans font-semibold text-slate-800">{d.recipientEmail}</td>
@@ -1519,9 +1651,9 @@ export function BeneficiaryDetails({
                 {/* Legacy detailed logs trail */}
                 <div className="space-y-2 mt-2 pt-2 border-t border-slate-150">
                   <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest block font-bold">Web Hook Correspondence Pulse Engine Feed</span>
-                  {beneficiary.emailTrackingHistory && beneficiary.emailTrackingHistory.length > 0 ? (
+                  {beneficiary.emailTrackingHistory && Array.isArray(beneficiary.emailTrackingHistory) && beneficiary.emailTrackingHistory.length > 0 ? (
                     <div className="space-y-2 max-h-32 overflow-y-auto pr-1">
-                      {beneficiary.emailTrackingHistory.map((h, hIdx) => (
+                      {(beneficiary.emailTrackingHistory || []).map((h, hIdx) => (
                         <div key={hIdx} className="p-2.5 bg-white border border-slate-150 rounded-lg text-[10px] font-mono flex items-start gap-2.5">
                           <span className="text-slate-400 shrink-0 select-none">[{new Date(h.timestamp).toLocaleTimeString()}]</span>
                           <div className="space-y-0.5">
@@ -1544,9 +1676,9 @@ export function BeneficiaryDetails({
               {/* Historical Admission Versions Grid */}
               <div className="space-y-3 text-left border-t border-slate-100 pt-5">
                 <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest block">Admission Letters Compilation History Versions</span>
-                {beneficiary.admissionLetterVersions && beneficiary.admissionLetterVersions.length > 0 ? (
+                {beneficiary.admissionLetterVersions && Array.isArray(beneficiary.admissionLetterVersions) && beneficiary.admissionLetterVersions.length > 0 ? (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {beneficiary.admissionLetterVersions.map((v, vIdx) => (
+                    {(beneficiary.admissionLetterVersions || []).map((v, vIdx) => (
                       <div key={vIdx} className="p-3 bg-slate-50 border border-slate-150 rounded-lg text-xs flex items-center justify-between font-mono">
                         <div className="space-y-0.5 text-left">
                           <span className="font-bold text-slate-800 block text-xs">Offer Letter (Version {v.version})</span>
@@ -1683,7 +1815,6 @@ export function BeneficiaryDetails({
                 </div>
 
               </div>
-
               {/* ADMIN DECISION DESK */}
               <div className="bg-slate-900 text-white border border-slate-950 rounded-xl p-5 shadow-xs text-left space-y-4">
                 <div className="flex justify-between items-center pb-2 border-b border-slate-800">
@@ -1696,6 +1827,8 @@ export function BeneficiaryDetails({
                       ? "bg-emerald-950/50 text-emerald-400 border-emerald-800"
                       : beneficiary.admissionStatus === "Acceptance Uploaded"
                       ? "bg-yellow-950/50 text-yellow-400 border-yellow-800 animate-pulse"
+                      : beneficiary.admissionStatus === "Acceptance Rejected"
+                      ? "bg-rose-950/50 text-rose-400 border-rose-900"
                       : "bg-slate-950/50 text-slate-400 border-slate-800"
                   }`}>
                     {beneficiary.admissionStatus?.toUpperCase() || "PENDING ACTION"}
@@ -1714,48 +1847,68 @@ export function BeneficiaryDetails({
                   </div>
                 </div>
 
-                {/* Inline rejection prompt */}
-                {rejectionMode && (
-                  <div className="space-y-2 p-3 bg-red-950/45 border border-red-800/40 rounded-lg text-xs font-sans">
-                    <span className="font-bold text-red-400 block pb-1">ENTER REJECTION REASON:</span>
-                    <input 
-                      type="text"
-                      value={rejectReason}
-                      onChange={(e) => setRejectReason(e.target.value)}
-                      placeholder="e.g. Signature blurry, wrong template uploaded..."
-                      className="w-full bg-slate-950 border border-slate-800 text-slate-100 rounded p-2 text-xs focus:ring-1 focus:ring-red-500 outline-none"
-                    />
-                    <div className="flex justify-end gap-2 pt-1 font-mono text-[10px]">
-                      <button 
-                        type="button"
-                        onClick={() => { setRejectionMode(false); setRejectReason(""); }}
-                        className="px-3 py-1 bg-slate-800 text-slate-300 rounded hover:bg-slate-750 cursor-pointer"
-                      >
-                        Cancel
-                      </button>
-                      <button 
-                        type="button"
-                        onClick={submitRejection}
-                        className="px-3 py-1 bg-rose-600 text-white rounded hover:bg-rose-505 font-bold cursor-pointer"
-                      >
-                        Confirm Decline
-                      </button>
+                {/* APPROVED STATE (STATUS LOCK) */}
+                {beneficiary.admissionStatus === "Accepted" ? (
+                  <div className="space-y-3">
+                    <div className="p-3.5 bg-emerald-955/20 border border-emerald-800/40 rounded-lg flex items-start gap-2.5 text-xs text-emerald-200">
+                      <Lock className="w-4.5 h-4.5 text-emerald-400 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-bold block text-emerald-300 text-xs">STATUS LOCKED & APPROVED</span>
+                        <p className="text-[11px] text-emerald-400 leading-normal font-sans mt-0.5">
+                          This candidate has been officially verified and enrolled. Document packages, biometrics registries, and competency trackers are structurally sealed.
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                )}
-
-                {/* Main CTAs */}
-                {!rejectionMode && (
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs font-mono font-bold">
+                    
                     <button
                       type="button"
-                      onClick={markUnderReview}
-                      disabled={beneficiary.admissionStatus === "Under Review"}
-                      className="bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 py-2.5 px-3 rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-40"
+                      onClick={revokeApproval}
+                      className="w-full bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 py-2.5 px-3 rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer font-mono text-xs font-bold"
                     >
-                      <ClipboardList className="w-3.5 h-3.5" />
-                      Mark Under Review
+                      <Unlock className="w-3.5 h-3.5 text-yellow-400" />
+                      Revoke Approval
                     </button>
+                  </div>
+                ) : beneficiary.admissionStatus === "Acceptance Rejected" ? (
+                  <div className="space-y-3">
+                    <div className="p-3.5 bg-rose-955/20 border border-rose-900/30 rounded-lg flex items-start gap-2.5 text-xs text-rose-250">
+                      <AlertTriangle className="w-4.5 h-4.5 text-rose-450 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-bold block text-rose-300 text-xs">ACCEPTANCE DECLINED / REJECTED</span>
+                        <p className="text-[11px] text-rose-400 leading-normal font-sans mt-0.5">
+                          Trainee submitted materials have been audited and rejected. Direct modifications are temporarily locked.
+                        </p>
+                      </div>
+                    </div>
+                    
+                    <button
+                      type="button"
+                      onClick={reopenReview}
+                      className="w-full bg-indigo-900 hover:bg-indigo-800 border border-indigo-700 text-white py-2.5 px-3 rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer font-mono text-xs font-bold"
+                    >
+                      <ClipboardList className="w-3.5 h-3.5 text-indigo-300" />
+                      Reopen Candidate Review
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs font-mono font-bold">
+                    {/* Only show Mark Under Review if NOT already under review */}
+                    {beneficiary.admissionStatus !== "Under Review" ? (
+                      <button
+                        type="button"
+                        onClick={markUnderReview}
+                        className="bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 py-2.5 px-3 rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer"
+                      >
+                        <ClipboardList className="w-3.5 h-3.5 text-indigo-400" />
+                        Mark Under Review
+                      </button>
+                    ) : (
+                      // Placeholder if hidden to occupy space or let other cols grow nicely
+                      <div className="hidden sm:flex text-center text-[10px] text-slate-500 italic items-center justify-center border border-slate-800/40 rounded-lg">
+                        Under Review (Active)
+                      </div>
+                    )}
+                    
                     <button
                       type="button"
                       onClick={approveVerification}
@@ -1764,10 +1917,11 @@ export function BeneficiaryDetails({
                       <CheckCircle className="w-3.5 h-3.5 text-emerald-200" />
                       Approve & Accept Trainee
                     </button>
+                    
                     <button
                       type="button"
-                      onClick={() => setRejectionMode(true)}
-                      className="bg-rose-900/40 hover:bg-rose-900 text-rose-100 border border-rose-800/55 py-2.5 px-3 rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer"
+                      onClick={submitRejection}
+                      className="bg-rose-900/45 hover:bg-rose-900 text-rose-100 border border-rose-800/55 py-2.5 px-3 rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer"
                     >
                       <AlertTriangle className="w-3.5 h-3.5 text-rose-300" />
                       Decline Scan Upload
@@ -1779,9 +1933,9 @@ export function BeneficiaryDetails({
               {/* Historical Acceptance Versions Grid */}
               <div className="space-y-3 text-left border-t border-slate-100 pt-5">
                 <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest block">Acceptance Letter Uploads History Versions</span>
-                {beneficiary.acceptanceLetterVersions && beneficiary.acceptanceLetterVersions.length > 0 ? (
+                {beneficiary.acceptanceLetterVersions && Array.isArray(beneficiary.acceptanceLetterVersions) && beneficiary.acceptanceLetterVersions.length > 0 ? (
                   <div className="grid grid-cols-1 gap-2">
-                    {beneficiary.acceptanceLetterVersions.map((v, vIdx) => (
+                    {(beneficiary.acceptanceLetterVersions || []).map((v, vIdx) => (
                       <div key={vIdx} className="p-3 bg-slate-50 border border-slate-150 rounded-lg text-xs flex justify-between items-center font-mono">
                         <div className="space-y-0.5 text-left">
                           <span className="font-bold text-slate-750 text-slate-800 block">Signed Acceptance Declaration (Version {v.version})</span>
@@ -1943,9 +2097,9 @@ export function BeneficiaryDetails({
               {/* Historical Form Versions List */}
               <div className="pt-4 border-t border-slate-100 text-left">
                 <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest block mb-2">Form Submission Profile History Versions</span>
-                {beneficiary.admissionFormVersions && beneficiary.admissionFormVersions.length > 0 ? (
+                {beneficiary.admissionFormVersions && Array.isArray(beneficiary.admissionFormVersions) && beneficiary.admissionFormVersions.length > 0 ? (
                   <div className="space-y-2">
-                    {beneficiary.admissionFormVersions.map((v, vIdx) => (
+                    {(beneficiary.admissionFormVersions || []).map((v, vIdx) => (
                       <div key={vIdx} className="p-3.5 bg-slate-50 border border-slate-150 rounded-lg font-mono text-xs text-left">
                         <div className="flex justify-between items-center pb-2 border-b border-slate-201 border-b border-slate-200">
                           <span className="font-bold text-slate-800 uppercase text-[10px]">Enrollment Form Details (Version {v.version})</span>
@@ -2154,10 +2308,10 @@ export function BeneficiaryDetails({
                 {/* METRIC CARDS GRID */}
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
                   {[
-                    { label: "Documents Active", val: `${new Set(documentHistory.map(h => h.documentType)).size} of 6`, desc: "Unique items compiled", icon: Sparkles, color: "text-indigo-600 bg-indigo-50 border-indigo-100" },
-                    { label: "Total Compiled Versions", val: documentHistory.length, desc: "Immutable records locked", icon: ClipboardList, color: "text-blue-600 bg-blue-50 border-blue-100" },
-                    { label: "Emails Dispatched", val: documentHistory.filter(h => h.emailDeliveryStatus === "Delivered" || h.emailDeliveryStatus === "Pending").length, desc: "Secure links distributed", icon: Mail, color: "text-emerald-600 bg-emerald-50 border-emerald-100" },
-                    { label: "Last Sync Timestamp", val: documentHistory[0] ? new Date(documentHistory[0].createdAt).toLocaleTimeString("en-GB", {hour: '2-digit', minute:'2-digit'}) : "Never", desc: documentHistory[0] ? new Date(documentHistory[0].createdAt).toLocaleDateString("en-GB") : "Awaiting build", icon: Calendar, color: "text-slate-600 bg-slate-50 border-slate-100" }
+                    { label: "Active Documents", val: `${new Set(documentHistory.map(h => h.documentType)).size} of 6`, desc: "Unique items compiled", icon: Sparkles, color: "text-indigo-600 bg-indigo-50 border-indigo-100" },
+                    { label: "Total Versions", val: documentHistory.length, desc: "Immutable records locked", icon: ClipboardList, color: "text-blue-600 bg-blue-50 border-blue-100" },
+                    { label: "Emails Sent", val: documentHistory.filter(h => h.emailDeliveryStatus === "Delivered" || h.emailDeliveryStatus === "Pending").length, desc: "Secure links distributed", icon: Mail, color: "text-emerald-600 bg-emerald-50 border-emerald-100" },
+                    { label: "Last Sync", val: documentHistory[0] ? new Date(documentHistory[0].createdAt).toLocaleTimeString("en-GB", {hour: '2-digit', minute:'2-digit'}) : "Never", desc: documentHistory[0] ? new Date(documentHistory[0].createdAt).toLocaleDateString("en-GB") : "Awaiting build", icon: Calendar, color: "text-slate-600 bg-slate-50 border-slate-100" }
                   ].map((card, i) => {
                     const CardIcon = card.icon || Sparkles;
                     return (
@@ -2444,13 +2598,6 @@ export function BeneficiaryDetails({
                       Loading programmatically compiled documents...
                     </div>
                   ) : (() => {
-                    const filteredHistory = documentHistory.filter(doc => {
-                      const matchesSearch = doc.generatedBy?.toLowerCase().includes(ledgerSearch.toLowerCase()) || 
-                                            doc.documentType.toLowerCase().includes(ledgerSearch.toLowerCase());
-                      const matchesFilter = ledgerFilter === "ALL" || doc.documentType === ledgerFilter;
-                      return matchesSearch && matchesFilter;
-                    });
-
                     if (filteredHistory.length === 0) {
                       return (
                         <div className="p-8 border border-dashed border-slate-200 rounded-xl bg-slate-50/30 text-center text-slate-400 text-[10px] font-mono tracking-wide uppercase">
@@ -2784,6 +2931,99 @@ export function BeneficiaryDetails({
         </div>
 
       </div>
+
+      {/* Hardened Acceptance Workflow Transition Modal */}
+      {transitionModal && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            {/* Header */}
+            <div className="p-5 border-b border-slate-800 text-left flex items-center gap-3">
+              <div className={`p-2 rounded-lg ${
+                transitionModal.targetStatus === "Accepted" 
+                  ? "bg-emerald-950 text-emerald-400" 
+                  : transitionModal.targetStatus === "Acceptance Rejected"
+                  ? "bg-rose-950 text-rose-400"
+                  : "bg-indigo-950 text-indigo-400"
+              }`}>
+                {transitionModal.targetStatus === "Accepted" ? (
+                  <CheckCircle className="w-5 h-5" />
+                ) : transitionModal.targetStatus === "Acceptance Rejected" ? (
+                  <AlertTriangle className="w-5 h-5" />
+                ) : (
+                  <ClipboardList className="w-5 h-5" />
+                )}
+              </div>
+              <div>
+                <h3 className="font-display font-semibold text-sm text-white uppercase tracking-wider">{transitionModal.title}</h3>
+                <p className="text-[10px] text-slate-400 font-mono">ADMISSION AUDIT TRANSITION GATEWAY</p>
+              </div>
+            </div>
+            
+            {/* Body */}
+            <div className="p-6 text-left space-y-4">
+              <p className="text-xs text-slate-350 leading-relaxed font-sans">{transitionModal.description}</p>
+              
+              {/* Transition Reason Field */}
+              <div className="space-y-1.5">
+                <label className="text-[10px] uppercase font-mono font-bold text-slate-400 tracking-wider">
+                  Transition Note / Reason {transitionModal.requiresReason ? "(Required)" : "(Optional)"}
+                </label>
+                <textarea
+                  value={transitionReason}
+                  onChange={(e) => setTransitionReason(e.target.value)}
+                  placeholder={transitionModal.requiresReason ? "e.g. Blurred hand-signature scan. Please re-upload verified copy." : "Any internal notes regarding this transition..."}
+                  rows={3}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-white focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 outline-none placeholder:text-slate-600 font-sans"
+                />
+              </div>
+            </div>
+            
+            {/* Footer */}
+            <div className="p-4 bg-slate-950 border-t border-slate-850 flex justify-end gap-2 font-mono text-xs">
+              <button
+                type="button"
+                disabled={transitionLoading}
+                onClick={() => { setTransitionModal(null); setTransitionReason(""); }}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-750 text-slate-300 rounded-lg cursor-pointer transition disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={transitionLoading || (transitionModal.requiresReason && !transitionReason.trim())}
+                onClick={() => handleStatusTransition(transitionModal.targetStatus, transitionReason)}
+                className={`px-4 py-2 text-white font-bold rounded-lg flex items-center gap-1.5 transition cursor-pointer disabled:opacity-40 select-none ${
+                  transitionModal.targetStatus === "Accepted"
+                    ? "bg-emerald-600 hover:bg-emerald-500"
+                    : transitionModal.targetStatus === "Acceptance Rejected"
+                    ? "bg-rose-600 hover:bg-rose-500 focus:ring-red-500"
+                    : "bg-indigo-600 hover:bg-indigo-500"
+                }`}
+              >
+                {transitionLoading && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                Confirm Transition
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Undo Floating Banner countdown tracker */}
+      {undoState && (
+        <div className="fixed bottom-6 right-6 z-50 bg-slate-900 border border-slate-755 text-white rounded-xl shadow-2xl p-4 flex items-center gap-4 animate-bounce font-mono text-xs max-w-sm">
+          <div className="flex-1 text-left space-y-0.5">
+            <span className="font-bold text-yellow-400 block pb-0.5">Workflow Action Reversible</span>
+            <span className="text-slate-300">Revert status back to <span className="underline font-bold text-indigo-300">{undoState.previousStatus}</span> in {undoCountdown}s</span>
+          </div>
+          <button
+            onClick={handleUndoStatus}
+            className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-1.5 px-3.5 rounded-lg active:scale-95 transition flex items-center gap-1 shadow-sm cursor-pointer animate-pulse"
+          >
+            <RotateCw className="w-3.5 h-3.5" />
+            Undo Change
+          </button>
+        </div>
+      )}
 
     </div>
   );

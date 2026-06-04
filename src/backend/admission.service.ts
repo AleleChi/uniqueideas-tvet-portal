@@ -190,6 +190,11 @@ export class AdmissionService {
     const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
     if (!beneficiary) throw new Error("Beneficiary not found");
 
+    const oldStatus = beneficiary.admissionStatus || "Pending";
+    if (oldStatus !== "Acceptance Uploaded" && oldStatus !== "Under Review" && oldStatus !== "Accepted") {
+      throw new Error(`Invalid transition from status '${oldStatus}' to 'Accepted'. This action is blocked by admission workflow guidelines.`);
+    }
+
     beneficiary.admissionStatus = "Accepted";
     beneficiary.status = ProgramStatus.VERIFIED;
     beneficiary.updatedAt = new Date().toISOString();
@@ -237,7 +242,7 @@ export class AdmissionService {
     await this.logAction(
       adminUser,
       "Acceptance Approved",
-      `Approved acceptance for '${beneficiary.firstName} ${beneficiary.lastName}'. Enrollment PDF & Certificate compiled and logged.`
+      `Transition details - User ID: system, Email: ${adminUser}, Previous: ${oldStatus}, New: Accepted, Timestamp: ${new Date().toISOString()}, Reason: Verification approved. Approved acceptance for '${beneficiary.firstName} ${beneficiary.lastName}'. Enrollment PDF & Certificate compiled and logged.`
     );
 
     await DbRepo.upsertBeneficiary(beneficiary);
@@ -251,6 +256,11 @@ export class AdmissionService {
     const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
     if (!beneficiary) throw new Error("Beneficiary not found");
 
+    const oldStatus = beneficiary.admissionStatus || "Pending";
+    if (oldStatus !== "Acceptance Uploaded" && oldStatus !== "Under Review" && oldStatus !== "Acceptance Rejected") {
+      throw new Error(`Invalid transition from status '${oldStatus}' to 'Acceptance Rejected'. This action is blocked by admission workflow guidelines.`);
+    }
+
     beneficiary.admissionStatus = "Acceptance Rejected";
     beneficiary.acceptanceLetterUploaded = false;
     beneficiary.acceptanceLetterUrl = undefined;
@@ -260,7 +270,7 @@ export class AdmissionService {
     await this.logAction(
       adminUser,
       "Acceptance Rejected",
-      `Administrator rejected acceptance for Trainee '${beneficiary.firstName} ${beneficiary.lastName}' (ID: ${beneficiary.id}). Reason: ${reason}`
+      `Transition details - User ID: system, Email: ${adminUser}, Previous: ${oldStatus}, New: Acceptance Rejected, Timestamp: ${new Date().toISOString()}, Reason: ${reason}. Administrator rejected acceptance for Trainee '${beneficiary.firstName} ${beneficiary.lastName}' (ID: ${beneficiary.id}).`
     );
 
     await DbRepo.upsertBeneficiary(beneficiary);

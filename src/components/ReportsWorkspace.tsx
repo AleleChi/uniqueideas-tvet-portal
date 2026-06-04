@@ -9,6 +9,7 @@ import {
   CheckCircle2, Compass, AlertCircle, FileImage, Layers, Filter, Check, Landmark, Award 
 } from "lucide-react";
 import { Beneficiary, ProgramStatus } from "../types";
+import { downloadWithAuth } from "../utils/authFetch";
 
 interface ReportsWorkspaceProps {
   beneficiaries: Beneficiary[];
@@ -160,7 +161,13 @@ export function ReportsWorkspace({ beneficiaries }: ReportsWorkspaceProps) {
             </div>
 
             <button 
-              onClick={() => { window.location.href = `/api/export/excel?state=${selectedState}&batch=${selectedBatch}`; }}
+              onClick={async () => {
+                try {
+                  await downloadWithAuth(`/api/export/excel?state=${selectedState}&batch=${selectedBatch}`, `ideas_beneficiaries_${selectedState}_${selectedBatch}.xls`);
+                } catch (err) {
+                  console.error("Excel download failed:", err);
+                }
+              }}
               className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2 px-4 rounded-lg flex items-center justify-center gap-2 text-xs shadow transition cursor-pointer"
             >
               <Download className="w-3.5 h-3.5" />
@@ -432,7 +439,13 @@ export function ReportsWorkspace({ beneficiaries }: ReportsWorkspaceProps) {
             </div>
 
             <button 
-              onClick={() => { window.location.href = `/api/export/pdf?state=${selectedState}&batch=${selectedBatch}`; }}
+              onClick={async () => {
+                try {
+                  await downloadWithAuth(`/api/export/pdf?state=${selectedState}&batch=${selectedBatch}`, `ideas_beneficiaries_report_${selectedState}_${selectedBatch}.pdf`);
+                } catch (err) {
+                  console.error("PDF download failed:", err);
+                }
+              }}
               className="w-full bg-indigo-600 hover:bg-indigo-55 bg-indigo-500 text-white font-bold text-xs py-3 rounded-lg shadow-lg flex items-center justify-center gap-2 transition"
             >
               <Download className="w-4 h-4" />

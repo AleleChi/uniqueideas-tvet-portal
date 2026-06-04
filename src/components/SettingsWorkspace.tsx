@@ -9,6 +9,7 @@ import {
   Save, CheckCircle, AlertCircle, Award, BookOpen, Clock, Tag, RefreshCw 
 } from "lucide-react";
 import { OrganizationSettings, TrainingProgram } from "../types";
+import { authFetch } from "../utils/authFetch";
 
 export function SettingsWorkspace() {
   const [settings, setSettings] = useState<OrganizationSettings>({
@@ -52,7 +53,7 @@ export function SettingsWorkspace() {
 
   const fetchSettings = async () => {
     try {
-      const res = await fetch("/api/organization-settings");
+      const res = await authFetch("/api/organization-settings");
       if (res.ok) {
         const data = await res.json();
         setSettings(data);
@@ -64,7 +65,7 @@ export function SettingsWorkspace() {
 
   const fetchPrograms = async () => {
     try {
-      const res = await fetch("/api/training-programs");
+      const res = await authFetch("/api/training-programs");
       if (res.ok) {
         const data = await res.json();
         setPrograms(data);
@@ -89,7 +90,7 @@ export function SettingsWorkspace() {
         
         try {
           // 2. Dispatch upload to our proxy router, reducing CORS complexity
-          const res = await fetch("/api/upload-asset", {
+          const res = await authFetch("/api/upload-asset", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -135,7 +136,7 @@ export function SettingsWorkspace() {
     setFeedbackSettings(null);
 
     try {
-      const res = await fetch("/api/organization-settings", {
+      const res = await authFetch("/api/organization-settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(settings)
@@ -166,7 +167,7 @@ export function SettingsWorkspace() {
     setFeedbackProgram(null);
 
     try {
-      const res = await fetch("/api/training-programs", {
+      const res = await authFetch("/api/training-programs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(newProgram)
@@ -198,7 +199,7 @@ export function SettingsWorkspace() {
     }
 
     try {
-      const res = await fetch(`/api/training-programs/${id}`, {
+      const res = await authFetch(`/api/training-programs/${id}`, {
         method: "DELETE"
       });
 

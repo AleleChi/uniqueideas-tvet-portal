@@ -317,6 +317,7 @@ const SCHEMA_DDL = `
     verification_code VARCHAR(100),
     verification_status VARCHAR(50) DEFAULT 'VALID',
     verification_date TIMESTAMP WITH TIME ZONE,
+    verified_at TIMESTAMP WITH TIME ZONE,
     email_delivery_status VARCHAR(50) DEFAULT 'Pending',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
   );
@@ -454,9 +455,10 @@ export async function initDb(): Promise<void> {
         pdf_url TEXT NOT NULL,
         docx_url TEXT,
         generated_by VARCHAR(255),
-        verification_code VARCHAR(100),
+        verification_code VARCHAR(100) UNIQUE,
         verification_status VARCHAR(50) DEFAULT 'VALID',
         verification_date TIMESTAMP WITH TIME ZONE,
+        verified_at TIMESTAMP WITH TIME ZONE,
         email_delivery_status VARCHAR(50) DEFAULT 'Pending',
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
@@ -465,7 +467,20 @@ export async function initDb(): Promise<void> {
       ALTER TABLE generated_documents ADD COLUMN IF NOT EXISTS verification_code VARCHAR(100);
       ALTER TABLE generated_documents ADD COLUMN IF NOT EXISTS verification_status VARCHAR(50) DEFAULT 'VALID';
       ALTER TABLE generated_documents ADD COLUMN IF NOT EXISTS verification_date TIMESTAMP WITH TIME ZONE;
+      ALTER TABLE generated_documents ADD COLUMN IF NOT EXISTS verified_at TIMESTAMP WITH TIME ZONE;
       ALTER TABLE generated_documents ADD COLUMN IF NOT EXISTS email_delivery_status VARCHAR(50) DEFAULT 'Pending';
+
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'generated_documents_verification_code_unique'
+        ) THEN
+          ALTER TABLE generated_documents ADD CONSTRAINT generated_documents_verification_code_unique UNIQUE (verification_code);
+        END IF;
+      EXCEPTION
+        WHEN OTHERS THEN
+          NULL;
+      END $$;
     `);
 
     // Bootstrap default system settings
@@ -1693,8 +1708,8 @@ export class DbRepo {
       await pool.query(
         `INSERT INTO generated_documents (
           id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at,
-          verification_code, verification_status, verification_date, email_delivery_status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          verification_code, verification_status, verification_date, verified_at, email_delivery_status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          ON CONFLICT (id) DO UPDATE SET
            pdf_url = EXCLUDED.pdf_url,
            docx_url = EXCLUDED.docx_url,
@@ -1703,10 +1718,14 @@ export class DbRepo {
            verification_code = EXCLUDED.verification_code,
            verification_status = EXCLUDED.verification_status,
            verification_date = EXCLUDED.verification_date,
+           verified_at = EXCLUDED.verified_at,
            email_delivery_status = EXCLUDED.email_delivery_status`,
         [
           doc.id, doc.beneficiaryId, doc.documentType, doc.version, doc.pdfUrl, doc.docxUrl || null, doc.generatedBy, new Date(doc.createdAt),
-          doc.verificationCode || null, doc.verificationStatus || "VALID", doc.verificationDate ? new Date(doc.verificationDate) : null, doc.emailDeliveryStatus || "Pending"
+          doc.verificationCode || null, doc.verificationStatus || "VALID",
+          doc.verificationDate ? new Date(doc.verificationDate) : null,
+          doc.verifiedAt ? new Date(doc.verifiedAt) : null,
+          doc.emailDeliveryStatus || "Pending"
         ]
       );
       return true;
@@ -1752,7 +1771,7 @@ export class DbRepo {
     }
     try {
       const res = await pool.query(
-        "SELECT id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at, verification_code, verification_status, verification_date, email_delivery_status FROM generated_documents WHERE beneficiary_id = $1 ORDER BY created_at DESC",
+        "SELECT id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at, verification_code, verification_status, verification_date, verified_at, email_delivery_status FROM generated_documents WHERE beneficiary_id = $1 ORDER BY created_at DESC",
         [beneficiaryId]
       );
       return res.rows.map(row => ({
@@ -1767,6 +1786,7 @@ export class DbRepo {
         verificationCode: row.verification_code || undefined,
         verificationStatus: row.verification_status || undefined,
         verificationDate: row.verification_date ? row.verification_date.toISOString() : undefined,
+        verifiedAt: row.verified_at ? row.verified_at.toISOString() : undefined,
         emailDeliveryStatus: row.email_delivery_status || undefined
       }));
     } catch (e) {
@@ -1786,7 +1806,7 @@ export class DbRepo {
     }
     try {
       const res = await pool.query(
-        "SELECT id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at, verification_code, verification_status, verification_date, email_delivery_status FROM generated_documents WHERE LOWER(verification_code) = LOWER($1)",
+        "SELECT id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at, verification_code, verification_status, verification_date, verified_at, email_delivery_status FROM generated_documents WHERE LOWER(verification_code) = LOWER($1)",
         [code]
       );
       if (res.rows.length === 0) return null;
@@ -1803,6 +1823,7 @@ export class DbRepo {
         verificationCode: row.verification_code,
         verificationStatus: row.verification_status,
         verificationDate: row.verification_date ? row.verification_date.toISOString() : undefined,
+        verifiedAt: row.verified_at ? row.verified_at.toISOString() : undefined,
         emailDeliveryStatus: row.email_delivery_status
       };
     } catch (e) {
@@ -1822,7 +1843,7 @@ export class DbRepo {
     }
     try {
       const res = await pool.query(
-        "SELECT id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at, verification_code, verification_status, verification_date, email_delivery_status FROM generated_documents WHERE id = $1",
+        "SELECT id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at, verification_code, verification_status, verification_date, verified_at, email_delivery_status FROM generated_documents WHERE id = $1",
         [id]
       );
       if (res.rows.length === 0) return null;
@@ -1839,6 +1860,7 @@ export class DbRepo {
         verificationCode: row.verification_code,
         verificationStatus: row.verification_status,
         verificationDate: row.verification_date ? row.verification_date.toISOString() : undefined,
+        verifiedAt: row.verified_at ? row.verified_at.toISOString() : undefined,
         emailDeliveryStatus: row.email_delivery_status
       };
     } catch (e) {
@@ -1858,6 +1880,7 @@ export class DbRepo {
       if (doc) {
         doc.verificationStatus = status;
         doc.verificationDate = date ? date.toISOString() : undefined;
+        doc.verifiedAt = date ? date.toISOString() : undefined;
         saveJsonState(state);
         return true;
       }
@@ -1865,7 +1888,7 @@ export class DbRepo {
     }
     try {
       await pool.query(
-        "UPDATE generated_documents SET verification_status = $1, verification_date = $2 WHERE id = $3",
+        "UPDATE generated_documents SET verification_status = $1, verification_date = $2, verified_at = $2 WHERE id = $3",
         [status, date, id]
       );
       return true;

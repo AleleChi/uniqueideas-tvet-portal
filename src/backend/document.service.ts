@@ -53,8 +53,31 @@ export class DocumentService {
           : latestVersion;
 
     // 1.5 Generate unique verification properties and lookup watermark configs
-    const verificationCode = "NBC-" + Math.floor(Math.random() * 900000 + 100000);
-    const appUrl = process.env.VITE_APP_URL || "http://localhost:3000";
+    let prefix = "TVET-DOC";
+    switch (documentType) {
+      case DocumentType.ADMISSION_LETTER:
+        prefix = "TVET-ADM";
+        break;
+      case DocumentType.ACCEPTANCE_LETTER:
+        prefix = "TVET-ACC";
+        break;
+      case DocumentType.ADMISSION_FORM:
+        prefix = "TVET-FRM";
+        break;
+      case DocumentType.PHOTO_ALBUM:
+        prefix = "TVET-ALB";
+        break;
+      case DocumentType.ENROLLMENT_CONFIRMATION:
+        prefix = "TVET-ENR";
+        break;
+      case DocumentType.COMPLETION_CERTIFICATE:
+        prefix = "TVET-CRT";
+        break;
+    }
+    const hex = Math.floor(Math.random() * 16777215).toString(16).toUpperCase().padStart(6, "0");
+    const verificationCode = `${prefix}-${hex}`;
+
+    const appUrl = process.env.APP_URL || process.env.VITE_APP_URL || "http://localhost:3000";
     const verificationUrl = `${appUrl}/verify-document?code=${verificationCode}`;
     let qrDataUrl = "";
     try {

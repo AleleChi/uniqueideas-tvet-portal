@@ -11,6 +11,7 @@ import {
 import { Beneficiary, CustomField, Gender, ProgramStatus } from "../types";
 import { BeneficiaryDetails } from "./BeneficiaryDetails";
 import { NewEnrollmentForm } from "./NewEnrollmentForm";
+import { authFetch } from "../utils/authFetch";
 
 interface BeneficiaryListProps {
   beneficiaries: Beneficiary[];
@@ -96,7 +97,7 @@ export function BeneficiaryList({
       for (let i = 0; i < selectedCandidateIds.length; i++) {
         const bId = selectedCandidateIds[i];
         setBulkProgress(`Compiling ${docType.replace(/_/g, " ")} (${i + 1}/${selectedCandidateIds.length})...`);
-        const res = await fetch("/api/documents/generate", {
+        const res = await authFetch("/api/documents/generate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -132,7 +133,7 @@ export function BeneficiaryList({
         setBulkProgress(`Retrieving documents for candidate ${i + 1}/${selectedCandidateIds.length}...`);
         
         // 1. Fetch document history
-        const hRes = await fetch(`/api/documents/${bId}/history`);
+        const hRes = await authFetch(`/api/documents/${bId}/history`);
         if (hRes.ok) {
           const history = await hRes.json();
           if (history && history.length > 0) {
@@ -140,7 +141,7 @@ export function BeneficiaryList({
             setBulkProgress(`Dispatching email for document v${latestDoc.version} (${i + 1}/${selectedCandidateIds.length})...`);
             
             // 2. Dispatch email
-            const emailRes = await fetch("/api/documents/email", {
+            const emailRes = await authFetch("/api/documents/email", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ documentId: latestDoc.id })

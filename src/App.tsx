@@ -21,6 +21,7 @@ import { PublicResponsePortal } from "./components/PublicResponsePortal";
 import { SettingsWorkspace } from "./components/SettingsWorkspace";
 import { DocumentVerification } from "./components/DocumentVerification";
 import { Beneficiary, CustomField, AuditLog, UserSession } from "./types";
+import { authFetch, downloadWithAuth } from "./utils/authFetch";
 
 export default function App() {
   const [session, setSession] = useState<UserSession | null>(() => {
@@ -107,7 +108,7 @@ export default function App() {
 
   const fetchBeneficiaries = async () => {
     try {
-      const res = await fetch("/api/beneficiaries");
+      const res = await authFetch("/api/beneficiaries");
       if (res.ok) {
         const data = await res.json();
         setBeneficiaries(data);
@@ -119,7 +120,7 @@ export default function App() {
 
   const fetchCustomFields = async () => {
     try {
-      const res = await fetch("/api/custom-fields");
+      const res = await authFetch("/api/custom-fields");
       if (res.ok) {
         const data = await res.json();
         setCustomFields(data);
@@ -131,7 +132,7 @@ export default function App() {
 
   const fetchAuditLogs = async () => {
     try {
-      const res = await fetch("/api/audit-logs");
+      const res = await authFetch("/api/audit-logs");
       if (res.ok) {
         const data = await res.json();
         setAuditLogs(data);
@@ -143,7 +144,7 @@ export default function App() {
 
   const handleLogin = async (email: string, pass: string): Promise<boolean> => {
     try {
-      const res = await fetch("/api/auth/login", {
+      const res = await authFetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password: pass })
@@ -168,7 +169,7 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      await fetch("/api/auth/logout", { method: "POST" });
+      await authFetch("/api/auth/logout", { method: "POST" });
     } catch (e) {
       console.error("Cookie clearing network exception:", e);
     }
@@ -176,12 +177,15 @@ export default function App() {
     sessionStorage.clear();
     document.cookie = "token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
     setSession(null);
+    setBeneficiaries([]);
+    setCustomFields([]);
+    setAuditLogs([]);
     window.location.hash = "#/landing";
   };
 
   const handleAddBeneficiary = async (data: any) => {
     try {
-      const res = await fetch("/api/beneficiaries", {
+      const res = await authFetch("/api/beneficiaries", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -201,7 +205,7 @@ export default function App() {
 
   const handleUpdateBeneficiary = async (id: string, data: Partial<Beneficiary>) => {
     try {
-      const res = await fetch(`/api/beneficiaries/${id}`, {
+      const res = await authFetch(`/api/beneficiaries/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data)
@@ -217,7 +221,7 @@ export default function App() {
 
   const handleAddCustomField = async (field: any) => {
     try {
-      const res = await fetch("/api/custom-fields", {
+      const res = await authFetch("/api/custom-fields", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(field)
@@ -233,7 +237,7 @@ export default function App() {
 
   const handleRemoveCustomField = async (id: string) => {
     try {
-      const res = await fetch(`/api/custom-fields/${id}`, {
+      const res = await authFetch(`/api/custom-fields/${id}`, {
         method: "DELETE"
       });
       if (res.ok) {
@@ -245,11 +249,15 @@ export default function App() {
     }
   };
 
-  const handleDownloadCSV = () => {
-    window.location.href = "/api/export/csv";
-    setTimeout(() => {
-      fetchAuditLogs(); // Grab log stating Excel CSV export was downloaded
-    }, 1500);
+  const handleDownloadCSV = async () => {
+    try {
+      await downloadWithAuth("/api/export/csv", "ideas_tvet_beneficiaries_export.csv");
+      setTimeout(() => {
+        fetchAuditLogs(); // Grab log stating Excel CSV export was downloaded
+      }, 1500);
+    } catch (e) {
+      console.error("CSV download error:", e);
+    }
   };
 
   const handlePhotoCaptured = async (base64Photo: string) => {
