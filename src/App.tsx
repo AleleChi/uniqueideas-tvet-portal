@@ -22,8 +22,10 @@ import { SettingsWorkspace } from "./components/SettingsWorkspace";
 import { DocumentVerification } from "./components/DocumentVerification";
 import { Beneficiary, CustomField, AuditLog, UserSession } from "./types";
 import { authFetch, downloadWithAuth } from "./utils/authFetch";
+import { useNotification } from "./components/NotificationContext";
 
 export default function App() {
+  const { showToast } = useNotification();
   const [session, setSession] = useState<UserSession | null>(() => {
     try {
       const cached = localStorage.getItem("ideas-session");
@@ -197,9 +199,14 @@ export default function App() {
         setTempCreatedPhoto(null);
         await fetchBeneficiaries();
         await fetchAuditLogs();
+        showToast("Beneficiary created successfully", "success");
+      } else {
+        const err = await res.json();
+        showToast(err.error || "Failed to create beneficiary", "error");
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
+      showToast("Network error: Failed to create beneficiary profile.", "error");
     }
   };
 
@@ -213,9 +220,14 @@ export default function App() {
       if (res.ok) {
         await fetchBeneficiaries();
         await fetchAuditLogs();
+        showToast("Beneficiary updated successfully", "success");
+      } else {
+        const err = await res.json();
+        showToast(err.error || "Failed to update beneficiary", "error");
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
+      showToast("Network error: Failed to update beneficiary profile.", "error");
     }
   };
 
@@ -229,13 +241,14 @@ export default function App() {
         setRegistryViewMode("list");
         await fetchBeneficiaries();
         await fetchAuditLogs();
+        showToast("Beneficiary deleted successfully", "success");
       } else {
         const err = await res.json();
-        alert(err.error || "Failed to delete beneficiary profile");
+        showToast(err.error || "Failed to delete beneficiary profile", "error");
       }
     } catch (e: any) {
       console.error(e);
-      alert(e.message);
+      showToast("Network error: Failed to delete beneficiary profile.", "error");
     }
   };
 

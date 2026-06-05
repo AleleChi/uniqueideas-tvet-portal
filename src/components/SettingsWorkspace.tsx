@@ -10,8 +10,10 @@ import {
 } from "lucide-react";
 import { OrganizationSettings, TrainingProgram } from "../types";
 import { authFetch } from "../utils/authFetch";
+import { useNotification } from "./NotificationContext";
 
 export function SettingsWorkspace() {
+  const { showToast, confirmDelete } = useNotification();
   const [settings, setSettings] = useState<OrganizationSettings>({
     id: "ideas_default",
     organizationName: "",
@@ -182,7 +184,9 @@ export function SettingsWorkspace() {
               ...prev,
               [`${field}Url`]: secureUrl
             }));
+            const isLogo = field.toLowerCase().includes("logo");
             setUploadStatus(prev => ({ ...prev, [field]: "success" }));
+            showToast(`${isLogo ? "Logo" : "Letterhead"} uploaded successfully`, "success");
             setTimeout(() => {
               setUploadStatus(prev => ({ ...prev, [field]: "idle" }));
             }, 3000);
@@ -191,7 +195,9 @@ export function SettingsWorkspace() {
           }
         } catch (err) {
           console.error(`Cloudinary upload failed for ${field}:`, err);
+          const isLogo = field.toLowerCase().includes("logo");
           setUploadStatus(prev => ({ ...prev, [field]: "error" }));
+          showToast(`${isLogo ? "Logo" : "Letterhead"} upload failed: server connection break.`, "error");
           setUploadError({
             field,
             message: `Server upload failed for the asset. Please verify key credentials and cloud connection.`
@@ -225,13 +231,16 @@ export function SettingsWorkspace() {
 
       if (res.ok) {
         setFeedbackSettings({ status: "success", msg: "State organization and authority settings updated successfully!" });
+        showToast("Settings saved successfully", "success");
         await fetchSettings();
       } else {
         const errData = await res.json();
         setFeedbackSettings({ status: "error", msg: errData.error || "Failed updating organization parameters." });
+        showToast(errData.error || "Validation error: Failed updating organization settings", "error");
       }
     } catch (err: any) {
       setFeedbackSettings({ status: "error", msg: err.message || "Failed saving parameters due to a connection break." });
+      showToast("Network error: Failed saving settings parameter keys.", "error");
     } finally {
       setIsSavingSettings(false);
     }
@@ -274,24 +283,27 @@ export function SettingsWorkspace() {
     }
   };
 
-  const handleDeleteProgram = async (id: string, name: string) => {
-    if (!confirm(`Are you sure you want to delete the accredited Training Program '${name}'? This may affect cascading historical beneficiary lookups.`)) {
-      return;
-    }
+  const handleDeleteProgram = (id: string, name: string) => {
+    confirmDelete({
+      title: "Delete Training Program",
+      message: `Are you sure you want to delete the accredited Training Program '${name}'? This may affect cascading historical beneficiary lookups.`,
+      onConfirm: async () => {
+        try {
+          const res = await authFetch(`/api/training-programs/${id}`, {
+            method: "DELETE"
+          });
 
-    try {
-      const res = await authFetch(`/api/training-programs/${id}`, {
-        method: "DELETE"
-      });
-
-      if (res.ok) {
-        await fetchPrograms();
-      } else {
-        alert("Action restricted under system isolation guidelines.");
+          if (res.ok) {
+            await fetchPrograms();
+            showToast("Accredited Training Program deleted successfully", "success");
+          } else {
+            showToast("Action restricted under system isolation guidelines.", "error");
+          }
+        } catch (err: any) {
+          showToast(err.message || "Network error deleting training program.", "error");
+        }
       }
-    } catch (err) {
-      console.error(err);
-    }
+    });
   };
 
   const missingLogos: string[] = [];

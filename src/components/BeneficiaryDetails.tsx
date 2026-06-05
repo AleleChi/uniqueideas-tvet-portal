@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { Beneficiary, ProgramStatus, AuditLog, WorkflowHistory } from "../types";
 import { authFetch, downloadWithAuth } from "../utils/authFetch";
+import { useNotification } from "./NotificationContext";
 import { API_BASE_URL } from "../config/api";
 
 interface BeneficiaryDetailsProps {
@@ -35,6 +36,7 @@ export function BeneficiaryDetails({
   session
 }: BeneficiaryDetailsProps) {
   
+  const { showToast: globalShowToast, confirmDelete } = useNotification();
   const [activeTab, setActiveTab] = useState<"overview" | "admission" | "acceptance" | "forms" | "documents" | "training" | "audits">("overview");
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [emailStatus, setEmailStatus] = useState<"idle" | "sending" | "sent">("idle");
@@ -48,7 +50,8 @@ export function BeneficiaryDetails({
   const [loadingDocType, setLoadingDocType] = useState<string | null>(null);
 
   // Executive advanced UI states (Phase 2A Polish)
-  const [toasts, setToasts] = useState<{ id: string; type: "success" | "error" | "info" | "warning"; message: string }[]>([]);
+  const toasts: any[] = [];
+  const setToasts = (val: any) => {};
   const [previewDoc, setPreviewDoc] = useState<any | null>(null);
   const [ledgerSearch, setLedgerSearch] = useState("");
   const [ledgerFilter, setLedgerFilter] = useState("ALL");
@@ -232,11 +235,7 @@ export function BeneficiaryDetails({
   };
 
   const showToast = (message: string, type: "success" | "error" | "info" | "warning" = "success") => {
-    const id = Math.random().toString(36).substring(2, 9);
-    setToasts((prev) => [...prev, { id, type, message }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 4500);
+    globalShowToast(message, type);
   };
 
   const fetchDocumentHistory = async (silently: boolean = false) => {
@@ -1284,9 +1283,7 @@ export function BeneficiaryDetails({
             <button 
               type="button"
               onClick={() => {
-                if (confirm(`WARNING: You are about to soft-delete the beneficiary profile for "${beneficiary.firstName} ${beneficiary.lastName}" (ID: ${beneficiary.id}). This action is logged under government TVET audit records, and is restricted to SUPER_ADMIN authorities. Do you wish to proceed?`)) {
-                  onDelete();
-                }
+                confirmDelete(`${beneficiary.firstName} ${beneficiary.lastName}`, onDelete);
               }}
               className="bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-4 rounded-lg text-xs flex items-center gap-1.5 shadow-sm transition outline-none cursor-pointer"
               id="delete-beneficiary-action-btn"
