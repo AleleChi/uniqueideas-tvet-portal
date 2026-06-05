@@ -8,6 +8,7 @@ import {
   FileText, ArrowDownToLine, Check, FileCheck, CircleAlert, 
   Trash2, Signature, HelpCircle, AlertCircle, Sparkles, UploadCloud 
 } from "lucide-react";
+import { API_BASE_URL } from "../config/api";
 
 interface PublicResponsePortalProps {
   token: string;
@@ -45,7 +46,7 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
   useEffect(() => {
     async function validateToken() {
       try {
-        const res = await fetch(`/api/admissions/validate-token?token=${encodeURIComponent(token)}`);
+        const res = await fetch(`${API_BASE_URL}/api/admissions/validate-token?token=${encodeURIComponent(token)}`);
         if (res.ok) {
           const data = await res.json();
           setCandidate(data.candidate);
@@ -76,7 +77,7 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
   // Handle PDF/Html download downloads
   const triggerAdmissionLetterDownload = () => {
     if (!candidate) return;
-    window.open(`/api/admissions/download-letter/${candidate.id}`, "_blank");
+    window.open(`${API_BASE_URL}/api/admissions/download-letter/${candidate.id}`, "_blank");
   };
 
   const triggerAcceptanceLetterDownload = () => {
@@ -247,7 +248,7 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
         }
       };
 
-      const res = await fetch("/api/admissions/submit-response", {
+      const res = await fetch(`${API_BASE_URL}/api/admissions/submit-response`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)

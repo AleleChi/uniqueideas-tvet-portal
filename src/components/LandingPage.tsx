@@ -10,6 +10,7 @@ import {
   Cpu, Scissors, Zap, Hammer, Sprout, Car, Sparkles, MessageSquare, BookOpen, Clock, Lock, KeyRound, Mail, AlertTriangle, UserPlus, Search, Menu, X, Landmark, ShieldAlert, BadgeCheck
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { API_BASE_URL } from "../config/api";
 
 interface LandingPageProps {
   onLoginShow: () => void;
@@ -155,7 +156,7 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
         admissionRef: "IDEAS/TVET/ADM/" + Math.floor(100000 + Math.random() * 900000)
       };
 
-      const res = await fetch("/api/beneficiaries", {
+      const res = await fetch(`${API_BASE_URL}/api/beneficiaries`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)

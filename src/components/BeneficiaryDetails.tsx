@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { Beneficiary, ProgramStatus, AuditLog, WorkflowHistory } from "../types";
 import { authFetch, downloadWithAuth } from "../utils/authFetch";
+import { API_BASE_URL } from "../config/api";
 
 interface BeneficiaryDetailsProps {
   beneficiary: Beneficiary;
@@ -911,7 +912,7 @@ export function BeneficiaryDetails({
 
   // Generate simple printable view for A4 letter
   const printAdmissionLetter = async () => {
-    window.open(`/api/admissions/download-letter/${beneficiary.id}`, "_blank");
+    window.open(`${API_BASE_URL}/api/admissions/download-letter/${beneficiary.id}`, "_blank");
   };
 
   // Generate simple printable view for Form
@@ -2947,7 +2948,7 @@ export function BeneficiaryDetails({
                                 };
                                 const tKey = typeMap[docType.type];
                                 trackDocumentActivity(latestDoc.id, "Downloaded", beneficiary.email || beneficiary.firstName, `Downloaded PDF copy of ${docType.label}`);
-                                window.open(`/api/documents/download/${beneficiary.id}/${tKey}?format=pdf`, "_blank");
+                                window.open(`${API_BASE_URL}/api/documents/download/${beneficiary.id}/${tKey}?format=pdf`, "_blank");
                               }
                             }}
                             className={`font-semibold text-[9px] uppercase tracking-wide px-2.5 py-1.5 rounded-lg inline-flex items-center gap-1 transition ${
@@ -2974,7 +2975,7 @@ export function BeneficiaryDetails({
                                 };
                                 const tKey = typeMap[docType.type];
                                 trackDocumentActivity(latestDoc.id, "Downloaded", beneficiary.email || beneficiary.firstName, `Downloaded Word copy of ${docType.label}`);
-                                window.open(`/api/documents/download/${beneficiary.id}/${tKey}?format=word`, "_blank");
+                                window.open(`${API_BASE_URL}/api/documents/download/${beneficiary.id}/${tKey}?format=word`, "_blank");
                               }
                             }}
                             className={`font-semibold text-[9px] uppercase tracking-wide px-2.5 py-1.5 rounded-lg inline-flex items-center gap-1 transition ${

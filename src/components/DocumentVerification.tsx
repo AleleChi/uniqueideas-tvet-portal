@@ -3,6 +3,7 @@ import {
   ShieldCheck, ShieldAlert, Cpu, Search, Calendar, FileText, 
   ExternalLink, Hash, ArrowLeft, Loader2, CheckCircle, HelpCircle
 } from "lucide-react";
+import { API_BASE_URL } from "../config/api";
 
 export function DocumentVerification() {
   const [searchType, setSearchType] = useState<"code" | "id">("code");
@@ -19,7 +20,7 @@ export function DocumentVerification() {
 
     try {
       if (type === "code") {
-        const res = await fetch(`/api/documents/verify/${encodeURIComponent(queryVal.trim())}`);
+        const res = await fetch(`${API_BASE_URL}/api/documents/verify/${encodeURIComponent(queryVal.trim())}`);
         if (res.ok) {
           const data = await res.json();
           if (data.valid) {
@@ -31,7 +32,7 @@ export function DocumentVerification() {
           setError("Document could not be verified within the centralized registry.");
         }
       } else {
-        const res = await fetch("/api/documents/verify", {
+        const res = await fetch(`${API_BASE_URL}/api/documents/verify`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: queryVal.trim() })

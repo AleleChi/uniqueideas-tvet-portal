@@ -5,6 +5,7 @@
 
 import React, { useState } from "react";
 import { Landmark, Mail, Lock, Eye, EyeOff, ShieldCheck, HelpCircle, ArrowRight, RefreshCw, KeyRound, CheckCircle2 } from "lucide-react";
+import { API_BASE_URL } from "../config/api";
 
 interface AdminLoginProps {
   onLoginSuccess: (email: string, pass: string) => Promise<boolean>;
@@ -55,7 +56,7 @@ export function AdminLogin({ onLoginSuccess, onBackToHome }: AdminLoginProps) {
     setIsLoading(true);
 
     try {
-      const res = await fetch("/api/auth/forgot-password", {
+      const res = await fetch(`${API_BASE_URL}/api/auth/forgot-password`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: forgotEmail })
@@ -85,7 +86,7 @@ export function AdminLogin({ onLoginSuccess, onBackToHome }: AdminLoginProps) {
     setIsLoading(true);
 
     try {
-      const res = await fetch("/api/auth/reset-password", {
+      const res = await fetch(`${API_BASE_URL}/api/auth/reset-password`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token: resetToken, newPassword })

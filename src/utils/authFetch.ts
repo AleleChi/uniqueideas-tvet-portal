@@ -1,3 +1,5 @@
+import { API_BASE_URL } from "../config/api";
+
 /**
  * Reusable authenticated fetch helper for secure API requests.
  * Reads the secure JWT from the active session or localStorage,
@@ -31,7 +33,9 @@ export async function authFetch(
     }
   }
 
-  return fetch(url, {
+  const targetUrl = url.startsWith("/api/") ? `${API_BASE_URL}${url}` : url;
+
+  return fetch(targetUrl, {
     ...options,
     headers,
   });
