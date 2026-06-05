@@ -766,7 +766,9 @@ app.post("/api/upload-asset", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OF
 // Beneficiary management resource
 app.get("/api/beneficiaries", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req, res) => {
   try {
-    const beneficiaries = await DbRepo.getBeneficiaries();
+    const includePhoto = req.query.includePhoto === "true";
+    const includeDetails = req.query.includeDetails === "true";
+    const beneficiaries = await DbRepo.getBeneficiaries({ includePhoto, includeDetails });
     res.json(beneficiaries);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -788,6 +790,150 @@ app.get("/api/beneficiaries/:id", requireAuth, async (req: AuthenticatedRequest,
     } else {
       res.status(404).json({ error: "Beneficiary record not found" });
     }
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/beneficiaries/:id/photo", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    if (req.user!.role === "TRAINEE" && req.user!.beneficiaryId !== id) {
+      return res.status(403).json({ error: "Access Denied." });
+    }
+    const photo = await DbRepo.getBeneficiaryPhotoOnly(id);
+    res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=3600");
+    res.json({ photo });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Serve raw photo as binary stream natively for high performance caching
+async function serveRawPhoto(id: string, res: any) {
+  try {
+    const photo = await DbRepo.getBeneficiaryPhotoOnly(id);
+    if (!photo) {
+      return res.status(404).send("Not Found");
+    }
+
+    const match = photo.match(/^data:([^;]+);base64,(.+)$/);
+    if (match) {
+      const mimeType = match[1];
+      const base64Data = match[2];
+      const imgBuffer = Buffer.from(base64Data, "base64");
+      res.setHeader("Content-Type", mimeType);
+      res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=3600");
+      return res.send(imgBuffer);
+    }
+
+    if (photo.startsWith("http")) {
+      return res.redirect(photo);
+    }
+
+    try {
+      const imgBuffer = Buffer.from(photo, "base64");
+      res.setHeader("Content-Type", "image/jpeg");
+      res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=3600");
+      return res.send(imgBuffer);
+    } catch {
+      return res.status(400).send("Invalid image format");
+    }
+  } catch (err: any) {
+    return res.status(500).send(err.message);
+  }
+}
+
+app.get("/api/beneficiaries/:id/photo/raw", async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    const { sig } = req.query;
+
+    if (sig) {
+      const expectedSig = crypto.createHmac("sha256", JWT_SECRET).update(id).digest("hex");
+      if (sig !== expectedSig) {
+        return res.status(403).send("Forbidden: Invalid signature");
+      }
+      return serveRawPhoto(id, res);
+    }
+
+    return requireAuth(req, res, () => {
+      if (req.user!.role === "TRAINEE" && req.user!.beneficiaryId !== id) {
+        return res.status(403).json({ error: "Access Denied. You are forbidden from retrieving other candidate photos." });
+      }
+      return serveRawPhoto(id, res);
+    });
+  } catch (e: any) {
+    res.status(500).send(e.message);
+  }
+});
+
+// DOB Data Integrity Audit and Diagnostics Tooling
+app.get("/api/diagnostics/dob", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const beneficiaries = await DbRepo.getBeneficiaries({ includePhoto: false });
+    
+    let total = beneficiaries.length;
+    let missingCount = 0;
+    let malformedCount = 0;
+    let validCount = 0;
+    const missingIds: string[] = [];
+    const malformedDetails: { id: string; name: string; dobValue: string }[] = [];
+
+    beneficiaries.forEach(b => {
+      const dob = b.dateOfBirth;
+      if (!dob || dob.trim() === "" || dob.toLowerCase() === "n/a") {
+        missingCount++;
+        missingIds.push(b.id);
+      } else {
+        const isIso = /^\d{4}-\d{2}-\d{2}$/.test(dob);
+        const isSlash = /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(dob);
+        if (isIso || isSlash) {
+          validCount++;
+        } else {
+          malformedCount++;
+          malformedDetails.push({
+            id: b.id,
+            name: `${b.firstName} ${b.lastName}`,
+            dobValue: dob
+          });
+        }
+      }
+    });
+
+    res.json({
+      auditTimestamp: new Date().toISOString(),
+      totalBeneficiaries: total,
+      metrics: {
+        validDobCount: validCount,
+        missingDobCount: missingCount,
+        malformedDobCount: malformedCount
+      },
+      missingDobBeneficiaryIds: missingIds,
+      malformedDobBeneficiaryDetails: malformedDetails
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/beneficiaries/photos/batch", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids)) {
+      return res.status(400).json({ error: "Invalid ids list" });
+    }
+
+    // Role safety boundaries: Trainees can only retrieve their own individual photo record.
+    if (req.user!.role === "TRAINEE") {
+      const isOk = ids.length === 1 && ids[0] === req.user!.beneficiaryId;
+      if (!isOk) {
+        return res.status(403).json({ error: "Access Denied. Trainees can only retrieve their own profile photograph." });
+      }
+    }
+
+    const photosMap = await DbRepo.getBeneficiaryPhotosBatch(ids);
+    res.json(photosMap);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -1201,9 +1347,13 @@ app.get("/api/export/csv", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFIC
 app.get("/api/export/excel", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
   try {
     const { state, batch } = req.query;
-    const beneficiaries = await DbRepo.getBeneficiaries();
+    const beneficiaries = await DbRepo.getBeneficiaries({ includePhoto: false });
 
     await logAction(req.user!.email, "EXCEL_EXPORT", `Triggered bulk beneficiary spreadsheet export in Excel format for State: ${state}, Batch: ${batch}`);
+
+    const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
+    const host = req.headers["x-forwarded-host"] || req.headers.host;
+    const baseUrl = `${protocol}://${host}`;
 
     // Filter beneficiaries list matching the request
     const filtered = beneficiaries.filter(b => {
@@ -1254,13 +1404,26 @@ app.get("/api/export/excel", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFF
     <tbody>
   `;
 
-    filtered.forEach(b => {
-      const photoUrl = b.photo;
+    for (const b of filtered) {
       const formattedDate = b.createdAt ? new Date(b.createdAt).toLocaleDateString("en-GB") : "N/A";
+      let embedSrc = "";
+      if (b.hasPhoto) {
+        const photo = await DbRepo.getBeneficiaryPhotoOnly(b.id);
+        if (photo) {
+          if (photo.startsWith("data:")) {
+            embedSrc = photo;
+          } else if (photo.startsWith("http")) {
+            embedSrc = photo;
+          } else {
+            embedSrc = `data:image/jpeg;base64,${photo}`;
+          }
+        }
+      }
+      
       html += `
       <tr>
         <td align="center" valign="middle" height="60">
-          <img class="photo-img" src="${photoUrl}" width="50" height="50" />
+          ${embedSrc ? `<img class="photo-img" src="${embedSrc}" width="50" height="50" />` : `<span style="font-size: 9px; color:#64748b; font-weight: bold;">NO PHOTO</span>`}
         </td>
         <td>${b.firstName}</td>
         <td>${b.lastName}</td>
@@ -1274,7 +1437,7 @@ app.get("/api/export/excel", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFF
         <td>${formattedDate}</td>
       </tr>
     `;
-    });
+    }
 
     if (filtered.length === 0) {
       html += `<tr><td colspan="11" align="center" style="font-weight:bold; color:#ef4444; padding:20px;">No beneficiary records found for the selected filter parameters.</td></tr>`;
@@ -1299,10 +1462,14 @@ app.get("/api/export/excel", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFF
 app.get("/api/export/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
   try {
     const { state, batch } = req.query;
-    const beneficiaries = await DbRepo.getBeneficiaries();
+    const beneficiaries = await DbRepo.getBeneficiaries({ includePhoto: false });
     const settings = await DbRepo.getOrganizationSettings();
 
     await logAction(req.user!.email, "PDF_EXPORT", `Triggered official multi-page registry-style PDF generation for State: ${state}, Batch: ${batch}`);
+
+    const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
+    const host = req.headers["x-forwarded-host"] || req.headers.host;
+    const baseUrl = `${protocol}://${host}`;
 
     const filtered = beneficiaries.filter(b => {
       const sMatch = !state || state === "all" || b.state === state;
@@ -1665,10 +1832,25 @@ app.get("/api/export/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFIC
                 <tbody>
     `;
 
-    filtered.forEach((b, index) => {
+    for (let index = 0; index < filtered.length; index++) {
+      const b = filtered[index];
       const lga = b.customFields?.["Local Government Area (LGA)"] || b.customFields?.["lga"] || b.customFields?.["LGA"] || b.customFields?.["cf_lga"] || "N/A";
       const age = b.customFields?.["Age"] || b.customFields?.["age"] || b.customFields?.["Date of Birth"] || b.customFields?.["dob"] || "N/A";
       
+      let embedSrc = "";
+      if (b.hasPhoto) {
+        const photo = await DbRepo.getBeneficiaryPhotoOnly(b.id);
+        if (photo) {
+          if (photo.startsWith("data:")) {
+            embedSrc = photo;
+          } else if (photo.startsWith("http")) {
+            embedSrc = photo;
+          } else {
+            embedSrc = `data:image/jpeg;base64,${photo}`;
+          }
+        }
+      }
+
       html += `
                   <tr style="page-break-inside: avoid; break-inside: avoid;">
                     <td style="border: 1.5px solid #000000; padding: 12px; text-align: center; font-weight: bold; font-family: monospace; font-size: 11px; vertical-align: middle; color: #1e293b; background-color: #ffffff;">
@@ -1677,8 +1859,8 @@ app.get("/api/export/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFIC
                     <td style="border: 1.5px solid #000000; padding: 12px; text-align: center; vertical-align: middle; background-color: #ffffff;">
                       <div style="font-weight: bold; font-size: 8.5pt; text-transform: uppercase; margin-bottom: 6px; color: #1e1b4b; font-family: sans-serif;">Photograph</div>
                       <div style="width: 100px; height: 120px; background: #ffffff; border: 1.5px solid #000000; display: flex; align-items: center; justify-content: center; margin: 0 auto; overflow: hidden; box-sizing: border-box;">
-                        ${b.photo ? `
-                          <img src="${b.photo}" alt="Passport" referrerPolicy="no-referrer" style="width: 100px; height: 120px; object-fit: cover;" />
+                        ${embedSrc ? `
+                          <img src="${embedSrc}" alt="Passport" referrerPolicy="no-referrer" style="width: 100px; height: 120px; object-fit: cover;" />
                         ` : `
                           <span style="font-size: 8px; font-weight: bold; color: #94a3b8; font-family: monospace; padding: 5px; text-align: center;">NO PHOTO AVAILABLE</span>
                         `}
@@ -1724,7 +1906,7 @@ app.get("/api/export/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFIC
                     </td>
                   </tr>
       `;
-    });
+    }
 
     html += `
                 </tbody>
@@ -1790,10 +1972,14 @@ app.get("/api/export/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFIC
 app.get("/api/export/word", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
   try {
     const { state, batch } = req.query;
-    const beneficiaries = await DbRepo.getBeneficiaries();
+    const beneficiaries = await DbRepo.getBeneficiaries({ includePhoto: false });
     const settings = await DbRepo.getOrganizationSettings();
 
     await logAction(req.user!.email, "WORD_EXPORT", `Triggered official registry-style MSG-Word generation for State: ${state}, Batch: ${batch}`);
+
+    const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
+    const host = req.headers["x-forwarded-host"] || req.headers.host;
+    const baseUrl = `${protocol}://${host}`;
 
     const filtered = beneficiaries.filter(b => {
       const sMatch = !state || state === "all" || b.state === state;
@@ -1947,7 +2133,22 @@ app.get("/api/export/word", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFI
         <tbody>
     `;
 
-    filtered.forEach((b, index) => {
+    for (let index = 0; index < filtered.length; index++) {
+      const b = filtered[index];
+      let embedSrc = "";
+      if (b.hasPhoto) {
+        const photo = await DbRepo.getBeneficiaryPhotoOnly(b.id);
+        if (photo) {
+          if (photo.startsWith("data:")) {
+            embedSrc = photo;
+          } else if (photo.startsWith("http")) {
+            embedSrc = photo;
+          } else {
+            embedSrc = `data:image/jpeg;base64,${photo}`;
+          }
+        }
+      }
+
       html += `
           <tr style="page-break-inside: avoid; break-inside: avoid;">
             <td style="border: 1.5pt solid #000000; padding: 10pt; text-align: center; font-weight: bold; font-family: monospace; font-size: 11pt; vertical-align: middle; color: #1e293b; background-color: #ffffff;">
@@ -1956,8 +2157,8 @@ app.get("/api/export/word", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFI
             <td style="border: 1.5pt solid #000000; padding: 10pt; text-align: center; vertical-align: middle; background-color: #ffffff;">
               <p style="margin: 0 0 6pt 0; font-weight: bold; font-size: 8.5pt; text-transform: uppercase; color: #000000; text-align: center; font-family: Arial, sans-serif;">Photograph</p>
               <div style="width: 100px; height: 120px; background: #ffffff; border: 1.5pt solid #000000; display: block; margin: 0 auto; overflow: hidden; text-align: center;">
-                ${b.photo ? `
-                  <img src="${b.photo}" width="100" height="120" style="width: 100px; height: 120px; max-width: 100px; max-height: 120px; object-fit: cover; object-position: center;" />
+                ${embedSrc ? `
+                  <img src="${embedSrc}" width="100" height="120" style="width: 100px; height: 120px; max-width: 100px; max-height: 120px; object-fit: cover; object-position: center;" />
                 ` : `
                   <p style="font-size: 8.5pt; font-weight: bold; color: #94a3b8; font-family: monospace; margin: 30pt 0 0 0; text-align: center;">NO PHOTO</p>
                 `}
@@ -1972,7 +2173,7 @@ app.get("/api/export/word", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFI
                 <tr style="background-color: #000000;"><td colspan="2" style="padding: 4pt 8pt; color: #ffffff; font-weight: bold; font-size: 9pt; text-transform: uppercase;">SECTION A: TRAINEE INFORMATION</td></tr>
                 <tr style="border-bottom: 1px dashed #cccccc;">
                   <td style="padding: 4pt; width: 140pt; font-weight: bold; color: #475569;">Full Name (Surname First):</td>
-                  <td style="padding: 4pt; font-weight: bold; color: #000000; text-transform: uppercase;">${b.lastName.toUpperCase()}, ${b.firstName.toUpperCase()} ${b.otherName ? b.otherName.toUpperCase() : ""}</td>
+                  <td style="padding: 4pt; font-weight: bold; color: #000000; text-transform: uppercase;">${(b.lastName || "").toUpperCase()}, ${(b.firstName || "").toUpperCase()} ${b.otherName ? (b.otherName || "").toUpperCase() : ""}</td>
                 </tr>
                 <tr style="border-bottom: 1px dashed #cccccc;">
                   <td style="padding: 4pt; width: 140pt; font-weight: bold; color: #475569;">Skill Applied For:</td>
@@ -2029,7 +2230,7 @@ app.get("/api/export/word", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFI
                 <tr style="background-color: #000000;"><td colspan="2" style="padding: 4pt 8pt; color: #ffffff; font-weight: bold; font-size: 9pt; text-transform: uppercase;">SECTION D: BANK DETAILS</td></tr>
                 <tr style="border-bottom: 1px dashed #cccccc;">
                   <td style="padding: 4pt; width: 140pt; font-weight: bold; color: #475569;">Account Holder Name:</td>
-                  <td style="padding: 4pt; font-weight: bold; color: #000000; text-transform: uppercase;">${b.bankAccountHolder || (b.firstName + " " + b.lastName).toUpperCase()}</td>
+                  <td style="padding: 4pt; font-weight: bold; color: #000000; text-transform: uppercase;">${(b.bankAccountHolder || "").toUpperCase() || ((b.firstName || "") + " " + (b.lastName || "")).toUpperCase()}</td>
                 </tr>
                 <tr style="border-bottom: 1px dashed #cccccc;">
                   <td style="padding: 4pt; width: 140pt; font-weight: bold; color: #475569;">BVN Number:</td>
@@ -2052,7 +2253,7 @@ app.get("/api/export/word", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFI
             </td>
           </tr>
       `;
-    });
+    }
 
     html += `
         </tbody>

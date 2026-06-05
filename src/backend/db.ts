@@ -15,6 +15,43 @@ const DB_FILE = path.join(process.cwd(), "database_ideas_tvet.json");
 // Pool instance. Created lazily to avoid immediate connection errors if CONFIG is not yet specified.
 let pgPool: pg.Pool | null = null;
 let isPgActive = false;
+let healthCheckTimer: NodeJS.Timeout | null = null;
+
+function triggerBackgroundHealthCheck() {
+  if (healthCheckTimer) return;
+  
+  console.log("[DB] Connection issue detected. Scheduling background health checks to reconnect to PostgreSQL...");
+  healthCheckTimer = setInterval(async () => {
+    console.log("[DB Background Health Check] Attempting to test PostgreSQL connectivity...");
+    const active = await checkPgStatusSilent();
+    if (active) {
+      console.log("[DB Background Health Check] PostgreSQL connectivity restored! Re-activating PostgreSQL mode.");
+      isPgActive = true;
+      if (healthCheckTimer) {
+        clearInterval(healthCheckTimer);
+        healthCheckTimer = null;
+      }
+    } else {
+      console.log("[DB Background Health Check] PostgreSQL is still offline. Keeping local filesystem fallback active.");
+    }
+  }, 20000); // Retries every 20 seconds
+  
+  if (healthCheckTimer && typeof healthCheckTimer.unref === "function") {
+    healthCheckTimer.unref();
+  }
+}
+
+async function checkPgStatusSilent(): Promise<boolean> {
+  const pool = getPgPool();
+  if (!pool) return false;
+  try {
+    const client = await pool.connect();
+    client.release();
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
 
 export function getPgPool(): pg.Pool | null {
   if (pgPool) return pgPool;
@@ -32,9 +69,44 @@ export function getPgPool(): pg.Pool | null {
       ssl: connectionString.includes("localhost") || connectionString.includes("127.0.0.1")
         ? false
         : { rejectUnauthorized: false },
-      connectionTimeoutMillis: 5000,
+      connectionTimeoutMillis: 20000, // Increased to 20 seconds to survive serverless/Neon database coldstarts
+      max: 15, // Keep connection count reasonable
+      idleTimeoutMillis: 30000, // Close idle connections after 30 seconds
     });
     isPgActive = true;
+    
+    // Intercept idle client errors
+    pgPool.on("error", (err) => {
+      console.error("[DB Pool] Unexpected error on idle client:", err);
+      const msg = err.message || "";
+      if (msg.includes("timeout") || msg.includes("connect") || msg.includes("connection") || msg.includes("ECONN") || msg.includes("closed")) {
+        isPgActive = false;
+        triggerBackgroundHealthCheck();
+      }
+    });
+
+    // Centralized safe proxy query interface to automatically fallback to JSON storage on connection loss
+    const originalQuery = pgPool.query.bind(pgPool);
+    pgPool.query = async function(this: any, ...args: any[]) {
+      try {
+        return await originalQuery(...args);
+      } catch (err: any) {
+        const msg = err.message || "";
+        if (
+          msg.includes("timeout") ||
+          msg.includes("connect") ||
+          msg.includes("connection") ||
+          msg.includes("ECONN") ||
+          msg.includes("closed")
+        ) {
+          console.warn("[DB] PostgreSQL connection failure detected on query execution. Engaging filesystem JSON storage fallback.", msg);
+          isPgActive = false;
+          triggerBackgroundHealthCheck();
+        }
+        throw err;
+      }
+    } as any;
+
     console.log("[DB] PostgreSQL Pool initialized with DATABASE_URL.");
     return pgPool;
   } catch (err) {
@@ -58,6 +130,7 @@ export async function checkPgStatus(): Promise<boolean> {
   } catch (e) {
     console.warn("[DB] PostgreSQL exists in config but is offline/unreachable:", (e as Error).message);
     isPgActive = false;
+    triggerBackgroundHealthCheck();
     return false;
   }
 }
@@ -661,20 +734,43 @@ export async function migrateJsonToPostgres(): Promise<void> {
         `INSERT INTO beneficiaries (
            id, photo, first_name, last_name, other_name, gender, bvn, nin, 
            state, city, phone_number, email, residential_address, batch, 
-           custom_fields, tsp, program, skill_sector, status, created_at, updated_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+           custom_fields, tsp, program, skill_sector, status,
+           admission_letter_url, acceptance_letter_url, enrollment_letter_url, certificate_url,
+           guardian_name, guardian_address, guardian_phone, physical_challenge,
+           bank_account_holder, bank_name, bank_sort_code, bank_account_number, education_qualification, date_of_birth,
+           created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35)
          ON CONFLICT (id) DO UPDATE SET 
            first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name, other_name = EXCLUDED.other_name,
            gender = EXCLUDED.gender, bvn = EXCLUDED.bvn, nin = EXCLUDED.nin, state = EXCLUDED.state,
            city = EXCLUDED.city, phone_number = EXCLUDED.phone_number, email = EXCLUDED.email,
            residential_address = EXCLUDED.residential_address, batch = EXCLUDED.batch,
-           custom_fields = EXCLUDED.custom_fields, status = EXCLUDED.status, updated_at = NOW()`,
+           custom_fields = EXCLUDED.custom_fields, status = EXCLUDED.status,
+           admission_letter_url = EXCLUDED.admission_letter_url,
+           acceptance_letter_url = EXCLUDED.acceptance_letter_url,
+           enrollment_letter_url = EXCLUDED.enrollment_letter_url,
+           certificate_url = EXCLUDED.certificate_url,
+           guardian_name = EXCLUDED.guardian_name,
+           guardian_address = EXCLUDED.guardian_address,
+           guardian_phone = EXCLUDED.guardian_phone,
+           physical_challenge = EXCLUDED.physical_challenge,
+           bank_account_holder = EXCLUDED.bank_account_holder,
+           bank_name = EXCLUDED.bank_name,
+           bank_sort_code = EXCLUDED.bank_sort_code,
+           bank_account_number = EXCLUDED.bank_account_number,
+           education_qualification = EXCLUDED.education_qualification,
+           date_of_birth = EXCLUDED.date_of_birth,
+           updated_at = NOW()`,
         [
-          b.id, b.photo, b.firstName, b.lastName, b.otherName || "", b.gender, b.bvn, b.nin,
+          b.id, b.photo || "", b.firstName, b.lastName, b.otherName || "", b.gender, b.bvn, b.nin,
           b.state, b.city, b.phoneNumber, b.email, b.residentialAddress, b.batch || `Batch ${new Date().getFullYear()}-C`,
           JSON.stringify(b.customFields || {}), b.tsp || "Unique Technology Nig. Ltd",
           b.program || "IDEAS-TVET", b.skillSector || "Computer Hardware and Cell Phone Repairs",
-          b.status, b.createdAt || new Date().toISOString(), b.updatedAt || new Date().toISOString()
+          b.status,
+          b.admissionLetterUrl || "", b.acceptanceLetterUrl || "", b.enrollmentLetterUrl || "", b.certificateUrl || "",
+          b.guardianName || "", b.guardianAddress || "", b.guardianPhone || "", b.physicalChallenge || "",
+          b.bankAccountHolder || "", b.bankName || "", b.bankSortCode || "", b.bankAccountNumber || "", b.educationQualification || "", b.dateOfBirth || "",
+          b.createdAt ? new Date(b.createdAt) : new Date(), b.updatedAt ? new Date(b.updatedAt) : new Date()
         ]
       );
 
@@ -960,100 +1056,109 @@ export class DbRepo {
   }
 
   /**
-   * Queries and returns a list of active beneficiaries with pre-mapped joined records
+   * Queries and returns a list of active beneficiaries with pre-mapped joined records.
+   * Leverages options to omit massive Base64 payloads and detail relations unless requested.
    */
-  static async getBeneficiaries(): Promise<Beneficiary[]> {
+  static async getBeneficiaries(options?: { includePhoto?: boolean; includeDetails?: boolean }): Promise<Beneficiary[]> {
+    const includePhoto = options?.includePhoto ?? false;
+    const includeDetails = options?.includeDetails ?? false;
+
     const pool = getPgPool();
     if (!pool || !isPgActive) {
-      return loadJsonState().beneficiaries;
+      const state = loadJsonState().beneficiaries as Beneficiary[];
+      return state.map(b => ({
+        ...b,
+        photo: includePhoto ? (b.photo || "") : "",
+        hasPhoto: !!b.photo
+      }));
     }
 
     try {
-      // 1. Get raw beneficiaries
-      const bRes = await pool.query(
-        `SELECT id, photo, first_name, last_name, other_name, gender, bvn, nin, 
-                state, city, phone_number, email, residential_address, batch, 
-                custom_fields, tsp, program, skill_sector, status, 
-                admission_letter_url, acceptance_letter_url, enrollment_letter_url, certificate_url,
-                guardian_name, guardian_address, guardian_phone, physical_challenge,
-                bank_account_holder, bank_name, bank_sort_code, bank_account_number, education_qualification, date_of_birth,
-                created_at, updated_at
-         FROM beneficiaries
-         WHERE deleted_at IS NULL
-         ORDER BY created_at DESC`
-      );
-
+      const photoCol = includePhoto ? "b.photo" : "'' as photo";
+      const queryStr = `
+        SELECT b.id, ${photoCol}, (b.photo IS NOT NULL AND b.photo != '') as has_photo, b.first_name, b.last_name, b.other_name, b.gender, b.bvn, b.nin, 
+               b.state, b.city, b.phone_number, b.email, b.residential_address, b.batch, 
+               b.custom_fields, b.tsp, b.program, b.skill_sector, b.status, 
+               b.admission_letter_url, b.acceptance_letter_url, b.enrollment_letter_url, b.certificate_url,
+               b.guardian_name, b.guardian_address, b.guardian_phone, b.physical_challenge,
+               b.bank_account_holder, b.bank_name, b.bank_sort_code, b.bank_account_number, b.education_qualification, b.date_of_birth,
+               b.created_at, b.updated_at,
+               adm.admission_status, adm.admission_ref, adm.admission_letter_generated_at, 
+               adm.admission_letter_sent_at, adm.admission_form_completed, adm.admission_form_status, 
+               adm.training_progress
+        FROM beneficiaries b
+        LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
+        WHERE b.deleted_at IS NULL
+        ORDER BY b.created_at DESC
+      `;
+      
+      const bRes = await pool.query(queryStr);
       if (bRes.rows.length === 0) return [];
 
       const payloadList: Beneficiary[] = [];
 
-      // 2. Retrieve relationship payloads for cascading mapping
       for (const row of bRes.rows) {
         const bId = row.id;
 
-        // A. Admissions
-        const admRes = await pool.query(
-          `SELECT admission_status, admission_ref, admission_letter_generated_at, 
-                  admission_letter_sent_at, admission_form_completed, admission_form_status, 
-                  admission_form_data, admission_letter_versions, admission_form_versions, training_progress
-           FROM admissions
-           WHERE beneficiary_id = $1 AND deleted_at IS NULL`,
-          [bId]
-        );
-        const adm = admRes.rows[0] || {};
+        let docsList: any[] = [];
+        let accVersions: any[] = [];
+        let attendanceLogs: any[] = [];
+        let eml: any = {};
 
-        // B. Documents List
-        const docRes = await pool.query(
-          "SELECT id, name, type, url, version, uploaded_at FROM documents WHERE beneficiary_id = $1 AND deleted_at IS NULL",
-          [bId]
-        );
-        const docsList = docRes.rows.map(d => ({
-          id: d.id,
-          name: d.name,
-          type: d.type,
-          url: d.url,
-          uploadedAt: d.uploaded_at.toISOString(),
-          version: d.version || 1
-        }));
+        if (includeDetails) {
+          // A. Documents List
+          const docRes = await pool.query(
+            "SELECT id, name, type, url, version, uploaded_at FROM documents WHERE beneficiary_id = $1 AND deleted_at IS NULL",
+            [bId]
+          );
+          docsList = docRes.rows.map(d => ({
+            id: d.id,
+            name: d.name,
+            type: d.type,
+            url: d.url,
+            uploadedAt: d.uploaded_at.toISOString(),
+            version: d.version || 1
+          }));
 
-        // C. Acceptance versions
-        const accRes = await pool.query(
-          "SELECT version, url, name, uploaded_at FROM acceptance_letters WHERE beneficiary_id = $1 AND deleted_at IS NULL ORDER BY version ASC",
-          [bId]
-        );
-        const accVersions = accRes.rows.map(ac => ({
-          version: ac.version,
-          url: ac.url,
-          name: ac.name,
-          uploadedAt: ac.uploaded_at.toISOString()
-        }));
+          // B. Acceptance versions
+          const accRes = await pool.query(
+            "SELECT version, url, name, uploaded_at FROM acceptance_letters WHERE beneficiary_id = $1 AND deleted_at IS NULL ORDER BY version ASC",
+            [bId]
+          );
+          accVersions = accRes.rows.map(ac => ({
+            version: ac.version,
+            url: ac.url,
+            name: ac.name,
+            uploadedAt: ac.uploaded_at.toISOString()
+          }));
 
-        // D. Attendance
-        const attRes = await pool.query(
-          "SELECT id, date, status, hours_logged FROM attendance_logs WHERE beneficiary_id = $1 AND deleted_at IS NULL ORDER BY date ASC",
-          [bId]
-        );
-        const attendanceLogs = attRes.rows.map(a => ({
-          id: a.id,
-          date: a.date.toISOString().split("T")[0],
-          status: a.status as "Present" | "Absent" | "Excused",
-          hoursLogged: parseFloat(a.hours_logged) || 0
-        }));
+          // C. Attendance
+          const attRes = await pool.query(
+            "SELECT id, date, status, hours_logged FROM attendance_logs WHERE beneficiary_id = $1 AND deleted_at IS NULL ORDER BY date ASC",
+            [bId]
+          );
+          attendanceLogs = attRes.rows.map(a => ({
+            id: a.id,
+            date: a.date.toISOString().split("T")[0],
+            status: a.status as "Present" | "Absent" | "Excused",
+            hoursLogged: parseFloat(a.hours_logged) || 0
+          }));
 
-        // E. Latest email logs (recipient history metrics)
-        const emailRes = await pool.query(
-          `SELECT tracking_status, sender_emailstatus, smtp_error_details, tracking_history, delivery_history
-           FROM email_logs
-           WHERE beneficiary_id = $1 AND deleted_at IS NULL
-           ORDER BY date_sent DESC LIMIT 1`,
-          [bId]
-        );
-        const eml = emailRes.rows[0] || {};
+          // D. Latest email logs
+          const emailRes = await pool.query(
+            `SELECT tracking_status, sender_emailstatus, smtp_error_details, tracking_history, delivery_history
+             FROM email_logs
+             WHERE beneficiary_id = $1 AND deleted_at IS NULL
+             ORDER BY date_sent DESC LIMIT 1`,
+            [bId]
+          );
+          eml = emailRes.rows[0] || {};
+        }
 
-        // 3. Compile structural Beneficiary mapping
         const beneficiary: Beneficiary = {
           id: row.id,
           photo: row.photo || "",
+          hasPhoto: row.has_photo,
           firstName: row.first_name,
           lastName: row.last_name,
           otherName: row.other_name || "",
@@ -1077,7 +1182,27 @@ export class DbRepo {
           createdAt: row.created_at.toISOString(),
           updatedAt: row.updated_at.toISOString(),
 
-          // Supplemental Form mapping (Phase 1 Database Sync)
+          admissionStatus: row.admission_status || "Draft",
+          admissionRef: row.admission_ref || "",
+          admissionLetterGeneratedAt: row.admission_letter_generated_at ? row.admission_letter_generated_at.toISOString() : undefined,
+          admissionLetterSentAt: row.admission_letter_sent_at ? row.admission_letter_sent_at.toISOString() : undefined,
+          admissionFormCompleted: !!row.admission_form_completed,
+          admissionFormStatus: row.admission_form_status || "Pending",
+          trainingProgress: row.training_progress || {},
+
+          acceptanceLetterUploaded: accVersions.length > 0,
+          acceptanceLetterUrl: row.acceptance_letter_url || (accVersions.length > 0 ? accVersions[accVersions.length - 1].url : undefined),
+          acceptanceLetterUploadedAt: accVersions.length > 0 ? accVersions[accVersions.length - 1].uploadedAt : undefined,
+          acceptanceLetterVersions: accVersions,
+          documentsList: docsList,
+          attendanceLogs,
+
+          emailStatus: eml.tracking_status || "Not Sent",
+          emailTrackingStatus: eml.sender_emailstatus || undefined,
+          emailTrackingHistory: eml.tracking_history || [],
+          smtpErrorDetails: eml.smtp_error_details || undefined,
+          emailDeliveryHistory: eml.delivery_history || [],
+
           guardianName: row.guardian_name || "",
           guardianAddress: row.guardian_address || "",
           guardianPhone: row.guardian_phone || "",
@@ -1087,38 +1212,7 @@ export class DbRepo {
           bankSortCode: row.bank_sort_code || "",
           bankAccountNumber: row.bank_account_number || "",
           educationQualification: row.education_qualification || "",
-          dateOfBirth: row.date_of_birth || "",
-
-          // Nested Adm structures
-          admissionStatus: adm.admission_status || "Pending",
-          admissionRef: adm.admission_ref || undefined,
-          admissionLetterGeneratedAt: adm.admission_letter_generated_at ? adm.admission_letter_generated_at.toISOString() : undefined,
-          admissionLetterSentAt: adm.admission_letter_sent_at ? adm.admission_letter_sent_at.toISOString() : undefined,
-          admissionFormCompleted: !!adm.admission_form_completed,
-          admissionFormStatus: adm.admission_form_status || "Pending",
-          admissionFormData: adm.admission_form_data || {},
-          admissionLetterVersions: adm.admission_letter_versions || [],
-          admissionFormVersions: adm.admission_form_versions || [],
-          trainingProgress: adm.training_progress || {},
-
-          // Documents mapping
-          documentsList: docsList,
-
-          // Acceptance Letters mapping
-          acceptanceLetterUploaded: accVersions.length > 0,
-          acceptanceLetterUrl: row.acceptance_letter_url || (accVersions.length > 0 ? accVersions[accVersions.length - 1].url : undefined),
-          acceptanceLetterUploadedAt: accVersions.length > 0 ? accVersions[accVersions.length - 1].uploadedAt : undefined,
-          acceptanceLetterVersions: accVersions,
-
-          // Attendance logs
-          attendanceLogs: attendanceLogs,
-
-          // Email delivery tracking analytics details
-          emailTrackingStatus: eml.tracking_status || undefined,
-          emailTrackingHistory: eml.tracking_history || [],
-          emailStatus: eml.sender_emailstatus || undefined,
-          smtpErrorDetails: eml.smtp_error_details || undefined,
-          emailDeliveryHistory: eml.delivery_history || []
+          dateOfBirth: row.date_of_birth ? (row.date_of_birth instanceof Date ? row.date_of_birth.toISOString().split("T")[0] : row.date_of_birth) : ""
         };
 
         payloadList.push(beneficiary);
@@ -1127,16 +1221,228 @@ export class DbRepo {
       return payloadList;
     } catch (e) {
       console.error("[DB Repo] Failed to load beneficiaries from PG:", e);
+      if (isPgActive) {
+        throw e;
+      }
       return loadJsonState().beneficiaries;
     }
   }
 
   /**
-   * Retrieves a single beneficiary profile using its unique identifier
+   * Retrieves a single beneficiary profile using its unique identifier.
+   * Performs an optimized single query with child record hydration.
    */
   static async getBeneficiaryById(id: string): Promise<Beneficiary | null> {
-    const list = await this.getBeneficiaries();
-    return list.find(b => b.id === id) || null;
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      return state.beneficiaries.find(b => b.id === id) || null;
+    }
+
+    try {
+      const bRes = await pool.query(
+        `SELECT id, photo, first_name, last_name, other_name, gender, bvn, nin, 
+                state, city, phone_number, email, residential_address, batch, 
+                custom_fields, tsp, program, skill_sector, status, 
+                admission_letter_url, acceptance_letter_url, enrollment_letter_url, certificate_url,
+                guardian_name, guardian_address, guardian_phone, physical_challenge,
+                bank_account_holder, bank_name, bank_sort_code, bank_account_number, education_qualification, date_of_birth,
+                created_at, updated_at
+         FROM beneficiaries
+         WHERE id = $1 AND deleted_at IS NULL`,
+        [id]
+      );
+
+      if (bRes.rows.length === 0) return null;
+      const row = bRes.rows[0];
+
+      // Hydrate Admissions
+      const admRes = await pool.query(
+        `SELECT admission_status, admission_ref, admission_letter_generated_at, 
+                admission_letter_sent_at, admission_form_completed, admission_form_status, 
+                admission_form_data, admission_letter_versions, admission_form_versions, training_progress
+         FROM admissions
+         WHERE beneficiary_id = $1 AND deleted_at IS NULL`,
+        [id]
+      );
+      const adm = admRes.rows[0] || {};
+
+      // Hydrate Documents
+      const docRes = await pool.query(
+        "SELECT id, name, type, url, version, uploaded_at FROM documents WHERE beneficiary_id = $1 AND deleted_at IS NULL",
+        [id]
+      );
+      const docsList = docRes.rows.map(d => ({
+        id: d.id,
+        name: d.name,
+        type: d.type,
+        url: d.url,
+        uploadedAt: d.uploaded_at.toISOString(),
+        version: d.version || 1
+      }));
+
+      // Hydrate Acceptance Letter versions
+      const accRes = await pool.query(
+        "SELECT version, url, name, uploaded_at FROM acceptance_letters WHERE beneficiary_id = $1 AND deleted_at IS NULL ORDER BY version ASC",
+        [id]
+      );
+      const accVersions = accRes.rows.map(ac => ({
+        version: ac.version,
+        url: ac.url,
+        name: ac.name,
+        uploadedAt: ac.uploaded_at.toISOString()
+      }));
+
+      // Hydrate Attendance logs
+      const attRes = await pool.query(
+        "SELECT id, date, status, hours_logged FROM attendance_logs WHERE beneficiary_id = $1 AND deleted_at IS NULL ORDER BY date ASC",
+        [id]
+      );
+      const attendanceLogs = attRes.rows.map(a => ({
+        id: a.id,
+        date: a.date.toISOString().split("T")[0],
+        status: a.status as "Present" | "Absent" | "Excused",
+        hoursLogged: parseFloat(a.hours_logged) || 0
+      }));
+
+      // Hydrate Email logs
+      const emailRes = await pool.query(
+        `SELECT tracking_status, sender_emailstatus, smtp_error_details, tracking_history, delivery_history
+         FROM email_logs
+         WHERE beneficiary_id = $1 AND deleted_at IS NULL
+         ORDER BY date_sent DESC LIMIT 1`,
+        [id]
+      );
+      const eml = emailRes.rows[0] || {};
+
+      const beneficiary: Beneficiary = {
+        id: row.id,
+        photo: row.photo || "",
+        hasPhoto: !!row.photo,
+        firstName: row.first_name,
+        lastName: row.last_name,
+        otherName: row.other_name || "",
+        gender: row.gender,
+        bvn: row.bvn,
+        nin: row.nin,
+        state: row.state,
+        city: row.city,
+        phoneNumber: row.phone_number || "",
+        email: row.email || "",
+        residentialAddress: row.residential_address || "",
+        batch: row.batch || `Batch ${new Date().getFullYear()}-C`,
+        customFields: row.custom_fields || {},
+        tsp: row.tsp || "Unique Technology Nig. Ltd",
+        program: row.program || "IDEAS-TVET",
+        skillSector: row.skill_sector || "Computer Hardware and Cell Phone Repairs",
+        status: row.status as ProgramStatus,
+        admissionLetterUrl: row.admission_letter_url || "",
+        enrollmentLetterUrl: row.enrollment_letter_url || "",
+        certificateUrl: row.certificate_url || "",
+        createdAt: row.created_at.toISOString(),
+        updatedAt: row.updated_at.toISOString(),
+
+        admissionStatus: adm.admission_status || "Draft",
+        admissionRef: adm.admission_ref || "",
+        admissionLetterGeneratedAt: adm.admission_letter_generated_at ? adm.admission_letter_generated_at.toISOString() : undefined,
+        admissionLetterSentAt: adm.admission_letter_sent_at ? adm.admission_letter_sent_at.toISOString() : undefined,
+        admissionFormCompleted: !!adm.admission_form_completed,
+        admissionFormStatus: adm.admission_form_status || "Pending",
+        admissionFormData: adm.admission_form_data || {},
+        admissionLetterVersions: adm.admission_letter_versions || [],
+        admissionFormVersions: adm.admission_form_versions || [],
+        trainingProgress: adm.training_progress || {},
+
+        acceptanceLetterUploaded: accVersions.length > 0,
+        acceptanceLetterUrl: row.acceptance_letter_url || (accVersions.length > 0 ? accVersions[accVersions.length - 1].url : undefined),
+        acceptanceLetterUploadedAt: accVersions.length > 0 ? accVersions[accVersions.length - 1].uploadedAt : undefined,
+        acceptanceLetterVersions: accVersions,
+        documentsList: docsList,
+        attendanceLogs,
+
+        emailStatus: eml.tracking_status || "Not Sent",
+        emailTrackingStatus: eml.sender_emailstatus || undefined,
+        emailTrackingHistory: eml.tracking_history || [],
+        smtpErrorDetails: eml.smtp_error_details || undefined,
+        emailDeliveryHistory: eml.delivery_history || [],
+
+        guardianName: row.guardian_name || "",
+        guardianAddress: row.guardian_address || "",
+        guardianPhone: row.guardian_phone || "",
+        physicalChallenge: row.physical_challenge || "",
+        bankAccountHolder: row.bank_account_holder || "",
+        bankName: row.bank_name || "",
+        bankSortCode: row.bank_sort_code || "",
+        bankAccountNumber: row.bank_account_number || "",
+        educationQualification: row.education_qualification || "",
+        dateOfBirth: row.date_of_birth ? (row.date_of_birth instanceof Date ? row.date_of_birth.toISOString().split("T")[0] : row.date_of_birth) : ""
+      };
+
+      return beneficiary;
+    } catch (e) {
+      console.error("[DB Repo] Failed to get beneficiary by ID from PG:", e);
+      if (isPgActive) {
+        throw e;
+      }
+      const state = loadJsonState();
+      return state.beneficiaries.find(b => b.id === id) || null;
+    }
+  }
+
+  /**
+   * Retrieves only the photo field of a specific beneficiary profile.
+   * This is a critical performance optimization to avoid Neon payload overflow.
+   */
+  static async getBeneficiaryPhotoOnly(id: string): Promise<string> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      const found = state.beneficiaries.find(b => b.id === id);
+      return found ? (found.photo || "") : "";
+    }
+    try {
+      const res = await pool.query(
+        "SELECT photo FROM beneficiaries WHERE id = $1 AND deleted_at IS NULL",
+        [id]
+      );
+      if (res.rows.length === 0) return "";
+      return res.rows[0].photo || "";
+    } catch (e) {
+      console.error("[DB Repo] Failed to get beneficiary photo only:", e);
+      return "";
+    }
+  }
+
+  /**
+   * Retrieves photos of multiple beneficiaries in a single batch query.
+   * Leverages options to omit massive Base64 payloads from list/all APIs.
+   */
+  static async getBeneficiaryPhotosBatch(ids: string[]): Promise<{ [id: string]: string }> {
+    if (ids.length === 0) return {};
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      const map: { [id: string]: string } = {};
+      for (const id of ids) {
+        const found = state.beneficiaries.find(b => b.id === id);
+        map[id] = found ? (found.photo || "") : "";
+      }
+      return map;
+    }
+    try {
+      const res = await pool.query(
+        "SELECT id, photo FROM beneficiaries WHERE id = ANY($1) AND deleted_at IS NULL",
+        [ids]
+      );
+      const map: { [id: string]: string } = {};
+      for (const row of res.rows) {
+        map[row.id] = row.photo || "";
+      }
+      return map;
+    } catch (e) {
+      console.error("[DB Repo] Failed to get database photos in batch:", e);
+      return {};
+    }
   }
 
   /**

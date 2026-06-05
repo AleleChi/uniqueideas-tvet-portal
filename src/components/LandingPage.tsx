@@ -43,30 +43,23 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
   const [applyError, setApplyError] = useState<string | null>(null);
   const [showApplyModal, setShowApplyModal] = useState(false);
 
-  const stats = [
-    { label: "Active TSPs Nationwide", count: "180+ Hubs", detail: "Fully accredited under Federal Government parameters.", icon: Building, color: "text-emerald-700 bg-emerald-50 border-emerald-200" },
-    { label: "State Center Coverage", count: "36 States + FCT", detail: "Extensive geopolitical distribution and network.", icon: MapPin, color: "text-indigo-700 bg-indigo-50 border-indigo-200" },
-    { label: "Enrolled & Active Trainees", count: "12,450+", detail: "Tracked with live biometric and document registry.", icon: Users, color: "text-blue-700 bg-blue-50 border-blue-200" },
-    { label: "Certified TVET Graduates", count: "8,920+ Alumni", detail: "Holding globally verifiable digital credentials.", icon: Award, color: "text-amber-700 font-bold bg-amber-50 border-amber-200" }
-  ];
-
   const credentialsAndSupport = [
     {
-      title: "Biometric Verification Gates",
-      desc: "Instant onboarding check-in powered by real-time National Identity Number (NIN) authentication to eliminate duplicate rosters.",
-      icon: ShieldCheck,
+      title: "Accredited Skills Pathways",
+      desc: "Comprehensive hands-on training under federally certified instructors covering power engineering, ICT systems, metal fabrication, and advanced drafting.",
+      icon: GraduationCap,
       color: "border-l-4 border-indigo-600 bg-linear-to-r from-indigo-50/10 to-transparent"
     },
     {
-      title: "Provisional Admission Mapping",
-      desc: "Authorized Training Providers can compile customize fields schema to dispatch official, watermarkable PDF offer letters instantly.",
-      icon: DocumentIcon,
+      title: "Interactive Student Portal",
+      desc: "Easy-to-use candidate portal to track application statuses, confirm seat allocations, and securely download certified enrollment confirmations.",
+      icon: BookOpen,
       color: "border-l-4 border-emerald-600 bg-linear-to-r from-emerald-50/10 to-transparent"
     },
     {
-      title: "NDPR Compliant Audits",
-      desc: "Rigorous record timeline logging ensuring student privacy protection and strict tracking of administrative event touchpoints.",
-      icon: BadgeCheck,
+      title: "Globally Recognized Certificates",
+      desc: "Earn high-value visual PDF credentials stamped and approved by national boards upon successful completion of curriculum cohorts.",
+      icon: Award,
       color: "border-l-4 border-blue-600 bg-linear-to-r from-blue-50/10 to-transparent"
     }
   ];
@@ -227,8 +220,7 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
           {/* Desktop Navitems */}
           <div className="hidden lg:flex items-center gap-7 font-mono text-[11px] font-bold text-slate-500 uppercase tracking-wider">
             <a href="#branding-strip" className="hover:text-indigo-600 transition">Partners</a>
-            <a href="#stats" className="hover:text-indigo-600 transition">Statistics</a>
-            <a href="#credentials" className="hover:text-indigo-600 transition">Portal Capabilities</a>
+            <a href="#credentials" className="hover:text-indigo-600 transition">Program Benefits</a>
             <a href="#programs" className="hover:text-indigo-600 transition">Training Programs</a>
             <a href="#faqs" className="hover:text-indigo-600 transition">TSP FAQ</a>
           </div>
@@ -279,18 +271,11 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
                 Partners
               </a>
               <a 
-                href="#stats" 
-                onClick={() => setMobileMenuOpen(false)}
-                className="hover:text-indigo-600 font-bold py-1 px-2 hover:bg-slate-50 rounded"
-              >
-                Statistics
-              </a>
-              <a 
                 href="#credentials" 
                 onClick={() => setMobileMenuOpen(false)}
                 className="hover:text-indigo-600 font-bold py-1 px-2 hover:bg-slate-50 rounded"
               >
-                Portal Capabilities
+                Program Benefits
               </a>
               <a 
                 href="#programs" 
@@ -389,46 +374,50 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
               <div className="flex items-center justify-between pb-3 border-b border-indigo-50/80">
                 <div className="flex items-center gap-2">
                   <div className="h-8.5 w-8.5 bg-emerald-50 border border-emerald-100 rounded-lg flex items-center justify-center text-emerald-800">
-                    <ShieldCheck className="w-4.5 h-4.5" />
+                    <GraduationCap className="w-4.5 h-4.5" />
                   </div>
                   <div>
-                    <h4 className="text-[11px] font-extrabold text-slate-800 uppercase font-mono">TSP Roster Gate</h4>
-                    <p className="text-[8px] text-slate-400 font-mono font-bold uppercase tracking-widest">Cohort Compliance</p>
+                    <h4 className="text-[11px] font-extrabold text-slate-800 uppercase font-mono">Trainee Services</h4>
+                    <p className="text-[8px] text-slate-400 font-mono font-bold uppercase tracking-widest">Enrollment Desk</p>
                   </div>
                 </div>
-                <span className="text-[8px] px-1.5 py-0.5 bg-indigo-50 border border-indigo-150 text-indigo-750 font-bold font-mono rounded">NIN INTEGRATED</span>
+                <span className="text-[8px] px-1.5 py-0.5 bg-indigo-50 border border-indigo-150 text-indigo-750 font-bold font-mono rounded">STUDENT ACTIVE PORTAL</span>
               </div>
 
-              {/* Status workflow mockup cards */}
-              <div className="space-y-3 font-sans text-xs">
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[9px] font-extrabold text-slate-400 font-mono tracking-wide uppercase">Stage A: Trainee Registration</span>
-                    <span className="text-[8px] px-1 bg-emerald-150 rounded text-emerald-800 font-bold font-mono">OK</span>
+              {/* Program features highlighting student portal access benefits */}
+              <div className="space-y-4 font-sans text-xs text-slate-600 leading-relaxed font-semibold">
+                <p className="text-[11px] leading-relaxed">Welcome to the Federal Ministry of Education and IDEAS-TVET Training Portal. If you have been pre-selected or have a provisional admission offer, you can access your trainee record here:</p>
+                
+                <div className="flex items-start gap-2.5 p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                  <BadgeCheck className="w-4 h-4 text-emerald-600 mt-0.5 shrink-0" />
+                  <div>
+                    <h5 className="font-bold text-slate-900 text-[11px] uppercase tracking-wide">Verify Admission Offers</h5>
+                    <p className="text-[10.5px] font-sans text-slate-500 mt-0.5 font-medium leading-normal">Instantly load, view, and print your watermarked Provisional Admission and Enrollment letters.</p>
                   </div>
-                  <p className="text-slate-650 font-medium scale-98 mt-0.5 text-slate-550 leading-relaxed text-[11px]">Personal file recorded alongside verified BVN for quick financial checks and biometric tracking setup.</p>
                 </div>
 
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[9px] font-extrabold text-slate-400 font-mono tracking-wide uppercase">Stage B: Document Compilation</span>
-                    <span className="text-[8px] px-1.5 bg-indigo-100 text-indigo-700 font-bold font-mono rounded">PENDING</span>
+                <div className="flex items-start gap-2.5 p-3 bg-indigo-50/30 border border-indigo-100/50 rounded-xl">
+                  <GraduationCap className="w-4 h-4 text-indigo-600 mt-0.5 shrink-0" />
+                  <div>
+                    <h5 className="font-bold text-slate-900 text-[11px] uppercase tracking-wide">Skills Training Curricula</h5>
+                    <p className="text-[10.5px] font-sans text-slate-500 mt-0.5 font-medium leading-normal">Access hands-on program tracks in IT systems, green power, and modern manufacturing.</p>
                   </div>
-                  <p className="text-slate-650 font-medium scale-98 mt-0.5 text-slate-550 leading-relaxed text-[11px]">System generates secure, watermarked PDFs requiring candidate accept signatures and physical file verification.</p>
                 </div>
+              </div>
 
-                <div className="p-3 bg-slate-900 border border-slate-850 text-indigo-100 rounded-xl space-y-1 shadow-xs">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[9px] font-bold text-indigo-300 font-mono uppercase tracking-wide">Stage C: Final Audit & Certificate</span>
-                    <span className="text-[7.5px] px-1 bg-emerald-400 text-slate-950 font-extrabold font-mono rounded select-none">FINAL</span>
-                  </div>
-                  <p className="text-indigo-200 text-[11px] leading-relaxed scale-98">Central administration locks attendance, signs final transcripts, and releases verifiable TVET awards.</p>
-                </div>
+              <div className="pt-2">
+                <button
+                  onClick={() => setShowTrackerModal(true)}
+                  className="w-full bg-indigo-650 hover:bg-slate-900 text-white font-bold py-3 px-4 rounded-xl text-[11px] flex items-center justify-center gap-1.5 transition font-mono uppercase tracking-wide cursor-pointer shadow-3xs"
+                >
+                  <Search className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Access Student Portal</span>
+                </button>
               </div>
 
               <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-[9px] font-mono text-slate-400">
-                <span>TSP HUB PORTAL V1.8</span>
-                <span className="text-indigo-650 font-bold uppercase">Nigeria TVET Standards</span>
+                <span>IDEAS-TVET HUB SLOTS</span>
+                <span className="text-emerald-600 font-bold uppercase">Accredited TSP Gateway</span>
               </div>
 
             </div>
@@ -495,39 +484,7 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
         </div>
       </section>
 
-      {/* STATISTICS SECTION */}
-      <section id="stats" className="bg-slate-50 border-b border-slate-200 py-16 scroll-mt-20">
-        <div className="max-w-7xl mx-auto px-6">
-          <div className="text-center space-y-2 mb-12">
-            <span className="text-[10px] font-bold text-indigo-600 font-mono uppercase tracking-widest block">Accredited cumulative scope</span>
-            <h2 className="text-2xl font-extrabold text-slate-900 font-display">IDEAS-TVET Key Program Metrics</h2>
-            <p className="text-xs text-slate-500 max-w-sm mx-auto">Live verified registry totals mapped across authorized Training Service Provider coordinates.</p>
-          </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-            {stats.map((st, idx) => {
-              const IconComp = st.icon;
-              return (
-                <div 
-                  key={idx}
-                  className="bg-white border border-slate-200 p-6 rounded-2xl flex flex-col justify-between text-left space-y-3 cursor-default hover:shadow-md hover:border-slate-300 transition duration-300 transform hover:-translate-y-0.5"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-3xl font-extrabold text-slate-900 font-display tracking-tight">{st.count}</span>
-                    <div className={`p-2 rounded-xl border ${st.color} flex items-center justify-center`}>
-                      <IconComp className="w-5 h-5" />
-                    </div>
-                  </div>
-                  <div className="space-y-1">
-                    <h4 className="text-xs font-bold text-slate-800">{st.label}</h4>
-                    <p className="text-[10.5px] text-slate-500 leading-normal font-semibold text-slate-450">{st.detail}</p>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </section>
 
       {/* PORTAL CAPABILITIES & DESIGN STANDARDS */}
       <section id="credentials" className="py-20 bg-white scroll-mt-20">
@@ -536,12 +493,12 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
             
             {/* Left descriptors block */}
             <div className="lg:col-span-5 space-y-5 text-left">
-              <span className="text-xs font-bold text-indigo-650 font-mono uppercase tracking-widest block leading-none">Security Architecture</span>
+              <span className="text-xs font-bold text-indigo-650 font-mono uppercase tracking-widest block leading-none">Programme Outcomes</span>
               <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight font-display leading-tight">
-                High Fidelity Auditing & Interactive TVET Validation
+                Empowering the Next Generation of Technical Specialists
               </h2>
               <p className="text-xs leading-relaxed text-slate-550 text-slate-600 font-medium">
-                Our database design guarantees complete operational accountability. Each administrative milestone, from the draft file creation to the final certificate stamp, is securely persisted under audited logs.
+                Our focused skills programmes are structured around hands-on training, industry-relevant training materials, and direct partnerships with designated Training Service Providers nationwide. 
               </p>
               
               <div className="h-1 bg-gradient-to-r from-indigo-500 to-emerald-500 w-32 rounded"></div>
@@ -550,7 +507,7 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
                 onClick={() => setShowApplyModal(true)}
                 className="inline-flex items-center gap-1.5 text-xs text-indigo-600 font-bold hover:underline font-mono uppercase tracking-wider"
               >
-                <span>Read security standards blueprint</span>
+                <span>Register as training prospect</span>
                 <ArrowRight className="w-4 h-4" />
               </button>
             </div>

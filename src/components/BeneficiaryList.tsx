@@ -12,6 +12,7 @@ import { Beneficiary, CustomField, Gender, ProgramStatus } from "../types";
 import { BeneficiaryDetails } from "./BeneficiaryDetails";
 import { NewEnrollmentForm } from "./NewEnrollmentForm";
 import { authFetch } from "../utils/authFetch";
+import { SecureBeneficiaryImage } from "./SecureBeneficiaryImage";
 
 interface BeneficiaryListProps {
   beneficiaries: Beneficiary[];
@@ -28,6 +29,8 @@ interface BeneficiaryListProps {
   onSelectBeneficiary?: (b: Beneficiary | null) => void;
   onDeleteBeneficiary?: (id: string) => Promise<void>;
   session?: { username?: string; role?: string; email?: string } | null;
+  initialDetailsTab?: "overview" | "admission" | "acceptance" | "forms" | "documents" | "training" | "audits";
+  subTabMode?: "beneficiaries" | "admissions" | "documents";
 }
 
 export function BeneficiaryList({
@@ -44,7 +47,9 @@ export function BeneficiaryList({
   selectedBeneficiary: propSelectedBeneficiary,
   onSelectBeneficiary: propOnSelectBeneficiary,
   onDeleteBeneficiary,
-  session
+  session,
+  initialDetailsTab,
+  subTabMode = "beneficiaries"
 }: BeneficiaryListProps) {
   
   // View mode switcher: "list" | "details" | "create"
@@ -65,7 +70,10 @@ export function BeneficiaryList({
   const compliancePercent = totalActive > 0 ? Math.round((compliantPhotos / totalActive) * 100) : 100;
 
   const liveBeneficiary = selectedBeneficiary
-    ? beneficiaries.find(b => b.id === selectedBeneficiary.id) || selectedBeneficiary
+    ? {
+        ...(beneficiaries.find(b => b.id === selectedBeneficiary.id) || {}),
+        ...selectedBeneficiary
+      }
     : null;
 
   const viewMode = externalViewMode !== undefined ? externalViewMode : internalViewMode;
@@ -282,6 +290,7 @@ export function BeneficiaryList({
         onUpdate={(data) => onUpdateBeneficiary(liveBeneficiary.id, data)}
         onDelete={onDeleteBeneficiary ? () => onDeleteBeneficiary(liveBeneficiary.id) : undefined}
         session={session}
+        initialTab={initialDetailsTab}
       />
     );
   }
@@ -371,8 +380,12 @@ export function BeneficiaryList({
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           
           <div className="flex flex-wrap items-center gap-3 flex-1">
-            <h3 className="font-display font-bold text-slate-800 text-sm uppercase tracking-wider mr-2">
-              All Candidates
+            <h3 className="font-display font-bold text-indigo-700 text-sm uppercase tracking-wider mr-2">
+              {subTabMode === "admissions" 
+                ? "Admissions Office Queue" 
+                : subTabMode === "documents" 
+                ? "Generated Documents Registry" 
+                : "All Candidates"}
             </h3>
 
             {/* Keyword search filter */}
@@ -567,12 +580,30 @@ export function BeneficiaryList({
                 </th>
                 <th className="py-2.5 px-4 w-16">Port</th>
                 <th className="py-2.5 px-4">Candidate Identification</th>
-                <th className="py-2.5 px-4">NIN Number</th>
-                <th className="py-2.5 px-4">BVN Number</th>
-                <th className="py-2.5 px-4">Location State</th>
-                <th className="py-2.5 px-4">Level batch</th>
-                <th className="py-2.5 px-4">Lifecycle Step</th>
-                <th className="py-2.5 px-4">Bio Lock Score</th>
+                {subTabMode === "admissions" ? (
+                  <>
+                    <th className="py-2.5 px-4 font-bold text-indigo-600">Admissions Lifecycle</th>
+                    <th className="py-2.5 px-4">Admission REF</th>
+                    <th className="py-2.5 px-4">Location State</th>
+                    <th className="py-2.5 px-4">Level batch</th>
+                    <th className="py-2.5 px-4">Bio Lock Score</th>
+                  </>
+                ) : subTabMode === "documents" ? (
+                  <>
+                    <th className="py-2.5 px-4 font-bold text-indigo-600">Document Completeness</th>
+                    <th className="py-2.5 px-4 text-rose-600">Missing Documents Warning</th>
+                    <th className="py-2.5 px-4">Admissions Lifecycle</th>
+                  </>
+                ) : (
+                  <>
+                    <th className="py-2.5 px-4">NIN Number</th>
+                    <th className="py-2.5 px-4">BVN Number</th>
+                    <th className="py-2.5 px-4">Location State</th>
+                    <th className="py-2.5 px-4">Level batch</th>
+                    <th className="py-2.5 px-4">Lifecycle Step</th>
+                    <th className="py-2.5 px-4">Bio Lock Score</th>
+                  </>
+                )}
                 <th className="py-2.5 px-4 text-right">View Detail</th>
               </tr>
             </thead>
@@ -606,12 +637,21 @@ export function BeneficiaryList({
                     </td>
                     
                     <td className="py-3 px-4">
-                      <img 
-                        src={b.photo} 
-                        alt="Port" 
-                        referrerPolicy="no-referrer"
-                        className="w-10 h-10 rounded-full object-cover border border-slate-200 shadow-xs"
-                      />
+                      {b.photo ? (
+                        <img 
+                          src={b.photo} 
+                          alt="Port" 
+                          referrerPolicy="no-referrer"
+                          className="w-10 h-10 rounded-full object-cover border border-slate-200 shadow-xs"
+                        />
+                      ) : (
+                        <SecureBeneficiaryImage 
+                          id={b.id}
+                          className="w-10 h-10 rounded-full object-cover border border-slate-200 shadow-xs"
+                          alt="Port"
+                          fallbackInitials={`${b.firstName?.charAt(0) || ""}${b.lastName?.charAt(0) || ""}`}
+                        />
+                      )}
                     </td>
 
                     <td className="py-3 px-4">
@@ -623,94 +663,257 @@ export function BeneficiaryList({
                       </p>
                     </td>
 
-                    <td className="py-3 px-4 font-mono text-[11px] text-slate-600">
-                      {b.nin.substring(0, 4)}-****-****
-                    </td>
+                    {subTabMode === "admissions" ? (
+                      <>
+                        <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                          {(() => {
+                            const step = b.admissionStatus || "Draft";
+                            let style = "bg-slate-100 text-slate-700 border-slate-200";
+                            if (step === "Admission Generated") style = "bg-indigo-50 text-indigo-700 border-indigo-100";
+                            else if (step === "Admission Sent") style = "bg-blue-50 text-blue-700 border-blue-100";
+                            else if (step === "Offer Viewed") style = "bg-cyan-50 text-cyan-700 border-cyan-100";
+                            else if (step === "Acceptance Pending") style = "bg-amber-50 text-amber-700 border-amber-100";
+                            else if (step === "Acceptance Uploaded") style = "bg-purple-50 text-purple-700 border-purple-100";
+                            else if (step === "Under Review") style = "bg-yellow-50 text-yellow-800 border-yellow-200";
+                            else if (step === "Accepted") style = "bg-green-50 text-green-700 border-green-100";
+                            else if (step === "Enrolled") style = "bg-emerald-50 text-emerald-700 border-emerald-100";
+                            else if (step === "Training In Progress") style = "bg-indigo-950/10 text-indigo-950 border-indigo-950/20";
+                            else if (step === "Training Completed") style = "bg-purple-950/10 text-purple-950 border-purple-950/20";
+                            else if (step === "Certified") style = "bg-amber-500/10 text-amber-700 border-amber-500/20";
+                            else if (step === "Alumni") style = "bg-teal-50 text-teal-700 border-teal-100";
+                            
+                            return (
+                              <span className={`border px-2 py-0.5 rounded font-mono text-[9px] font-bold uppercase ${style}`}>
+                                {step}
+                              </span>
+                            );
+                          })()}
+                        </td>
 
-                    <td className="py-3 px-4 font-mono text-[11px] text-slate-600">
-                      {b.bvn.substring(0, 3)}****{b.bvn.substring(7)}
-                    </td>
+                        <td className="py-3 px-4 font-mono text-[11px] font-bold text-indigo-600">
+                          {b.admissionRef || <span className="text-slate-300">DRAFT</span>}
+                        </td>
 
-                    <td className="py-3 px-4 font-sans text-[11px] text-slate-600">
-                      {b.state.replace(" State", "")}
-                    </td>
+                        <td className="py-3 px-4 font-sans text-[11px] text-slate-600">
+                          {b.state.replace(" State", "")}
+                        </td>
 
-                    <td className="py-3 px-4 font-sans text-xs text-indigo-700 font-semibold uppercase">
-                      {b.batch.replace("Batch ", "")}
-                    </td>
+                        <td className="py-3 px-4 font-sans text-xs text-indigo-700 font-semibold uppercase">
+                          {b.batch.replace("Batch ", "")}
+                        </td>
 
-                    <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
-                      {(() => {
-                        const step = b.admissionStatus || "Draft";
-                        let style = "bg-slate-100 text-slate-700 border-slate-200";
-                        if (step === "Admission Generated") style = "bg-indigo-50 text-indigo-700 border-indigo-100";
-                        else if (step === "Admission Sent") style = "bg-blue-50 text-blue-700 border-blue-100";
-                        else if (step === "Offer Viewed") style = "bg-cyan-50 text-cyan-700 border-cyan-100";
-                        else if (step === "Acceptance Pending") style = "bg-amber-50 text-amber-700 border-amber-100";
-                        else if (step === "Acceptance Uploaded") style = "bg-purple-50 text-purple-700 border-purple-100";
-                        else if (step === "Under Review") style = "bg-yellow-50 text-yellow-800 border-yellow-200";
-                        else if (step === "Accepted") style = "bg-green-50 text-green-700 border-green-100";
-                        else if (step === "Enrolled") style = "bg-emerald-50 text-emerald-700 border-emerald-105 border-emerald-100";
-                        else if (step === "Training In Progress") style = "bg-indigo-950/10 text-indigo-950 border-indigo-950/20";
-                        else if (step === "Training Completed") style = "bg-purple-950/10 text-purple-950 border-purple-950/20";
-                        else if (step === "Certified") style = "bg-amber-500/10 text-amber-705 text-amber-700 border-amber-500/20";
-                        else if (step === "Alumni") style = "bg-teal-50 text-teal-700 border-teal-100";
-                        
-                        return (
-                          <span className={`border px-2 py-0.5 rounded font-mono text-[9px] font-bold uppercase ${style}`}>
-                            {step}
-                          </span>
-                        );
-                      })()}
-                    </td>
+                        <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                          {(() => {
+                            let text = "Pending";
+                            let style = "bg-amber-50 text-amber-700 border-amber-100";
+                            let dotColor = "bg-amber-500";
+                            let pulse = false;
 
-                    <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
-                      {(() => {
-                        let text = "Pending";
-                        let style = "bg-amber-50 text-amber-700 border-amber-100";
-                        let dotColor = "bg-amber-500";
-                        let pulse = false;
+                            if (b.status === ProgramStatus.DRAFT) {
+                              text = "Draft";
+                              style = "bg-slate-50 text-slate-600 border-slate-200";
+                              dotColor = "bg-slate-400";
+                            } else if (b.status === ProgramStatus.UNDER_REVIEW || b.status === ProgramStatus.PENDING_PHOTO) {
+                              text = "Under Review";
+                              style = "bg-orange-50 text-orange-700 border-orange-200";
+                              dotColor = "bg-orange-500";
+                            } else if (b.status === ProgramStatus.ENROLLED || b.status === ProgramStatus.VERIFIED) {
+                              text = "Enrolled";
+                              style = "bg-blue-50 text-blue-700 border-blue-200";
+                              dotColor = "bg-blue-500";
+                              pulse = true;
+                            } else if (b.status === ProgramStatus.IN_TRAINING) {
+                              text = "In Training";
+                              style = "bg-purple-50 text-purple-700 border-purple-200";
+                              dotColor = "bg-purple-500";
+                              pulse = true;
+                            } else if (b.status === ProgramStatus.GRADUATED) {
+                              text = "Graduated";
+                              style = "bg-emerald-50 text-emerald-700 border-emerald-200";
+                              dotColor = "bg-emerald-500";
+                            } else if (b.status === ProgramStatus.ALUMNI) {
+                              text = "Alumni";
+                              style = "bg-teal-50 text-teal-700 border-teal-200";
+                              dotColor = "bg-teal-500";
+                            } else if (b.status === ProgramStatus.FLAGGED) {
+                              text = "NIN Mismatch";
+                              style = "bg-rose-50 text-rose-700 border-rose-200";
+                              dotColor = "bg-rose-500";
+                            }
 
-                        if (b.status === ProgramStatus.DRAFT) {
-                          text = "Draft";
-                          style = "bg-slate-50 text-slate-600 border-slate-200";
-                          dotColor = "bg-slate-400";
-                        } else if (b.status === ProgramStatus.UNDER_REVIEW || b.status === ProgramStatus.PENDING_PHOTO) {
-                          text = "Under Review";
-                          style = "bg-orange-50 text-orange-700 border-orange-200";
-                          dotColor = "bg-orange-500";
-                        } else if (b.status === ProgramStatus.ENROLLED || b.status === ProgramStatus.VERIFIED) {
-                          text = "Enrolled";
-                          style = "bg-blue-50 text-blue-700 border-blue-200";
-                          dotColor = "bg-blue-500";
-                          pulse = true;
-                        } else if (b.status === ProgramStatus.IN_TRAINING) {
-                          text = "In Training";
-                          style = "bg-purple-50 text-purple-700 border-purple-200";
-                          dotColor = "bg-purple-500";
-                          pulse = true;
-                        } else if (b.status === ProgramStatus.GRADUATED) {
-                          text = "Graduated";
-                          style = "bg-emerald-50 text-emerald-700 border-emerald-200";
-                          dotColor = "bg-emerald-500";
-                        } else if (b.status === ProgramStatus.ALUMNI) {
-                          text = "Alumni";
-                          style = "bg-teal-50 text-teal-700 border-teal-200";
-                          dotColor = "bg-teal-500";
-                        } else if (b.status === ProgramStatus.FLAGGED) {
-                          text = "NIN Mismatch";
-                          style = "bg-rose-50 text-rose-700 border-rose-200";
-                          dotColor = "bg-rose-500";
-                        }
+                            return (
+                              <span className={`${style} border font-semibold px-2 py-0.5 rounded text-[10px] tracking-wide inline-flex items-center gap-1`}>
+                                <span className={`h-1.5 w-1.5 rounded-full ${dotColor} ${pulse ? "animate-pulse" : ""}`}></span>
+                                {text}
+                              </span>
+                            );
+                          })()}
+                        </td>
+                      </>
+                    ) : subTabMode === "documents" ? (
+                      <>
+                        <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                          {(() => {
+                            const docs = [
+                              { key: "photo", label: "Passport", exists: !!b.photo },
+                              { key: "nin", label: "NIN", exists: !!b.nin },
+                              { key: "bvn", label: "BVN", exists: !!b.bvn },
+                              { key: "admission", label: "Admission Letter", exists: !!b.admissionLetterUrl || !!b.admissionRef },
+                              { key: "acceptance", label: "Acceptance Slip", exists: !!b.acceptanceLetterUrl || !!b.acceptanceLetterUploaded },
+                            ];
+                            const count = docs.filter(d => d.exists).length;
+                            const total = docs.length;
+                            const percent = Math.round((count / total) * 100);
+                            return (
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-xs font-bold text-slate-800">{count}/{total} Docs</span>
+                                <div className="w-16 bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                                  <div className="bg-indigo-600 h-1.5 rounded-full" style={{ width: `${percent}%` }}></div>
+                                </div>
+                              </div>
+                            );
+                          })()}
+                        </td>
 
-                        return (
-                          <span className={`${style} border font-semibold px-2 py-0.5 rounded text-[10px] tracking-wide inline-flex items-center gap-1`}>
-                            <span className={`h-1.5 w-1.5 rounded-full ${dotColor} ${pulse ? "animate-pulse" : ""}`}></span>
-                            {text}
-                          </span>
-                        );
-                      })()}
-                    </td>
+                        <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                          {(() => {
+                            const docs = [
+                              { key: "photo", label: "Passport Image", exists: !!b.photo },
+                              { key: "nin", label: "NIN Verification", exists: !!b.nin },
+                              { key: "bvn", label: "BVN Verification", exists: !!b.bvn },
+                              { key: "admission", label: "Offer Letter", exists: !!b.admissionLetterUrl || !!b.admissionRef },
+                              { key: "acceptance", label: "Acceptance Slip", exists: !!b.acceptanceLetterUrl || !!b.acceptanceLetterUploaded },
+                            ];
+                            const missing = docs.filter(d => !d.exists).map(d => d.label);
+                            return missing.length === 0 ? (
+                              <span className="text-emerald-600 font-extrabold text-[10px] flex items-center gap-1 uppercase tracking-wider">
+                                <Check className="w-3.5 h-3.5" /> FULLY COMPLIANT
+                              </span>
+                            ) : (
+                              <div className="flex flex-wrap gap-1 max-w-[280px]">
+                                {missing.map((lbl) => (
+                                  <span key={lbl} className="bg-rose-50 border border-rose-100 text-rose-600 text-[9px] font-bold px-1.5 py-0.5 rounded uppercase">
+                                    Missing {lbl}
+                                  </span>
+                                ))}
+                              </div>
+                            );
+                          })()}
+                        </td>
+
+                        <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                          {(() => {
+                            const step = b.admissionStatus || "Draft";
+                            let style = "bg-slate-100 text-slate-705 text-slate-700 border-slate-200";
+                            if (step === "Admission Generated") style = "bg-indigo-50 text-indigo-700 border-indigo-100";
+                            else if (step === "Admission Sent") style = "bg-blue-50 text-blue-700 border-blue-105 border-blue-100";
+                            else if (step === "Offer Viewed") style = "bg-cyan-50 text-cyan-705 text-cyan-700 border-cyan-100";
+                            else if (step === "Acceptance Pending") style = "bg-amber-50 text-amber-700 border-amber-100";
+                            else if (step === "Acceptance Uploaded") style = "bg-purple-50 text-purple-705 text-purple-700 border-purple-100";
+                            else if (step === "Under Review") style = "bg-yellow-50 text-yellow-850 text-yellow-800 border-yellow-200";
+                            else if (step === "Accepted") style = "bg-green-50 text-green-700 border-green-100";
+                            else if (step === "Enrolled") style = "bg-emerald-50 text-emerald-700 border-emerald-100";
+                            
+                            return (
+                              <span className={`border px-2 py-0.5 rounded font-mono text-[9px] font-bold uppercase ${style}`}>
+                                {step}
+                              </span>
+                            );
+                          })()}
+                        </td>
+                      </>
+                    ) : (
+                      <>
+                        <td className="py-3 px-4 font-mono text-[11px] text-slate-600">
+                          {b.nin.substring(0, 4)}-****-****
+                        </td>
+
+                        <td className="py-3 px-4 font-mono text-[11px] text-slate-600">
+                          {b.bvn.substring(0, 3)}****{b.bvn.substring(7)}
+                        </td>
+
+                        <td className="py-3 px-4 font-sans text-[11px] text-slate-600">
+                          {b.state.replace(" State", "")}
+                        </td>
+
+                        <td className="py-3 px-4 font-sans text-xs text-indigo-700 font-semibold uppercase">
+                          {b.batch.replace("Batch ", "")}
+                        </td>
+
+                        <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                          {(() => {
+                            const step = b.admissionStatus || "Draft";
+                            let style = "bg-slate-100 text-slate-700 border-slate-200";
+                            if (step === "Admission Generated") style = "bg-indigo-50 text-indigo-700 border-indigo-100";
+                            else if (step === "Admission Sent") style = "bg-blue-50 text-blue-700 border-blue-100";
+                            else if (step === "Offer Viewed") style = "bg-cyan-50 text-cyan-700 border-cyan-100";
+                            else if (step === "Acceptance Pending") style = "bg-amber-50 text-amber-700 border-amber-100";
+                            else if (step === "Acceptance Uploaded") style = "bg-purple-50 text-purple-700 border-purple-100";
+                            else if (step === "Under Review") style = "bg-yellow-50 text-yellow-800 border-yellow-200";
+                            else if (step === "Accepted") style = "bg-green-50 text-green-700 border-green-100";
+                            else if (step === "Enrolled") style = "bg-emerald-50 text-emerald-700 border-emerald-105 border-emerald-100";
+                            else if (step === "Training In Progress") style = "bg-indigo-950/10 text-indigo-950 border-indigo-950/20";
+                            else if (step === "Training Completed") style = "bg-purple-950/10 text-purple-950 border-purple-950/20";
+                            else if (step === "Certified") style = "bg-amber-500/10 text-amber-700 border-amber-500/20";
+                            else if (step === "Alumni") style = "bg-teal-50 text-teal-700 border-teal-100";
+                            
+                            return (
+                              <span className={`border px-2 py-0.5 rounded font-mono text-[9px] font-bold uppercase ${style}`}>
+                                {step}
+                              </span>
+                            );
+                          })()}
+                        </td>
+
+                        <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                          {(() => {
+                            let text = "Pending";
+                            let style = "bg-amber-50 text-amber-700 border-amber-100";
+                            let dotColor = "bg-amber-500";
+                            let pulse = false;
+
+                            if (b.status === ProgramStatus.DRAFT) {
+                              text = "Draft";
+                              style = "bg-slate-50 text-slate-600 border-slate-200";
+                              dotColor = "bg-slate-400";
+                            } else if (b.status === ProgramStatus.UNDER_REVIEW || b.status === ProgramStatus.PENDING_PHOTO) {
+                              text = "Under Review";
+                              style = "bg-orange-50 text-orange-700 border-orange-200";
+                              dotColor = "bg-orange-500";
+                            } else if (b.status === ProgramStatus.ENROLLED || b.status === ProgramStatus.VERIFIED) {
+                              text = "Enrolled";
+                              style = "bg-blue-50 text-blue-700 border-blue-200";
+                              dotColor = "bg-blue-500";
+                              pulse = true;
+                            } else if (b.status === ProgramStatus.IN_TRAINING) {
+                              text = "In Training";
+                              style = "bg-purple-50 text-purple-700 border-purple-200";
+                              dotColor = "bg-purple-500";
+                              pulse = true;
+                            } else if (b.status === ProgramStatus.GRADUATED) {
+                              text = "Graduated";
+                              style = "bg-emerald-50 text-emerald-700 border-emerald-200";
+                              dotColor = "bg-emerald-500";
+                            } else if (b.status === ProgramStatus.ALUMNI) {
+                              text = "Alumni";
+                              style = "bg-teal-50 text-teal-700 border-teal-200";
+                              dotColor = "bg-teal-500";
+                            } else if (b.status === ProgramStatus.FLAGGED) {
+                              text = "NIN Mismatch";
+                              style = "bg-rose-50 text-rose-700 border-rose-200";
+                              dotColor = "bg-rose-500";
+                            }
+
+                            return (
+                              <span className={`${style} border font-semibold px-2 py-0.5 rounded text-[10px] tracking-wide inline-flex items-center gap-1`}>
+                                <span className={`h-1.5 w-1.5 rounded-full ${dotColor} ${pulse ? "animate-pulse" : ""}`}></span>
+                                {text}
+                              </span>
+                            );
+                          })()}
+                        </td>
+                      </>
+                    )}
 
                     <td className="py-3 px-4 text-right">
                       <ChevronRight className="w-4 h-4 text-slate-300 hover:text-indigo-600 inline-block" />

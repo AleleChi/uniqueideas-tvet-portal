@@ -208,6 +208,9 @@ export class PdfService {
           @page { size: A4; margin: 15mm; }
           body { font-family: 'Times New Roman', Times, serif; color: #0f172a; line-height: 1.5; margin: 0; padding: 10px; background-color: #ffffff; }
           .border-frame { border: 1px solid #e2e8f0; padding: 25px; border-radius: 4px; min-height: 250mm; position: relative; }
+          .logo-header-table { width: 100%; border-collapse: collapse; margin-bottom: 5px; }
+          .logo-header-table td { vertical-align: middle; padding: 0; }
+          .divider-line { border-bottom: 3px double #000000; width: 100%; margin: 10px 0 15px 0; }
           .header-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; border-bottom: 3px double #008751; padding-bottom: 12px; }
           .header-crest { width: 80px; text-align: left; vertical-align: middle; }
           .header-text-col { text-align: center; vertical-align: middle; }
@@ -256,27 +259,25 @@ export class PdfService {
               <img src="${settings.admissionLetterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
             </div>
           ` : settings.letterheadUrl ? `
-            <div style="text-align: center; margin-bottom: 20px; border-bottom: 3px double #008751; padding-bottom: 12px; position: relative; z-index: 10;">
-              <img src="${settings.letterheadUrl}" style="max-height: 90px; width: auto; max-width: 100%;" referrerPolicy="no-referrer">
+            <div style="text-align: center; margin-bottom: 20px; position: relative; z-index: 10; width: 100%;">
+              <img src="${settings.letterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
             </div>
           ` : `
-            <table class="header-table" style="position: relative; z-index: 10; width: 100%;">
+            <!-- THREE-LOGO GOVERNMENT HEADER FALLBACK -->
+            <table class="logo-header-table" style="position: relative; z-index: 10; width: 100%; border-collapse: collapse; margin-bottom: 10px;">
               <tr>
-                <td class="header-crest">${this.getFederalCrestSvg()}</td>
-                <td class="header-text-col">
-                  <h1>${settings.organizationName}</h1>
-                  <div class="sub-title">Federal Ministry of Education | IDEAS-TVET Programme Cohort</div>
-                  <div class="contacts">${settings.contactAddress} | Email: ${settings.contactEmail} | Direct Line: ${settings.contactPhone}</div>
+                <td style="width: 33%; text-align: left; vertical-align: middle;">
+                  ${this.renderLogo(settings.fmeLogoUrl, this.getFederalCrestSvg(), "70px", "70px")}
                 </td>
-                <td style="width: 80px; text-align: right; vertical-align: middle;">
-                  ${beneficiary.photo ? `
-                    <img src="${beneficiary.photo}" style="border: 1px solid #cbd5e1; width: 60px; height: 60px; object-fit: cover; border-radius: 4px;" referrerPolicy="no-referrer">
-                  ` : `
-                    <div style="border: 1px solid #cbd5e1; width: 60px; height: 60px; line-height: 60px; text-align: center; font-family: Arial, sans-serif; font-size: 8px; color: #64748b; margin-left: auto; background-color: #f8fafc; border-radius: 4px;">PHOTO ID</div>
-                  `}
+                <td style="width: 34%; text-align: center; vertical-align: middle;">
+                  ${this.renderLogo(settings.ideasLogoUrl, this.getIdeasLogoSvg(), "80px", "70px")}
+                </td>
+                <td style="width: 33%; text-align: right; vertical-align: middle;">
+                  ${this.renderLogo(settings.worldBankLogoUrl, this.getWorldBankLogoSvg(), "70px", "70px")}
                 </td>
               </tr>
             </table>
+            <div class="divider-line" style="position: relative; z-index: 10;"></div>
           `}
 
           <table class="metadata-table" style="position: relative; z-index: 10;">
@@ -412,6 +413,10 @@ export class PdfService {
           ${settings.acceptanceLetterheadUrl ? `
             <div style="text-align: center; margin-bottom: 25px; position: relative; z-index: 10; width: 100%;">
               <img src="${settings.acceptanceLetterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
+            </div>
+          ` : settings.letterheadUrl ? `
+            <div style="text-align: center; margin-bottom: 25px; position: relative; z-index: 10; width: 100%;">
+              <img src="${settings.letterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
             </div>
           ` : `
             <!-- THREE-LOGO GOVERNMENT HEADER FALLBACK -->
@@ -721,23 +726,28 @@ export class PdfService {
         <div class="border-frame">
           ${meta?.watermarkEnabled ? `<div class="watermark">${meta.watermarkText || "SECURED REGISTRY DOCUMENT"}</div>` : ""}
           
-          <!-- HORIZONTAL LOGO BAR -->
-          <table class="logo-header-table" style="position: relative; z-index: 10;">
-            <tr>
-              <td style="width: 33%; text-align: left;">
-                ${this.renderLogo(settings.fmeLogoUrl, this.getFederalCrestSvg(), "70px", "70px")}
-              </td>
-              <td style="width: 34%; text-align: center;">
-                ${this.renderLogo(settings.ideasLogoUrl, this.getIdeasLogoSvg(), "80px", "70px")}
-              </td>
-              <td style="width: 33%; text-align: right;">
-                ${this.renderLogo(settings.worldBankLogoUrl, this.getWorldBankLogoSvg(), "70px", "70px")}
-              </td>
-            </tr>
-          </table>
-
-          <!-- SEPARATOR SYSTEM -->
-          <div class="divider-line"></div>
+          ${settings.letterheadUrl ? `
+            <div style="text-align: center; margin-bottom: 20px; position: relative; z-index: 10; width: 100%;">
+              <img src="${settings.letterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
+            </div>
+          ` : `
+            <!-- HORIZONTAL LOGO BAR -->
+            <table class="logo-header-table" style="position: relative; z-index: 10; width: 100%; border-collapse: collapse; margin-bottom: 10px;">
+              <tr>
+                <td style="width: 33%; text-align: left; vertical-align: middle;">
+                  ${this.renderLogo(settings.fmeLogoUrl, this.getFederalCrestSvg(), "70px", "70px")}
+                </td>
+                <td style="width: 34%; text-align: center; vertical-align: middle;">
+                  ${this.renderLogo(settings.ideasLogoUrl, this.getIdeasLogoSvg(), "80px", "70px")}
+                </td>
+                <td style="width: 33%; text-align: right; vertical-align: middle;">
+                  ${this.renderLogo(settings.worldBankLogoUrl, this.getWorldBankLogoSvg(), "70px", "70px")}
+                </td>
+              </tr>
+            </table>
+            <!-- SEPARATOR SYSTEM -->
+            <div class="divider-line" style="position: relative; z-index: 10;"></div>
+          `}
 
           <!-- DOCUMENT TITLE -->
           <div style="text-align: center; margin-bottom: 20px; position: relative; z-index: 10;">
@@ -1123,6 +1133,9 @@ export class PdfService {
           .sig-block { display: table-cell; width: 33%; text-align: center; font-size: 11px; vertical-align: top; }
           .sig-line { width: 85%; margin: 0 auto 5px auto; border-bottom: 1px solid #475569; height: 35px; }
           .footer-note { text-align: center; font-size: 8px; color: #94a3b8; position: absolute; bottom: 15px; width: 100%; left: 0; font-family: Arial, sans-serif; }
+          .logo-header-table { width: 100%; border-collapse: collapse; margin-bottom: 5px; }
+          .logo-header-table td { vertical-align: middle; padding: 0; }
+          .divider-line { border-bottom: 3px double #000000; width: 100%; margin: 10px 0 15px 0; }
           ${meta?.watermarkEnabled ? `
           .watermark {
             position: absolute;
@@ -1146,17 +1159,29 @@ export class PdfService {
         <div class="border-frame">
           ${meta?.watermarkEnabled ? `<div class="watermark">${meta.watermarkText || "SECURED REGISTRY DOCUMENT"}</div>` : ""}
           ${settings.enrollmentLetterheadUrl ? `
-            <div style="text-align: center; margin-bottom: 20px; position: relative; z-index: 10; width: 100%;">
+            <div style="text-align: center; margin-bottom: 25px; position: relative; z-index: 10; width: 100%;">
               <img src="${settings.enrollmentLetterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
             </div>
+          ` : settings.letterheadUrl ? `
+            <div style="text-align: center; margin-bottom: 25px; position: relative; z-index: 10; width: 100%;">
+              <img src="${settings.letterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
+            </div>
           ` : `
-            <div class="crest-container" style="position: relative; z-index: 10;">
-              ${this.renderLogo(settings.fmeLogoUrl, this.getFederalCrestSvg(), "70px", "70px")}
-            </div>
-            <div class="header" style="position: relative; z-index: 10;">
-              <h1>Federal Republic of Nigeria</h1>
-              <p>Ministry of Education • IDEAS-TVET National Trainee Enrollment Registry</p>
-            </div>
+            <!-- THREE-LOGO GOVERNMENT HEADER FALLBACK -->
+            <table class="logo-header-table" style="position: relative; z-index: 10; width: 100%; border-collapse: collapse; margin-bottom: 10px;">
+              <tr>
+                <td style="width: 33%; text-align: left; vertical-align: middle;">
+                  ${this.renderLogo(settings.fmeLogoUrl, this.getFederalCrestSvg(), "70px", "70px")}
+                </td>
+                <td style="width: 34%; text-align: center; vertical-align: middle;">
+                  ${this.renderLogo(settings.ideasLogoUrl, this.getIdeasLogoSvg(), "80px", "70px")}
+                </td>
+                <td style="width: 33%; text-align: right; vertical-align: middle;">
+                  ${this.renderLogo(settings.worldBankLogoUrl, this.getWorldBankLogoSvg(), "70px", "70px")}
+                </td>
+              </tr>
+            </table>
+            <div class="divider-line" style="position: relative; z-index: 10;"></div>
           `}
           
           <div class="title-box" style="position: relative; z-index: 10;">Official Trainee Biometrics Enrollment Confirmation Letter</div>
@@ -1230,6 +1255,32 @@ export class PdfService {
     const dateStr = beneficiary.updatedAt 
       ? new Date(beneficiary.updatedAt).toLocaleDateString("en-GB") 
       : new Date().toLocaleDateString("en-GB");
+
+    // Dynamic compliant Certificate Number generator logic
+    const bId = beneficiary.id || "IDEAS-2026-000001";
+    const idParts = bId.split("-");
+    let year = new Date().getFullYear();
+    if (idParts.length >= 2) {
+      const parsedYear = parseInt(idParts[1], 10);
+      if (!isNaN(parsedYear) && parsedYear > 2000 && parsedYear < 2100) {
+        year = parsedYear;
+      }
+    } else if (beneficiary.createdAt) {
+      year = new Date(beneficiary.createdAt).getFullYear();
+    }
+
+    const stateName = beneficiary.state || "Kano";
+    const cleanState = stateName.trim().toUpperCase();
+    const stateMap: Record<string, string> = {
+      "ABIA": "AB", "ADAMAWA": "AD", "AKWA IBOM": "AK", "ANAMBRA": "AN", "BAUCHI": "BA", "BAYELSA": "BY", "BENUE": "BE", "BORNO": "BO", "CROSS RIVER": "CR", "DELTA": "DE", "EBONYI": "EB", "EDO": "ED", "EKITI": "EK", "ENUGU": "EN", "FCT": "FC", "FEDERAL CAPITAL TERRITORY": "FC", "GOMBE": "GO", "IMO": "IM", "JIGAWA": "JI", "KADUNA": "KD", "KANO": "KN", "KATSINA": "KT", "KEBBI": "KE", "KOGI": "KO", "KWARA": "KW", "LAGOS": "LA", "NASARAWA": "NA", "NIGER": "NI", "OGUN": "OG", "ONDO": "ON", "OSUN": "OS", "OYO": "OY", "PLATEAU": "PL", "RIVERS": "RI", "SOKOTO": "SO", "TARABA": "TA", "YOBE": "YO", "ZAMFARA": "ZA"
+    };
+    const stateAbbr = stateMap[cleanState] || cleanState.substring(0, 2).padEnd(2, "X");
+
+    const seqPart = idParts[idParts.length - 1] || "1";
+    const seqMatch = seqPart.match(/\d+/);
+    const sequenceStr = seqMatch ? seqMatch[0].padStart(6, "0") : "000001";
+
+    const certNoFormatted = `IDEAS-TVET-${year}-${stateAbbr}-${sequenceStr}`;
 
     const htmlContent = `
       <!DOCTYPE html>
@@ -1335,7 +1386,7 @@ export class PdfService {
               
               <div class="cert-no" style="bottom: 12px; display: flex; align-items: center; text-align: left; font-family: Arial, sans-serif;">
                 <div>
-                  <strong style="color: #475569; font-family: monospace;">REGISTRY SERIAL CODE: NBC/CO-${beneficiary.id.split("-").pop()}-${new Date().getFullYear()}</strong>
+                  <strong style="color: #475569; font-family: monospace;">REGISTRY SERIAL CODE: ${certNoFormatted}</strong>
                   ${meta?.verificationCode ? `<br/><span style="color: #008751; font-weight: bold; font-family: monospace;">VERIFICATION PORTAL CODE: ${meta.verificationCode}</span>` : ""}
                 </div>
                 ${meta?.qrDataUrl ? `

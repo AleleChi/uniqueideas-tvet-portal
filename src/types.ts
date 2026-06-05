@@ -36,6 +36,7 @@ export interface CustomField {
 export interface Beneficiary {
   id: string; // e.g. "IDEAS-[CURRENT_YEAR]-001"
   photo: string; // Base64 or image URL
+  hasPhoto?: boolean;
   firstName: string;
   lastName: string;
   otherName?: string;

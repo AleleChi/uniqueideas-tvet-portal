@@ -7,6 +7,7 @@ import React, { useState, useEffect } from "react";
 import { Printer, Download, FileText, CheckCircle, Table } from "lucide-react";
 import { Beneficiary, ProgramStatus, OrganizationSettings } from "../types";
 import { authFetch, downloadWithAuth } from "../utils/authFetch";
+import { SecureBeneficiaryImage } from "./SecureBeneficiaryImage";
 
 interface AlbumGeneratorProps {
   beneficiaries: Beneficiary[];
@@ -246,7 +247,42 @@ export function AlbumGenerator({ beneficiaries }: AlbumGeneratorProps) {
             <tbody>
               {displayList.map((b, index) => {
                 const lga = b.customFields?.["Local Government Area (LGA)"] || b.customFields?.["lga"] || b.customFields?.["LGA"] || b.customFields?.["cf_lga"] || "N/A";
-                const age = b.customFields?.["Age"] || b.customFields?.["age"] || b.customFields?.["Date of Birth"] || b.customFields?.["dob"] || "N/A";
+                
+                let age = "N/A";
+                if (b.dateOfBirth) {
+                  try {
+                    let dobDate: Date | null = null;
+                    if (b.dateOfBirth.includes("/")) {
+                      const parts = b.dateOfBirth.split("/");
+                      if (parts.length === 3) {
+                        const day = parseInt(parts[0], 10);
+                        const month = parseInt(parts[1], 10) - 1;
+                        const year = parseInt(parts[2], 10);
+                        dobDate = new Date(year, month, day);
+                      }
+                    }
+                    if (!dobDate || isNaN(dobDate.getTime())) {
+                      dobDate = new Date(b.dateOfBirth);
+                    }
+
+                    if (dobDate && !isNaN(dobDate.getTime())) {
+                      const today = new Date();
+                      let computedAge = today.getFullYear() - dobDate.getFullYear();
+                      const m = today.getMonth() - dobDate.getMonth();
+                      if (m < 0 || (m === 0 && today.getDate() < dobDate.getDate())) {
+                        computedAge--;
+                      }
+                      const formattedDob = dobDate.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+                      age = `${computedAge} Yrs (${formattedDob})`;
+                    } else {
+                      age = b.dateOfBirth;
+                    }
+                  } catch (e) {
+                    age = b.dateOfBirth;
+                  }
+                } else {
+                  age = b.customFields?.["Age"] || b.customFields?.["age"] || b.customFields?.["Date of Birth"] || b.customFields?.["dob"] || "N/A";
+                }
 
                 return (
                   <tr 
@@ -260,12 +296,11 @@ export function AlbumGenerator({ beneficiaries }: AlbumGeneratorProps) {
                     </td>
 
                     {/* Column 2: Photograph (Fixed width, white background behind photo, centered) */}
-                    <td className="border border-slate-300 p-3 text-center align-middle bg-slate-50/30">
-                      <div className="font-bold text-[9px] text-slate-500 uppercase mb-2 font-mono tracking-wider">Photograph</div>
+                    <td className="border border-slate-300 p-1.5 text-center align-middle bg-slate-50/30">
                       <div 
                         style={{
-                          width: "100px",
-                          height: "120px",
+                          width: "135px",
+                          height: "170px",
                           background: "#ffffff",
                           display: "flex",
                           alignItems: "center",
@@ -281,18 +316,26 @@ export function AlbumGenerator({ beneficiaries }: AlbumGeneratorProps) {
                             alt="Passport Photograph" 
                             referrerPolicy="no-referrer"
                             style={{
-                              width: "100px",
-                              height: "120px",
+                              width: "135px",
+                              height: "170px",
                               objectFit: "cover"
                             }}
                           />
                         ) : (
-                          <span className="text-[9px] text-slate-400 font-bold font-mono text-center px-1">
-                            NO PHOTO AVAILABLE
-                          </span>
+                          <SecureBeneficiaryImage 
+                            id={b.id}
+                            className="w-full h-full object-cover"
+                            alt="Passport Photograph"
+                            style={{
+                              width: "135px",
+                              height: "170px",
+                              objectFit: "cover"
+                            }}
+                            fallbackInitials="NO PHOTO AVAILABLE"
+                          />
                         )}
                       </div>
-                      <div className="mt-1.5 font-mono text-[8.5px] font-bold text-slate-500">
+                      <div className="mt-1 font-mono text-[8.5px] font-bold text-slate-500">
                         REF: {b.id}
                       </div>
                     </td>

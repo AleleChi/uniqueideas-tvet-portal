@@ -24,6 +24,7 @@ interface BeneficiaryDetailsProps {
   onUpdate: (data: Partial<Beneficiary>) => Promise<void>;
   onDelete?: () => void;
   session?: { username?: string; role?: string; email?: string } | null;
+  initialTab?: "overview" | "admission" | "acceptance" | "forms" | "documents" | "training" | "audits";
 }
 
 export function BeneficiaryDetails({
@@ -33,11 +34,18 @@ export function BeneficiaryDetails({
   onEdit,
   onUpdate,
   onDelete,
-  session
+  session,
+  initialTab
 }: BeneficiaryDetailsProps) {
   
   const { showToast: globalShowToast, confirmDelete } = useNotification();
-  const [activeTab, setActiveTab] = useState<"overview" | "admission" | "acceptance" | "forms" | "documents" | "training" | "audits">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "admission" | "acceptance" | "forms" | "documents" | "training" | "audits">(initialTab || "overview");
+
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [emailStatus, setEmailStatus] = useState<"idle" | "sending" | "sent">("idle");
   const [emailHealth, setEmailHealth] = useState<{ status: string; error?: string } | null>(null);
@@ -1305,12 +1313,19 @@ export function BeneficiaryDetails({
           <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs border-l-4 border-indigo-650 border-l-indigo-600 text-center flex flex-col items-center space-y-4">
             
             <div className="relative group">
-              <img 
-                src={beneficiary.photo} 
-                alt={`${beneficiary.firstName} Passport`} 
-                referrerPolicy="no-referrer"
-                className="w-32 h-32 rounded-full object-cover border-2 border-slate-200 shadow-md group-hover:opacity-90 transition"
-              />
+              {beneficiary.photo ? (
+                <img 
+                  src={beneficiary.photo} 
+                  alt={`${beneficiary.firstName} Passport`} 
+                  referrerPolicy="no-referrer"
+                  className="w-32 h-32 rounded-full object-cover border-2 border-slate-200 shadow-md group-hover:opacity-90 transition"
+                />
+              ) : (
+                <div className="w-32 h-32 rounded-full bg-slate-100 border border-slate-200 flex flex-col items-center justify-center text-slate-500 font-mono font-bold text-xl shadow-md group-hover:opacity-90 transition">
+                  <span className="text-2xl">{beneficiary.firstName?.charAt(0)}{beneficiary.lastName?.charAt(0)}</span>
+                  <span className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider">No Photo</span>
+                </div>
+              )}
               <button 
                 type="button"
                 onClick={onTriggerBiometrics}
@@ -1445,7 +1460,29 @@ export function BeneficiaryDetails({
                   
                   <div className="space-y-0.5">
                     <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-wider">Date of Birth (Recorded Verification)</span>
-                    <span className="text-slate-800 font-semibold font-sans text-sm">14 May 1998</span>
+                    <span className="text-slate-800 font-semibold font-sans text-sm">
+                      {beneficiary.dateOfBirth ? (() => {
+                        try {
+                          let d: Date | null = null;
+                          if (beneficiary.dateOfBirth.includes("/")) {
+                            const parts = beneficiary.dateOfBirth.split("/");
+                            if (parts.length === 3) {
+                              const day = parseInt(parts[0], 10);
+                              const month = parseInt(parts[1], 10) - 1;
+                              const year = parseInt(parts[2], 10);
+                              d = new Date(year, month, day);
+                            }
+                          }
+                          if (!d || isNaN(d.getTime())) {
+                            d = new Date(beneficiary.dateOfBirth);
+                          }
+                          if (d && !isNaN(d.getTime())) {
+                            return d.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+                          }
+                        } catch (e) {}
+                        return beneficiary.dateOfBirth;
+                      })() : "N/A"}
+                    </span>
                   </div>
 
                   <div className="space-y-0.5">
@@ -3465,7 +3502,32 @@ export function BeneficiaryDetails({
 
                   {hoursPercent >= 100 ? (
                     <div className="p-3 bg-yellow-400 text-slate-950 font-mono text-[9px] font-bold rounded-lg uppercase tracking-wider text-center border border-yellow-500 shadow-sm animate-pulse">
-                      <span>DIPLOMA: CERT-IDEAS-{new Date().getFullYear()}-{beneficiary.id.split("-").pop()}</span>
+                      <span>DIPLOMA: {(() => {
+                        const bId = beneficiary.id || "IDEAS-2026-000001";
+                        const parts = bId.split("-");
+                        let year = new Date().getFullYear();
+                        if (parts.length >= 2) {
+                          const parsedYear = parseInt(parts[1], 10);
+                          if (!isNaN(parsedYear) && parsedYear > 2000 && parsedYear < 2100) {
+                            year = parsedYear;
+                          }
+                        } else if (beneficiary.createdAt) {
+                          year = new Date(beneficiary.createdAt).getFullYear();
+                        }
+
+                        const stateName = beneficiary.state || "Kano";
+                        const cleanState = stateName.trim().toUpperCase();
+                        const stateMap: Record<string, string> = {
+                          "ABIA": "AB", "ADAMAWA": "AD", "AKWA IBOM": "AK", "ANAMBRA": "AN", "BAUCHI": "BA", "BAYELSA": "BY", "BENUE": "BE", "BORNO": "BO", "CROSS RIVER": "CR", "DELTA": "DE", "EBONYI": "EB", "EDO": "ED", "EKITI": "EK", "ENUGU": "EN", "FCT": "FC", "FEDERAL CAPITAL TERRITORY": "FC", "GOMBE": "GO", "IMO": "IM", "JIGAWA": "JI", "KADUNA": "KD", "KANO": "KN", "KATSINA": "KT", "KEBBI": "KE", "KOGI": "KO", "KWARA": "KW", "LAGOS": "LA", "NASARAWA": "NA", "NIGER": "NI", "OGUN": "OG", "ONDO": "ON", "OSUN": "OS", "OYO": "OY", "PLATEAU": "PL", "RIVERS": "RI", "SOKOTO": "SO", "TARABA": "TA", "YOBE": "YO", "ZAMFARA": "ZA"
+                        };
+                        const stateAbbr = stateMap[cleanState] || cleanState.substring(0, 2).padEnd(2, "X");
+
+                        const seqPart = parts[parts.length - 1] || "1";
+                        const seqMatch = seqPart.match(/\d+/);
+                        const sequenceStr = seqMatch ? seqMatch[0].padStart(6, "0") : "000001";
+
+                        return `IDEAS-TVET-${year}-${stateAbbr}-${sequenceStr}`;
+                      })()}</span>
                       <span className="block mt-0.5 font-bold">✓ ACCREDITED LEVEL STATUS</span>
                     </div>
                   ) : (

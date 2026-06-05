@@ -265,23 +265,57 @@ export function BiometricCapture({ beneficiary, onPhotoCaptured, onClose }: Biom
     }
   };
 
+  // Non-blocking asynchronous client-side passport optimization helper
+  const compressAndResizeImage = (
+    dataUrl: string,
+    targetWidth: number = 300,
+    targetHeight: number = 300,
+    quality: number = 0.7
+  ): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          const minDim = Math.min(img.width, img.height);
+          const sx = (img.width - minDim) / 2;
+          const sy = (img.height - minDim) / 2;
+          ctx.drawImage(img, sx, sy, minDim, minDim, 0, 0, targetWidth, targetHeight);
+          resolve(canvas.toDataURL("image/jpeg", quality));
+        } else {
+          resolve(dataUrl);
+        }
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    });
+  };
+
   // Handle local JPG file upload
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
-      reader.onload = (event) => {
+      reader.onload = async (event) => {
         if (event.target?.result) {
-          setCapturedPreview(event.target.result as string);
+          const rawBase64 = event.target.result as string;
+          // Pre-compress upload cleanly
+          const compressed = await compressAndResizeImage(rawBase64, 300, 300, 0.7);
+          setCapturedPreview(compressed);
         }
       };
       reader.readAsDataURL(file);
     }
   };
 
-  const confirmCapturedPhoto = () => {
+  const confirmCapturedPhoto = async () => {
     if (capturedPreview) {
-      onPhotoCaptured(capturedPreview);
+      // Ensure visual canvas assets or webcams are perfectly compressed to 15KB-50KB layout
+      const finalImage = await compressAndResizeImage(capturedPreview, 300, 300, 0.7);
+      onPhotoCaptured(finalImage);
       stopCamera();
       onClose();
     }

@@ -11,6 +11,5 @@ const isLocalOrPreview = typeof window !== "undefined" && (
 );
 
 export const API_BASE_URL =
-  ((import.meta as any).env?.VITE_API_BASE_URL as string) ||
-  (isLocalOrPreview ? "" : "https://uniqueideas-tvet-portal.onrender.com");
+  isLocalOrPreview ? "" : (((import.meta as any).env?.VITE_API_BASE_URL as string) || "");
 

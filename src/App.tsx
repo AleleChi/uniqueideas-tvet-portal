@@ -37,6 +37,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings">("dashboard");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [registryViewMode, setRegistryViewMode] = useState<"list" | "details" | "create">("list");
+  const [subTabMode, setSubTabMode] = useState<"beneficiaries" | "admissions" | "documents">("beneficiaries");
   const [beneficiaries, setBeneficiaries] = useState<Beneficiary[]>([]);
   const [customFields, setCustomFields] = useState<CustomField[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
@@ -113,10 +114,36 @@ export default function App() {
       const res = await authFetch("/api/beneficiaries");
       if (res.ok) {
         const data = await res.json();
-        setBeneficiaries(data);
+        if (Array.isArray(data) && data.length > 0) {
+          setBeneficiaries(data);
+        } else if (Array.isArray(data)) {
+          setBeneficiaries(prev => prev.length > 0 ? prev : data);
+        }
+      } else {
+        console.error("Failed to load beneficiaries list: Status", res.status);
+        showToast("System is currently experiencing heavy load. Displaying cached session records.", "warning");
       }
     } catch (e) {
-      console.error(e);
+      console.error("Failed to load beneficiaries due to network error:", e);
+      showToast("System error: Failed to connect to secure gateway. Relying on active local data session.", "warning");
+    }
+  };
+
+  const handleSelectBeneficiary = async (b: Beneficiary | null) => {
+    if (!b) {
+      setSelectedBeneficiary(null);
+      return;
+    }
+    // Set lightweight selection immediately and transition screens with zero perceived lag
+    setSelectedBeneficiary(b);
+    try {
+      const res = await authFetch(`/api/beneficiaries/${b.id}`);
+      if (res.ok) {
+        const fullDetail = await res.json();
+        setSelectedBeneficiary(fullDetail);
+      }
+    } catch (e) {
+      console.error("Failed to fetch full beneficiary details, falling back to lightweight:", e);
     }
   };
 
@@ -463,11 +490,12 @@ export default function App() {
               onClick={() => {
                 setActiveTab("registry");
                 setRegistryViewMode("list");
+                setSubTabMode("beneficiaries");
                 setSelectedBeneficiary(null);
                 setIsSidebarOpen(false);
               }}
               className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-                activeTab === "registry" 
+                activeTab === "registry" && subTabMode === "beneficiaries"
                   ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
                   : "text-slate-400 hover:text-white hover:bg-slate-800/40"
               }`}
@@ -480,11 +508,12 @@ export default function App() {
               onClick={() => {
                 setActiveTab("registry");
                 setRegistryViewMode("list");
+                setSubTabMode("admissions");
                 setSelectedBeneficiary(null);
                 setIsSidebarOpen(false);
               }}
               className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-                activeTab === "registry" && registryViewMode === "list"
+                activeTab === "registry" && subTabMode === "admissions"
                   ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
                   : "text-slate-400 hover:text-white hover:bg-slate-800/40"
               }`}
@@ -497,10 +526,12 @@ export default function App() {
               onClick={() => {
                 setActiveTab("registry");
                 setRegistryViewMode("list");
+                setSubTabMode("documents");
+                setSelectedBeneficiary(null);
                 setIsSidebarOpen(false);
               }}
               className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-                activeTab === "registry" && registryViewMode === "details"
+                activeTab === "registry" && subTabMode === "documents"
                   ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
                   : "text-slate-400 hover:text-white hover:bg-slate-800/40"
               }`}
@@ -590,6 +621,7 @@ export default function App() {
                     onClick={() => {
                       setActiveTab("registry");
                       setRegistryViewMode("create");
+                      setSubTabMode("beneficiaries");
                       setSelectedBeneficiary(null);
                       setTempCreatedPhoto(null);
                       setIsSidebarOpen(false);
@@ -660,14 +692,16 @@ export default function App() {
               onSelectBeneficiary={(id) => {
                 const b = beneficiaries.find(x => x.id === id);
                 if (b) {
-                  setSelectedBeneficiary(b);
+                  handleSelectBeneficiary(b);
                   setRegistryViewMode("details");
+                  setSubTabMode("beneficiaries");
                 }
                 setActiveTab("registry");
               }}
               onNavigateToRegistryCreate={() => {
                 setActiveTab("registry");
                 setRegistryViewMode("create");
+                setSubTabMode("beneficiaries");
                 setSelectedBeneficiary(null);
                 setTempCreatedPhoto(null);
               }}
@@ -687,9 +721,17 @@ export default function App() {
               tempCreatedPhoto={tempCreatedPhoto}
               onClearTempPhoto={() => setTempCreatedPhoto(null)}
               selectedBeneficiary={selectedBeneficiary}
-              onSelectBeneficiary={setSelectedBeneficiary}
+              onSelectBeneficiary={handleSelectBeneficiary}
               onDeleteBeneficiary={handleDeleteBeneficiary}
               session={session}
+              subTabMode={subTabMode}
+              initialDetailsTab={
+                subTabMode === "admissions" 
+                  ? "admission" 
+                  : subTabMode === "documents" 
+                  ? "documents" 
+                  : "overview"
+              }
             />
           )}
 

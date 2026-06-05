@@ -11,6 +11,7 @@ import {
 import { Beneficiary, ProgramStatus } from "../types";
 import { downloadWithAuth } from "../utils/authFetch";
 import { AlbumGenerator } from "./AlbumGenerator";
+import { SecureBeneficiaryImage } from "./SecureBeneficiaryImage";
 
 interface ReportsWorkspaceProps {
   beneficiaries: Beneficiary[];
@@ -198,12 +199,21 @@ export function ReportsWorkspace({ beneficiaries }: ReportsWorkspaceProps) {
                   {displayList.map((b) => (
                     <tr key={b.id} className="hover:bg-slate-50/55 transition">
                       <td className="py-2 px-4">
-                        <img 
-                          src={b.photo} 
-                          alt="Biometric" 
-                          className="w-8 h-8 rounded-full object-cover border border-slate-200"
-                          referrerPolicy="no-referrer"
-                        />
+                        {b.photo ? (
+                          <img 
+                            src={b.photo} 
+                            alt="Biometric" 
+                            className="w-8 h-8 rounded-full object-cover border border-slate-200"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <SecureBeneficiaryImage 
+                            id={b.id}
+                            className="w-8 h-8 rounded-full object-cover border border-slate-200"
+                            alt="Biometric"
+                            fallbackInitials={`${b.firstName?.charAt(0) || ""}${b.lastName?.charAt(0) || ""}`}
+                          />
+                        )}
                       </td>
                       <td className="py-2 px-4 font-sans text-slate-800 font-semibold">{b.firstName}</td>
                       <td className="py-2 px-4 font-sans text-slate-800 font-semibold">{b.lastName}</td>
