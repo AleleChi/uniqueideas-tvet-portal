@@ -7,7 +7,7 @@ import pg from "pg";
 import fs from "fs";
 import path from "path";
 import bcrypt from "bcryptjs";
-import { Beneficiary, ProgramStatus, AuditLog, CustomField, OrganizationSettings, TrainingProgram } from "../types";
+import { Beneficiary, ProgramStatus, AuditLog, CustomField, OrganizationSettings, TrainingProgram, WorkflowHistory } from "../types";
 
 const { Pool } = pg;
 const DB_FILE = path.join(process.cwd(), "database_ideas_tvet.json");
@@ -113,6 +113,7 @@ const SCHEMA_DDL = `
     bank_sort_code VARCHAR(50),
     bank_account_number VARCHAR(50),
     education_qualification VARCHAR(255),
+    date_of_birth VARCHAR(100),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP WITH TIME ZONE
@@ -222,6 +223,14 @@ const SCHEMA_DDL = `
     stamp_url TEXT,
     watermark_text VARCHAR(255) DEFAULT 'SECURED REGISTRY DOCUMENT',
     watermark_enabled BOOLEAN DEFAULT TRUE,
+    admission_letterhead_url TEXT,
+    acceptance_letterhead_url TEXT,
+    enrollment_letterhead_url TEXT,
+    certificate_background_url TEXT,
+    photo_album_header_url TEXT,
+    training_venue TEXT,
+    training_start_date VARCHAR(100),
+    training_end_date VARCHAR(100),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -335,6 +344,18 @@ const SCHEMA_DDL = `
   CREATE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE deleted_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token);
   CREATE INDEX IF NOT EXISTS idx_generated_documents_beneficiary_id ON generated_documents(beneficiary_id);
+
+  -- Status history timeline table
+  CREATE TABLE IF NOT EXISTS workflow_history (
+    id SERIAL PRIMARY KEY,
+    beneficiary_id VARCHAR(50) REFERENCES beneficiaries(id) ON DELETE CASCADE,
+    old_status VARCHAR(50),
+    new_status VARCHAR(50),
+    changed_by VARCHAR(255),
+    changed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    remarks TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_workflow_history_beneficiary_id ON workflow_history(beneficiary_id);
 `;
 
 /**
@@ -440,9 +461,40 @@ export async function initDb(): Promise<void> {
       ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS bank_sort_code VARCHAR(50);
       ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS bank_account_number VARCHAR(50);
       ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS education_qualification VARCHAR(255);
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS date_of_birth VARCHAR(100);
       
       ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS watermark_text VARCHAR(255) DEFAULT 'SECURED REGISTRY DOCUMENT';
       ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS watermark_enabled BOOLEAN DEFAULT TRUE;
+      ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS fme_logo_url TEXT DEFAULT '';
+      ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS ideas_logo_url TEXT DEFAULT '';
+      ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS world_bank_logo_url TEXT DEFAULT '';
+      ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS nbte_logo_url TEXT DEFAULT '';
+      ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS custom_logo_url TEXT DEFAULT '';
+      ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS admission_letterhead_url TEXT DEFAULT '';
+      ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS acceptance_letterhead_url TEXT DEFAULT '';
+      ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS enrollment_letterhead_url TEXT DEFAULT '';
+      ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS certificate_background_url TEXT DEFAULT '';
+      ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS photo_album_header_url TEXT DEFAULT '';
+      ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS training_venue TEXT DEFAULT 'Government Technical College (GTC), Kano';
+      ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS training_start_date VARCHAR(100) DEFAULT 'October 12, 2026';
+      ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS training_end_date VARCHAR(100) DEFAULT 'December 18, 2026';
+      ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS attendance_threshold INT DEFAULT 80;
+      ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS completion_threshold INT DEFAULT 75;
+    `);
+
+    // Ensure document_delivery_logs is bootstrapped independently
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS document_delivery_logs (
+        id VARCHAR(100) PRIMARY KEY,
+        document_id VARCHAR(100),
+        beneficiary_id VARCHAR(50) REFERENCES beneficiaries(id) ON DELETE CASCADE,
+        delivery_type VARCHAR(100) NOT NULL,
+        recipient VARCHAR(255) NOT NULL,
+        sent_by VARCHAR(255),
+        sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        status VARCHAR(100) NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_delivery_logs_beneficiary_id ON document_delivery_logs(beneficiary_id);
     `);
 
     // Ensure generated_documents is bootstrapped independently
@@ -483,6 +535,20 @@ export async function initDb(): Promise<void> {
       END $$;
     `);
 
+    // Ensure workflow_history is bootstrapped independently
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS workflow_history (
+        id SERIAL PRIMARY KEY,
+        beneficiary_id VARCHAR(50) REFERENCES beneficiaries(id) ON DELETE CASCADE,
+        old_status VARCHAR(50),
+        new_status VARCHAR(50),
+        changed_by VARCHAR(255),
+        changed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        remarks TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_workflow_history_beneficiary_id ON workflow_history(beneficiary_id);
+    `);
+
     // Bootstrap default system settings
     await pool.query(`
       INSERT INTO organization_settings (
@@ -509,6 +575,16 @@ export async function initDb(): Promise<void> {
 
     // Bootstrap secure user systems
     await seedAuthAndRoles(pool);
+
+    // Ensure the ID generation sequence exists and is synchronized
+    await pool.query(`
+      CREATE SEQUENCE IF NOT EXISTS ideas_beneficiary_id_seq START WITH 1;
+      SELECT setval('ideas_beneficiary_id_seq', COALESCE((
+        SELECT MAX(CAST(substring(id from '\\d+$') AS INTEGER)) 
+        FROM beneficiaries 
+        WHERE id ~ '-\\d+$'
+      ), 0) + 1, false);
+    `);
 
     console.log("[DB] PostgreSQL schema verified and migration performed.");
 
@@ -900,7 +976,7 @@ export class DbRepo {
                 custom_fields, tsp, program, skill_sector, status, 
                 admission_letter_url, acceptance_letter_url, enrollment_letter_url, certificate_url,
                 guardian_name, guardian_address, guardian_phone, physical_challenge,
-                bank_account_holder, bank_name, bank_sort_code, bank_account_number, education_qualification,
+                bank_account_holder, bank_name, bank_sort_code, bank_account_number, education_qualification, date_of_birth,
                 created_at, updated_at
          FROM beneficiaries
          WHERE deleted_at IS NULL
@@ -1011,6 +1087,7 @@ export class DbRepo {
           bankSortCode: row.bank_sort_code || "",
           bankAccountNumber: row.bank_account_number || "",
           educationQualification: row.education_qualification || "",
+          dateOfBirth: row.date_of_birth || "",
 
           // Nested Adm structures
           admissionStatus: adm.admission_status || "Pending",
@@ -1063,6 +1140,38 @@ export class DbRepo {
   }
 
   /**
+   * Generates a bulletproof sequential ID, concurrent-safe using PG sequence or JSON state search
+   */
+  static async selectNextBeneficiaryId(year: number): Promise<string> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      const ids = state.beneficiaries
+        .map(b => {
+          const match = b.id.match(/-(\d+)$/);
+          return match ? parseInt(match[1], 10) : 0;
+        });
+      const maxId = ids.length > 0 ? Math.max(...ids) : 0;
+      const nextId = maxId + 1;
+      const pad = String(nextId).padStart(3, "0");
+      return `IDEAS-${year}-${pad}`;
+    }
+
+    try {
+      const seqRes = await pool.query("SELECT nextval('ideas_beneficiary_id_seq') as val");
+      const nextVal = seqRes.rows[0].val;
+      const pad = String(nextVal).padStart(3, "0");
+      return `IDEAS-${year}-${pad}`;
+    } catch (e) {
+      console.error("[DB Repo] Failed to get nextval for beneficiary ID sequence:", e);
+      const countRes = await pool.query("SELECT count(*) as count FROM beneficiaries");
+      const nextVal = parseInt(countRes.rows[0].count, 10) + 1;
+      const pad = String(nextVal).padStart(3, "0");
+      return `IDEAS-${year}-${pad}`;
+    }
+  }
+
+  /**
    * Deep performs cascading inserts or updates for high-fidelity relational schema mapping
    */
   static async upsertBeneficiary(b: Beneficiary): Promise<Beneficiary> {
@@ -1092,9 +1201,9 @@ export class DbRepo {
            custom_fields, tsp, program, skill_sector, status,
            admission_letter_url, acceptance_letter_url, enrollment_letter_url, certificate_url,
            guardian_name, guardian_address, guardian_phone, physical_challenge,
-           bank_account_holder, bank_name, bank_sort_code, bank_account_number, education_qualification,
+           bank_account_holder, bank_name, bank_sort_code, bank_account_number, education_qualification, date_of_birth,
            created_at, updated_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35)
          ON CONFLICT (id) DO UPDATE SET 
            photo = EXCLUDED.photo,
            first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name, other_name = EXCLUDED.other_name,
@@ -1115,6 +1224,7 @@ export class DbRepo {
            bank_sort_code = EXCLUDED.bank_sort_code,
            bank_account_number = EXCLUDED.bank_account_number,
            education_qualification = EXCLUDED.education_qualification,
+           date_of_birth = EXCLUDED.date_of_birth,
            updated_at = NOW()`,
         [
           b.id, b.photo || "", b.firstName, b.lastName, b.otherName || "", b.gender, b.bvn, b.nin,
@@ -1124,7 +1234,7 @@ export class DbRepo {
           b.status,
           b.admissionLetterUrl || "", b.acceptanceLetterUrl || "", b.enrollmentLetterUrl || "", b.certificateUrl || "",
           b.guardianName || "", b.guardianAddress || "", b.guardianPhone || "", b.physicalChallenge || "",
-          b.bankAccountHolder || "", b.bankName || "", b.bankSortCode || "", b.bankAccountNumber || "", b.educationQualification || "",
+          b.bankAccountHolder || "", b.bankName || "", b.bankSortCode || "", b.bankAccountNumber || "", b.educationQualification || "", b.dateOfBirth || "",
           new Date(b.createdAt || Date.now()), new Date()
         ]
       );
@@ -1543,8 +1653,23 @@ export class DbRepo {
       letterheadUrl: "",
       signatureUrl: "",
       stampUrl: "",
+      fmeLogoUrl: "",
+      ideasLogoUrl: "",
+      worldBankLogoUrl: "",
+      nbteLogoUrl: "",
+      customLogoUrl: "",
       watermarkText: "SECURED REGISTRY DOCUMENT",
-      watermarkEnabled: true
+      watermarkEnabled: true,
+      admissionLetterheadUrl: "",
+      acceptanceLetterheadUrl: "",
+      enrollmentLetterheadUrl: "",
+      certificateBackgroundUrl: "",
+      photoAlbumHeaderUrl: "",
+      trainingVenue: "Government Technical College (GTC), Kano",
+      trainingStartDate: "October 12, 2026",
+      trainingEndDate: "December 18, 2026",
+      attendanceThreshold: 80,
+      completionThreshold: 75
     };
 
     const pool = getPgPool();
@@ -1553,7 +1678,7 @@ export class DbRepo {
     }
 
     try {
-      const res = await pool.query("SELECT id, organization_name, tpm_name, tpm_title, contact_email, contact_phone, contact_address, letterhead_url, signature_url, stamp_url, watermark_text, watermark_enabled FROM organization_settings ORDER BY updated_at DESC LIMIT 1");
+      const res = await pool.query("SELECT id, organization_name, tpm_name, tpm_title, contact_email, contact_phone, contact_address, letterhead_url, signature_url, stamp_url, watermark_text, watermark_enabled, fme_logo_url, ideas_logo_url, world_bank_logo_url, nbte_logo_url, custom_logo_url, admission_letterhead_url, acceptance_letterhead_url, enrollment_letterhead_url, certificate_background_url, photo_album_header_url, training_venue, training_start_date, training_end_date, attendance_threshold, completion_threshold FROM organization_settings ORDER BY updated_at DESC LIMIT 1");
       if (res.rows.length > 0) {
         const row = res.rows[0];
         return {
@@ -1567,8 +1692,23 @@ export class DbRepo {
           letterheadUrl: row.letterhead_url || "",
           signatureUrl: row.signature_url || "",
           stampUrl: row.stamp_url || "",
+          fmeLogoUrl: row.fme_logo_url || "",
+          ideasLogoUrl: row.ideas_logo_url || "",
+          worldBankLogoUrl: row.world_bank_logo_url || "",
+          nbteLogoUrl: row.nbte_logo_url || "",
+          customLogoUrl: row.custom_logo_url || "",
           watermarkText: row.watermark_text || "SECURED REGISTRY DOCUMENT",
-          watermarkEnabled: row.watermark_enabled !== false
+          watermarkEnabled: row.watermark_enabled !== false,
+          admissionLetterheadUrl: row.admission_letterhead_url || "",
+          acceptanceLetterheadUrl: row.acceptance_letterhead_url || "",
+          enrollmentLetterheadUrl: row.enrollment_letterhead_url || "",
+          certificateBackgroundUrl: row.certificate_background_url || "",
+          photoAlbumHeaderUrl: row.photo_album_header_url || "",
+          trainingVenue: row.training_venue || "Government Technical College (GTC), Kano",
+          trainingStartDate: row.training_start_date || "October 12, 2026",
+          trainingEndDate: row.training_end_date || "December 18, 2026",
+          attendanceThreshold: row.attendance_threshold !== null && row.attendance_threshold !== undefined ? parseInt(row.attendance_threshold) : 80,
+          completionThreshold: row.completion_threshold !== null && row.completion_threshold !== undefined ? parseInt(row.completion_threshold) : 75
         };
       }
       return defaultSettings;
@@ -1590,8 +1730,8 @@ export class DbRepo {
     try {
       await pool.query(
         `INSERT INTO organization_settings (
-          id, organization_name, tpm_name, tpm_title, contact_email, contact_phone, contact_address, letterhead_url, signature_url, stamp_url, watermark_text, watermark_enabled, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+          id, organization_name, tpm_name, tpm_title, contact_email, contact_phone, contact_address, letterhead_url, signature_url, stamp_url, watermark_text, watermark_enabled, fme_logo_url, ideas_logo_url, world_bank_logo_url, nbte_logo_url, custom_logo_url, admission_letterhead_url, acceptance_letterhead_url, enrollment_letterhead_url, certificate_background_url, photo_album_header_url, training_venue, training_start_date, training_end_date, attendance_threshold, completion_threshold, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, NOW())
          ON CONFLICT (id) DO UPDATE SET
            organization_name = EXCLUDED.organization_name,
            tpm_name = EXCLUDED.tpm_name,
@@ -1604,12 +1744,32 @@ export class DbRepo {
            stamp_url = EXCLUDED.stamp_url,
            watermark_text = EXCLUDED.watermark_text,
            watermark_enabled = EXCLUDED.watermark_enabled,
+           fme_logo_url = EXCLUDED.fme_logo_url,
+           ideas_logo_url = EXCLUDED.ideas_logo_url,
+           world_bank_logo_url = EXCLUDED.world_bank_logo_url,
+           nbte_logo_url = EXCLUDED.nbte_logo_url,
+           custom_logo_url = EXCLUDED.custom_logo_url,
+           admission_letterhead_url = EXCLUDED.admission_letterhead_url,
+           acceptance_letterhead_url = EXCLUDED.acceptance_letterhead_url,
+           enrollment_letterhead_url = EXCLUDED.enrollment_letterhead_url,
+           certificate_background_url = EXCLUDED.certificate_background_url,
+           photo_album_header_url = EXCLUDED.photo_album_header_url,
+           training_venue = EXCLUDED.training_venue,
+           training_start_date = EXCLUDED.training_start_date,
+           training_end_date = EXCLUDED.training_end_date,
+           attendance_threshold = EXCLUDED.attendance_threshold,
+           completion_threshold = EXCLUDED.completion_threshold,
            updated_at = NOW()`,
         [
           s.id || "ideas_default", s.organizationName, s.tpmName, s.tpmTitle,
           s.contactEmail, s.contactPhone, s.contactAddress,
           s.letterheadUrl, s.signatureUrl, s.stampUrl,
-          s.watermarkText || "SECURED REGISTRY DOCUMENT", s.watermarkEnabled !== false
+          s.watermarkText || "SECURED REGISTRY DOCUMENT", s.watermarkEnabled !== false,
+          s.fmeLogoUrl || "", s.ideasLogoUrl || "", s.worldBankLogoUrl || "", s.nbteLogoUrl || "", s.customLogoUrl || "",
+          s.admissionLetterheadUrl || "", s.acceptanceLetterheadUrl || "", s.enrollmentLetterheadUrl || "", s.certificateBackgroundUrl || "", s.photoAlbumHeaderUrl || "",
+          s.trainingVenue || "Government Technical College (GTC), Kano", s.trainingStartDate || "October 12, 2026", s.trainingEndDate || "December 18, 2026",
+          s.attendanceThreshold !== undefined ? s.attendanceThreshold : 80,
+          s.completionThreshold !== undefined ? s.completionThreshold : 75
         ]
       );
       return true;
@@ -1796,6 +1956,77 @@ export class DbRepo {
   }
 
   /**
+   * Save a workflow status history record
+   */
+  static async saveWorkflowHistory(h: WorkflowHistory): Promise<boolean> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      // In simulation fallback mode, write to state and persist
+      const state = loadJsonState() as any;
+      if (!state.workflowHistory) {
+        state.workflowHistory = [];
+      }
+      state.workflowHistory.push({
+        id: "wf_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+        ...h,
+        changedAt: h.changedAt || new Date().toISOString()
+      });
+      saveJsonState(state);
+      return true;
+    }
+    try {
+      await pool.query(
+        `INSERT INTO workflow_history (
+          beneficiary_id, old_status, new_status, changed_by, changed_at, remarks
+        ) VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          h.beneficiaryId,
+          h.oldStatus,
+          h.newStatus,
+          h.changedBy,
+          h.changedAt ? new Date(h.changedAt) : new Date(),
+          h.remarks || ""
+        ]
+      );
+      return true;
+    } catch (e) {
+      console.error("[DB Repo] Failed to save workflow history:", e);
+      return false;
+    }
+  }
+
+  /**
+   * Fetch workflow status history for a beneficiary, sorted chronologically ascending
+   */
+  static async getWorkflowHistory(beneficiaryId: string): Promise<WorkflowHistory[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState() as any;
+      return (state.workflowHistory || [])
+        .filter((h: any) => h.beneficiaryId === beneficiaryId)
+        .sort((a: any, b: any) => new Date(a.changedAt).getTime() - new Date(b.changedAt).getTime());
+    }
+    try {
+      const res = await pool.query(
+        "SELECT id, beneficiary_id, old_status, new_status, changed_by, changed_at, remarks FROM workflow_history WHERE beneficiary_id = $1 ORDER BY id ASC, changed_at ASC",
+        [beneficiaryId]
+      );
+      return res.rows.map(row => ({
+        id: row.id,
+        beneficiaryId: row.beneficiary_id,
+        oldStatus: row.old_status,
+        newStatus: row.new_status,
+        changedBy: row.changed_by,
+        changedAt: row.changed_at ? row.changed_at.toISOString() : new Date().toISOString(),
+        remarks: row.remarks || ""
+      }));
+    } catch (e) {
+      console.error("[DB Repo] Failed to get workflow history:", e);
+      return [];
+    }
+  }
+
+  /**
    * Fetch a generated document by verification code
    */
   static async getGeneratedDocumentByCode(code: string): Promise<any | null> {
@@ -1922,6 +2153,93 @@ export class DbRepo {
     } catch (e) {
       console.error("[DB Repo] Failed to update document email status:", e);
       return false;
+    }
+  }
+
+  /**
+   * Save a document delivery tracking log
+   */
+  static async saveDeliveryLog(log: {
+    id?: string;
+    documentId?: string;
+    beneficiaryId: string;
+    deliveryType: string;
+    recipient: string;
+    sentBy: string;
+    sentAt?: string;
+    status: string;
+  }): Promise<boolean> {
+    const pool = getPgPool();
+    const id = log.id || "dl_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
+    const sentAt = log.sentAt ? new Date(log.sentAt) : new Date();
+
+    if (!pool || !isPgActive) {
+      const state = loadJsonState() as any;
+      if (!state.deliveryLogs) {
+        state.deliveryLogs = [];
+      }
+      state.deliveryLogs.push({
+        id,
+        documentId: log.documentId || null,
+        beneficiaryId: log.beneficiaryId,
+        deliveryType: log.deliveryType,
+        recipient: log.recipient,
+        sentBy: log.sentBy,
+        sentAt: sentAt.toISOString(),
+        status: log.status
+      });
+      saveJsonState(state);
+      return true;
+    }
+    try {
+      await pool.query(
+        `INSERT INTO document_delivery_logs (
+          id, document_id, beneficiary_id, delivery_type, recipient, sent_by, sent_at, status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (id) DO UPDATE SET
+           status = EXCLUDED.status,
+           sent_at = EXCLUDED.sent_at`,
+        [
+          id,
+          log.documentId || null,
+          log.beneficiaryId,
+          log.deliveryType,
+          log.recipient,
+          log.sentBy,
+          sentAt,
+          log.status
+        ]
+      );
+      return true;
+    } catch (e) {
+      console.error("[DB Repo] Failed to save document delivery log:", e);
+      return false;
+    }
+  }
+
+  /**
+   * Fetch document delivery tracking logs for a beneficiary
+   */
+  static async getDeliveryLogs(beneficiaryId: string): Promise<any[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState() as any;
+      return (state.deliveryLogs || []).filter((l: any) => l.beneficiaryId === beneficiaryId);
+    }
+    try {
+      const res = await pool.query(
+        `SELECT id, document_id as "documentId", beneficiary_id as "beneficiaryId",
+                delivery_type as "deliveryType", recipient, sent_by as "sentBy",
+                sent_at as "sentAt", status
+         FROM document_delivery_logs
+         WHERE beneficiary_id = $1
+         ORDER BY sent_at DESC`,
+        [beneficiaryId]
+      );
+      return res.rows;
+    } catch (e) {
+      console.error("[DB Repo] Failed to get delivery logs:", e);
+      return [];
     }
   }
 }

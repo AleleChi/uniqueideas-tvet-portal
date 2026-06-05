@@ -26,6 +26,8 @@ interface BeneficiaryListProps {
   onClearTempPhoto?: () => void;
   selectedBeneficiary?: Beneficiary | null;
   onSelectBeneficiary?: (b: Beneficiary | null) => void;
+  onDeleteBeneficiary?: (id: string) => Promise<void>;
+  session?: { username?: string; role?: string; email?: string } | null;
 }
 
 export function BeneficiaryList({
@@ -40,7 +42,9 @@ export function BeneficiaryList({
   tempCreatedPhoto,
   onClearTempPhoto,
   selectedBeneficiary: propSelectedBeneficiary,
-  onSelectBeneficiary: propOnSelectBeneficiary
+  onSelectBeneficiary: propOnSelectBeneficiary,
+  onDeleteBeneficiary,
+  session
 }: BeneficiaryListProps) {
   
   // View mode switcher: "list" | "details" | "create"
@@ -276,6 +280,8 @@ export function BeneficiaryList({
         onTriggerBiometrics={() => onTriggerBiometrics(liveBeneficiary)}
         onEdit={() => setViewState("create")}
         onUpdate={(data) => onUpdateBeneficiary(liveBeneficiary.id, data)}
+        onDelete={onDeleteBeneficiary ? () => onDeleteBeneficiary(liveBeneficiary.id) : undefined}
+        session={session}
       />
     );
   }
@@ -284,6 +290,7 @@ export function BeneficiaryList({
   if (viewMode === "create") {
     return (
       <NewEnrollmentForm 
+        key={liveBeneficiary ? `edit-${liveBeneficiary.id}` : "new-enrollment"}
         customFields={customFields}
         beneficiaries={beneficiaries}
         onCancel={() => { 

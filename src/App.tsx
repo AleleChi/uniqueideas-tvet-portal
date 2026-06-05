@@ -6,7 +6,7 @@
 import React, { useState, useEffect } from "react";
 import { 
   Users, Image as ImageIcon, Sliders, ShieldCheck, LogOut, 
-  Settings, FolderLock, Landmark, Cpu, Smartphone, LayoutDashboard, History, Check, Menu, X 
+  Settings, FolderLock, Landmark, Cpu, Smartphone, LayoutDashboard, History, Check, Menu, X, FileCheck
 } from "lucide-react";
 import { AdminLogin } from "./components/AdminLogin";
 import { TraineePortal } from "./components/TraineePortal";
@@ -219,6 +219,26 @@ export default function App() {
     }
   };
 
+  const handleDeleteBeneficiary = async (id: string) => {
+    try {
+      const res = await authFetch(`/api/beneficiaries/${id}`, {
+        method: "DELETE"
+      });
+      if (res.ok) {
+        setSelectedBeneficiary(null);
+        setRegistryViewMode("list");
+        await fetchBeneficiaries();
+        await fetchAuditLogs();
+      } else {
+        const err = await res.json();
+        alert(err.error || "Failed to delete beneficiary profile");
+      }
+    } catch (e: any) {
+      console.error(e);
+      alert(e.message);
+    }
+  };
+
   const handleAddCustomField = async (field: any) => {
     try {
       const res = await authFetch("/api/custom-fields", {
@@ -423,7 +443,7 @@ export default function App() {
               }`}
             >
               <LayoutDashboard className="w-4 h-4 text-inherit" />
-              <span>Governance Dashboard</span>
+              <span>Detail Dashboard</span>
             </button>
 
             <button 
@@ -440,7 +460,40 @@ export default function App() {
               }`}
             >
               <Users className="w-4 h-4 text-inherit" />
-              <span>Candidate Registry</span>
+              <span>Beneficiaries</span>
+            </button>
+
+            <button 
+              onClick={() => {
+                setActiveTab("registry");
+                setRegistryViewMode("list");
+                setSelectedBeneficiary(null);
+                setIsSidebarOpen(false);
+              }}
+              className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+                activeTab === "registry" && registryViewMode === "list"
+                  ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                  : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+              }`}
+            >
+              <ShieldCheck className="w-4 h-4 text-inherit" />
+              <span>Admissions Office</span>
+            </button>
+
+            <button 
+              onClick={() => {
+                setActiveTab("registry");
+                setRegistryViewMode("list");
+                setIsSidebarOpen(false);
+              }}
+              className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+                activeTab === "registry" && registryViewMode === "details"
+                  ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                  : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+              }`}
+            >
+              <FileCheck className="w-4 h-4 text-inherit" />
+              <span>Generated Documents</span>
             </button>
 
             <button 
@@ -455,23 +508,23 @@ export default function App() {
               }`}
             >
               <ImageIcon className="w-4 h-4 text-inherit" />
-              <span>Reports & Exports Hub</span>
+              <span>Reports</span>
             </button>
 
             {["SUPER_ADMIN", "ADMIN_OFFICER"].includes(session?.role || "") && (
               <button 
                 onClick={() => {
-                  setActiveTab("custom");
+                  setActiveTab("settings");
                   setIsSidebarOpen(false);
                 }}
                 className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-                  activeTab === "custom" 
+                  activeTab === "settings" 
                     ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
                     : "text-slate-400 hover:text-white hover:bg-slate-800/40"
                 }`}
               >
-                <Sliders className="w-4 h-4 text-inherit" />
-                <span>Dynamic field Schemas</span>
+                <Settings className="w-4 h-4 text-inherit" />
+                <span>Settings</span>
               </button>
             )}
 
@@ -488,7 +541,24 @@ export default function App() {
                 }`}
               >
                 <History className="w-4 h-4 text-inherit" />
-                <span>Session Audits Log</span>
+                <span>Audit Logs</span>
+              </button>
+            )}
+
+            {["SUPER_ADMIN", "ADMIN_OFFICER"].includes(session?.role || "") && (
+              <button 
+                onClick={() => {
+                  setActiveTab("custom");
+                  setIsSidebarOpen(false);
+                }}
+                className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+                  activeTab === "custom" 
+                    ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                    : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+                }`}
+              >
+                <Sliders className="w-4 h-4 text-inherit" />
+                <span>Dynamic field Schemas</span>
               </button>
             )}
           </nav>
@@ -507,6 +577,7 @@ export default function App() {
                     onClick={() => {
                       setActiveTab("registry");
                       setRegistryViewMode("create");
+                      setSelectedBeneficiary(null);
                       setTempCreatedPhoto(null);
                       setIsSidebarOpen(false);
                     }}
@@ -535,34 +606,14 @@ export default function App() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-2 text-center pb-1">
-              <button 
-                type="button"
-                onClick={() => {
-                  if (["SUPER_ADMIN", "ADMIN_OFFICER"].includes(session?.role || "")) {
-                    setActiveTab("settings");
-                    setIsSidebarOpen(false);
-                  } else {
-                    alert("Access restricted. Settings administration requires Super/Admin officer roles.");
-                  }
-                }}
-                className={`border py-1.5 px-2 rounded-md flex items-center justify-center gap-1 transition text-[10px] font-semibold cursor-pointer ${
-                  activeTab === "settings"
-                    ? "bg-indigo-600 border-indigo-500 text-white font-bold shadow-md shadow-indigo-600/20 animate-pulse"
-                    : "bg-slate-800/60 hover:bg-slate-800 border-slate-700/30 text-slate-300 hover:text-white"
-                }`}
-              >
-                <Settings className="w-3 h-3 flex-shrink-0" />
-                <span>Settings</span>
-              </button>
-              
+            <div className="pb-1">
               <button 
                 type="button"
                 onClick={handleLogout}
-                className="bg-rose-950/20 hover:bg-rose-950 text-rose-300 hover:text-rose-100 border border-rose-900/40 py-1.5 px-2 rounded-md flex items-center justify-center gap-1 transition text-[10px] font-semibold cursor-pointer"
+                className="w-full bg-rose-950/25 hover:bg-rose-900/40 text-rose-300 hover:text-rose-100 border border-rose-800/30 py-2 px-3 rounded-lg flex items-center justify-center gap-2 transition text-xs font-semibold cursor-pointer"
               >
-                <LogOut className="w-3 h-3 flex-shrink-0" />
-                <span>Logout</span>
+                <LogOut className="w-4 h-4 flex-shrink-0" />
+                <span>Sign Out of Portal</span>
               </button>
             </div>
           </div>
@@ -604,6 +655,7 @@ export default function App() {
               onNavigateToRegistryCreate={() => {
                 setActiveTab("registry");
                 setRegistryViewMode("create");
+                setSelectedBeneficiary(null);
                 setTempCreatedPhoto(null);
               }}
             />
@@ -623,6 +675,8 @@ export default function App() {
               onClearTempPhoto={() => setTempCreatedPhoto(null)}
               selectedBeneficiary={selectedBeneficiary}
               onSelectBeneficiary={setSelectedBeneficiary}
+              onDeleteBeneficiary={handleDeleteBeneficiary}
+              session={session}
             />
           )}
 

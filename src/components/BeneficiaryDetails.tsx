@@ -11,7 +11,7 @@ import {
   Copy, RotateCw, RefreshCw, FileSpreadsheet, Search, Filter, X, Eye, ChevronRight,
   Lock, Unlock
 } from "lucide-react";
-import { Beneficiary, ProgramStatus, AuditLog } from "../types";
+import { Beneficiary, ProgramStatus, AuditLog, WorkflowHistory } from "../types";
 import { authFetch, downloadWithAuth } from "../utils/authFetch";
 
 interface BeneficiaryDetailsProps {
@@ -20,6 +20,8 @@ interface BeneficiaryDetailsProps {
   onTriggerBiometrics: () => void;
   onEdit: () => void;
   onUpdate: (data: Partial<Beneficiary>) => Promise<void>;
+  onDelete?: () => void;
+  session?: { username?: string; role?: string; email?: string } | null;
 }
 
 export function BeneficiaryDetails({
@@ -27,7 +29,9 @@ export function BeneficiaryDetails({
   onBack,
   onTriggerBiometrics,
   onEdit,
-  onUpdate
+  onUpdate,
+  onDelete,
+  session
 }: BeneficiaryDetailsProps) {
   
   const [activeTab, setActiveTab] = useState<"overview" | "admission" | "acceptance" | "forms" | "documents" | "training" | "audits">("overview");
@@ -49,6 +53,62 @@ export function BeneficiaryDetails({
   const [ledgerFilter, setLedgerFilter] = useState("ALL");
   const [generatingAll, setGeneratingAll] = useState<boolean>(false);
   const [generationProgress, setGenerationProgress] = useState<{ currentStep: string; percent: number } | null>(null);
+
+  // Status ranks & helpers for document validation and workflow locking (Phase 3)
+  const STATUS_RANK = useMemo(() => ({
+    "DRAFT": 1,
+    "PENDING": 1,
+    "PENDING_PHOTO": 1,
+    "UNDER_REVIEW": 1,
+    "ADMITTED": 2,
+    "ACCEPTED": 3,
+    "VERIFIED": 3,
+    "ENROLLED": 4,
+    "IN_TRAINING": 4,
+    "GRADUATED": 5,
+    "ALUMNI": 5
+  } as Record<string, number>), []);
+
+  const getStatusRank = (status?: string): number => {
+    if (!status) return 1;
+    const upper = status.toUpperCase();
+    if (STATUS_RANK[upper] !== undefined) {
+      return STATUS_RANK[upper];
+    }
+    if (upper === "VERIFIED" || upper === "IN_TRAINING" || upper === "TRAINING IN PROGRESS") return 4; 
+    return 1; 
+  };
+
+  const getDocLockReason = (docType: string, status?: string): string | null => {
+    const rank = getStatusRank(status);
+    
+    if (docType === "ADMISSION_FORM") {
+      return null;
+    }
+    if (docType === "ADMISSION_LETTER") {
+      if (rank < 2) return "Required Status: ADMITTED";
+    }
+    if (docType === "ACCEPTANCE_LETTER") {
+      if (rank < 3) return "Required Status: ACCEPTED";
+    }
+    if (docType === "ENROLLMENT_CONFIRMATION") {
+      if (rank < 4) return "Required Status: ENROLLED";
+    }
+    if (docType === "COMPLETION_CERTIFICATE") {
+      if (rank < 5) return "Required Status: GRADUATED";
+    }
+    return null;
+  };
+
+  const [validationModal, setValidationModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    missingFields: string[];
+  }>({
+    isOpen: false,
+    title: "",
+    missingFields: []
+  });
 
   // Hardened Admission Acceptance State Transition States
   const [transitionModal, setTransitionModal] = useState<{
@@ -195,7 +255,84 @@ export function BeneficiaryDetails({
     }
   };
 
+  const [workflowHistory, setWorkflowHistory] = useState<WorkflowHistory[]>([]);
+  const [loadingWorkflow, setLoadingWorkflow] = useState<boolean>(false);
+
+  const [deliveryLogs, setDeliveryLogs] = useState<any[]>([]);
+  const [loadingDeliveryLogs, setLoadingDeliveryLogs] = useState<boolean>(false);
+
+  const fetchDeliveryLogs = async (silently: boolean = false) => {
+    if (!silently) setLoadingDeliveryLogs(true);
+    try {
+      const res = await authFetch(`/api/documents/delivery-logs/${beneficiary.id}`);
+      if (res.ok) {
+        const data = await res.json();
+        setDeliveryLogs(data);
+      }
+    } catch (e) {
+      console.error("Failed to load delivery logs:", e);
+    } finally {
+      if (!silently) setLoadingDeliveryLogs(false);
+    }
+  };
+
+  const trackDocumentActivity = async (documentId: string, deliveryType: "Downloaded" | "Viewed", recipient: string, status: string) => {
+    try {
+      await authFetch("/api/documents/track", {
+        method: "POST",
+        headers: { "Content-Type" : "application/json" },
+        body: JSON.stringify({
+          documentId,
+          beneficiaryId: beneficiary.id,
+          deliveryType,
+          recipient,
+          sentBy: session?.email || session?.username || "SYSTEM_USER",
+          status
+        })
+      });
+      await fetchDeliveryLogs(true);
+    } catch (e) {
+      console.error("Failed to track document activity:", e);
+    }
+  };
+
+  const fetchWorkflowHistory = async (silently: boolean = false) => {
+    if (!silently) setLoadingWorkflow(true);
+    try {
+      const res = await authFetch(`/api/beneficiaries/${beneficiary.id}/workflow-history`);
+      if (res.ok) {
+        const data = await res.json();
+        setWorkflowHistory(data);
+      }
+    } catch (e) {
+      console.error("Failed to load workflow history:", e);
+    } finally {
+      if (!silently) setLoadingWorkflow(false);
+    }
+  };
+
   const handleGenerateDoc = async (documentType: string, regenerate: boolean) => {
+    if (documentType === "ADMISSION_FORM") {
+      const missing: string[] = [];
+      if (!beneficiary.dateOfBirth) missing.push("Date of Birth (DOB)");
+      if (!beneficiary.nin) missing.push("National Identity Number (NIN)");
+      if (!beneficiary.phoneNumber) missing.push("Trainee Phone Number");
+      if (!beneficiary.guardianName) missing.push("Guardian Name");
+      if (!beneficiary.guardianPhone) missing.push("Guardian Phone");
+      if (!beneficiary.bankName || !beneficiary.bankAccountNumber || !beneficiary.bankAccountHolder) {
+        missing.push("Bank Details (Bank Name, Account Number, and Account Holder Name)");
+      }
+
+      if (missing.length > 0) {
+        setValidationModal({
+          isOpen: true,
+          title: "Admission Form cannot be generated because required fields are missing.",
+          missingFields: missing
+        });
+        return;
+      }
+    }
+
     setLoadingDocType(`${documentType}_${regenerate ? 'regen' : 'gen'}`);
     showToast(`Compiling ${documentType.replace(/_/g, " ")} matching state data...`, "info");
     try {
@@ -410,8 +547,10 @@ export function BeneficiaryDetails({
   useEffect(() => {
     if (beneficiary?.id) {
       fetchDocumentHistory();
+      fetchWorkflowHistory();
+      fetchDeliveryLogs();
     }
-  }, [beneficiary?.id]);
+  }, [beneficiary?.id, beneficiary?.status]);
 
   // Admin validation actions
   const approveVerification = () => {
@@ -980,6 +1119,59 @@ export function BeneficiaryDetails({
           </div>
         </div>
       )}
+
+      {/* Admission Form Validation Modal (Phase 4) */}
+      {validationModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-[9999] flex items-center justify-center p-4 pointer-events-auto">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-red-50/50">
+              <div className="flex items-center gap-2 text-red-700">
+                <AlertTriangle className="w-5 h-5" />
+                <h4 className="text-xs font-bold uppercase tracking-tight">
+                  Validation Error
+                </h4>
+              </div>
+              <button
+                onClick={() => setValidationModal(prev => ({ ...prev, isOpen: false }))}
+                className="p-1.5 hover:bg-slate-100 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer transition border-0 bg-transparent flex items-center justify-center"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Content Body */}
+            <div className="p-5 space-y-4">
+              <p className="text-xs text-slate-700 font-medium leading-relaxed">
+                {validationModal.title}
+              </p>
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2">
+                <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest block">
+                  Missing Required Fields:
+                </span>
+                <ul className="list-disc list-inside text-xs text-slate-600 font-sans space-y-1">
+                  {validationModal.missingFields.map((field, i) => (
+                    <li key={i}>{field}</li>
+                  ))}
+                </ul>
+              </div>
+              <p className="text-[10px] text-slate-500 italic">
+                Please edit the beneficiary details and complete these mandatory fields before compiling the Admission Form.
+              </p>
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-150 flex justify-end">
+              <button
+                onClick={() => setValidationModal(prev => ({ ...prev, isOpen: false }))}
+                className="bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs uppercase tracking-wider px-4 py-2 rounded-xl transition cursor-pointer"
+              >
+                Acknowledge & Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       
       {/* Top Header & Navigation Strip */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-3 border-b border-slate-200">
@@ -1007,21 +1199,61 @@ export function BeneficiaryDetails({
             Back to List
           </button>
           
-          <div className={`font-semibold px-2.5 py-1.5 rounded-lg text-xs flex items-center gap-1.5 border ${
-            beneficiary.status === ProgramStatus.VERIFIED 
-              ? "bg-emerald-50 text-emerald-700 border-emerald-100" 
-              : beneficiary.status === ProgramStatus.IN_TRAINING
-              ? "bg-blue-50 text-blue-700 border-blue-100"
-              : "bg-yellow-50 text-yellow-600 border-yellow-100"
+          <div className={`p-0.5 rounded-lg border flex items-center gap-1 bg-white ${
+            beneficiary.status === ProgramStatus.PENDING
+              ? "border-yellow-200 text-yellow-700 bg-yellow-50/50"
+              : beneficiary.status === ProgramStatus.ADMITTED
+              ? "border-orange-200 text-orange-700 bg-orange-50/50"
+              : beneficiary.status === ProgramStatus.ACCEPTED
+              ? "border-teal-200 text-teal-700 bg-teal-50/50"
+              : beneficiary.status === ProgramStatus.ENROLLED
+              ? "border-blue-200 text-blue-700 bg-blue-50/50"
+              : beneficiary.status === ProgramStatus.GRADUATED
+              ? "border-emerald-250 text-emerald-700 bg-emerald-50/50"
+              : "border-slate-200 text-slate-700 bg-slate-50/10"
           }`}>
-            <span className={`h-2 w-2 rounded-full ${
-              beneficiary.status === ProgramStatus.VERIFIED 
-                ? "bg-emerald-500 animate-pulse" 
-                : beneficiary.status === ProgramStatus.IN_TRAINING 
-                ? "bg-blue-500 animate-pulse" 
-                : "bg-yellow-500 animate-pulse"
+            <span className={`h-2 w-2 rounded-full ml-1.5 shrink-0 ${
+              beneficiary.status === ProgramStatus.PENDING
+                ? "bg-yellow-500 animate-pulse"
+                : beneficiary.status === ProgramStatus.ADMITTED
+                ? "bg-orange-500 animate-pulse"
+                : beneficiary.status === ProgramStatus.ACCEPTED
+                ? "bg-teal-500 animate-pulse"
+                : beneficiary.status === ProgramStatus.ENROLLED
+                ? "bg-blue-500 animate-pulse"
+                : beneficiary.status === ProgramStatus.GRADUATED
+                ? "bg-emerald-500 animate-pulse"
+                : "bg-slate-500"
             }`}></span>
-            {beneficiary.status}
+            
+            <select
+              value={beneficiary.status}
+              disabled={transitionLoading}
+              onChange={async (e) => {
+                const newStatus = e.target.value;
+                setTransitionLoading(true);
+                try {
+                  if (onUpdate) {
+                    await onUpdate({ status: newStatus as any });
+                    showToast(`Status updated successfully to ${newStatus}`, "success");
+                  }
+                } catch (err) {
+                  showToast("Failed to update status", "error");
+                } finally {
+                  setTransitionLoading(false);
+                }
+              }}
+              className="bg-transparent text-xs font-bold py-1 pl-1 pr-2 border-0 outline-none focus:ring-0 focus:outline-none cursor-pointer text-inherit"
+            >
+              <option value="PENDING" className="text-slate-800 bg-white leading-normal">PENDING</option>
+              <option value="ADMITTED" className="text-slate-800 bg-white leading-normal">ADMITTED</option>
+              <option value="ACCEPTED" className="text-slate-800 bg-white leading-normal">ACCEPTED</option>
+              <option value="ENROLLED" className="text-slate-800 bg-white leading-normal">ENROLLED</option>
+              <option value="GRADUATED" className="text-slate-800 bg-white leading-normal">GRADUATED</option>
+              {beneficiary.status && !["PENDING", "ADMITTED", "ACCEPTED", "ENROLLED", "GRADUATED"].includes(beneficiary.status) && (
+                <option value={beneficiary.status} className="text-slate-800 bg-white leading-normal">{beneficiary.status}</option>
+              )}
+            </select>
           </div>
 
           <div className="font-semibold px-2.5 py-1.5 rounded-lg text-xs flex items-center gap-1.5 border bg-indigo-50 text-indigo-750 border-indigo-200">
@@ -1046,6 +1278,22 @@ export function BeneficiaryDetails({
             <Printer className="w-3.5 h-3.5" />
             Print Portfolio
           </button>
+
+          {session?.role === "SUPER_ADMIN" && onDelete && (
+            <button 
+              type="button"
+              onClick={() => {
+                if (confirm(`WARNING: You are about to soft-delete the beneficiary profile for "${beneficiary.firstName} ${beneficiary.lastName}" (ID: ${beneficiary.id}). This action is logged under government TVET audit records, and is restricted to SUPER_ADMIN authorities. Do you wish to proceed?`)) {
+                  onDelete();
+                }
+              }}
+              className="bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-4 rounded-lg text-xs flex items-center gap-1.5 shadow-sm transition outline-none cursor-pointer"
+              id="delete-beneficiary-action-btn"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Delete Profile
+            </button>
+          )}
         </div>
       </div>
 
@@ -1302,6 +1550,104 @@ export function BeneficiaryDetails({
                     </div>
                   )}
                 </div>
+              </div>
+
+              {/* VERTICAL WORKFLOW TIMELINE: GOVERNMENT REGISTRY APPEARANCE (PHASE 2) */}
+              <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-4 text-left">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-100 pb-3">
+                  <h4 className="font-display font-bold text-slate-900 text-xs uppercase flex items-center gap-2">
+                    <ClipboardList className="w-4 h-4 text-slate-500" />
+                    WORKFLOW TIMELINE STATUS HISTORY
+                  </h4>
+                  <span className="text-[9px] uppercase font-mono px-2 py-0.5 rounded bg-amber-50 text-amber-700 font-bold border border-amber-200">
+                    TSPs Secure Ledger Logs
+                  </span>
+                </div>
+
+                {loadingWorkflow ? (
+                  <div className="flex items-center justify-center p-8 text-xs font-mono text-slate-500 gap-2">
+                    <RotateCw className="w-4 h-4 animate-spin text-indigo-600" />
+                    Querying GOVERNANCE STATUS METADATA...
+                  </div>
+                ) : (
+                  <div className="relative pl-7 space-y-6 before:absolute before:left-[11px] before:top-2 before:bottom-2 before:w-[2px] before:bg-slate-200">
+                    {[
+                      { key: "REGISTERED", label: "Registered", desc: "Trainee profile logged successfully on Governance portal.", matcher: (h: any) => h.oldStatus === "null" || ["PENDING", "DRAFT", "REGISTERED"].includes((h.newStatus || "").toUpperCase()) },
+                      { key: "ADMITTED", label: "Admission Sent", desc: "Admission Letter compile generated and sent to trainee with portal invite.", matcher: (h: any) => (h.newStatus || "").toUpperCase() === "ADMITTED" },
+                      { key: "OFFER_VIEWED", label: "Offer Viewed", desc: "Admission Offer letter link read and validated.", matcher: (h: any) => (h.newStatus || "").toUpperCase() === "OFFER_VIEWED" || (h.remarks || "").toLowerCase().includes("viewed") },
+                      { key: "ACCEPTANCE_UPLOADED", label: "Acceptance Uploaded", desc: "Official acceptance slip documents signed and submitted.", matcher: (h: any) => (h.newStatus || "").toUpperCase() === "ACCEPTANCE_UPLOADED" || (h.remarks || "").toLowerCase().includes("upload") || (h.remarks || "").toLowerCase().includes("acceptance letter") },
+                      { key: "ACCEPTED", label: "Accepted", desc: "Admissions board verified matching acceptance agreements.", matcher: (h: any) => (h.newStatus || "").toUpperCase() === "ACCEPTED" },
+                      { key: "ENROLLED", label: "Enrolled", desc: "Trainee verified inside the portal under central registry.", matcher: (h: any) => ["ENROLLED", "VERIFIED", "IN_TRAINING"].includes((h.newStatus || "").toUpperCase()) },
+                      { key: "GRADUATED", label: "Graduated", desc: "Trainee completed learning curricula and final certification signed.", matcher: (h: any) => ["GRADUATED", "ALUMNI"].includes((h.newStatus || "").toUpperCase()) }
+                    ].map((step, idx) => {
+                      // Find matching workflow logs
+                      const matchingLogs = workflowHistory.filter(step.matcher);
+
+                      const stepRanks: Record<string, number> = {
+                        "REGISTERED": 1,
+                        "ADMITTED": 2,
+                        "OFFER_VIEWED": 2,
+                        "ACCEPTANCE_UPLOADED": 3,
+                        "ACCEPTED": 3,
+                        "ENROLLED": 4,
+                        "GRADUATED": 5
+                      };
+                      const currentRank = getStatusRank(beneficiary.status);
+                      const isPassed = matchingLogs.length > 0 || currentRank >= stepRanks[step.key];
+
+                      const primaryLog = matchingLogs[matchingLogs.length - 1];
+
+                      return (
+                        <div key={step.key} className="relative group text-slate-800">
+                          {/* Circle dot on vertical line */}
+                          <div className={`absolute left-[-24px] top-1 h-3.5 w-3.5 rounded-full border-2 transition-all ${
+                            isPassed 
+                              ? "bg-emerald-600 border-emerald-600 shadow-sm" 
+                              : "bg-white border-slate-300"
+                          }`} />
+
+                          <div className="grid grid-cols-1 md:grid-cols-12 gap-2">
+                            <div className="md:col-span-4">
+                              <span className={`text-xs font-bold block ${
+                                isPassed ? "text-slate-900" : "text-slate-400"
+                              }`}>
+                                {step.label}
+                              </span>
+                              <p className="text-[10px] text-slate-500 leading-snug mt-0.5">{step.desc}</p>
+                            </div>
+
+                            <div className="md:col-span-8 bg-slate-50/70 border border-slate-100 rounded-lg p-2.5 space-y-1.5 text-[11px] min-h-[44px]">
+                              {primaryLog ? (
+                                <div className="space-y-1">
+                                  <div className="flex flex-wrap items-center justify-between gap-1 font-mono text-slate-400 text-[10px]">
+                                    <span>
+                                      Operator: <span className="text-slate-600 font-semibold">{primaryLog.changedBy}</span>
+                                    </span>
+                                    <span>
+                                      {new Date(primaryLog.changedAt).toLocaleString("en-GB")}
+                                    </span>
+                                  </div>
+                                  <p className="text-slate-600 font-sans italic leading-snug">
+                                    “{primaryLog.remarks || `Candidate status advanced to ${step.key}`}”
+                                  </p>
+                                </div>
+                              ) : isPassed ? (
+                                <div className="text-[10px] text-slate-400 font-mono flex items-center gap-1.5 py-1">
+                                  <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full inline-block animate-pulse" />
+                                  Stage Verified (Legacy or pre-migrated status log).
+                                </div>
+                              ) : (
+                                <span className="text-[10px] font-mono text-slate-400 italic block py-1">
+                                  ○ Lifecycle stage not yet reached.
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
             </div>
@@ -2359,18 +2705,46 @@ export function BeneficiaryDetails({
                 )}
 
                 {/* DOCUMENT CARDS GRID */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
                   {[
-                    { type: "ADMISSION_LETTER", label: "Official Admission Intent Letter", dept: "Admissions Office" },
-                    { type: "ACCEPTANCE_LETTER", label: "State Acceptance Slip Confirmation", dept: "Registrar's Office" },
-                    { type: "ADMISSION_FORM", label: "Consolidated Candidate Registration Dossier", dept: "Biometrics Center" },
-                    { type: "PHOTO_ALBUM", label: "Trainee Portfolio Photo Album Badge", dept: "Media & Portfolio" },
-                    { type: "ENROLLMENT_CONFIRMATION", label: "Official Enrollment Confirmation Slip", dept: "Central Registry" },
-                    { type: "COMPLETION_CERTIFICATE", label: "Gold Seal Graduation Completion Certificate", dept: "Central Registry" }
+                    { type: "ADMISSION_FORM", label: "Admission Form (Dossier)", dept: "Biometrics Center", targetStatus: "Always Available" },
+                    { type: "ADMISSION_LETTER", label: "Admission Letter", dept: "Admissions Office", targetStatus: "ADMITTED" },
+                    { type: "ACCEPTANCE_LETTER", label: "Acceptance Letter", dept: "Registrar's Office", targetStatus: "ACCEPTED" },
+                    { type: "ENROLLMENT_CONFIRMATION", label: "Enrollment Letter", dept: "Central Registry", targetStatus: "ENROLLED" },
+                    { type: "COMPLETION_CERTIFICATE", label: "Completion Certificate", dept: "Central Registry", targetStatus: "GRADUATED" }
                   ].map((docType) => {
                     const docVersions = documentHistory.filter(h => h.documentType === docType.type);
                     const latestDoc = [...docVersions].sort((a,b) => b.version - a.version)[0];
                     const count = docVersions.length;
+
+                    // Compute lock state & reason
+                    const lockReason = getDocLockReason(docType.type, beneficiary.status);
+                    const isLocked = !!lockReason;
+
+                    // Extract actual delivery logs for this specific latest compiled document ID
+                    const docLogs = latestDoc ? deliveryLogs.filter((l: any) => l.documentId === latestDoc.id) : [];
+
+                    // Track individual activity milestones
+                    const logGen = docLogs.find((l: any) => l.deliveryType === "Generated") || (latestDoc ? { sentAt: latestDoc.createdAt, sentBy: latestDoc.generatedBy } : null);
+                    const logEmailed = docLogs.find((l: any) => l.deliveryType === "Emailed" || l.deliveryType === "email");
+                    const logViewed = docLogs.find((l: any) => l.deliveryType === "Viewed");
+                    const logDownloaded = docLogs.find((l: any) => l.deliveryType === "Downloaded");
+
+                    const hasGenerated = !!latestDoc || !!logGen;
+                    const hasEmailed = !!logEmailed || (latestDoc && (latestDoc.emailDeliveryStatus === "Delivered" || latestDoc.emailDeliveryStatus === "Opened"));
+                    const hasViewed = !!logViewed || (latestDoc && latestDoc.emailDeliveryStatus === "Opened");
+                    const hasDownloaded = !!logDownloaded;
+
+                    const formatLogTime = (isoString?: string) => {
+                      if (!isoString) return "";
+                      return new Date(isoString).toLocaleTimeString("en-GB", {
+                        hour: "2-digit",
+                        minute: "2-digit"
+                      }) + " " + new Date(isoString).toLocaleDateString("en-GB", {
+                        day: "2-digit",
+                        month: "short"
+                      });
+                    };
 
                     // Compute dynamic status
                     let statusLabel = "Not Generated";
@@ -2391,64 +2765,229 @@ export function BeneficiaryDetails({
                     const isCompiling = loadingDocType === `${docType.type}_gen` || loadingDocType === `${docType.type}_regen`;
 
                     return (
-                      <div key={docType.type} className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col justify-between space-y-4 hover:shadow-sm hover:border-slate-300 transition duration-200">
-                        <div className="flex justify-between items-start">
-                          <div>
-                            <span className="text-[10px] font-bold text-slate-800 tracking-tight block">
-                              {docType.label}
-                            </span>
-                            <span className="text-[8px] font-mono text-slate-400 block mt-0.5">
-                              {docType.dept} • {docType.type}
-                            </span>
+                      <div key={docType.type} className={`bg-white border rounded-xl p-5 flex flex-col justify-between space-y-4 shadow-3xs transition duration-200 ${isLocked ? 'border-red-150 bg-red-50/5' : 'border-slate-200 hover:border-slate-300'}`}>
+                        <div>
+                          {/* Card Header Info */}
+                          <div className="flex justify-between items-start pb-2 border-b border-slate-100 mb-3">
+                            <div>
+                              <span className="text-[11px] font-bold text-slate-900 tracking-tight block font-sans">
+                                {docType.label}
+                              </span>
+                              <span className="text-[8px] font-mono text-slate-400 block mt-0.5 uppercase tracking-wider">
+                                {docType.dept} • {docType.type}
+                              </span>
+                            </div>
+                            {isLocked ? (
+                              <span className="px-2 py-0.5 rounded-full text-[8px] font-extrabold font-mono uppercase bg-red-100 text-red-700 border border-red-200 flex items-center gap-1 shrink-0">
+                                <Lock className="w-2 h-2 text-red-500 animate-pulse" /> Locked
+                              </span>
+                            ) : (
+                              <span className={`px-2 py-0.5 rounded-full text-[8px] font-extrabold font-mono uppercase border shrink-0 ${statusColor}`}>
+                                {statusLabel}
+                              </span>
+                            )}
                           </div>
-                          <span className={`px-2 py-0.5 rounded-full text-[8px] font-extrabold font-mono uppercase border ${statusColor}`}>
-                            {statusLabel}
-                          </span>
+
+                          {/* Lock Overlay vs Metadata Block */}
+                          {isLocked ? (
+                            <div className="bg-red-50/50 border border-red-100 rounded-xl p-3 text-[10px] font-sans text-red-800 space-y-1">
+                              <div className="flex items-center gap-1.5 font-bold text-red-900 uppercase tracking-wide text-[8px]">
+                                <Lock className="w-3.5 h-3.5 text-red-500 shrink-0" /> PROGRESSIVE LOCK ACTIVE
+                              </div>
+                              <p className="leading-relaxed">Required Status: <span className="font-bold underline">{docType.targetStatus}</span></p>
+                              <span className="text-[8px] text-red-500 block uppercase font-mono mt-1">Status restriction prevents generation and dispatch.</span>
+                            </div>
+                          ) : (
+                            <div className="bg-slate-50/60 border border-slate-100 rounded-xl p-3 text-[10px] space-y-1.5 font-sans">
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <span className="text-[8px] font-mono text-slate-400 block uppercase">Document Version</span>
+                                  <span className="font-bold text-slate-700">{latestDoc ? `v${latestDoc.version}` : "Not Compiled"}</span>
+                                </div>
+                                <div>
+                                  <span className="text-[8px] font-mono text-slate-400 block uppercase">Verification Code</span>
+                                  <span className="font-mono font-bold text-slate-700 truncate block">{latestDoc?.verificationCode || "Awaiting compilation"}</span>
+                                </div>
+                                <div>
+                                  <span className="text-[8px] font-mono text-slate-400 block uppercase">Generated Date</span>
+                                  <span className="text-slate-700">{latestDoc ? new Date(latestDoc.createdAt).toLocaleString("en-GB", {day: "2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit"}) : "Never"}</span>
+                                </div>
+                                <div>
+                                  <span className="text-[8px] font-mono text-slate-400 block uppercase">Generated By</span>
+                                  <span className="text-slate-700 truncate block">{latestDoc ? latestDoc.generatedBy : "n/a"}</span>
+                                </div>
+                              </div>
+                              <div className="pt-1.5 border-t border-slate-100 flex justify-between items-center text-[8px] font-mono">
+                                <span className="text-slate-400 uppercase">Compiled Registry Count:</span>
+                                <span className="font-bold text-indigo-750 text-indigo-750 bg-indigo-50 px-1.5 rounded">{count} versions</span>
+                              </div>
+                            </div>
+                          )}
                         </div>
 
-                        <div className="flex items-center justify-between py-1 bg-slate-50/50 rounded-lg px-2.5 text-[9px] font-mono">
-                          <span className="text-slate-400 font-medium">Recorded Compile Versions:</span>
-                          <span className="font-bold text-slate-700">{count} {count === 1 ? 'version' : 'versions'}</span>
-                        </div>
+                        {/* Interactive Verification Access Activity Indicators / Timeline */}
+                        {!isLocked && (
+                          <div className="space-y-2 pt-1">
+                            <span className="text-[8px] font-extrabold font-mono text-slate-400 uppercase tracking-widest block text-center">
+                              DOCUMENT LIFECYCLE TIMELINE
+                            </span>
+                            <div className="relative flex justify-between items-center px-2">
+                              {/* Horizontal connecting track line */}
+                              <div className="absolute left-6 right-6 top-3 h-0.5 bg-slate-200 -z-10" />
+                              <div 
+                                className="absolute left-6 top-3 h-0.5 bg-emerald-500 -z-10 transition-all duration-300" 
+                                style={{
+                                  width: hasDownloaded ? "100%" : hasViewed ? "66%" : hasEmailed ? "33%" : "0%"
+                                }}
+                              />
 
-                        <div className="flex flex-wrap items-center gap-1.5 pt-1 font-sans">
+                              {/* Milestone 1: Generated */}
+                              <div className="flex flex-col items-center space-y-1 text-center shrink-0 w-12">
+                                <div className={`w-6.5 h-6.5 rounded-full flex items-center justify-center border-2 text-[9px] font-bold ${
+                                  hasGenerated ? "bg-emerald-50 border-emerald-500 text-emerald-600" : "bg-white border-slate-250 text-slate-400"
+                                }`}>
+                                  ✓
+                                </div>
+                                <span className="text-[8px] font-bold font-mono text-slate-650 block">Compiled</span>
+                                <span className="text-[7px] text-slate-400 font-mono scale-90 whitespace-nowrap block min-h-[10px]">
+                                  {formatLogTime(logGen?.sentAt || latestDoc?.createdAt)}
+                                </span>
+                              </div>
+
+                              {/* Milestone 2: Emailed */}
+                              <div className="flex flex-col items-center space-y-1 text-center shrink-0 w-12">
+                                <div className={`w-6.5 h-6.5 rounded-full flex items-center justify-center border-2 text-[9px] font-bold ${
+                                  hasEmailed ? "bg-emerald-50 border-emerald-500 text-emerald-600 animate-pulse" : "bg-white border-slate-250 text-slate-400"
+                                }`}>
+                                  ✉
+                                </div>
+                                <span className="text-[8px] font-bold font-mono text-slate-650 block animate-none">Emailed</span>
+                                <span className="text-[7px] text-slate-400 font-mono scale-90 whitespace-nowrap block min-h-[10px]">
+                                  {formatLogTime(logEmailed?.sentAt) || "—"}
+                                </span>
+                              </div>
+
+                              {/* Milestone 3: Viewed */}
+                              <div className="flex flex-col items-center space-y-1 text-center shrink-0 w-12">
+                                <div className={`w-6.5 h-6.5 rounded-full flex items-center justify-center border-2 text-[9px] font-bold ${
+                                  hasViewed ? "bg-emerald-50 border-emerald-500 text-emerald-600" : "bg-white border-slate-250 text-slate-400"
+                                }`}>
+                                  👁
+                                </div>
+                                <span className="text-[8px] font-bold font-mono text-slate-650 block">Viewed</span>
+                                <span className="text-[7px] text-slate-400 font-mono scale-90 whitespace-nowrap block min-h-[10px]">
+                                  {formatLogTime(logViewed?.sentAt) || "—"}
+                                </span>
+                              </div>
+
+                              {/* Milestone 4: Downloaded */}
+                              <div className="flex flex-col items-center space-y-1 text-center shrink-0 w-12">
+                                <div className={`w-6.5 h-6.5 rounded-full flex items-center justify-center border-2 text-[9px] font-bold ${
+                                  hasDownloaded ? "bg-emerald-50 border-emerald-500 text-emerald-600" : "bg-white border-slate-250 text-slate-400"
+                                }`}>
+                                  ⬇
+                                </div>
+                                <span className="text-[8px] font-bold font-mono text-slate-650 block">Saved</span>
+                                <span className="text-[7px] text-slate-400 font-mono scale-90 whitespace-nowrap block min-h-[10px]">
+                                  {formatLogTime(logDownloaded?.sentAt) || "—"}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Interactive Operations Drawer Block */}
+                        <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-50 font-sans">
                           {/* Run/Compile next version button */}
                           <button
                             type="button"
-                            disabled={loadingDocType !== null}
+                            disabled={loadingDocType !== null || isLocked}
                             onClick={() => handleGenerateDoc(docType.type, count > 0)}
-                            className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[9px] uppercase tracking-wide px-3 py-1.5 rounded-lg inline-flex items-center gap-1 shadow-xs transition hover:-translate-y-px disabled:opacity-60 cursor-pointer"
+                            className={`font-bold text-[9px] uppercase tracking-wide px-3 py-1.5 rounded-lg inline-flex items-center gap-1 shadow-3xs transition cursor-pointer ${
+                              isLocked 
+                                ? "bg-slate-200 text-slate-405 text-slate-400 cursor-not-allowed select-none pointer-events-none opacity-40" 
+                                : "bg-indigo-600 hover:bg-indigo-750 text-white hover:-translate-y-px"
+                            }`}
                           >
                             <RotateCw className={`w-2.5 h-2.5 ${isCompiling ? "animate-spin" : ""}`} />
-                            {isCompiling ? "Compiling PDF..." : count > 0 ? "Regenerate" : "Compile"}
+                            {isCompiling ? "Compiling..." : count > 0 ? "Regenerate" : "Compile"}
                           </button>
 
                           {/* Preview Link */}
-                          {latestDoc ? (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => setPreviewDoc(latestDoc)}
-                                className="bg-white border border-slate-200 text-slate-700 font-semibold text-[9px] uppercase tracking-wide px-2.5 py-1.5 rounded-lg inline-flex items-center gap-1 transition hover:bg-slate-50 cursor-pointer"
-                              >
-                                <Eye className="w-2.5 h-2.5 text-slate-500" /> Preview
-                              </button>
-                              <a
-                                href={latestDoc.pdfUrl}
-                                download={`document_${latestDoc.id}.pdf`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="bg-white border border-slate-200 text-slate-700 font-semibold text-[9px] uppercase tracking-wide px-2.5 py-1.5 rounded-lg inline-flex items-center gap-1 transition hover:bg-slate-50 cursor-pointer"
-                              >
-                                <Download className="w-2.5 h-2.5 text-slate-500" /> Download
-                              </a>
-                            </>
-                          ) : (
-                            <span className="text-[9px] text-slate-400 italic font-mono px-1 select-none">Awaiting Compiler</span>
-                          )}
+                          <button
+                            type="button"
+                            disabled={!latestDoc || isLocked}
+                            onClick={() => {
+                              if (latestDoc) {
+                                setPreviewDoc(latestDoc);
+                                trackDocumentActivity(latestDoc.id, "Viewed", beneficiary.email || beneficiary.firstName, `Visual viewer preview of ${docType.label}`);
+                              }
+                            }}
+                            className={`font-semibold text-[9px] uppercase tracking-wide px-2.5 py-1.5 rounded-lg inline-flex items-center gap-1 transition ${
+                              (!latestDoc || isLocked) 
+                                ? "bg-slate-100 text-slate-400 cursor-not-allowed select-none pointer-events-none opacity-40 border border-slate-200" 
+                                : "bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 cursor-pointer"
+                            }`}
+                          >
+                            <Eye className="w-2.5 h-2.5 text-slate-540" /> Preview
+                          </button>
+
+                          {/* Instant PDF on-the-fly downloads */}
+                          <button
+                            type="button"
+                            disabled={!latestDoc || isLocked}
+                            onClick={() => {
+                              if (latestDoc) {
+                                const typeMap: any = {
+                                  ADMISSION_LETTER: "admission",
+                                  ACCEPTANCE_LETTER: "acceptance",
+                                  ADMISSION_FORM: "form",
+                                  ENROLLMENT_CONFIRMATION: "enrollment",
+                                  COMPLETION_CERTIFICATE: "certificate"
+                                };
+                                const tKey = typeMap[docType.type];
+                                trackDocumentActivity(latestDoc.id, "Downloaded", beneficiary.email || beneficiary.firstName, `Downloaded PDF copy of ${docType.label}`);
+                                window.open(`/api/documents/download/${beneficiary.id}/${tKey}?format=pdf`, "_blank");
+                              }
+                            }}
+                            className={`font-semibold text-[9px] uppercase tracking-wide px-2.5 py-1.5 rounded-lg inline-flex items-center gap-1 transition ${
+                              (!latestDoc || isLocked) 
+                                ? "bg-slate-100 text-slate-400 cursor-not-allowed select-none pointer-events-none opacity-40 border border-slate-200" 
+                                : "bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 cursor-pointer"
+                            }`}
+                          >
+                            <Download className="w-2.5 h-2.5 text-emerald-600" /> PDF
+                          </button>
+
+                          {/* Instant Word on-the-fly downloads */}
+                          <button
+                            type="button"
+                            disabled={!latestDoc || isLocked}
+                            onClick={() => {
+                              if (latestDoc) {
+                                const typeMap: any = {
+                                  ADMISSION_LETTER: "admission",
+                                  ACCEPTANCE_LETTER: "acceptance",
+                                  ADMISSION_FORM: "form",
+                                  ENROLLMENT_CONFIRMATION: "enrollment",
+                                  COMPLETION_CERTIFICATE: "certificate"
+                                };
+                                const tKey = typeMap[docType.type];
+                                trackDocumentActivity(latestDoc.id, "Downloaded", beneficiary.email || beneficiary.firstName, `Downloaded Word copy of ${docType.label}`);
+                                window.open(`/api/documents/download/${beneficiary.id}/${tKey}?format=word`, "_blank");
+                              }
+                            }}
+                            className={`font-semibold text-[9px] uppercase tracking-wide px-2.5 py-1.5 rounded-lg inline-flex items-center gap-1 transition ${
+                              (!latestDoc || isLocked) 
+                                ? "bg-slate-100 text-slate-400 cursor-not-allowed select-none pointer-events-none opacity-40 border border-slate-200" 
+                                : "bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 cursor-pointer"
+                            }`}
+                          >
+                            <FileText className="w-2.5 h-2.5 text-blue-600" /> Word
+                          </button>
 
                           {/* Email Dispatch Button */}
-                          {latestDoc && (
+                          {latestDoc && !isLocked && (
                             <button
                               type="button"
                               disabled={loadingDocType !== null}
@@ -2675,7 +3214,10 @@ export function BeneficiaryDetails({
                                 <td className="px-3.5 py-3 text-right space-x-1.5 font-sans">
                                   <button
                                     type="button"
-                                    onClick={() => setPreviewDoc(doc)}
+                                    onClick={() => {
+                                      setPreviewDoc(doc);
+                                      trackDocumentActivity(doc.id, "Viewed", beneficiary.email || "Candidate Profile", "Viewed from secure dashboard");
+                                    }}
                                     className="text-indigo-600 hover:text-indigo-805 font-bold hover:underline bg-transparent border-0 inline-block p-0 cursor-pointer"
                                   >
                                     Preview
@@ -2684,6 +3226,9 @@ export function BeneficiaryDetails({
                                   <a
                                     href={doc.pdfUrl}
                                     download={`document_${doc.id}.pdf`}
+                                    onClick={() => {
+                                      trackDocumentActivity(doc.id, "Downloaded", beneficiary.email || "Candidate Profile", "Downloaded PDF File format successfully");
+                                    }}
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     className="text-slate-650 text-slate-600 hover:text-slate-800 font-bold hover:underline"
@@ -2707,6 +3252,74 @@ export function BeneficiaryDetails({
                       </div>
                     );
                   })()}
+                </div>
+
+                {/* ADVANCED TRACKING: DOCUMENT DELIVERY LOGS HISTORY */}
+                <div className="mt-8 border-t border-slate-200 pt-6">
+                  <div className="flex items-center gap-1.5 pb-2 mb-4">
+                    <History className="w-4 h-4 text-emerald-600" />
+                    <h6 className="text-[10px] font-bold text-slate-800 uppercase font-mono tracking-wider">
+                      Official Document Delivery & Access Logs Tracking Ledger
+                    </h6>
+                  </div>
+
+                  {loadingDeliveryLogs ? (
+                    <div className="p-6 border border-dashed border-slate-200 rounded-xl bg-slate-50/50 text-center text-slate-400 text-[10px] font-mono animate-pulse">
+                      Retrieving delivery audit logs...
+                    </div>
+                  ) : deliveryLogs.length === 0 ? (
+                    <div className="p-8 border border-dashed border-slate-200 rounded-xl bg-slate-50/30 text-center text-slate-405 text-slate-400 text-[9px] font-mono uppercase">
+                      No document downloads, emails, or views logged yet.
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto border border-slate-150 rounded-xl bg-white shadow-3xs">
+                      <table className="min-w-full divide-y divide-slate-100 text-left text-slate-600 font-mono text-[9px]">
+                        <thead className="bg-[#f8fafc] text-slate-400 font-bold uppercase text-[8px]">
+                          <tr>
+                            <th className="px-3.5 py-2.5">Action</th>
+                            <th className="px-3 py-2.5">Document ID</th>
+                            <th className="px-3 py-2.5">Recipient / Destination</th>
+                            <th className="px-3 py-2.5">Logged By</th>
+                            <th className="px-3 py-2.5">Logged Date</th>
+                            <th className="px-3.5 py-2.5 text-right font-sans">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {deliveryLogs.map((log: any) => (
+                            <tr key={log.id} className="hover:bg-slate-50/50 transition-colors">
+                              <td className="px-3.5 py-2.5 font-bold text-slate-900">
+                                <span className={`px-2 py-0.5 rounded text-[8px] font-extrabold border ${
+                                  log.deliveryType === 'Generated' ? 'bg-indigo-50 text-indigo-700 border-indigo-150' : 
+                                  log.deliveryType === 'Downloaded' ? 'bg-amber-50 text-amber-700 border-amber-150' :
+                                  log.deliveryType === 'Emailed' ? 'bg-emerald-50 text-emerald-700 border-emerald-150' :
+                                  'bg-slate-50 text-slate-700 border-slate-200'
+                                }`}>
+                                  {log.deliveryType}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2.5 font-semibold text-slate-500">
+                                {log.documentId ? log.documentId : <span className="text-slate-400 italic">None</span>}
+                              </td>
+                              <td className="px-3 py-2.5 text-slate-850 font-semibold">
+                                {log.recipient}
+                              </td>
+                              <td className="px-3 py-2.5 text-slate-500">
+                                {log.sentBy}
+                              </td>
+                              <td className="px-3 py-2.5 text-slate-450 text-slate-400">
+                                {new Date(log.sentAt).toLocaleString("en-GB")}
+                              </td>
+                              <td className="px-3.5 py-2.5 text-right font-semibold">
+                                <span className="text-slate-700">
+                                  {log.status}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               </div>
 

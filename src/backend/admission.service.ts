@@ -3,12 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Beneficiary, ProgramStatus, AuditLog } from "../types";
+import { Beneficiary, ProgramStatus, AuditLog, DocumentType } from "../types";
 import { PdfService } from "./pdf.service";
 import { TokenService } from "./token.service";
 import { EmailService } from "./email.service";
 import { DbRepo } from "./db";
 import { CloudinaryService } from "./cloudinary.service";
+import { DocumentService } from "./document.service";
 
 export class AdmissionService {
   /**
@@ -38,6 +39,7 @@ export class AdmissionService {
     
     // 1. Generate Letter references and update beneficiary local parameters
     const admissionRef = beneficiary.admissionRef || `IDEAS/TVET/ADM/${beneficiary.id.split("-").pop()}/${new Date().getFullYear()}`;
+    const originalAdmissionStatus = beneficiary.admissionStatus || "Pending";
     
     if (!beneficiary.admissionStatus || beneficiary.admissionStatus === "Pending") {
       beneficiary.admissionStatus = "Admission Generated";
@@ -50,29 +52,31 @@ export class AdmissionService {
     const secureToken = TokenService.generateToken(beneficiary.id);
     const secureLink = `${customDomain}/?token=${secureToken}`;
 
-    // 3. Generate dynamic documents as PDF buffers
-    console.log("[AdmissionService] Compiling PDFs via Puppeteer...");
-    const admissionPdfBuffer = await PdfService.generateAdmissionLetterPdf(beneficiary);
-    const acceptancePdfBuffer = await PdfService.generateAcceptanceLetterPdf(beneficiary);
-
-    // 4. Upload PDFs to Cloudinary
-    console.log("[AdmissionService] Uploading compiled files to Cloudinary...");
-    const admissionPdfUrl = await CloudinaryService.uploadDocument(
-      admissionPdfBuffer, 
-      `Admission_Letter_${beneficiary.id}`
+    // 3. Generate dynamic documents via unified DocumentService
+    console.log("[AdmissionService] Generating official admission & acceptance documents through DocumentService...");
+    const { document: admissionDoc, pdfBuffer: admissionPdfBuffer } = await DocumentService.generateDocumentWithBuffer(
+      beneficiary.id,
+      DocumentType.ADMISSION_LETTER,
+      "SYSTEM_ADMISSIONS",
+      true
     );
-    const acceptancePdfUrl = await CloudinaryService.uploadDocument(
-      acceptancePdfBuffer, 
-      `Acceptance_Template_${beneficiary.id}`
+    
+    const { document: acceptanceDoc, pdfBuffer: acceptancePdfBuffer } = await DocumentService.generateDocumentWithBuffer(
+      beneficiary.id,
+      DocumentType.ACCEPTANCE_LETTER,
+      "SYSTEM_ADMISSIONS",
+      true
     );
 
     // Sync URLs to main columns
+    const admissionPdfUrl = admissionDoc.pdfUrl;
+    const acceptancePdfUrl = acceptanceDoc.pdfUrl;
     beneficiary.admissionLetterUrl = admissionPdfUrl;
     beneficiary.acceptanceLetterUrl = acceptancePdfUrl;
 
     // 5. Document Versioning for Admission Letter
     const currentVersions = beneficiary.admissionLetterVersions || [];
-    const nextVersionNum = currentVersions.length + 1;
+    const nextVersionNum = admissionDoc.version;
     const newVersionItem = {
       version: nextVersionNum,
       url: admissionPdfUrl,
@@ -81,11 +85,11 @@ export class AdmissionService {
     };
     beneficiary.admissionLetterVersions = [...currentVersions, newVersionItem];
 
-    // 6. Save documents inside Candidate's local document database lists for backwards-compatibility
+    // 6. Save documents inside Candidate's local document list
     const currentDocs = beneficiary.documentsList || [];
     const updatedDocs = [...currentDocs];
     updatedDocs.push({
-      id: "doc_adm_" + Date.now() + "_" + nextVersionNum,
+      id: admissionDoc.id,
       name: `Official TVET Admission Letter (v${nextVersionNum}).pdf`,
       type: "admission",
       url: admissionPdfUrl,
@@ -109,6 +113,7 @@ export class AdmissionService {
       ]
     );
 
+    let changeRemarks = "";
     // Set Separate Email Status as requested
     if (mailResult.success) {
       beneficiary.emailStatus = "Sent";
@@ -117,9 +122,11 @@ export class AdmissionService {
       }
       beneficiary.admissionLetterSentAt = new Date().toISOString();
       beneficiary.smtpErrorDetails = undefined;
+      changeRemarks = "Admission offer letter successfully generated and sent via email.";
     } else {
       beneficiary.emailStatus = "Failed";
       beneficiary.smtpErrorDetails = mailResult.status;
+      changeRemarks = `Admission offer letter generated, but email dispatch failed: ${mailResult.status}`;
     }
 
     // Append operations tracker entry
@@ -133,6 +140,16 @@ export class AdmissionService {
         : (mailResult.apiResponse ? JSON.stringify(mailResult.apiResponse) : (mailResult.errorDetails || "Connection Timeout / Transport Error"))
     };
     beneficiary.emailDeliveryHistory = [...deliveryHistory, newDeliveryRecord];
+
+    // Write to Workflow History table!
+    await DbRepo.saveWorkflowHistory({
+      beneficiaryId: beneficiary.id,
+      oldStatus: originalAdmissionStatus,
+      newStatus: beneficiary.admissionStatus || "Admission Sent",
+      changedBy: "SYSTEM_ADMISSIONS",
+      changedAt: new Date().toISOString(),
+      remarks: changeRemarks
+    });
 
     // 8. Append secure logs and write to storage
     await this.logAction(
@@ -170,6 +187,25 @@ export class AdmissionService {
       });
       beneficiary.emailTrackingHistory = trackingHistory;
 
+      const oldAdmissionStatus = beneficiary.admissionStatus || "Pending";
+      let newAdmissionStatus = oldAdmissionStatus;
+      if (oldAdmissionStatus === "Admission Sent" || oldAdmissionStatus === "Admission Generated" || oldAdmissionStatus === "Pending") {
+        beneficiary.admissionStatus = "Offer Viewed";
+        newAdmissionStatus = "Offer Viewed";
+      }
+
+      // Write to Workflow History table!
+      try {
+        await DbRepo.saveWorkflowHistory({
+          beneficiaryId: beneficiary.id,
+          oldStatus: oldAdmissionStatus,
+          newStatus: newAdmissionStatus,
+          changedBy: beneficiary.email || "STUDENT_PORTAL",
+          changedAt: new Date().toISOString(),
+          remarks: "Trainee loaded secure response link; logged Offer Viewed event."
+        });
+      } catch (err) {}
+
       // Audit Log
       await this.logAction(
         beneficiary.email || `${beneficiary.firstName.toLowerCase()}@tvet-response.net`,
@@ -199,45 +235,59 @@ export class AdmissionService {
     beneficiary.status = ProgramStatus.VERIFIED;
     beneficiary.updatedAt = new Date().toISOString();
 
-    console.log("[AdmissionService] Generating Enrollment Confirmation & Certificate PDFs...");
+    console.log("[AdmissionService] Generating official dynamic Enrollment Confirmation & Certificate PDFs...");
     
-    // Generate Enrollment Confirmation PDF
-    const enrollmentPdfBuffer = await PdfService.generateEnrollmentConfirmationPdf(beneficiary);
-    const enrollmentUrl = await CloudinaryService.uploadDocument(
-      enrollmentPdfBuffer, 
-      `Enrollment_Confirmation_${beneficiary.id}`
+    // Generate Enrollment Confirmation PDF using central DocumentService
+    const { document: enrollmentDoc } = await DocumentService.generateDocumentWithBuffer(
+      beneficiary.id,
+      DocumentType.ENROLLMENT_CONFIRMATION,
+      adminUser,
+      true
     );
-    beneficiary.enrollmentLetterUrl = enrollmentUrl;
+    beneficiary.enrollmentLetterUrl = enrollmentDoc.pdfUrl;
 
-    // Generate Completion Certificate PDF (future use)
-    const certPdfBuffer = await PdfService.generateCompletionCertificatePdf(beneficiary);
-    const certUrl = await CloudinaryService.uploadDocument(
-      certPdfBuffer, 
-      `Completion_Certificate_${beneficiary.id}`
+    // Generate Completion Certificate PDF using central DocumentService
+    const { document: certDoc } = await DocumentService.generateDocumentWithBuffer(
+      beneficiary.id,
+      DocumentType.COMPLETION_CERTIFICATE,
+      adminUser,
+      true
     );
-    beneficiary.certificateUrl = certUrl;
+    beneficiary.certificateUrl = certDoc.pdfUrl;
 
     // Append core document lists for retrospective audit compliance
     const currentDocs = beneficiary.documentsList || [];
     beneficiary.documentsList = [
       ...currentDocs,
       {
-        id: "doc_enr_" + Date.now(),
+        id: enrollmentDoc.id,
         name: "Official Trainee Biometrics Enrollment Confirmation.pdf",
         type: "enrollment",
-        url: enrollmentUrl,
+        url: enrollmentDoc.pdfUrl,
         uploadedAt: new Date().toISOString(),
-        version: 1
+        version: enrollmentDoc.version
       },
       {
-        id: "doc_cert_" + Date.now(),
+        id: certDoc.id,
         name: "Official Skill Competency Certificate of Completion.pdf",
         type: "certificate",
-        url: certUrl,
+        url: certDoc.pdfUrl,
         uploadedAt: new Date().toISOString(),
-        version: 1
+        version: certDoc.version
       }
     ];
+
+    // Persist to Workflow History secure table
+    try {
+      await DbRepo.saveWorkflowHistory({
+        beneficiaryId: beneficiary.id,
+        oldStatus,
+        newStatus: "Accepted",
+        changedBy: adminUser,
+        changedAt: new Date().toISOString(),
+        remarks: "Verification approved. Approved student acceptance offer; automatically compiled final biometrics enrollment slip & certificate."
+      });
+    } catch (err) {}
 
     await this.logAction(
       adminUser,
@@ -267,6 +317,18 @@ export class AdmissionService {
     beneficiary.acceptanceLetterUploadedAt = undefined;
     beneficiary.updatedAt = new Date().toISOString();
 
+    // Persist to Workflow History secure table
+    try {
+      await DbRepo.saveWorkflowHistory({
+        beneficiaryId: beneficiary.id,
+        oldStatus,
+        newStatus: "Acceptance Rejected",
+        changedBy: adminUser,
+        changedAt: new Date().toISOString(),
+        remarks: reason || "No rejection reason specified by administrator"
+      });
+    } catch (err) {}
+
     await this.logAction(
       adminUser,
       "Acceptance Rejected",
@@ -290,6 +352,8 @@ export class AdmissionService {
     if (!beneficiary) {
       throw new Error("Primary biographical record corresponding to portal session could not be tracked.");
     }
+
+    const oldAdmissionStatus = beneficiary.admissionStatus || "Pending";
 
     // Register active form version control
     const currentFormVersions = beneficiary.admissionFormVersions || [];
@@ -323,6 +387,9 @@ export class AdmissionService {
 
     // 3. Process signed acceptance letter document compile
     let signedAcceptanceUrl = "";
+    let registeredDocId = "";
+    let nextAccLetterVer = (beneficiary.acceptanceLetterVersions || []).length + 1;
+
     if (formData.uploadedAcceptanceLetter) {
       console.log("[AdmissionService] Custom hand-signed file detected, syncing to Cloudinary...");
       if (formData.uploadedAcceptanceLetter.startsWith("data:")) {
@@ -333,13 +400,51 @@ export class AdmissionService {
       } else {
         signedAcceptanceUrl = formData.uploadedAcceptanceLetter;
       }
+
+      // Manually register in generated_documents table for absolute completeness & traceability!
+      const docId = `gdoc_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+      const prefix = "TVET-ACC";
+      const hex = Math.floor(Math.random() * 16777215).toString(16).toUpperCase().padStart(6, "0");
+      const verificationCode = `${prefix}-${hex}`;
+      registeredDocId = docId;
+
+      const newDocObj = {
+        id: docId,
+        beneficiaryId: beneficiary.id,
+        documentType: DocumentType.ACCEPTANCE_LETTER,
+        version: nextAccLetterVer,
+        pdfUrl: signedAcceptanceUrl,
+        generatedBy: beneficiary.email || "STUDENT_PORTAL",
+        createdAt: new Date().toISOString(),
+        verificationCode,
+        verificationStatus: "UNVERIFIED",
+        verificationDate: "",
+        emailDeliveryStatus: "NOT_SENT",
+      };
+      await DbRepo.saveGeneratedDocument(newDocObj);
+      
+      try {
+        await DbRepo.saveDeliveryLog({
+          documentId: docId,
+          beneficiaryId: beneficiary.id,
+          deliveryType: "Generated",
+          recipient: beneficiary.email || `${beneficiary.firstName} ${beneficiary.lastName}`,
+          sentBy: beneficiary.email || "STUDENT_PORTAL",
+          status: "Custom Signed File Uploaded Successfully"
+        });
+      } catch (err) {}
     } else {
       console.log("[AdmissionService] Compiling signed Acceptance Letter contract PDF via Puppeteer...");
-      const signedAcceptancePdfBuffer = await PdfService.generateAcceptanceLetterPdf(beneficiary);
-      signedAcceptanceUrl = await CloudinaryService.uploadDocument(
-        signedAcceptancePdfBuffer, 
-        `Signed_Acceptance_Auto_${beneficiary.id}`
+      // Generate through unified DocumentService to leverage QR/verification/watermark features perfectly!
+      const { document: acceptanceDoc } = await DocumentService.generateDocumentWithBuffer(
+        beneficiary.id,
+        DocumentType.ACCEPTANCE_LETTER,
+        "STUDENT_PORTAL",
+        true
       );
+      signedAcceptanceUrl = acceptanceDoc.pdfUrl;
+      registeredDocId = acceptanceDoc.id;
+      nextAccLetterVer = acceptanceDoc.version;
     }
 
     beneficiary.acceptanceLetterUploaded = true;
@@ -348,7 +453,6 @@ export class AdmissionService {
 
     // Document Versioning for Acceptance Letter
     const currentAccLetters = beneficiary.acceptanceLetterVersions || [];
-    const nextAccLetterVer = currentAccLetters.length + 1;
     const newAccLetterItem = {
       version: nextAccLetterVer,
       url: signedAcceptanceUrl,
@@ -361,7 +465,7 @@ export class AdmissionService {
     const currentDocs = beneficiary.documentsList || [];
     const updatedDocs = [...currentDocs];
     updatedDocs.push({
-      id: "doc_acc_" + Date.now() + "_" + nextAccLetterVer,
+      id: registeredDocId,
       name: `Signed Acceptance Declaration (v${nextAccLetterVer}).pdf`,
       type: "acceptance",
       url: signedAcceptanceUrl,
@@ -374,6 +478,18 @@ export class AdmissionService {
     beneficiary.admissionStatus = "Acceptance Uploaded";
     beneficiary.status = ProgramStatus.PENDING_PHOTO; // Mark status pending admin check
     beneficiary.updatedAt = new Date().toISOString();
+
+    // Write to Workflow History secure table!
+    try {
+      await DbRepo.saveWorkflowHistory({
+        beneficiaryId: beneficiary.id,
+        oldStatus: oldAdmissionStatus,
+        newStatus: "Acceptance Uploaded",
+        changedBy: beneficiary.email || "STUDENT_PORTAL",
+        changedAt: new Date().toISOString(),
+        remarks: "Trainee successfully completed supplemental profiles and signed/uploaded acceptance offer terms."
+      });
+    } catch (err) {}
 
     // 6. Generate detailed audit log traces
     await this.logAction(

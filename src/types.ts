@@ -11,8 +11,11 @@ export enum Gender {
 
 export enum ProgramStatus {
   DRAFT = "DRAFT",
+  PENDING = "PENDING",
   PENDING_PHOTO = "PENDING_PHOTO",
   UNDER_REVIEW = "UNDER_REVIEW",
+  ADMITTED = "ADMITTED",
+  ACCEPTED = "ACCEPTED",
   VERIFIED = "VERIFIED",
   ENROLLED = "ENROLLED",
   IN_TRAINING = "IN_TRAINING",
@@ -148,6 +151,7 @@ export interface Beneficiary {
   bankSortCode?: string;
   bankAccountNumber?: string;
   educationQualification?: string;
+  dateOfBirth?: string;
 }
 
 export interface OrganizationSettings {
@@ -161,8 +165,23 @@ export interface OrganizationSettings {
   letterheadUrl: string;
   signatureUrl: string;
   stampUrl: string;
+  fmeLogoUrl?: string;
+  ideasLogoUrl?: string;
+  worldBankLogoUrl?: string;
+  nbteLogoUrl?: string;
+  customLogoUrl?: string;
   watermarkText?: string;
   watermarkEnabled?: boolean;
+  admissionLetterheadUrl?: string;
+  acceptanceLetterheadUrl?: string;
+  enrollmentLetterheadUrl?: string;
+  certificateBackgroundUrl?: string;
+  photoAlbumHeaderUrl?: string;
+  trainingVenue?: string;
+  trainingStartDate?: string;
+  trainingEndDate?: string;
+  attendanceThreshold?: number;
+  completionThreshold?: number;
   updatedAt?: string;
 }
 
@@ -236,3 +255,14 @@ export interface GeneratedDocument {
   verifiedAt?: string;
   emailDeliveryStatus?: string;
 }
+
+export interface WorkflowHistory {
+  id?: number | string;
+  beneficiaryId: string;
+  oldStatus: string;
+  newStatus: string;
+  changedBy: string;
+  changedAt: string;
+  remarks?: string;
+}
+

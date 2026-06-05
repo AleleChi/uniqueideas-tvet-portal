@@ -25,14 +25,14 @@ export class DocumentService {
   }
 
   /**
-   * Generates a new versioned document for a beneficiary, uploads to Cloudinary, and registers it.
+   * Generates a new versioned document for a beneficiary, uploads to Cloudinary, registers it, and returns both the record and PDF buffer.
    */
-  static async generateDocument(
+  static async generateDocumentWithBuffer(
     beneficiaryId: string,
     documentType: DocumentType,
     generatedBy: string,
     forceNewVersion: boolean = false
-  ): Promise<GeneratedDocument> {
+  ): Promise<{ document: GeneratedDocument; pdfBuffer: Buffer }> {
     const beneficiary = await this.getBeneficiary(beneficiaryId);
     if (!beneficiary) {
       throw new Error(`Beneficiary with ID ${beneficiaryId} not found.`);
@@ -109,22 +109,22 @@ export class DocumentService {
     let pdfBuffer: Buffer;
     switch (documentType) {
       case DocumentType.ADMISSION_LETTER:
-        pdfBuffer = await PdfService.generateAdmissionLetterPdf(beneficiary, meta);
+        pdfBuffer = await PdfService.generateAdmissionLetterPdf(beneficiary, meta) as Buffer;
         break;
       case DocumentType.ACCEPTANCE_LETTER:
-        pdfBuffer = await PdfService.generateAcceptanceLetterPdf(beneficiary, meta);
+        pdfBuffer = await PdfService.generateAcceptanceLetterPdf(beneficiary, meta) as Buffer;
         break;
       case DocumentType.ADMISSION_FORM:
-        pdfBuffer = await PdfService.generateAdmissionFormPdf(beneficiary, meta);
+        pdfBuffer = await PdfService.generateAdmissionFormPdf(beneficiary, meta) as Buffer;
         break;
       case DocumentType.PHOTO_ALBUM:
         pdfBuffer = await PdfService.generatePhotoAlbumPdf(beneficiary, meta);
         break;
       case DocumentType.ENROLLMENT_CONFIRMATION:
-        pdfBuffer = await PdfService.generateEnrollmentConfirmationPdf(beneficiary, meta);
+        pdfBuffer = await PdfService.generateEnrollmentConfirmationPdf(beneficiary, meta) as Buffer;
         break;
       case DocumentType.COMPLETION_CERTIFICATE:
-        pdfBuffer = await PdfService.generateCompletionCertificatePdf(beneficiary, meta);
+        pdfBuffer = await PdfService.generateCompletionCertificatePdf(beneficiary, meta) as Buffer;
         break;
       default:
         throw new Error(`Unsupported document type requested: ${documentType}`);
@@ -156,15 +156,43 @@ export class DocumentService {
       throw new Error(`Failed to save generated document record for ${documentType} in the database.`);
     }
 
+    try {
+      await DbRepo.saveDeliveryLog({
+        documentId: docId,
+        beneficiaryId,
+        deliveryType: "Generated",
+        recipient: beneficiary.email || `${beneficiary.firstName} ${beneficiary.lastName}`,
+        sentBy: generatedBy,
+        status: "Generated Successfully"
+      });
+    } catch (logErr) {
+      console.error("[DocumentService] Failed to log document generation tracking:", logErr);
+    }
+
     // If it's a new version, log audit trail
     const actionType = latestVersion === 0 ? "DOC_GENERATE" : "DOC_REGENERATE";
-    await DocumentService.logAuditAction(
-      generatedBy,
-      actionType,
-      `Generated ${documentType} (v${nextVersion}) for candidate ${beneficiary.firstName} ${beneficiary.lastName}. Url: ${pdfUrl}`
-    );
+    try {
+      await DocumentService.logAuditAction(
+        generatedBy,
+        actionType,
+        `Generated ${documentType} (v${nextVersion}) for candidate ${beneficiary.firstName} ${beneficiary.lastName}. Url: ${pdfUrl}`
+      );
+    } catch (logErr) {}
 
-    return newDoc;
+    return { document: newDoc, pdfBuffer };
+  }
+
+  /**
+   * Generates a new versioned document for a beneficiary, uploads to Cloudinary, and registers it.
+   */
+  static async generateDocument(
+    beneficiaryId: string,
+    documentType: DocumentType,
+    generatedBy: string,
+    forceNewVersion: boolean = false
+  ): Promise<GeneratedDocument> {
+    const { document } = await this.generateDocumentWithBuffer(beneficiaryId, documentType, generatedBy, forceNewVersion);
+    return document;
   }
 
   /**
@@ -317,6 +345,18 @@ export class DocumentService {
       } catch (dbErr) {
         console.error("Failed to update status to Delivered:", dbErr);
       }
+      try {
+        await DbRepo.saveDeliveryLog({
+          documentId: doc.id,
+          beneficiaryId: doc.beneficiaryId,
+          deliveryType: "Emailed",
+          recipient: emailToDeliver,
+          sentBy: doc.generatedBy || "SYSTEM",
+          status: "Emailed Successfully"
+        });
+      } catch (logErr) {
+        console.error("[DocumentService] Failed to log email delivery tracking:", logErr);
+      }
       await DocumentService.logAuditAction(
         doc.generatedBy,
         "DOC_EMAIL_DELIVERY",
@@ -324,6 +364,16 @@ export class DocumentService {
       );
       return { success: true, message: `Email dispatched successfully to ${emailToDeliver}.` };
     } else {
+      try {
+        await DbRepo.saveDeliveryLog({
+          documentId: doc.id,
+          beneficiaryId: doc.beneficiaryId,
+          deliveryType: "Emailed",
+          recipient: emailToDeliver,
+          sentBy: doc.generatedBy || "SYSTEM",
+          status: "Emailed Dispatch Failed"
+        });
+      } catch (logErr) {}
       try {
         await DbRepo.updateGeneratedDocumentEmailStatus(doc.id, "Failed");
       } catch (dbErr) {}

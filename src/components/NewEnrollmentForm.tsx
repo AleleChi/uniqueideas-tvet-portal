@@ -8,6 +8,7 @@ import { Camera, Upload, AlertCircle, Sparkles, Trash2, Check, ArrowRight, Shiel
 import { Beneficiary, Gender, ProgramStatus, CustomField } from "../types";
 
 interface NewEnrollmentFormProps {
+  key?: string | number;
   customFields?: CustomField[];
   onSave: (data: Partial<Beneficiary>) => void;
   onCancel: () => void;
@@ -30,6 +31,8 @@ export function NewEnrollmentForm({
   // Field values state
   const [firstName, setFirstName] = useState(beneficiary?.firstName || "");
   const [lastName, setLastName] = useState(beneficiary?.lastName || "");
+  const [otherName, setOtherName] = useState(beneficiary?.otherName || "");
+  const [skillSector, setSkillSector] = useState(beneficiary?.skillSector || "Computer Hardware and Cell Phone Repairs");
   const [nin, setNin] = useState(beneficiary?.nin || "");
   const [bvn, setBvn] = useState(beneficiary?.bvn || "");
   const [gender, setGender] = useState<Gender>(beneficiary?.gender || Gender.MALE);
@@ -39,6 +42,18 @@ export function NewEnrollmentForm({
   const [phoneNumber, setPhoneNumber] = useState(beneficiary?.phoneNumber || "");
   const [residentialAddress, setResidentialAddress] = useState(beneficiary?.residentialAddress || "");
   const [batch, setBatch] = useState(beneficiary?.batch || `Batch ${new Date().getFullYear()}-C`);
+  
+  // Supplementary admission form fields
+  const [guardianName, setGuardianName] = useState(beneficiary?.guardianName || "");
+  const [guardianAddress, setGuardianAddress] = useState(beneficiary?.guardianAddress || "");
+  const [guardianPhone, setGuardianPhone] = useState(beneficiary?.guardianPhone || "");
+  const [physicalChallenge, setPhysicalChallenge] = useState(beneficiary?.physicalChallenge || "");
+  const [bankAccountHolder, setBankAccountHolder] = useState(beneficiary?.bankAccountHolder || "");
+  const [bankName, setBankName] = useState(beneficiary?.bankName || "");
+  const [bankSortCode, setBankSortCode] = useState(beneficiary?.bankSortCode || "");
+  const [bankAccountNumber, setBankAccountNumber] = useState(beneficiary?.bankAccountNumber || "");
+  const [educationQualification, setEducationQualification] = useState(beneficiary?.educationQualification || "");
+  const [dateOfBirth, setDateOfBirth] = useState(beneficiary?.dateOfBirth || "");
   
   // Dynamic fields state
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>(() => {
@@ -88,6 +103,8 @@ export function NewEnrollmentForm({
     const values: Partial<Beneficiary> = {
       firstName,
       lastName,
+      otherName,
+      skillSector,
       nin,
       bvn,
       gender,
@@ -99,7 +116,17 @@ export function NewEnrollmentForm({
       batch,
       photo: preloadedPhoto,
       status: ProgramStatus.VERIFIED,
-      customFields: customFieldValues
+      customFields: customFieldValues,
+      guardianName,
+      guardianAddress,
+      guardianPhone,
+      physicalChallenge,
+      bankAccountHolder,
+      bankName,
+      bankSortCode,
+      bankAccountNumber,
+      educationQualification,
+      dateOfBirth
     };
 
     onSave(values);
@@ -123,17 +150,29 @@ export function NewEnrollmentForm({
 
       <form onSubmit={handleSubmit} className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         
-        {/* LEFT COLUMN: TWO COLUMN FORM ENTRY FIELD CARD (8/12 columns) */}
         <div className="lg:col-span-8 bg-white border border-slate-200 rounded-xl p-4 sm:p-6 shadow-xs border-l-4 border-indigo-600 space-y-6">
           
-          {/* Section 1: Personal Details */}
+          {/* SECTION A: TRAINEE INFORMATION */}
           <div className="space-y-4">
-            <h3 className="text-xs font-display font-bold text-slate-800 uppercase tracking-wider pb-1 border-b border-slate-100">
-              1. Personal Information
+            <h3 className="text-xs font-display font-bold text-slate-800 uppercase tracking-wider pb-1 border-b border-indigo-100 flex items-center justify-between animate-in fade-in duration-200">
+              <span className="text-indigo-900">SECTION A: TRAINEE INFORMATION</span>
+              <span className="text-[9px] text-slate-400 font-mono normal-case font-medium">Trainee profile & credentials</span>
             </h3>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               
+              <div className="space-y-1.5 font-sans">
+                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Surname (Last Name)</label>
+                <input 
+                  type="text" 
+                  required
+                  placeholder="Adeyemi"
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition font-semibold"
+                />
+              </div>
+
               <div className="space-y-1.5">
                 <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">First Name</label>
                 <input 
@@ -142,20 +181,36 @@ export function NewEnrollmentForm({
                   placeholder="Oluwaseun"
                   value={firstName}
                   onChange={(e) => setFirstName(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition font-semibold"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Other Names</label>
+                <input 
+                  type="text" 
+                  placeholder="e.g. John (Optional)"
+                  value={otherName}
+                  onChange={(e) => setOtherName(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition"
                 />
               </div>
 
               <div className="space-y-1.5">
-                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Last Name</label>
-                <input 
-                  type="text" 
-                  required
-                  placeholder="Adeyemi"
-                  value={lastName}
-                  onChange={(e) => setLastName(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition"
-                />
+                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Skill Applied For</label>
+                <select
+                  value={skillSector}
+                  onChange={(e) => setSkillSector(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition cursor-pointer font-semibold text-slate-800"
+                >
+                  <option value="Computer Hardware and Cell Phone Repairs">Computer Hardware and Cell Phone Repairs</option>
+                  <option value="Renewable Energy and Solar Installation">Renewable Energy and Solar Installation</option>
+                  <option value="Graphics Design and Digital Marketing">Graphics Design and Digital Marketing</option>
+                  <option value="Catering and Hotel Management">Catering and Hotel Management</option>
+                  <option value="Tailoring and Fashion Design">Tailoring and Fashion Design</option>
+                  <option value="Automobile Engineering">Automobile Engineering</option>
+                  <option value="Plumbing and Pipe Fitting">Plumbing and Pipe Fitting</option>
+                </select>
               </div>
 
               <div className="space-y-1.5 md:col-span-2">
@@ -176,8 +231,8 @@ export function NewEnrollmentForm({
                     disabled={verifyingNin || ninVerified}
                     className={`px-4 py-2 text-[10px] font-bold font-mono uppercase tracking-wide rounded-lg flex items-center gap-1.5 cursor-pointer transition ${
                       ninVerified 
-                        ? "bg-slate-100 border border-slate-200 text-emerald-600 cursor-default" 
-                        : "bg-indigo-950 text-white hover:bg-slate-900 shadow-sm"
+                        ? "bg-slate-100 border border-slate-200 text-emerald-600 cursor-default font-semibold" 
+                        : "bg-indigo-950 text-white hover:bg-slate-900 shadow-sm font-semibold"
                     }`}
                   >
                     {verifyingNin ? "Checking..." : ninVerified ? "✓ Verified" : "Verify NIN"}
@@ -186,14 +241,25 @@ export function NewEnrollmentForm({
               </div>
 
               <div className="space-y-1.5">
-                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Bank Verification Number (BVN)</label>
+                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Phone Number (WhatsApp)</label>
                 <input 
-                  type="text" 
+                  type="tel" 
                   required
-                  placeholder="22149583904"
-                  maxLength={11}
-                  value={bvn}
-                  onChange={(e) => setBvn(e.target.value)}
+                  placeholder="+234 812 345 6789"
+                  value={phoneNumber}
+                  onChange={(e) => setPhoneNumber(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition font-semibold"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Work Email Address</label>
+                <input 
+                  type="email" 
+                  required
+                  placeholder="username@uniqueideas.dontechservicesconst.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition"
                 />
               </div>
@@ -223,65 +289,8 @@ export function NewEnrollmentForm({
                 />
               </div>
 
-              {/* Gender Radio Choice Chips */}
               <div className="space-y-1.5 md:col-span-2">
-                <span className="text-[10px] font-bold font-mono text-slate-500 uppercase block mb-1">Gender</span>
-                <div className="flex gap-2">
-                  {[Gender.MALE, Gender.FEMALE, Gender.OTHER].map(gen => (
-                    <button
-                      key={gen}
-                      type="button"
-                      onClick={() => setGender(gen)}
-                      className={`px-4 py-2 border rounded-lg text-xs font-semibold cursor-pointer transition ${
-                        gender === gen 
-                          ? "bg-indigo-950 text-white border-indigo-900 shadow-sm" 
-                          : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"
-                      }`}
-                    >
-                      {gen}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-            </div>
-
-          </div>
-
-          {/* Section 2: Contact Details */}
-          <div className="space-y-4 pt-4 border-t border-slate-100">
-            <h3 className="text-xs font-display font-bold text-slate-800 uppercase tracking-wider pb-1 border-b border-slate-100">
-              2. Contact & Coordinates
-            </h3>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Work Email Address</label>
-                <input 
-                  type="email" 
-                  required
-                  placeholder="username@uniqueideas.dontechservicesconst.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Phone Number</label>
-                <input 
-                  type="tel" 
-                  required
-                  placeholder="+234 812 345 6789"
-                  value={phoneNumber}
-                  onChange={(e) => setPhoneNumber(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition"
-                />
-              </div>
-
-              <div className="space-y-1.5 md:col-span-2">
-                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Residential Address</label>
+                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Contact Address</label>
                 <textarea 
                   required
                   rows={2}
@@ -293,11 +302,56 @@ export function NewEnrollmentForm({
               </div>
 
               <div className="space-y-1.5">
-                <label className="text-[10px] font-bold font-mono text-slate-400 font-bold text-slate-500 uppercase">Disbursement Batch</label>
+                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Date of Birth (DD/MM/YYYY)</label>
+                <input 
+                  type="text" 
+                  required
+                  placeholder="e.g. 15/08/1998"
+                  value={dateOfBirth}
+                  onChange={(e) => setDateOfBirth(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition font-semibold"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Highest Educational Qualification</label>
+                <input 
+                  type="text" 
+                  required
+                  placeholder="e.g. OND, SSCE, B.Sc"
+                  value={educationQualification}
+                  onChange={(e) => setEducationQualification(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition font-semibold"
+                />
+              </div>
+
+              {/* Retained system controls for Gender and Batch in Trainee Information */}
+              <div className="space-y-1.5">
+                <span className="text-[10px] font-bold font-mono text-slate-500 uppercase block mb-1">Gender</span>
+                <div className="flex gap-2">
+                  {[Gender.MALE, Gender.FEMALE, Gender.OTHER].map(gen => (
+                    <button
+                      key={gen}
+                      type="button"
+                      onClick={() => setGender(gen)}
+                      className={`px-3 py-1.5 border rounded-lg text-xs font-semibold cursor-pointer transition ${
+                        gender === gen 
+                          ? "bg-indigo-950 text-white border-indigo-900 shadow-sm font-semibold" 
+                          : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"
+                      }`}
+                    >
+                      {gen}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Disbursement Batch</label>
                 <select
                   value={batch}
                   onChange={(e) => setBatch(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition cursor-pointer"
+                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition cursor-pointer text-slate-800 font-semibold"
                 >
                   <option value={`Batch ${new Date().getFullYear()}-A`}>Batch {new Date().getFullYear()}-A</option>
                   <option value={`Batch ${new Date().getFullYear()}-B`}>Batch {new Date().getFullYear()}-B</option>
@@ -308,11 +362,157 @@ export function NewEnrollmentForm({
             </div>
           </div>
 
-          {/* Section 3: Schema Fields */}
+          {/* SECTION B: PARENT/GUARDIAN INFORMATION */}
+          <div className="space-y-4 pt-4 border-t border-slate-100">
+            <h3 className="text-xs font-display font-bold text-indigo-900 uppercase tracking-wider pb-1 border-b border-indigo-100 flex items-center justify-between">
+              <span>SECTION B: PARENT/GUARDIAN INFORMATION</span>
+              <span className="text-[9px] text-slate-400 font-mono normal-case font-medium">Emergency parent/guardian contacts</span>
+            </h3>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              
+              <div className="space-y-1.5 md:col-span-2">
+                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Name of Parent/Guardian</label>
+                <input 
+                  type="text" 
+                  required
+                  placeholder="Surname first, e.g. Adeyemi John"
+                  value={guardianName}
+                  onChange={(e) => setGuardianName(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition font-semibold"
+                />
+              </div>
+
+              <div className="space-y-1.5 md:col-span-2">
+                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Address of Parent/Guardian</label>
+                <textarea 
+                  required
+                  rows={2}
+                  placeholder="Full physical home or office location"
+                  value={guardianAddress}
+                  onChange={(e) => setGuardianAddress(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition leading-relaxed"
+                />
+              </div>
+
+              <div className="space-y-1.5 md:col-span-2">
+                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Phone Number of Parent/Guardian</label>
+                <input 
+                  type="text" 
+                  required
+                  placeholder="e.g. +234 803 234 5678"
+                  value={guardianPhone}
+                  onChange={(e) => setGuardianPhone(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition"
+                />
+              </div>
+
+            </div>
+          </div>
+
+          {/* SECTION C: SPECIAL NEEDS */}
+          <div className="space-y-4 pt-4 border-t border-slate-100">
+            <h3 className="text-xs font-display font-bold text-indigo-900 uppercase tracking-wider pb-1 border-b border-indigo-100 flex items-center justify-between">
+              <span>SECTION C: SPECIAL NEEDS</span>
+              <span className="text-[9px] text-slate-400 font-mono normal-case font-medium">Welfare & accessibility details</span>
+            </h3>
+
+            <div className="grid grid-cols-1 gap-4">
+              
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Any Physical Challenge? (State 'None' or describe the challenges)</label>
+                <input 
+                  type="text" 
+                  required
+                  placeholder="e.g. None, or describe kind of challenge"
+                  value={physicalChallenge}
+                  onChange={(e) => setPhysicalChallenge(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition"
+                />
+              </div>
+
+            </div>
+          </div>
+
+          {/* SECTION D: BANK DETAILS */}
+          <div className="space-y-4 pt-4 border-t border-slate-100">
+            <h3 className="text-xs font-display font-bold text-indigo-900 uppercase tracking-wider pb-1 border-b border-indigo-100 flex items-center justify-between">
+              <span>SECTION D: BANK DETAILS</span>
+              <span className="text-[9px] text-slate-400 font-mono normal-case font-medium">Stipend bank disbursement channels</span>
+            </h3>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              
+              <div className="space-y-1.5 md:col-span-2">
+                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Name of Account Holder</label>
+                <input 
+                  type="text" 
+                  required
+                  placeholder="e.g. Oluwaseun Adeyemi"
+                  value={bankAccountHolder}
+                  onChange={(e) => setBankAccountHolder(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition font-semibold"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Bank Verification Number (BVN)</label>
+                <input 
+                  type="text" 
+                  required
+                  placeholder="22149583904"
+                  maxLength={11}
+                  value={bvn}
+                  onChange={(e) => setBvn(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition font-semibold font-mono"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Bank Name (Full Name)</label>
+                <input 
+                  type="text" 
+                  required
+                  placeholder="e.g. First Bank of Nigeria"
+                  value={bankName}
+                  onChange={(e) => setBankName(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition font-semibold"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Bank Sort Code</label>
+                <input 
+                  type="text" 
+                  required
+                  placeholder="e.g. 011151003"
+                  value={bankSortCode}
+                  onChange={(e) => setBankSortCode(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition font-mono"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Bank Account Number</label>
+                <input 
+                  type="text" 
+                  required
+                  maxLength={10}
+                  placeholder="10-digit NUBAN number"
+                  value={bankAccountNumber}
+                  onChange={(e) => setBankAccountNumber(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition font-semibold font-mono"
+                />
+              </div>
+
+            </div>
+          </div>
+
+          {/* Section 4: Schema Fields */}
           {customFields.length > 0 && (
-            <div className="space-y-4 pt-4 border-t border-slate-100">
-              <h3 className="text-xs font-display font-bold text-slate-800 uppercase tracking-wider pb-1 border-b border-slate-100">
-                3. Additional Schema fields
+            <div className="space-y-4 pt-4 border-t border-slate-100 animate-in fade-in duration-300">
+              <h3 className="text-xs font-display font-bold text-indigo-900 uppercase tracking-wider pb-1 border-b border-indigo-100">
+                Additional Schema Fields
               </h3>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -327,7 +527,7 @@ export function NewEnrollmentForm({
                       placeholder={`Enter custom ${f.label.toLowerCase()}`}
                       value={customFieldValues[f.label] || ""}
                       onChange={(e) => handleCustomFieldChange(f.label, e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition"
+                      className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition font-semibold"
                     />
                   </div>
                 ))}

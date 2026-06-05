@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { Beneficiary, ProgramStatus } from "../types";
 import { downloadWithAuth } from "../utils/authFetch";
+import { AlbumGenerator } from "./AlbumGenerator";
 
 interface ReportsWorkspaceProps {
   beneficiaries: Beneficiary[];
@@ -70,7 +71,7 @@ export function ReportsWorkspace({ beneficiaries }: ReportsWorkspaceProps) {
             }`}
           >
             <ImageIcon className="w-4 h-4 text-indigo-600" />
-            Photo Album Grid
+            Photo Album Registry
           </button>
 
           <button
@@ -231,72 +232,10 @@ export function ReportsWorkspace({ beneficiaries }: ReportsWorkspaceProps) {
       )}
 
       {/* ----------------------------------------------------------------- */}
-      {/* VIEW B: COMPACT PHOTO CARDS CATALOG (3.png) */}
+      {/* VIEW B: OFFICIAL PHOTO ALBUM REGISTRY (Photo Left, Details Right) */}
       {/* ----------------------------------------------------------------- */}
       {activeReportTab === "album" && (
-        <div className="space-y-6">
-          
-          <div className="p-4 bg-white border border-slate-200 rounded-xl flex items-center justify-between shadow-xs">
-            <span className="text-xs text-slate-400 font-mono">Cataloging {displayList.length} candidate biometrics</span>
-            <button 
-              onClick={() => window.print()}
-              className="bg-indigo-600 hover:bg-slate-900 text-white font-bold py-2 px-4 rounded-lg flex items-center gap-1.5 text-xs shadow cursor-pointer transition"
-            >
-              <Printer className="w-3.5 h-3.5" />
-              Print Album Cards
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {displayList.map(b => (
-              <div 
-                key={b.id}
-                className="bg-white border border-slate-200 rounded-xl p-4 text-center space-y-4 hover:shadow-md transition relative flex flex-col justify-between"
-              >
-                
-                {b.status === ProgramStatus.VERIFIED && (
-                  <div className="absolute top-2 right-2 bg-emerald-50 text-emerald-700 font-bold text-[8px] px-2 py-0.5 rounded-full border border-emerald-100 flex items-center gap-0.5">
-                    <CheckCircle2 className="w-2.5 h-2.5" /> LOCK ACTIVE
-                  </div>
-                )}
-
-                <div>
-                  <img 
-                    src={b.photo} 
-                    alt="Biometric Capture" 
-                    className="w-24 h-24 rounded-full object-cover border border-slate-200 mx-auto"
-                  />
-                  
-                  <div className="space-y-0.5 mt-3">
-                    <h4 className="font-display font-bold text-slate-900 text-[13px] uppercase">
-                      {b.lastName}, {b.firstName}
-                    </h4>
-                    <p className="text-[10px] font-mono text-slate-400">
-                      REF ID: {b.id}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="pt-2 border-t border-slate-100 font-mono text-[9px] text-slate-500 space-y-1">
-                  <div className="flex justify-between">
-                    <span>NIN Number:</span>
-                    <span className="font-semibold text-slate-800">{b.nin.substring(0,6)}*****</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>BVN Profile:</span>
-                    <span className="font-semibold text-slate-800">{b.bvn.substring(0,4)}******</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>LGA Hub:</span>
-                    <span className="font-semibold text-indigo-700">{b.state.replace(" State", "")}</span>
-                  </div>
-                </div>
-
-              </div>
-            ))}
-          </div>
-
-        </div>
+        <AlbumGenerator beneficiaries={beneficiaries} />
       )}
 
       {/* ----------------------------------------------------------------- */}
