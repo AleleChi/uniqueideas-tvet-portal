@@ -6,6 +6,7 @@
 import React, { useState, useEffect } from "react";
 import { UserSession, Beneficiary, ProgramStatus } from "../types";
 import { authFetch } from "../utils/authFetch";
+import { API_BASE_URL } from "../config/api";
 import { AdmissionFormPage } from "./AdmissionFormPage";
 import {
   LogOut,
@@ -41,6 +42,7 @@ export function TraineePortal({ session, onLogout }: TraineePortalProps) {
   const [candidate, setCandidate] = useState<Beneficiary | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
+  const [previewDoc, setPreviewDoc] = useState<any | null>(null);
 
   // Navigation
   const [activeTab, setActiveTab] = useState<"dashboard" | "profile" | "letter" | "form" | "documents" | "notifications">("dashboard");
@@ -904,37 +906,76 @@ export function TraineePortal({ session, onLogout }: TraineePortalProps) {
 
                 <div className="space-y-3">
                   {[
-                    { name: "Provisional Offer of Admission Letter", size: "A4 Printable", url: candidate.admissionLetterUrl, ready: !!candidate.admissionLetterUrl },
-                    { name: "Formal Signed Acceptance Scan Draft", size: "Scanned Template Upload", url: candidate.acceptanceLetterUrl, ready: !!candidate.acceptanceLetterUrl },
-                    { name: "Official System Verification Admission Form", size: "Encrypted Dossier PDF", url: `/api/admissions/${candidate.id}/form/pdf`, ready: !!candidate.admissionFormPdfUrl },
-                    { name: "Official Federal Enrollment Confirmation Certificate", size: "Enrollment Confirmed", url: candidate.enrollmentLetterUrl, ready: isEnrolled && !!candidate.enrollmentLetterUrl }
-                  ].map((doc, idx) => (
-                    <div key={idx} className="flex items-center justify-between p-3.5 border border-slate-100 rounded-xl hover:bg-slate-50 transition-colors">
-                      <div className="flex items-center gap-3">
-                        <div className={`p-2 rounded-lg ${doc.ready ? "bg-indigo-50 text-indigo-650" : "bg-slate-100 text-slate-350"}`}>
-                          <FileText className="w-5 h-5" />
+                    { name: "Provisional Offer of Admission Letter", size: "A4 Printable", url: candidate ? candidate.admissionLetterUrl : null, ready: candidate ? !!candidate.admissionLetterUrl : false },
+                    { name: "Formal Signed Acceptance Scan Draft", size: "Scanned Template Upload", url: candidate ? candidate.acceptanceLetterUrl : null, ready: candidate ? !!candidate.acceptanceLetterUrl : false },
+                    { name: "Official System Verification Admission Form", size: "Encrypted Dossier PDF", url: candidate ? `/api/admissions/${candidate.id}/form/pdf` : null, ready: candidate ? !!candidate.admissionFormPdfUrl : false },
+                    { name: "Official Federal Enrollment Confirmation Certificate", size: "Enrollment Confirmed", url: candidate ? candidate.enrollmentLetterUrl : null, ready: candidate ? (isEnrolled && !!candidate.enrollmentLetterUrl) : false }
+                  ].map((doc, idx) => {
+                    if (!doc.url) return null;
+                    const absoluteUrl = doc.url.startsWith("/") ? `${API_BASE_URL}${doc.url}` : doc.url;
+                    
+                    return (
+                      <div key={idx} className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 border border-slate-100 rounded-xl hover:bg-slate-50 transition-colors gap-3">
+                        <div className="flex items-center gap-3">
+                          <div className={`p-2 rounded-lg ${doc.ready ? "bg-indigo-50 text-indigo-650" : "bg-slate-100 text-slate-350"}`}>
+                            <FileText className="w-5 h-5" />
+                          </div>
+                          <div className="text-left">
+                            <h4 className="text-xs font-bold text-slate-850 leading-none">{doc.name}</h4>
+                            <span className="text-[10px] text-slate-400 font-mono mt-1.5 block">{doc.size}</span>
+                          </div>
                         </div>
-                        <div className="text-left">
-                          <h4 className="text-xs font-bold text-slate-850 leading-none">{doc.name}</h4>
-                          <span className="text-[10px] text-slate-400 font-mono mt-1.5 block">{doc.size}</span>
-                        </div>
-                      </div>
 
-                      {doc.ready ? (
-                        <a
-                          href={doc.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-[11px] font-bold text-indigo-650 hover:text-indigo-900 uppercase font-mono flex items-center gap-1 transition"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          <span>Download</span>
-                        </a>
-                      ) : (
-                        <span className="text-[10px] font-medium font-mono text-slate-350 bg-slate-50 px-2.5 py-1 rounded">NOT ACTIVE</span>
-                      )}
-                    </div>
-                  ))}
+                        {doc.ready ? (
+                          <div className="flex items-center gap-3 self-end sm:self-auto font-mono text-[11px] font-bold">
+                            {(absoluteUrl.toLowerCase().includes("pdf") || absoluteUrl.toLowerCase().includes("download") || absoluteUrl.toLowerCase().includes("cloudinary")) ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  let previewUrl = absoluteUrl;
+                                  if (previewUrl.includes("?")) {
+                                    if (!previewUrl.includes("inline=true")) {
+                                      previewUrl += "&inline=true";
+                                    }
+                                  } else {
+                                    previewUrl += "?inline=true";
+                                  }
+                                  setPreviewDoc({
+                                    id: `portal_preview_${idx}`,
+                                    documentType: doc.name.toUpperCase().replace(/\s+/g, "_"),
+                                    version: 1,
+                                    pdfUrl: previewUrl,
+                                    generatedBy: "System Process",
+                                    createdAt: new Date().toISOString()
+                                  });
+                                }}
+                                className="text-indigo-650 hover:text-indigo-900 uppercase flex items-center gap-1 transition bg-transparent border-0 cursor-pointer p-0 font-bold"
+                              >
+                                <Eye className="w-3.5 h-3.5" />
+                                <span>Preview</span>
+                              </button>
+                            ) : null}
+
+                            {(absoluteUrl.toLowerCase().includes("pdf") || absoluteUrl.toLowerCase().includes("download") || absoluteUrl.toLowerCase().includes("cloudinary")) && (
+                              <span className="text-slate-200">|</span>
+                            )}
+
+                            <a
+                              href={absoluteUrl.includes("?") ? absoluteUrl.replace("inline=true", "inline=false") : `${absoluteUrl}${absoluteUrl.includes("/form/pdf") ? "?inline=false" : ""}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-slate-600 hover:text-slate-900 uppercase flex items-center gap-1 transition no-underline font-bold"
+                            >
+                              <Download className="w-3.5 h-3.5 text-emerald-600" />
+                              <span>Download</span>
+                            </a>
+                          </div>
+                        ) : (
+                          <span className="text-[10px] font-medium font-mono text-slate-350 bg-slate-50 px-2.5 py-1 rounded self-end sm:self-auto">NOT ACTIVE</span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -993,8 +1034,70 @@ export function TraineePortal({ session, onLogout }: TraineePortalProps) {
 
         </div>
 
+        {/* Document Preview Modal */}
+        {previewDoc && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-[9999] flex items-center justify-center p-4 pointer-events-auto">
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-4xl w-full h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+              {/* Header */}
+              <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                <div>
+                  <h4 className="text-xs font-bold text-slate-800 uppercase tracking-tight">
+                    Document Preview Tool
+                  </h4>
+                  <p className="text-[10px] text-slate-500 font-mono mt-0.5 uppercase">
+                    {previewDoc.documentType.replace(/_/g, " ")} • Version v{previewDoc.version}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setPreviewDoc(null)}
+                  className="p-1.5 hover:bg-slate-100 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer transition border-0 bg-transparent flex items-center justify-center"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Content Body */}
+              <div className="flex-1 bg-slate-100 relative p-2 min-h-0">
+                <iframe
+                  title="PDF Document Preview"
+                  src={previewDoc.pdfUrl}
+                  className="w-full h-full border-0 rounded-lg shadow-inner"
+                />
+              </div>
+
+              {/* Footer Metadata & Actions */}
+              <div className="p-4 bg-white border-t border-slate-150 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 text-[10px]">
+                <div className="font-mono text-slate-500 space-y-0.5">
+                  <div>Compiled on: <span className="font-bold text-slate-700">{new Date(previewDoc.createdAt).toLocaleString("en-GB")}</span></div>
+                  <div>Recorded by operator: <span className="font-bold text-slate-700">{previewDoc.generatedBy}</span></div>
+                </div>
+
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  <a
+                    href={previewDoc.pdfUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 sm:flex-none text-center bg-slate-150 hover:bg-slate-200 border border-slate-200 text-slate-700 font-bold px-3.5 py-2 rounded-lg cursor-pointer transition"
+                  >
+                    Open In New Tab
+                  </a>
+                  <a
+                    href={previewDoc.pdfUrl.replace("inline=true", "inline=false")}
+                    download={`document_${previewDoc.id}.pdf`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 sm:flex-none text-center bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-3.5 py-2 rounded-lg cursor-pointer transition shadow-xs"
+                  >
+                    Download PDF
+                  </a>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Unified Portal footer notices */}
-        <footer className="bg-white border-t border-slate-200 py-4 px-6 text-center text-[10px] text-slate-400 font-mono mt-auto shrink-0">
+        <footer className="bg-white border-t border-slate-200 py-4 px-6 text-center text-[10px] text-slate-400 font-mono mt-auto shrink-0 font-sans">
           <p>© {new Date().getFullYear()} Federal Ministry of Education · IDEAS-TVET Skills Sector Initiative</p>
         </footer>
 

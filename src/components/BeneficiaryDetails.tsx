@@ -1122,13 +1122,13 @@ export function BeneficiaryDetails({
                   Open In New Tab
                 </a>
                 <a
-                  href={previewDoc.pdfUrl}
+                  href={previewDoc.pdfUrl ? previewDoc.pdfUrl.replace("inline=true", "inline=false") : "#"}
                   download={`document_${previewDoc.id}.pdf`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex-1 sm:flex-none text-center bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-3.5 py-2 rounded-lg cursor-pointer transition shadow-xs"
                 >
-                  Download PDF Certificate
+                  Download PDF
                 </a>
               </div>
             </div>

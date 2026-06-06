@@ -159,18 +159,18 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
   return (
     <div id="ideas-tvet-portal-layout" className="min-h-screen bg-slate-50 text-slate-900 font-sans antialiased selection:bg-emerald-600 selection:text-white">
       
-      {/* GOVERNMENT TOPMOST REGULATORY HEADER BAR */}
+      {/* LOCAL TSP ACCREDITED COMPLIANCE HEADER BAR */}
       <div className="bg-slate-950 border-b border-emerald-500/30 text-white py-2 px-6 flex items-center justify-between text-[10px] font-mono tracking-wider font-semibold">
         <div className="flex items-center gap-2">
           <span className="inline-block h-2 w-3.5 bg-emerald-500 rounded-xs"></span>
           <span className="inline-block h-2 w-3.5 bg-white rounded-xs"></span>
           <span className="inline-block h-2 w-3.5 bg-emerald-500 rounded-xs"></span>
-          <span className="text-slate-350 uppercase">Official Portal of the Federal Republic of Nigeria</span>
+          <span className="text-slate-350 uppercase">Accredited Training Service Provider (TSP) Portal · Participating in IDEAS-TVET Program</span>
         </div>
         <div className="hidden sm:flex items-center gap-4 text-slate-400">
           <span>COHORT B ADMISSIONS TIMELINE ACTIVE</span>
           <span>·</span>
-          <span>SYSTEM SECURITY: SECURE AES-256</span>
+          <span>STATE COORDINATION COMPLIANT</span>
         </div>
       </div>
 
@@ -181,14 +181,14 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
           {/* Institutional logo & name */}
           <a href="#" className="flex items-center gap-3 select-none group text-left">
             <div className="h-10 w-10 bg-emerald-950 rounded-xl flex items-center justify-center text-white font-bold border border-emerald-600/30 shadow-xs group-hover:scale-[101%] transition-all">
-              <Landmark className="w-5.5 h-5.5 text-emerald-400" />
+              <GraduationCap className="w-5.5 h-5.5 text-emerald-400" />
             </div>
             <div className="min-w-0">
               <span className="text-[9px] font-bold text-emerald-700 font-mono uppercase tracking-widest block leading-none">
-                Federal Ministry of Education
+                Accredited TVET Training Service Provider
               </span>
               <h2 className="text-[14px] font-black text-slate-900 font-display mt-0.5 leading-none tracking-tight">
-                IDEAS-TVET Initiative
+                IDEAS-TVET Skills Centre
               </h2>
             </div>
           </a>
@@ -320,22 +320,22 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
           
           {/* Hero text descriptor */}
           <div className="lg:col-span-7 space-y-6 text-left">
-            <div className="inline-flex items-center gap-2 bg-slate-100 border border-slate-200 px-3.5 py-1.5 rounded-full text-slate-700 font-extrabold font-mono text-[9px] uppercase tracking-wider">
+            <div className="inline-flex items-center gap-2 bg-slate-100 border border-slate-200 px-3.5 py-1.5 rounded-full text-emerald-800 font-extrabold font-mono text-[9px] uppercase tracking-wider">
               <span className="w-2 h-2 bg-emerald-500 rounded-full" />
-              <span>Federal Ministry of Education · IDEAS-TVET</span>
+              <span>Accredited Training Service Provider (TSP)</span>
             </div>
 
             <div className="space-y-3">
               <p className="text-emerald-700 font-extrabold font-mono text-xs uppercase tracking-widest block">
-                Sovereign Vocational Empowerment System
+                Innovative Skills Development & Trainee Success
               </p>
               <h1 className="text-3xl sm:text-5xl font-black text-slate-950 tracking-tight font-display leading-[1.12]">
-                Skills Development for <span className="text-emerald-900 block sm:inline">National Growth</span>
+                Training Excellence & <span className="text-emerald-900 block sm:inline">Industry Readiness</span>
               </h1>
             </div>
 
             <p className="text-xs sm:text-sm md:text-base text-slate-600 leading-relaxed font-medium max-w-xl">
-              Coordinating technical masteries with sovereign transparency. The Innovative Development for Effectiveness in the Acquisition of Skills (IDEAS) project, supported by the World Bank, empowers certified Training Service Providers (TSPs) to register candidates, track biometrics, compile credential histories, and verify credentials.
+              Equipping youth with future-focused skills through professional training courses. Under the Innovative Development for Effectiveness in the Acquisition of Skills (IDEAS) initiative—supported by the World Bank, the National Board for Technical Education (NBTE), and the Federal Ministry of Education—our center facilitates Admissions Management, digital tracking, and thorough Learning Support.
             </p>
 
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3.5 pt-4">
@@ -449,7 +449,7 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
         <div className="max-w-7xl mx-auto px-6">
           <div className="text-center mb-6">
             <span className="text-[9px] font-extrabold text-slate-400 font-mono uppercase tracking-widest block">
-              ACCREDITED PROGRAM PARTNERS & GOVERNANCE AUTHORITIES
+              SUPPORTING DEVELOPMENT PARTNERS & REGULATORY AUTHORITIES
             </span>
           </div>
 
@@ -458,7 +458,7 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
             <div className="border border-slate-150 px-4 py-3 bg-slate-50 rounded-xl flex items-center gap-2.5">
               <Landmark className="w-5 h-5 text-slate-500 shrink-0" />
               <div className="text-left leading-none">
-                <span className="text-[8px] font-mono font-bold text-slate-400 uppercase leading-none block">Supporting Body</span>
+                <span className="text-[8px] font-mono font-bold text-slate-400 uppercase leading-none block">Funding Partner</span>
                 <h5 className="text-[10px] font-extrabold text-slate-700 mt-1 uppercase font-mono">WORLD BANK</h5>
               </div>
             </div>
@@ -467,7 +467,7 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
             <div className="border border-slate-150 px-4 py-3 bg-slate-50 rounded-xl flex items-center gap-2.5">
               <Building className="w-5 h-5 text-slate-500 shrink-0" />
               <div className="text-left leading-none">
-                <span className="text-[8px] font-mono font-bold text-slate-400 uppercase leading-none block">Federal Ministry</span>
+                <span className="text-[8px] font-mono font-bold text-slate-400 uppercase leading-none block">Supervising Ministry</span>
                 <h5 className="text-[10px] font-extrabold text-slate-700 mt-1 uppercase font-mono">FME NIGERIA</h5>
               </div>
             </div>
@@ -476,8 +476,8 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
             <div className="border border-slate-150 px-4 py-3 bg-slate-50 rounded-xl flex items-center gap-2.5">
               <Award className="w-5 h-5 text-slate-500 shrink-0" />
               <div className="text-left leading-none">
-                <span className="text-[8px] font-mono font-bold text-slate-400 uppercase leading-none block">Regulatory Board</span>
-                <h5 className="text-[10px] font-extrabold text-slate-700 mt-1 uppercase font-mono">NBTE SECRETARIAT</h5>
+                <span className="text-[8px] font-mono font-bold text-slate-400 uppercase leading-none block">Curriculum Standards</span>
+                <h5 className="text-[10px] font-extrabold text-slate-700 mt-1 uppercase font-mono">NBTE BOARD</h5>
               </div>
             </div>
 
@@ -485,7 +485,7 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
             <div className="border border-slate-150 px-4 py-3 bg-slate-50 rounded-xl flex items-center gap-2.5">
               <CheckCircle className="w-5 h-5 text-slate-500 shrink-0" />
               <div className="text-left leading-none">
-                <span className="text-[8px] font-mono font-bold text-slate-400 uppercase leading-none block">National Initiative</span>
+                <span className="text-[8px] font-mono font-bold text-slate-400 uppercase leading-none block">Sponsoring Initiative</span>
                 <h5 className="text-[10px] font-extrabold text-slate-700 mt-1 uppercase font-mono">IDEAS PROJECTS</h5>
               </div>
             </div>
@@ -494,8 +494,8 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
             <div className="col-span-2 md:col-span-4 lg:col-span-1 border border-emerald-150 px-4 py-3 bg-emerald-50/20 rounded-xl flex items-center gap-2.5">
               <ShieldCheck className="w-5 h-5 text-emerald-600 shrink-0" />
               <div className="text-left leading-none">
-                <span className="text-[8px] font-mono font-bold text-emerald-600 uppercase leading-none block">Identity Standard</span>
-                <h5 className="text-[10px] font-extrabold text-slate-800 mt-1 uppercase font-mono">CIVIL NIN SENSITIVE</h5>
+                <span className="text-[8px] font-mono font-bold text-emerald-600 uppercase leading-none block">Accredited Centers</span>
+                <h5 className="text-[10px] font-extrabold text-slate-800 mt-1 uppercase font-mono">TSP ACCREDITED</h5>
               </div>
             </div>
           </div>
@@ -521,14 +521,6 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
             </div>
 
             <div className="bg-white p-6 rounded-2xl border border-slate-200 text-left space-y-2">
-              <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest block">Trainees Enrolled</span>
-              <div className="text-3xl font-black font-mono text-slate-900">
-                <AnimatedCounter target={15420} suffix="+" />
-              </div>
-              <p className="text-[10px] uppercase font-mono font-bold text-emerald-700">Verified Profiles</p>
-            </div>
-
-            <div className="bg-white p-6 rounded-2xl border border-slate-200 text-left space-y-2">
               <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest block">Accredited TSPs</span>
               <div className="text-3xl font-black font-mono text-slate-900">
                 <AnimatedCounter target={120} suffix="+" />
@@ -537,19 +529,27 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
             </div>
 
             <div className="bg-white p-6 rounded-2xl border border-slate-200 text-left space-y-2">
-              <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest block">Stamp Documents</span>
+              <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest block">Total Trainees</span>
               <div className="text-3xl font-black font-mono text-slate-900">
-                <AnimatedCounter target={45000} suffix="+" />
+                <AnimatedCounter target={15420} suffix="+" />
               </div>
-              <p className="text-[10px] uppercase font-mono font-bold text-emerald-700">Generated PDFs</p>
+              <p className="text-[10px] uppercase font-mono font-bold text-emerald-700">Eligible Profiles</p>
             </div>
 
-            <div className="bg-col-span-2 col-span-2 lg:col-span-1 bg-white p-6 rounded-2xl border border-slate-200 text-left space-y-2">
-              <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest block">Graduated Core</span>
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 text-left space-y-2">
+              <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest block">Center Trainees</span>
               <div className="text-3xl font-black font-mono text-slate-900">
-                <AnimatedCounter target={12800} suffix="+" />
+                <AnimatedCounter target={480} suffix="+" />
               </div>
-              <p className="text-[10px] uppercase font-mono font-bold text-emerald-700">Certificates Issued</p>
+              <p className="text-[10px] uppercase font-mono font-bold text-emerald-700">Enrolled Here</p>
+            </div>
+
+            <div className="col-span-2 lg:col-span-1 bg-white p-6 rounded-2xl border border-slate-200 text-left space-y-2">
+              <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest block">TSP Success Rate</span>
+              <div className="text-3xl font-black font-mono text-slate-900">
+                <AnimatedCounter target={98} suffix="%" />
+              </div>
+              <p className="text-[10px] uppercase font-mono font-bold text-emerald-700">Completion KPI</p>
             </div>
           </div>
         </div>

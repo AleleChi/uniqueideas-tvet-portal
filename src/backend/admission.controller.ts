@@ -821,9 +821,10 @@ export class AdmissionController {
         return res.status(200).send(htmlContent);
       }
 
+      const inline = req.query.inline !== "false";
       const pdfBuffer = await PdfService.generateAdmissionFormPdf(candidate, null, false) as Buffer;
       res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `inline; filename="Admission_Form_${id}.pdf"`);
+      res.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename="Admission_Form_${id}.pdf"`);
       return res.status(200).send(pdfBuffer);
     } catch (err: any) {
       console.error("[AdmissionController] getFormPdf failed:", err);

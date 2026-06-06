@@ -10,6 +10,7 @@ import {
   MapPin, Sliders, Sparkles, Download, ArrowUpDown, Lock, Unlock, History, FileText, Play
 } from "lucide-react";
 import { authFetch } from "../utils/authFetch";
+import { API_BASE_URL } from "../config/api";
 import { DispatchCenter } from "./DispatchCenter";
 
 interface AdmissionsWorkspaceProps {
@@ -472,7 +473,7 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
       const res = await authFetch(`/api/admissions/${id}/letter`);
       if (res.ok) {
         const letterData = await res.json();
-        setPreviewCandidate(letterData);
+        setPreviewCandidate({ ...letterData, beneficiaryId: id });
       } else {
         alert("Failed to load candidate structured admissions letter parameters.");
       }
@@ -2392,8 +2393,7 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
                 <button
                   type="button"
                   onClick={() => {
-                    // Direct window.print invokes save-as-pdf native layout safely
-                    window.print();
+                    window.open(`${API_BASE_URL}/api/admissions/download-letter/${previewCandidate.beneficiaryId || previewCandidate.id}?inline=false`, "_blank");
                   }}
                   className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs py-2 px-4 rounded-lg flex items-center gap-1.5 transition cursor-pointer shadow-xs"
                 >
