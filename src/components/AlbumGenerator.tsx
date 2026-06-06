@@ -20,6 +20,14 @@ export function AlbumGenerator({ beneficiaries }: AlbumGeneratorProps) {
   const [isDownloadingWord, setIsDownloadingWord] = useState(false);
   const [settings, setSettings] = useState<OrganizationSettings | null>(null);
 
+  // States for advanced range-based album export
+  const [exportFormat, setExportFormat] = useState<"pdf" | "word">("pdf");
+  const [exportRangeType, setExportRangeType] = useState<"all" | "first_n" | "custom">("all");
+  const [exportFirstN, setExportFirstN] = useState<number>(50);
+  const [exportStartRecord, setExportStartRecord] = useState<number>(1);
+  const [exportEndRecord, setExportEndRecord] = useState<number>(50);
+  const [isRangeExporting, setIsRangeExporting] = useState<boolean>(false);
+
   useEffect(() => {
     async function loadSettings() {
       try {
@@ -74,6 +82,67 @@ export function AlbumGenerator({ beneficiaries }: AlbumGeneratorProps) {
       console.error("Word download failed:", err);
     } finally {
       setIsDownloadingWord(false);
+    }
+  };
+
+  const handleRangeExport = async () => {
+    try {
+      setIsRangeExporting(true);
+      const payload = {
+        state: filterState,
+        batch: filterBatch,
+        rangeType: exportRangeType,
+        firstN: exportFirstN,
+        startRecord: exportStartRecord,
+        endRecord: exportEndRecord
+      };
+
+      if (exportFormat === "pdf") {
+        // Send POST request, receive HTML string, and write to a new print window natively
+        const res = await authFetch("/api/export/album/pdf", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        
+        if (!res.ok) {
+          throw new Error(`Failed to export PDF: ${res.statusText}`);
+        }
+        
+        const htmlText = await res.text();
+        const printWindow = window.open("", "_blank");
+        if (printWindow) {
+          printWindow.document.write(htmlText);
+          printWindow.document.close();
+        } else {
+          alert("Popup blocked! Please allow popups to compile and print the Range Album PDF document.");
+        }
+      } else {
+        // Send POST request, read response as blob, and download natively
+        const res = await authFetch("/api/export/album/word", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        
+        if (!res.ok) {
+          throw new Error(`Failed to export Word: ${res.statusText}`);
+        }
+        
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = `ideas_beneficiaries_album_${exportRangeType}_${filterState}_${filterBatch}.doc`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(blobUrl);
+      }
+    } catch (err) {
+      console.error("Range export compilation failed:", err);
+    } finally {
+      setIsRangeExporting(false);
     }
   };
 
@@ -142,6 +211,98 @@ export function AlbumGenerator({ beneficiaries }: AlbumGeneratorProps) {
             <Download className="w-3.5 h-3.5" />
             {isDownloadingWord ? "Compiling Word..." : "Export Word (.doc)"}
           </button>
+        </div>
+      </div>
+
+      {/* Advanced Range-based Exporter Panel (no-print) */}
+      <div className="no-print bg-white p-5 border border-slate-200 rounded-xl shadow-xs space-y-4 max-w-4xl mx-auto">
+        <div className="border-b border-slate-100 pb-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full bg-indigo-600 animate-pulse"></span>
+            <h3 className="text-xs font-bold font-mono text-indigo-950 uppercase tracking-wider">
+              Export Album Options (Production Optimized)
+            </h3>
+          </div>
+          <span className="text-[10px] text-indigo-600 font-mono font-bold bg-indigo-50 py-0.5 px-2 rounded-full">Stream & Chunk Enabled</span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end text-xs">
+          <div>
+            <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Format</label>
+            <select
+              value={exportFormat}
+              onChange={(e) => setExportFormat(e.target.value as "pdf" | "word")}
+              className="w-full bg-slate-50 border border-slate-200 py-1.5 px-3 rounded-lg text-xs font-semibold text-slate-600 focus:outline-none focus:bg-white focus:border-indigo-500"
+            >
+              <option value="pdf">PDF (Printable Portal)</option>
+              <option value="word">Microsoft Word (.doc)</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Range Selection</label>
+            <select
+              value={exportRangeType}
+              onChange={(e) => setExportRangeType(e.target.value as "all" | "first_n" | "custom")}
+              className="w-full bg-slate-50 border border-slate-200 py-1.5 px-3 rounded-lg text-xs font-semibold text-slate-600 focus:outline-none focus:bg-white focus:border-indigo-500"
+            >
+              <option value="all">Entire Filtered Registry</option>
+              <option value="first_n">First N Records</option>
+              <option value="custom">Custom Range (S/N Start & End)</option>
+            </select>
+          </div>
+
+          {exportRangeType === "first_n" && (
+            <div>
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Count (N)</label>
+              <input
+                type="number"
+                min="1"
+                value={exportFirstN}
+                onChange={(e) => setExportFirstN(parseInt(e.target.value) || 50)}
+                className="w-full bg-slate-50 border border-slate-200 py-1.5 px-3 rounded-lg text-xs font-semibold text-slate-600 focus:outline-none focus:bg-white focus:border-indigo-500"
+              />
+            </div>
+          )}
+
+          {exportRangeType === "custom" && (
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Start S/N</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={exportStartRecord}
+                  onChange={(e) => setExportStartRecord(parseInt(e.target.value) || 1)}
+                  className="w-full bg-slate-50 border border-slate-200 py-1.5 px-3 rounded-lg text-xs font-semibold text-slate-600 focus:outline-none focus:bg-white focus:border-indigo-500"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">End S/N</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={exportEndRecord}
+                  onChange={(e) => setExportEndRecord(parseInt(e.target.value) || 50)}
+                  className="w-full bg-slate-50 border border-slate-200 py-1.5 px-3 rounded-lg text-xs font-semibold text-slate-600 focus:outline-none focus:bg-white focus:border-indigo-500"
+                />
+              </div>
+            </div>
+          )}
+
+          {exportRangeType === "all" && <div></div>}
+
+          <div>
+            <button
+              type="button"
+              disabled={isRangeExporting}
+              onClick={handleRangeExport}
+              className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold py-2 px-4 rounded-lg flex items-center justify-center gap-1.5 text-xs shadow transition cursor-pointer"
+            >
+              <CheckCircle className="w-4 h-4" />
+              {isRangeExporting ? "Compiling Export..." : "Export"}
+            </button>
+          </div>
         </div>
       </div>
 
