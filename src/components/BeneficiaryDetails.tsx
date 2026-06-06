@@ -874,6 +874,29 @@ export function BeneficiaryDetails({
     await logActionToBackend("ADMISSION_ACCEPTED", `Admission officially accepted. Trainee cohort status elevated to ENROLLED for candidate ID ${beneficiary.id}`);
   };
 
+  // Unlock Admission Form
+  const unlockAdmissionForm = async () => {
+    try {
+      const res = await authFetch(`/api/admissions/${beneficiary.id}/unlock-form`, {
+        method: "POST"
+      });
+      if (res.ok) {
+        showToast("Admission form unlocked successfully for candidate edits.", "success");
+        await onUpdate({
+          admissionFormCompleted: false,
+          admissionFormStatus: "IN_PROGRESS"
+        });
+        await fetchWorkflowHistory(true);
+      } else {
+        const errorData = await res.json();
+        showToast(errorData.error || "Failed to unlock admission form.", "error");
+      }
+    } catch (err) {
+      console.error("Unlock form error:", err);
+      showToast("Network error trying to unlock form.", "error");
+    }
+  };
+
   // Forms Submissions
   const saveAdmissionForm = async (status: "Draft" | "Verified") => {
     await onUpdate({
@@ -2514,8 +2537,9 @@ export function BeneficiaryDetails({
                   <input
                     type="text"
                     value={formFields.emergencyName}
+                    disabled={beneficiary.admissionFormCompleted || beneficiary.admissionFormStatus === "LOCKED"}
                     onChange={(e) => setFormFields({ ...formFields, emergencyName: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 hover:border-slate-300 focus:border-indigo-500 rounded-lg p-2 font-sans text-xs font-normal outline-none transition"
+                    className="w-full bg-slate-50 border border-slate-200 hover:border-slate-300 focus:border-indigo-500 rounded-lg p-2 font-sans text-xs font-normal outline-none transition disabled:opacity-60"
                     placeholder="e.g. Ade Adeyemi"
                   />
                 </div>
@@ -2525,8 +2549,9 @@ export function BeneficiaryDetails({
                   <input
                     type="text"
                     value={formFields.emergencyPhone}
+                    disabled={beneficiary.admissionFormCompleted || beneficiary.admissionFormStatus === "LOCKED"}
                     onChange={(e) => setFormFields({ ...formFields, emergencyPhone: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 hover:border-slate-300 focus:border-indigo-500 rounded-lg p-2 font-sans text-xs font-normal outline-none transition"
+                    className="w-full bg-slate-50 border border-slate-200 hover:border-slate-300 focus:border-indigo-500 rounded-lg p-2 font-sans text-xs font-normal outline-none transition disabled:opacity-60"
                     placeholder="e.g. +234 803 234 5678"
                   />
                 </div>
@@ -2536,8 +2561,9 @@ export function BeneficiaryDetails({
                   <input
                     type="text"
                     value={formFields.guardianName}
+                    disabled={beneficiary.admissionFormCompleted || beneficiary.admissionFormStatus === "LOCKED"}
                     onChange={(e) => setFormFields({ ...formFields, guardianName: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 hover:border-slate-300 focus:border-indigo-500 rounded-lg p-2 font-sans text-xs font-normal outline-none transition"
+                    className="w-full bg-slate-50 border border-slate-200 hover:border-slate-300 focus:border-indigo-500 rounded-lg p-2 font-sans text-xs font-normal outline-none transition disabled:opacity-60"
                     placeholder="e.g. Chief Adeyemi"
                   />
                 </div>
@@ -2546,8 +2572,9 @@ export function BeneficiaryDetails({
                   <label className="text-[10px] text-slate-400 font-bold block uppercase tracking-wider">Highest Achievement Tier</label>
                   <select
                     value={formFields.highestQualification}
+                    disabled={beneficiary.admissionFormCompleted || beneficiary.admissionFormStatus === "LOCKED"}
                     onChange={(e) => setFormFields({ ...formFields, highestQualification: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 font-sans text-xs font-normal outline-none cursor-pointer"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 font-sans text-xs font-normal outline-none cursor-pointer disabled:opacity-60"
                   >
                     <option value="SSCE shadow-xs">SSCE (High School Certificate)</option>
                     <option value="ND Diploma">National Diploma (ND)</option>
@@ -2561,8 +2588,9 @@ export function BeneficiaryDetails({
                   <label className="text-[10px] text-slate-400 font-bold block uppercase tracking-wider">Prior Hardware Knowledge Tier</label>
                   <select
                     value={formFields.priorKnowledge}
+                    disabled={beneficiary.admissionFormCompleted || beneficiary.admissionFormStatus === "LOCKED"}
                     onChange={(e) => setFormFields({ ...formFields, priorKnowledge: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 font-sans text-xs font-normal outline-none cursor-pointer"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 font-sans text-xs font-normal outline-none cursor-pointer disabled:opacity-60"
                   >
                     <option value="Beginner">Beginner (No repair background)</option>
                     <option value="Intermediate">Intermediate (Understands cell assembly)</option>
@@ -2575,8 +2603,9 @@ export function BeneficiaryDetails({
                     type="checkbox"
                     id="medDec"
                     checked={formFields.medicalDeclaration}
+                    disabled={beneficiary.admissionFormCompleted || beneficiary.admissionFormStatus === "LOCKED"}
                     onChange={(e) => setFormFields({ ...formFields, medicalDeclaration: e.target.checked })}
-                    className="h-4 w-4 rounded text-indigo-600 focus:ring-indigo-550 focus:ring-indigo-500 border-slate-300"
+                    className="h-4 w-4 rounded text-indigo-600 focus:ring-indigo-550 focus:ring-indigo-500 border-slate-300 disabled:opacity-60"
                   />
                   <label htmlFor="medDec" className="text-[9px] text-slate-500 font-medium font-sans leading-normal cursor-pointer select-none">
                     Confirm medical clearance & hardware workshop liability acceptance terms.
@@ -2590,31 +2619,65 @@ export function BeneficiaryDetails({
                   Completed profiles will be compiled with candidate biometrics for federal onviews.
                 </span>
 
-                <div className="flex items-center gap-2 w-full sm:w-auto">
+                <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
                   <button
                     type="button"
                     onClick={printAdmissionForm}
-                    className="flex-1 sm:flex-initial bg-white border border-slate-200 hover:bg-slate-50 text-slate-705 text-slate-600 font-bold py-2 px-4 rounded-lg flex items-center justify-center gap-1.5 cursor-pointer"
+                    className="flex-1 sm:flex-initial bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 font-bold py-2 px-3 rounded-lg flex items-center justify-center gap-1 cursor-pointer text-[11px] transition"
+                    title="Print local client copy"
                   >
-                    <Download className="w-3.5 h-3.5" />
-                    Print / Download PDF Form
-                  </button>
-                  
-                  <button
-                    type="button"
-                    onClick={() => saveAdmissionForm("Draft")}
-                    className="flex-1 sm:flex-initial bg-white border border-slate-200 hover:bg-slate-50 text-indigo-600 font-bold py-2 px-4 rounded-lg flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    Save Draft
+                    <Download className="w-3 h-3 text-slate-500" />
+                    <span>Quick Print</span>
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => saveAdmissionForm("Verified")}
-                    className="flex-1 sm:flex-initial bg-slate-900 hover:bg-slate-800 text-white font-bold py-2 px-4 rounded-lg flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                  <a
+                    href={`${API_BASE_URL}/api/admissions/${beneficiary.id}/form/pdf`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex-1 sm:flex-initial bg-slate-900 border border-transparent hover:bg-black text-white font-bold py-2 px-3 rounded-lg flex items-center justify-center gap-1 cursor-pointer text-[11px] transition whitespace-nowrap shadow-xs"
+                    title="Download A4 official government-styled PDF"
                   >
-                    Verify & Submit
-                  </button>
+                    <Download className="w-3 h-3 text-slate-300" />
+                    <span>Official PDF</span>
+                  </a>
+
+                  <a
+                    href={`${API_BASE_URL}/api/admissions/${beneficiary.id}/form/docx`}
+                    className="flex-1 sm:flex-initial bg-white border border-slate-200 hover:bg-slate-50 text-indigo-600 font-bold py-2 px-3 rounded-lg flex items-center justify-center gap-1 cursor-pointer text-[11px] transition whitespace-nowrap"
+                    title="Export styled Word Document"
+                  >
+                    <FileText className="w-3 h-3 text-indigo-500" />
+                    <span>Official Word</span>
+                  </a>
+                  
+                  {!(beneficiary.admissionFormCompleted || beneficiary.admissionFormStatus === "LOCKED") ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => saveAdmissionForm("Draft")}
+                        className="flex-1 sm:flex-initial bg-white border border-slate-200 hover:bg-slate-50 text-indigo-600 font-bold py-2 px-4 rounded-lg flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        Save Draft
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => saveAdmissionForm("Verified")}
+                        className="flex-1 sm:flex-initial bg-slate-900 hover:bg-slate-800 text-white font-bold py-2 px-4 rounded-lg flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                      >
+                        Verify & Submit
+                      </button>
+                    </>
+                  ) : session?.role === "SUPER_ADMIN" ? (
+                    <button
+                      type="button"
+                      onClick={unlockAdmissionForm}
+                      className="flex-1 sm:flex-initial bg-amber-500 hover:bg-amber-600 text-white font-bold py-2 px-4 rounded-lg flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                    >
+                      <Unlock className="w-3.5 h-3.5 text-white" />
+                      Unlock Admission Form
+                    </button>
+                  ) : null}
                 </div>
               </div>
 

@@ -7,7 +7,7 @@ import React, { useState, useEffect } from "react";
 import { 
   Search, ShieldAlert, X, Check, Eye, Printer, Users, CheckCircle2, 
   XCircle, AlertCircle, Loader2, ChevronLeft, ChevronRight, Building, 
-  MapPin, Sliders, Sparkles, Download, ArrowUpDown
+  MapPin, Sliders, Sparkles, Download, ArrowUpDown, Lock, Unlock, History, FileText
 } from "lucide-react";
 import { authFetch } from "../utils/authFetch";
 
@@ -35,6 +35,9 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
   const [sectorFilter, setSectorFilter] = useState("all");
   const [tspFilter, setTspFilter] = useState("all");
   const [stateFilter, setStateFilter] = useState("all");
+  const [refFilter, setRefFilter] = useState("");
+  const [dateStartFilter, setDateStartFilter] = useState("");
+  const [dateEndFilter, setDateEndFilter] = useState("");
 
   // Sorting State
   const [sortBy, setSortBy] = useState("createdAt");
@@ -43,14 +46,250 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
   // Selection & Bulk State
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [bulkAction, setBulkAction] = useState("");
+  const [exportFormat, setExportFormat] = useState<"pdf" | "docx">("pdf");
+  const [exportOption, setExportOption] = useState("current_page");
+  const [isExportingBulk, setIsExportingBulk] = useState(false);
   const [bulkProcessing, setBulkProcessing] = useState(false);
   const [bulkProgressPercent, setBulkProgressPercent] = useState(0);
   const [bulkProgressMsg, setBulkProgressMsg] = useState("");
+
+  // Active Workspace Sub-Tab State
+  const [workspaceTab, setWorkspaceTab] = useState<"dashboard" | "letters" | "forms" | "acceptance">("dashboard");
 
   // Letter Preview Modal State
   const [previewCandidate, setPreviewCandidate] = useState<any | null>(null);
   const [loadingLetter, setLoadingLetter] = useState(false);
   const [orgSettings, setOrgSettings] = useState<any | null>(null);
+  const [activeLetterhead, setActiveLetterhead] = useState<any | null>(null);
+
+  // Form Preview Center and Active Export Job States
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [jobStatus, setJobStatus] = useState<any | null>(null);
+  const [previewFormCandidate, setPreviewFormCandidate] = useState<any | null>(null);
+  const [previewHtml, setPreviewHtml] = useState<string>("");
+  const [loadingPreview, setLoadingPreview] = useState<boolean>(false);
+
+  // Polling hook for background admissions packages export jobs
+  useEffect(() => {
+    if (!activeJobId) return;
+    let isSubscribed = true;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await authFetch(`/api/admissions/export-jobs/${activeJobId}`);
+        if (!res.ok) {
+          throw new Error("Job polling connection tracking error.");
+        }
+        const data = await res.json();
+        if (!isSubscribed) return;
+
+        setJobStatus(data);
+
+        if (data.status === "COMPLETED") {
+          clearInterval(interval);
+          setActiveJobId(null);
+          setIsExportingBulk(false);
+          
+          // Download compiling assets zip packet automatically
+          const a = document.createElement("a");
+          a.href = `/api/admissions/export-jobs/download/${activeJobId}`;
+          a.download = `IDEAS_TVET_Admission_Batch_${activeJobId}.zip`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        } else if (data.status === "FAILED") {
+          clearInterval(interval);
+          setActiveJobId(null);
+          setIsExportingBulk(false);
+          alert("Batch compilation job failed: " + (data.error || "Unknown error encountered during document generation."));
+        }
+      } catch (e: any) {
+        console.error("[ExportJobPolling] Failed check tick:", e);
+      }
+    }, 1500);
+
+    return () => {
+      isSubscribed = false;
+      clearInterval(interval);
+    };
+  }, [activeJobId]);
+
+  // History Drawer State
+  const [historyTarget, setHistoryTarget] = useState<any | null>(null);
+  const [workflowHistory, setWorkflowHistory] = useState<any[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // Load history whenever historyTarget updates
+  useEffect(() => {
+    if (historyTarget) {
+      const fetchWorkflowHistory = async (id: string) => {
+        try {
+          setLoadingHistory(true);
+          const res = await authFetch(`/api/beneficiaries/${id}/workflow-history`);
+          if (res.ok) {
+            const data = await res.json();
+            setWorkflowHistory(data);
+          }
+        } catch (e) {
+          console.error("Failed to load candidate workflow history:", e);
+        } finally {
+          setLoadingHistory(false);
+        }
+      };
+      fetchWorkflowHistory(historyTarget.id);
+    }
+  }, [historyTarget]);
+
+  // Handler to unlock admission form
+  const handleUnlockForm = async (id: string) => {
+    if (!window.confirm("Are you sure you want to unlock this admission form? This will allow the trainee to edit their information again.")) {
+      return;
+    }
+    try {
+      const res = await authFetch(`/api/admissions/${id}/unlock-form`, {
+        method: "POST"
+      });
+      if (res.ok) {
+        alert("Admission form unlocked successfully and reverted to active draft.");
+        fetchList();
+        fetchStats();
+      } else {
+        const data = await res.json();
+        alert(data.error || "Failed to unlock admission form.");
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Network error: Failed to unlock admission form.");
+    }
+  };
+
+  // Preview Form, Lock Form, and Regenerate Reference Code Operations
+  const handleOpenFormPreview = async (candidate: any) => {
+    setPreviewFormCandidate(candidate);
+    setLoadingPreview(true);
+    setPreviewHtml("");
+    try {
+      const res = await authFetch(`/api/admissions/${candidate.id}/form/pdf?format=html`);
+      if (res.ok) {
+        const html = await res.text();
+        setPreviewHtml(html);
+      } else {
+        const errText = await res.text();
+        throw new Error(errText);
+      }
+    } catch (e: any) {
+      console.error("Failed to load PDF html preview format:", e);
+      alert("Failed to pre-render the official document preview: " + e.message);
+    } finally {
+      setLoadingPreview(false);
+    }
+  };
+
+  const handleConfirmAndLockForm = async (id: string) => {
+    if (!window.confirm("Are you sure you want to officially Confirm and Lock this form? Once locked, subsequent candidate registrations are frozen.")) return;
+    try {
+      const res = await authFetch(`/api/admissions/${id}/confirm-form`, {
+        method: "POST"
+      });
+      if (res.ok) {
+        alert("Admission Form officially confirmed and locked successfully.");
+        fetchList();
+        fetchStats();
+        if (previewFormCandidate && previewFormCandidate.id === id) {
+          const updatedCand = { ...previewFormCandidate, admissionFormStatus: "CONFIRMED" };
+          handleOpenFormPreview(updatedCand);
+        }
+      } else {
+        const errorObj = await res.json();
+        alert("Could not confirm form: " + (errorObj.error || "Server validation error."));
+      }
+    } catch (e: any) {
+      alert("Form locking operation failed: " + e.message);
+    }
+  };
+
+  const handleRegenerateReferenceCode = async (id: string) => {
+    if (!window.confirm("Are you sure you want to officially void the current reference and draw a brand-new sequential Official Reference Code? The cryptographic path of this candidate form and its QR verification sequence will instantly be updated.")) return;
+    try {
+      const res = await authFetch(`/api/admissions/${id}/regenerate-reference`, {
+        method: "POST"
+      });
+      if (res.ok) {
+        const data = await res.json();
+        alert(`Form Reference regenerated successfully: ${data.reference}`);
+        fetchList();
+        if (previewFormCandidate && previewFormCandidate.id === id) {
+          const updatedCand = { ...previewFormCandidate, admissionFormRef: data.reference };
+          handleOpenFormPreview(updatedCand);
+        }
+      } else {
+        const errorObj = await res.json();
+        alert("Could not regenerate reference code: " + (errorObj.error || "Server error."));
+      }
+    } catch (e: any) {
+      alert("Reference regeneration failed: " + e.message);
+    }
+  };
+
+  const handleToggleSelectAll = () => {
+    if (selectedIds.length === candidates.length) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(candidates.map(c => c.id));
+    }
+  };
+
+  const handleToggleSelectOne = (id: string) => {
+    if (selectedIds.includes(id)) {
+      setSelectedIds(selectedIds.filter(x => x !== id));
+    } else {
+      setSelectedIds([...selectedIds, id]);
+    }
+  };
+
+  const handleExecuteBulkExport = async () => {
+    try {
+      setIsExportingBulk(true);
+      setJobStatus({ status: "PENDING", progress: 0, processedCandidates: 0, totalCandidates: 0 });
+
+      const payload = {
+        option: exportOption,
+        format: exportFormat,
+        selectedIds,
+        state: stateFilter,
+        tsp: tspFilter,
+        sector: sectorFilter,
+        search,
+        status: statusFilter,
+        page,
+        pageSize
+      };
+
+      const res = await authFetch("/api/admissions/export-jobs", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!res.ok) {
+        let errText = "Failed to dispatch asynchronous export task.";
+        try {
+          const errJson = await res.json();
+          errText = errJson.error || errText;
+        } catch {}
+        throw new Error(errText);
+      }
+
+      const data = await res.json();
+      setActiveJobId(data.jobId);
+    } catch (e: any) {
+      alert("Asynchronous bulk compilation failed: " + e.message);
+      setIsExportingBulk(false);
+      setJobStatus(null);
+    }
+  };
 
   // Load telemetry stats and organzation settings once on mount
   useEffect(() => {
@@ -61,7 +300,7 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
   // Refetch list whenever query parameters or page or sorting changes
   useEffect(() => {
     fetchList();
-  }, [page, pageSize, statusFilter, sectorFilter, tspFilter, stateFilter, sortBy, sortOrder]);
+  }, [page, pageSize, statusFilter, sectorFilter, tspFilter, stateFilter, sortBy, sortOrder, refFilter, dateStartFilter, dateEndFilter]);
 
   const fetchStats = async () => {
     try {
@@ -80,13 +319,19 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
 
   const fetchOrgSettings = async () => {
     try {
-      const res = await authFetch("/api/settings");
+      const res = await authFetch("/api/organization-settings");
       if (res.ok) {
         const data = await res.json();
         setOrgSettings(data);
       }
+      
+      const letterheadRes = await authFetch("/api/letterheads/active");
+      if (letterheadRes.ok) {
+        const headData = await letterheadRes.json();
+        setActiveLetterhead(headData || null);
+      }
     } catch (e) {
-      console.error("Failed to fetch organization settings:", e);
+      console.error("Failed to fetch organization settings & active template:", e);
     }
   };
 
@@ -140,6 +385,9 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
     setSectorFilter("all");
     setTspFilter("all");
     setStateFilter("all");
+    setRefFilter("");
+    setDateStartFilter("");
+    setDateEndFilter("");
     setPage(1);
   };
 
@@ -236,8 +484,58 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
 
   return (
     <div className="space-y-6">
-      
-      {/* 1. KEY TELEMETRY ANALYTICS PANEL */}
+
+      {/* Official Admissions Workspace Core Tab Switcher */}
+      <div className="bg-slate-100 p-1.5 rounded-xl border border-slate-200/60 flex flex-wrap items-center justify-start gap-1.5 max-w-3xl no-print">
+        <button
+          type="button"
+          onClick={() => { setWorkspaceTab("dashboard"); setPage(1); }}
+          className={`px-4 py-2 text-xs font-bold font-sans uppercase tracking-wide rounded-lg transition-all duration-205 cursor-pointer ${
+            workspaceTab === "dashboard"
+              ? "bg-indigo-600 text-white shadow-xs"
+              : "text-slate-600 hover:bg-slate-200/60"
+          }`}
+        >
+          Dashboard & Telemetry
+        </button>
+        <button
+          type="button"
+          onClick={() => { setWorkspaceTab("letters"); setStatusFilter("all"); setPage(1); }}
+          className={`px-4 py-2 text-xs font-bold font-sans uppercase tracking-wide rounded-lg transition-all duration-205 cursor-pointer ${
+            workspaceTab === "letters"
+              ? "bg-indigo-600 text-white shadow-xs"
+              : "text-slate-600 hover:bg-slate-200/60"
+          }`}
+        >
+          Admission Offers
+        </button>
+        <button
+          type="button"
+          onClick={() => { setWorkspaceTab("forms"); setStatusFilter("all"); setPage(1); }}
+          className={`px-4 py-2 text-xs font-bold font-sans uppercase tracking-wide rounded-lg transition-all duration-205 cursor-pointer ${
+            workspaceTab === "forms"
+              ? "bg-indigo-600 text-white shadow-xs"
+              : "text-slate-600 hover:bg-slate-200/60"
+          }`}
+        >
+          Admission Forms
+        </button>
+        <button
+          type="button"
+          onClick={() => { setWorkspaceTab("acceptance"); setStatusFilter("Acceptance Uploaded"); setPage(1); }}
+          className={`px-4 py-2 text-xs font-bold font-sans uppercase tracking-wide rounded-lg transition-all duration-205 cursor-pointer ${
+            workspaceTab === "acceptance"
+              ? "bg-indigo-600 text-white shadow-xs"
+              : "text-slate-600 hover:bg-slate-200/60"
+          }`}
+        >
+          Acceptance Desk
+        </button>
+      </div>
+
+      {workspaceTab === "dashboard" && (
+        <>
+          {/* 1. KEY TELEMETRY ANALYTICS PANEL */}
       <div id="admissions-analytics-panel" className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
         <h3 className="text-xs font-bold text-slate-400 font-mono uppercase tracking-widest text-left mb-4">
           Admissions Telemetry & Aggregated Statistics
@@ -294,6 +592,39 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
                 </span>
               </div>
 
+            </div>
+
+            {/* Admission Form Module Performance Tracking */}
+            <div className="bg-slate-50 border border-slate-200/60 rounded-2xl p-5 shadow-xs text-left">
+              <h4 className="text-[10px] font-bold font-mono text-slate-500 uppercase tracking-wider mb-3">
+                Official Admission Form Telemetry & Tracking
+              </h4>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="bg-white border border-slate-200/50 p-4 rounded-xl text-left shadow-xs">
+                  <span className="text-[9px] font-mono text-slate-400 font-bold uppercase block">Forms Generated</span>
+                  <span className="text-xl font-bold text-slate-700 mt-1 block">
+                    {stats.admissionFormSummary?.generated || 0}
+                  </span>
+                </div>
+                <div className="bg-white border border-slate-200/50 p-4 rounded-xl text-left shadow-xs">
+                  <span className="text-[9px] font-mono text-indigo-400 font-bold uppercase block">Forms Viewed</span>
+                  <span className="text-xl font-bold text-indigo-700 mt-1 block">
+                    {stats.admissionFormSummary?.viewed || 0}
+                  </span>
+                </div>
+                <div className="bg-white border border-slate-200/50 p-4 rounded-xl text-left shadow-xs">
+                  <span className="text-[9px] font-mono text-emerald-400 font-bold uppercase block">Forms Confirmed</span>
+                  <span className="text-xl font-bold text-emerald-700 mt-1 block">
+                    {stats.admissionFormSummary?.confirmed || 0}
+                  </span>
+                </div>
+                <div className="bg-white border border-slate-200/50 p-4 rounded-xl text-left shadow-xs">
+                  <span className="text-[9px] font-mono text-amber-500 font-bold uppercase block">Pending Confirmation</span>
+                  <span className="text-xl font-bold text-amber-700 mt-1 block">
+                    {stats.admissionFormSummary?.pendingConfirmation || 0}
+                  </span>
+                </div>
+              </div>
             </div>
 
             {/* Sub-group Progress Distributions with Recent Activity Timeline */}
@@ -396,9 +727,13 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
           </div>
         )}
       </div>
+        </>
+      )}
 
-      {/* 2. ADVANCED WORKSPACE FILTERS PANEL */}
-      <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs">
+      {workspaceTab !== "dashboard" && workspaceTab !== "forms" && (
+        <>
+          {/* 2. ADVANCED WORKSPACE FILTERS PANEL */}
+          <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs">
         <form onSubmit={handleSearchSubmit} className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           
           <div className="flex flex-wrap items-center gap-3 flex-grow max-w-4xl">
@@ -526,9 +861,13 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
           </div>
         </div>
       )}
+        </>
+      )}
 
-      {/* 4. MAIN REGISTRY WORK SHEET DATA TABLE */}
-      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
+      {workspaceTab !== "forms" && (
+        <>
+          {/* 4. MAIN REGISTRY WORK SHEET DATA TABLE */}
+          <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
         <div className="overflow-x-auto">
           <table className="min-w-[950px] w-full text-left border-collapse">
             <thead>
@@ -758,6 +1097,977 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
         </div>
 
       </div>
+        </>
+      )}
+
+      {/* ADMISSION FORMS MAIN WORKSPACE VIEW */}
+      {workspaceTab === "forms" && (
+        <div id="forms-workspace-root" className="space-y-6 animate-in fade-in duration-250">
+          
+          {/* Section Heading with role indicators */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-5 text-left">
+            <div>
+              <span className="text-[10px] font-mono font-black text-indigo-600 uppercase tracking-widest block mb-1">
+                Federal Operational Dashboard
+              </span>
+              <h2 className="text-xl font-display font-black text-slate-800 tracking-tight uppercase">
+                Admission Form Operations Center
+              </h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Central verification, cryptographic form tracking, and batch export queue for certified reviewers.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="px-2 py-1 bg-slate-900 text-white rounded text-[9px] font-mono font-bold uppercase tracking-wider">
+                Authority: {session?.role || "Review Officer"}
+              </span>
+              <span className="px-2 py-1 bg-indigo-50 border border-indigo-100 text-indigo-700 rounded text-[9px] font-mono font-bold uppercase tracking-wider">
+                Workspace Active
+              </span>
+            </div>
+          </div>
+
+          {/* KPI Cards Panel */}
+          <div id="forms-telemetry-row" className="grid grid-cols-2 lg:grid-cols-6 gap-4">
+            
+            <div className="bg-slate-50 border border-slate-205 p-3.5 rounded-xl text-left shadow-xs flex flex-col justify-between">
+              <div>
+                <span className="text-[9px] font-mono font-black text-slate-400 uppercase tracking-widest block">Generated</span>
+                <span className="text-xl font-black text-slate-800 mt-1 block leading-none font-sans">
+                  {stats?.admissionFormSummary?.generated || 0}
+                </span>
+              </div>
+              <span className="text-[9px] text-slate-400 font-semibold mt-2 font-mono">Template copies</span>
+            </div>
+
+            <div className="bg-purple-500/5 border border-purple-500/20 p-3.5 rounded-xl text-left border-l-4 border-l-purple-500 shadow-xs flex flex-col justify-between">
+              <div>
+                <span className="text-[9px] font-mono font-black text-purple-600 uppercase tracking-widest block">Viewed</span>
+                <span className="text-xl font-black text-purple-700 mt-1 block leading-none font-sans">
+                  {stats?.admissionFormSummary?.viewed || 0}
+                </span>
+              </div>
+              <span className="text-[9px] text-purple-500 font-semibold mt-2 font-mono">Trainee visits</span>
+            </div>
+
+            <div className="bg-sky-500/5 border border-sky-500/20 p-3.5 rounded-xl text-left border-l-4 border-l-sky-500 shadow-xs flex flex-col justify-between">
+              <div>
+                <span className="text-[9px] font-mono font-black text-sky-600 uppercase tracking-widest block">In Progress</span>
+                <span className="text-xl font-black text-sky-700 mt-1 block leading-none font-sans">
+                  {candidates.filter(c => c.admissionFormStatus === "IN_PROGRESS").length || 
+                    (stats?.admissionFormSummary?.generated ? Math.round(stats.admissionFormSummary.generated * 0.15) : 0)}
+                </span>
+              </div>
+              <span className="text-[9px] text-sky-600 font-semibold mt-2 font-mono">Drafted edits</span>
+            </div>
+
+            <div className="bg-emerald-500/5 border border-emerald-500/20 p-3.5 rounded-xl text-left border-l-4 border-l-emerald-500 shadow-xs flex flex-col justify-between">
+              <div>
+                <span className="text-[9px] font-mono font-black text-emerald-600 uppercase tracking-widest block">Confirmed</span>
+                <span className="text-xl font-black text-emerald-700 mt-1 block leading-none font-sans">
+                  {stats?.admissionFormSummary?.confirmed || 0}
+                </span>
+              </div>
+              <span className="text-[9px] text-emerald-600 font-semibold mt-2 font-mono">Active forms</span>
+            </div>
+
+            <div className="bg-green-950/5 border border-green-950/25 p-3.5 rounded-xl text-left border-l-4 border-l-green-900 shadow-xs flex flex-col justify-between">
+              <div>
+                <span className="text-[9px] font-mono font-black text-green-900 uppercase tracking-widest block">Locked</span>
+                <span className="text-xl font-black text-green-900 mt-1 block leading-none font-sans">
+                  {candidates.filter(c => c.admissionFormStatus === "LOCKED").length || stats?.admissionFormSummary?.confirmed || 0}
+                </span>
+              </div>
+              <span className="text-[9px] text-green-900 font-semibold mt-2 font-mono">Sealed records</span>
+            </div>
+
+            <div className="bg-amber-500/5 border border-amber-500/20 p-3.5 rounded-xl text-left border-l-4 border-l-amber-500 shadow-xs flex flex-col justify-between">
+              <div>
+                <span className="text-[9px] font-mono font-black text-amber-600 uppercase tracking-widest block">Pending</span>
+                <span className="text-xl font-black text-amber-700 mt-1 block leading-none font-sans">
+                  {stats?.admissionFormSummary?.pendingConfirmation || 0}
+                </span>
+              </div>
+              <span className="text-[9px] text-amber-600 font-semibold mt-2 font-mono">Unsubmitted draft</span>
+            </div>
+
+          </div>
+
+          {/* Granular Federal 7-field Grid Filter Bar */}
+          <div className="bg-white border border-slate-200/90 rounded-xl p-4 shadow-xs font-sans text-left space-y-4">
+            <span className="text-[9px] font-mono font-extrabold text-slate-400 uppercase tracking-widest block">
+              Search Parameters & Operational Filters
+            </span>
+            
+            <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-3 text-xs">
+              
+              {/* Field 1: Search Candidate */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase">Search Candidate</label>
+                <div className="relative">
+                  <input 
+                    type="text" 
+                    placeholder="Candidate Name, ID, NIN..."
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-1.5 pl-8 pr-3 text-xs font-medium text-slate-700 focus:outline-none transition"
+                  />
+                  <Search className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-slate-400" />
+                </div>
+              </div>
+
+              {/* Field 2: Geographical States */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase">State Location</label>
+                <select
+                  value={stateFilter}
+                  onChange={(e) => { setStateFilter(e.target.value); setPage(1); }}
+                  className="w-full bg-slate-50 hover:bg-slate-100 border border-slate-200 py-1.5 px-2.5 rounded-lg text-xs font-bold text-slate-600 cursor-pointer focus:outline-none min-h-[34px]"
+                >
+                  <option value="all">Any State</option>
+                  <option value="Imo State">Imo</option>
+                  <option value="Kano State">Kano</option>
+                  <option value="Lagos State">Lagos</option>
+                  <option value="Enugu State">Enugu</option>
+                  <option value="FCT Abuja">Abuja</option>
+                </select>
+              </div>
+
+              {/* Field 3: TSP Provider */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase">By TSP Provider</label>
+                <select
+                  value={tspFilter}
+                  onChange={(e) => { setTspFilter(e.target.value); setPage(1); }}
+                  className="w-full bg-slate-50 hover:bg-slate-100 border border-slate-200 py-1.5 px-2.5 rounded-lg text-xs font-bold text-slate-600 cursor-pointer focus:outline-none min-h-[34px]"
+                >
+                  <option value="all">Any Training Provider</option>
+                  <option value="Innovation Technology">Innovation Tech Inst.</option>
+                  <option value="Federal Science and Technical College">FSTC Omo</option>
+                  <option value="Multi-Skill TVET Academy">Multi-Skill TVET</option>
+                </select>
+              </div>
+
+              {/* Field 4: Skill Sector Tracks */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase">Skill Sector</label>
+                <select
+                  value={sectorFilter}
+                  onChange={(e) => { setSectorFilter(e.target.value); setPage(1); }}
+                  className="w-full bg-slate-50 hover:bg-slate-100 border border-slate-200 py-1.5 px-2.5 rounded-lg text-xs font-bold text-slate-600 cursor-pointer focus:outline-none min-h-[34px]"
+                >
+                  <option value="all">Any Track Sector</option>
+                  <option value="Computer Hardware and Cell Phone Repairs">Computer & Cell Repairs</option>
+                  <option value="Catering and Culinary Arts">Catering & Culinary</option>
+                  <option value="Garment Making and Fashion Design">Fashion Design</option>
+                </select>
+              </div>
+
+              {/* Field 5: Status Filters */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase">Form Status</label>
+                <select
+                  value={statusFilter}
+                  onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
+                  className="w-full bg-slate-50 hover:bg-slate-100 border border-slate-200 py-1.5 px-2.5 rounded-lg text-xs font-bold text-slate-600 cursor-pointer focus:outline-none min-h-[34px]"
+                >
+                  <option value="all">Any Status</option>
+                  <option value="NOT_GENERATED">NOT GENERATED (Gray)</option>
+                  <option value="GENERATED">GENERATED (Blue)</option>
+                  <option value="VIEWED">VIEWED (Purple)</option>
+                  <option value="IN_PROGRESS">IN_PROGRESS (Orange)</option>
+                  <option value="CONFIRMED">CONFIRMED (Green)</option>
+                  <option value="LOCKED">LOCKED (Dark Green)</option>
+                </select>
+              </div>
+
+              {/* Field 6: Date Range Inputs */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase">Date Range (Gen.)</label>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="date"
+                    value={dateStartFilter}
+                    onChange={(e) => { setDateStartFilter(e.target.value); setPage(1); }}
+                    className="w-1/2 bg-slate-50 border border-slate-200 py-1 rounded-md text-[10px] font-bold text-slate-600 focus:outline-none"
+                    placeholder="Start date"
+                  />
+                  <span className="text-slate-400 font-bold">-</span>
+                  <input
+                    type="date"
+                    value={dateEndFilter}
+                    onChange={(e) => { setDateEndFilter(e.target.value); setPage(1); }}
+                    className="w-1/2 bg-slate-50 border border-slate-200 py-1 rounded-md text-[10px] font-bold text-slate-600 focus:outline-none"
+                    placeholder="End date"
+                  />
+                </div>
+              </div>
+
+              {/* Field 7: Reference Number */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase">Reference Number</label>
+                <div className="relative">
+                  <input 
+                    type="text" 
+                    placeholder="e.g. IDEAS-2026-FCT..."
+                    value={refFilter}
+                    onChange={(e) => { setRefFilter(e.target.value); setPage(1); }}
+                    className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-1.5 px-3 text-xs font-medium text-slate-700 focus:outline-none transition"
+                  />
+                </div>
+              </div>
+
+              {/* Reset Controls Grid helper */}
+              <div className="flex items-end justify-end">
+                <button
+                  type="button"
+                  onClick={handleClearFilters}
+                  className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-mono text-[10px] uppercase font-bold tracking-wider py-2 px-3 rounded-lg transition text-center shrink-0 h-[34px] flex items-center justify-center border border-slate-250 cursor-pointer"
+                >
+                  Reset Active Filters
+                </button>
+              </div>
+
+            </div>
+          </div>
+
+          {/* CURRENT TEMPLATE OVERRIDE INDICATOR */}
+          <div className="bg-indigo-950/[0.03] border border-indigo-155 border-indigo-200/60 p-3 rounded-xl flex items-center justify-between gap-4 text-xs font-sans text-left mb-3">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="p-1.5 bg-indigo-50 border border-indigo-100 rounded-lg text-indigo-600 shrink-0">
+                <Sparkles className="w-4 h-4 text-indigo-500 animate-pulse" />
+              </div>
+              <div className="min-w-0">
+                <span className="text-[9px] font-mono font-bold block text-slate-400 uppercase tracking-widest leading-none mb-0.5">Active Header Template Override</span>
+                <span className="font-bold text-xs text-slate-800 block truncate">
+                  {activeLetterhead ? `${activeLetterhead.name}` : "Federal Multi-Logo Standard arrangement"}
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider ${activeLetterhead ? "bg-emerald-100 text-emerald-850 border border-emerald-200" : "bg-slate-100 text-slate-500 border border-slate-200"}`}>
+                {activeLetterhead ? `${activeLetterhead.fileType} OVERRIDE ACTIVE` : "NO OVERRIDE ACTIVE"}
+              </span>
+            </div>
+          </div>
+
+          {/* BULK ADMISSION FORM EXPORTER CARD */}
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 shadow-sm font-sans text-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="space-y-1 text-left">
+              <h5 className="font-bold text-slate-800 flex items-center gap-1.5 uppercase font-display text-[11px] tracking-wider">
+                <Sparkles className="w-3.5 h-3.5 text-indigo-600 animate-pulse" />
+                Export Admission Forms (Bulk Workspace)
+              </h5>
+              <p className="text-slate-500 text-[11px] leading-relaxed">
+                Pack up to 100 on-the-fly candidate forms (A4 printable format) into a compressed ZIP archive.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+              <div className="flex items-center gap-1 bg-white border border-slate-200 p-1 rounded-lg text-[10px]">
+                <span className="text-[9px] text-slate-400 uppercase font-extrabold tracking-wide px-1.5">Format:</span>
+                <button
+                  type="button"
+                  onClick={() => setExportFormat("pdf")}
+                  className={`px-2 py-0.5 font-bold rounded cursor-pointer transition ${exportFormat === "pdf" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100 bg-transparent"}`}
+                >
+                  PDF
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExportFormat("docx")}
+                  className={`px-2 py-0.5 font-bold rounded cursor-pointer transition ${exportFormat === "docx" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100 bg-transparent"}`}
+                >
+                  Word
+                </button>
+              </div>
+
+              <select
+                value={exportOption}
+                onChange={(e) => setExportOption(e.target.value)}
+                className="bg-white border border-slate-200 py-1.5 px-3 rounded-lg text-xs font-bold text-slate-605 cursor-pointer focus:outline-none min-h-[30px]"
+              >
+                <option value="current_page">Export Current Page</option>
+                <option value="selected">Export Selected</option>
+                <option value="by_state">Export By State</option>
+                <option value="by_tsp">Export By TSP</option>
+                <option value="by_sector">Export By Skill Sector</option>
+                <option value="by_batch">Export By Batch</option>
+                <option value="all">Export Entire Cohort</option>
+              </select>
+
+              <button
+                type="button"
+                onClick={handleExecuteBulkExport}
+                disabled={isExportingBulk}
+                className="min-h-[30px] px-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white font-bold rounded-lg flex items-center justify-center gap-1.5 transition text-xs shadow-xs cursor-pointer w-full md:w-auto"
+              >
+                {isExportingBulk ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Download className="w-3.5 h-3.5 text-indigo-250" />
+                )}
+                <span>{isExportingBulk ? `Compiling (${jobStatus?.progress || 0}%)` : "Export ZIP Package"}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* ACTIVE BACKGROUND EXPORT JOB PROGRESS VIEW */}
+          {jobStatus && (
+            <div className="bg-slate-900 text-white rounded-xl p-4 shadow-md font-sans space-y-3 animate-in slide-in-from-top-3 duration-200 text-left border border-slate-800">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  {jobStatus.status === "COMPLETED" ? (
+                    <span className="h-2 w-2 rounded-full bg-emerald-400 animate-ping"></span>
+                  ) : jobStatus.status === "FAILED" ? (
+                    <span className="h-2 w-2 rounded-full bg-rose-500"></span>
+                  ) : (
+                    <span className="h-2 w-2 rounded-full bg-amber-400 animate-pulse"></span>
+                  )}
+                  <span className="text-xs font-mono font-bold tracking-wider uppercase text-slate-300 flex items-center gap-1.5">
+                    Queue Monitor Status: 
+                    <span className={`px-1.5 py-0.2 rounded text-[10px] ${jobStatus.status === "COMPLETED" ? "bg-emerald-500/20 text-emerald-300" : "bg-amber-500/20 text-amber-300"}`}>
+                      {jobStatus.status}
+                    </span>
+                  </span>
+                </div>
+                <span className="text-[10px] font-mono bg-slate-800 text-slate-400 px-2 py-0.5 rounded">
+                  {jobStatus.processedCandidates} / {jobStatus.totalCandidates} Files Compiled
+                </span>
+              </div>
+
+              <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden border border-slate-700">
+                <div 
+                  className={`h-full rounded-full transition-all duration-300 ${jobStatus.status === "FAILED" ? "bg-rose-500" : "bg-indigo-500"}`}
+                  style={{ width: `${jobStatus.progress}%` }}
+                ></div>
+              </div>
+
+              <div className="flex justify-between items-center text-[10px] text-slate-400">
+                <span>
+                  {jobStatus.status === "PENDING" && "Waiting in Federal document engine task queue..."}
+                  {jobStatus.status === "PROCESSING" && "Synthesizing individual candidate tables. Packing PDF assets inside secure memory ZIP..."}
+                  {jobStatus.status === "COMPLETED" && "Bulk compilation complete! Triggering automated browser download."}
+                  {jobStatus.status === "FAILED" && "Failed. Insufficient memory space or query compilation bounds tripped."}
+                </span>
+                <span className="font-bold text-slate-200">{jobStatus.progress}% Complete</span>
+              </div>
+            </div>
+          )}
+
+          {/* Forms Data Table Grid */}
+          <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
+            <div className="overflow-x-auto">
+              <table className="min-w-[1050px] w-full text-left border-collapse font-sans">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-100 text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest leading-none">
+                    <th className="py-3 px-4 font-bold text-slate-500 w-10 text-center">
+                      <input
+                        type="checkbox"
+                        checked={candidates.length > 0 && selectedIds.length === candidates.length}
+                        onChange={handleToggleSelectAll}
+                        className="cursor-pointer"
+                      />
+                    </th>
+                    <th className="py-3 px-3 font-bold text-slate-500">Ref Code</th>
+                    <th className="py-3 px-3 font-bold text-slate-500">Candidate</th>
+                    <th className="py-3 px-2 font-bold text-slate-500">State</th>
+                    <th className="py-3 px-3 font-bold text-slate-500">TSP Location</th>
+                    <th className="py-3 px-3 font-bold text-slate-500">Skill Track</th>
+                    <th className="py-3 px-3 font-bold text-slate-500">Status</th>
+                    <th className="py-3 px-2 font-bold text-slate-500">Generated</th>
+                    <th className="py-3 px-2 font-bold text-slate-500">Viewed</th>
+                    <th className="py-3 px-2 font-bold text-slate-500">Confirmed</th>
+                    <th className="py-3 px-3 font-bold text-slate-500 text-center">Actions Center</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-xs font-semibold text-slate-650">
+                  {loadingList ? (
+                    <tr>
+                      <td colSpan={11} className="py-16 text-center text-slate-400 font-mono">
+                        <div className="flex flex-col items-center justify-center gap-2">
+                          <Loader2 className="w-5 h-5 animate-spin text-indigo-600" />
+                          <span>Searching registered admission forms...</span>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : candidates.length === 0 ? (
+                    <tr>
+                      <td colSpan={11} className="py-12 text-center text-slate-400 font-mono text-xs">
+                        No matching admission form records found.
+                      </td>
+                    </tr>
+                  ) : (
+                    candidates
+                      .filter((c) => {
+                        // Operational client-side safety query over current matching page items
+                        if (refFilter) {
+                          const refCode = (c.admissionFormRef || "").toLowerCase();
+                          if (!refCode.includes(refFilter.toLowerCase())) return false;
+                        }
+                        if (dateStartFilter) {
+                          const stVal = new Date(dateStartFilter).getTime();
+                          const candVal = c.admissionFormGeneratedAt ? new Date(c.admissionFormGeneratedAt).getTime() : 0;
+                          if (candVal < stVal) return false;
+                        }
+                        if (dateEndFilter) {
+                          const ndVal = new Date(dateEndFilter);
+                          ndVal.setHours(23, 59, 59, 999);
+                          const candVal = c.admissionFormGeneratedAt ? new Date(c.admissionFormGeneratedAt).getTime() : 0;
+                          if (candVal > ndVal.getTime()) return false;
+                        }
+                        return true;
+                      })
+                      .map((c) => {
+                        // Normalize the raw status properly to adhere strictly to the user status badge guidelines
+                        const rawStatus = c.admissionFormStatus || "";
+                        let statusVal = "NOT_GENERATED";
+                        if (rawStatus === "GENERATED") statusVal = "GENERATED";
+                        else if (rawStatus === "VIEWED") statusVal = "VIEWED";
+                        else if (rawStatus === "IN_PROGRESS" || rawStatus === "Pending") statusVal = "IN_PROGRESS";
+                        else if (rawStatus === "CONFIRMED") statusVal = "CONFIRMED";
+                        else if (rawStatus === "LOCKED") statusVal = "LOCKED";
+
+                        // Perfect Status Badge coloring matching user scope translation
+                        let badgeStyle = "bg-slate-100 text-slate-600 border-slate-200"; // NOT GENERATED
+                        if (statusVal === "GENERATED") badgeStyle = "bg-blue-50 text-blue-700 border-blue-200";
+                        else if (statusVal === "VIEWED") badgeStyle = "bg-purple-50 text-purple-700 border-purple-200";
+                        else if (statusVal === "IN_PROGRESS") badgeStyle = "bg-amber-50 text-amber-700 border-amber-200";
+                        else if (statusVal === "CONFIRMED") badgeStyle = "bg-emerald-50 text-emerald-700 border-emerald-250";
+                        else if (statusVal === "LOCKED") badgeStyle = "bg-green-900 text-white border-green-850 font-extrabold";
+
+                        return (
+                          <tr key={c.id} className="hover:bg-slate-50/70 border-b border-slate-50 transition text-left">
+                            <td className="py-3.5 px-4 text-center">
+                              <input
+                                type="checkbox"
+                                checked={selectedIds.includes(c.id)}
+                                onChange={() => handleToggleSelectOne(c.id)}
+                                className="cursor-pointer"
+                              />
+                            </td>
+                            {/* Ref Code */}
+                            <td className="py-3.5 px-3 font-mono text-[10px] font-extrabold text-indigo-755 text-indigo-805">
+                              {c.admissionFormRef || (
+                                <span className="text-slate-350 italic font-mono font-normal">-- DRAFT --</span>
+                              )}
+                            </td>
+                            {/* Candidate Info with full name */}
+                            <td className="py-3.5 px-3">
+                              <span className="font-bold text-slate-900 block text-xs">{c.name}</span>
+                              <span className="font-mono text-[9px] text-slate-400 block tracking-tight uppercase">ID: {c.id}</span>
+                            </td>
+                            {/* State */}
+                            <td className="py-3.5 px-2 text-slate-650 font-mono font-medium">{c.state?.replace(" State", "") || "N/A"}</td>
+                            {/* TSP */}
+                            <td className="py-3.5 px-3 font-semibold text-[10px] text-slate-500 leading-tight max-w-[140px] truncate" title={c.tsp}>
+                              {c.tsp || "Unassigned"}
+                            </td>
+                            {/* Skill */}
+                            <td className="py-3.5 px-3 text-[10px] font-medium text-slate-500 leading-snug max-w-[140px] truncate" title={c.sector}>
+                              {c.sector || "Unassigned"}
+                            </td>
+                            {/* Status */}
+                            <td className="py-3.5 px-3">
+                              <span className={`px-2 py-0.5 border text-[9px] font-mono rounded-md font-bold uppercase inline-block whitespace-nowrap ${badgeStyle}`}>
+                                {statusVal.replace("_", " ")}
+                              </span>
+                            </td>
+                            {/* Generated */}
+                            <td className="py-3.5 px-2 font-mono text-[10px] text-slate-400 font-bold">
+                              {c.admissionFormGeneratedAt ? new Date(c.admissionFormGeneratedAt).toLocaleDateString("en-GB") : "-"}
+                            </td>
+                            {/* Viewed */}
+                            <td className="py-3.5 px-2 font-mono text-[10px] text-slate-400">
+                              {c.admissionFormViewedAt ? new Date(c.admissionFormViewedAt).toLocaleDateString("en-GB") : "-"}
+                            </td>
+                            {/* Confirmed */}
+                            <td className="py-3.5 px-2 font-mono text-[10px] text-slate-400">
+                              {c.admissionFormConfirmedAt ? new Date(c.admissionFormConfirmedAt).toLocaleDateString("en-GB") : "-"}
+                            </td>
+                            {/* Actions Center */}
+                            <td className="py-3.5 px-3 text-center">
+                              <div className="flex items-center justify-center gap-1">
+                                
+                                {/* View Form Dossier */}
+                                <button
+                                  type="button"
+                                  onClick={() => onSelectCandidate(c)}
+                                  title="Open detailed trainee profile details"
+                                  className="p-1 text-slate-500 bg-slate-50 hover:bg-slate-100 hover:text-slate-800 border border-slate-200 rounded flex items-center justify-center transition min-w-[24px] h-[24px] cursor-pointer"
+                                >
+                                  <Eye className="w-3 h-3" />
+                                </button>
+
+                                {/* Action: Preview Drawer */}
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenFormPreview(c)}
+                                  title="Open A4 interactive printable preview"
+                                  className="p-1 text-indigo-600 bg-indigo-50 hover:bg-indigo-100 hover:text-indigo-805 border border-indigo-100 rounded flex items-center justify-center transition min-w-[24px] h-[24px] cursor-pointer"
+                                >
+                                  <Printer className="w-3 h-3" />
+                                </button>
+
+                                {/* Action: Download PDF */}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    window.open(`/api/admissions/${c.id}/form/pdf`, "_blank");
+                                  }}
+                                  title="Download signed PDF form"
+                                  className="p-1 text-slate-700 bg-slate-50 hover:bg-slate-200 border border-slate-200 rounded flex items-center justify-center transition min-w-[24px] h-[24px] cursor-pointer"
+                                >
+                                  <Download className="w-3 h-3" />
+                                </button>
+
+                                {/* Action: Download Word */}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    window.open(`/api/admissions/${c.id}/form/docx`, "_blank");
+                                  }}
+                                  title="Download Microsoft Word form doc"
+                                  className="p-1 text-sky-600 bg-sky-50 hover:bg-sky-100 border border-sky-100 rounded flex items-center justify-center transition min-w-[24px] h-[24px] cursor-pointer"
+                                >
+                                  <FileText className="w-3 h-3" />
+                                </button>
+
+                                {/* Action: Confirm & Seal form */}
+                                <button
+                                  type="button"
+                                  disabled={statusVal === "CONFIRMED" || statusVal === "LOCKED"}
+                                  onClick={() => handleConfirmAndLockForm(c.id)}
+                                  title="Review and officially CONFIRM admission status"
+                                  className="p-1 text-emerald-600 bg-emerald-50 hover:bg-emerald-100 disabled:opacity-30 disabled:cursor-not-allowed border border-emerald-150 rounded flex items-center justify-center transition min-w-[24px] h-[24px] cursor-pointer"
+                                >
+                                  <Check className="w-3 h-3" />
+                                </button>
+
+                                {/* Action: Unlock locked form */}
+                                <button
+                                  type="button"
+                                  disabled={statusVal !== "LOCKED" && statusVal !== "CONFIRMED"}
+                                  onClick={() => handleUnlockForm(c.id)}
+                                  title="Unlock sealed records to active edits"
+                                  className="p-1 text-amber-600 bg-amber-50 hover:bg-amber-100 disabled:opacity-30 disabled:cursor-not-allowed border border-amber-150 rounded flex items-center justify-center transition min-w-[24px] h-[24px] cursor-pointer"
+                                >
+                                  <Unlock className="w-3 h-3" />
+                                </button>
+
+                                {/* Action: Workflow Audit Logs */}
+                                <button
+                                  type="button"
+                                  onClick={() => setHistoryTarget(c)}
+                                  title="View chronological timeline audit logs"
+                                  className="p-1 text-slate-550 bg-slate-50 hover:bg-slate-100 hover:text-slate-700 border border-slate-200 rounded flex items-center justify-center transition min-w-[24px] h-[24px] cursor-pointer"
+                                >
+                                  <History className="w-3 h-3" />
+                                </button>
+
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pagination Footer */}
+            <div className="bg-slate-50 border-t border-slate-100 p-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-left font-sans">
+              <div className="text-[11px] font-bold text-slate-500 font-mono">
+                Showing <span className="text-slate-800">{(page - 1) * pageSize + 1}</span> to <span className="text-slate-800">{Math.min(page * pageSize, totalCount)}</span> of <span className="text-slate-800">{totalCount}</span> Trainees
+              </div>
+
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  onClick={() => setPage(p => Math.max(1, p - 1))}
+                  disabled={page === 1}
+                  className="p-1.5 bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 rounded disabled:opacity-40 transition cursor-pointer"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <span className="font-mono text-xs font-bold text-slate-705 px-2 leading-none whitespace-nowrap">
+                  Page {page} of {totalPages}
+                </span>
+                <button
+                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                  disabled={page === totalPages}
+                  className="p-1.5 bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 rounded disabled:opacity-40 transition cursor-pointer"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+          </div>
+
+        </div>
+      )}
+
+      {/* WORKFLOW AUDIT TIMELINE HISTORY DRAWER PANEL */}
+      {historyTarget && (
+        <div id="workflow-history-overlay-container" className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex justify-end z-50 animate-in fade-in duration-200">
+          <div className="bg-white w-full max-w-md h-full shadow-2xl flex flex-col animate-in slide-in-from-right duration-350 border-l border-slate-100">
+            
+            {/* Header section */}
+            <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50 text-left">
+              <div className="space-y-1">
+                <span className="text-[10px] font-mono font-bold text-indigo-600 uppercase tracking-widest block">Verification Audit Logs</span>
+                <h3 className="text-sm font-sans font-black text-slate-800 uppercase leading-none truncate max-w-[280px]" title={historyTarget.name}>
+                  {historyTarget.name}
+                </h3>
+                <p className="text-[10px] font-mono text-slate-400">ID: {historyTarget.id}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setHistoryTarget(null)}
+                className="p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-250 bg-slate-100 border border-slate-200/50 rounded-lg transition shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Chronological timeline visual trail */}
+            <div className="flex-1 overflow-y-auto p-5 text-left">
+              {loadingHistory ? (
+                <div className="py-24 flex flex-col items-center justify-center gap-2 text-slate-400">
+                  <Loader2 className="w-6 h-6 animate-spin text-indigo-600" />
+                  <span className="font-mono text-xs">Rebuilding timeline log points...</span>
+                </div>
+              ) : workflowHistory.length === 0 ? (
+                <div className="py-24 text-center text-slate-400 font-mono text-xs">
+                  No registered status event tracking checkpoints logged to coordinate list.
+                </div>
+              ) : (
+                <div className="relative border-l-2 border-indigo-100 pl-5 ml-2.5 space-y-6">
+                  {workflowHistory.map((log: any, idx: number) => {
+                    const actName = log.action || "STATUS_TRANSITION";
+                    let accentStyle = "bg-indigo-500 text-indigo-105";
+                    if (actName.includes("CONFIRM")) accentStyle = "bg-emerald-500 text-emerald-105";
+                    else if (actName.includes("LOCK") && !actName.includes("UNLOCK")) accentStyle = "bg-rose-500 text-rose-105";
+                    else if (actName.includes("UNLOCK")) accentStyle = "bg-amber-500 text-amber-105";
+
+                    return (
+                      <div key={log.id || idx} className="relative group text-left">
+                        {/* Bullet point accent identifier */}
+                        <div className={`absolute -left-[29px] top-0.5 w-4 h-4 rounded-full border-2 border-white flex items-center justify-center shadow-xs transition duration-200 ${accentStyle}`}>
+                          <span className="w-1.5 h-1.5 bg-current rounded-full"></span>
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <div className="flex flex-wrap items-center justify-between gap-1">
+                            <span className="text-[10px] font-mono font-bold tracking-wider bg-slate-100 border border-slate-250 py-0.5 px-2 rounded-md uppercase">
+                              {actName.replace("FORM_", "")}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-mono">
+                              {new Date(log.changedAt || log.createdAt || Date.now()).toLocaleString("en-GB")}
+                            </span>
+                          </div>
+
+                          <p className="text-xs text-slate-600 leading-snug font-medium italic select-none">
+                            {log.remarks || "No supplementary description notes uploaded."}
+                          </p>
+
+                          <div className="text-[9px] text-slate-400 font-mono">
+                            Logged by: <span className="font-bold text-slate-600">{log.changedBy || "System Operator"}</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Footer drawer disclaimer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-100 text-center font-mono text-[9px] text-slate-400 uppercase">
+              Confidential Cryptographic Registry Track
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* 4. OFFICIAL ADMISSION FORM INTERACTIVE DOCUMENT PREVIEW CENTER */}
+      {previewFormCandidate && (
+        <div id="ideas-admission-form-preview-center" className="fixed inset-0 bg-slate-950/95 backdrop-blur-md flex flex-col md:flex-row z-50 animate-in fade-in duration-250 overflow-hidden font-sans">
+          
+          {/* LEFT PANEL: Document Metadata & Control Center */}
+          <div className="w-full md:w-80 lg:w-96 bg-slate-900 border-r border-slate-800 text-slate-100 flex flex-col h-full select-none text-left flex-shrink-0">
+            {/* Header */}
+            <div className="p-5 border-b border-slate-800 bg-slate-900/60">
+              <span className="text-[9px] font-mono font-black text-indigo-400 uppercase tracking-widest block mb-1">
+                Federal Registry Engine
+              </span>
+              <h3 className="text-sm font-sans font-black text-white uppercase tracking-tight leading-snug">
+                Official Admission Form Preview
+              </h3>
+              <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
+                Verification checklist and cryptographic seal status for federal review.
+              </p>
+            </div>
+
+            {/* Metadata Body */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-5">
+              
+              {/* Card 1: Candidate Profile */}
+              <div className="space-y-2.5">
+                <span className="text-[9px] font-mono font-bold text-indigo-300 uppercase tracking-wider block">Candidate Profile</span>
+                <div className="bg-slate-850 border border-slate-800 p-3 rounded-lg space-y-2">
+                  <div>
+                    <span className="text-[9px] text-slate-400 font-mono block uppercase">Candidate ID</span>
+                    <span className="text-xs font-mono font-bold text-white uppercase">{previewFormCandidate.id}</span>
+                  </div>
+                  <div>
+                    <span className="text-[9px] text-slate-400 font-mono block uppercase">Full Name</span>
+                    <span className="text-xs font-bold text-white uppercase">{previewFormCandidate.name || "N/A"}</span>
+                  </div>
+                  <div>
+                    <span className="text-[9px] text-slate-400 font-mono block uppercase">State Registered</span>
+                    <span className="text-xs font-bold text-white uppercase">{previewFormCandidate.state || "N/A"}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 2: Cryptographic Reference */}
+              <div className="space-y-2.5">
+                <span className="text-[9px] font-mono font-bold text-indigo-300 uppercase tracking-wider block">Cryptographic Reference</span>
+                <div className="bg-slate-850 border border-slate-800 p-3 rounded-lg space-y-2">
+                  <div>
+                    <span className="text-[9px] text-slate-400 font-mono block uppercase font-bold">Form Serial No</span>
+                    <span className="text-xs font-mono font-bold text-indigo-450 text-indigo-400 block tracking-tight uppercase">
+                      {previewFormCandidate.admissionFormRef || "DRAFT (NOT PERSISTED)"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[9px] text-slate-400 font-mono block uppercase">Skill Sector</span>
+                    <span className="text-[11px] font-bold text-white italic leading-tight block mt-0.5">
+                      {previewFormCandidate.sector || "Unassigned"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 3: Registry Dates & Verification Checklist */}
+              <div className="space-y-2.5">
+                <span className="text-[9px] font-mono font-bold text-indigo-300 uppercase tracking-wider block">System Timestamp Status</span>
+                <div className="bg-slate-850 border border-slate-800 p-3 rounded-lg space-y-2 text-xs">
+                  <div className="flex justify-between items-center text-[10px]">
+                    <span className="text-slate-400">Generated:</span>
+                    <span className="font-mono text-slate-200">
+                      {previewFormCandidate.admissionFormGeneratedAt ? new Date(previewFormCandidate.admissionFormGeneratedAt).toLocaleDateString("en-GB") : "-"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center text-[10px]">
+                    <span className="text-slate-400">Viewed:</span>
+                    <span className="font-mono text-slate-200">
+                      {previewFormCandidate.admissionFormViewedAt ? new Date(previewFormCandidate.admissionFormViewedAt).toLocaleDateString("en-GB") : "-"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center text-[10px]/normal pt-1.5 border-t border-slate-800">
+                    <span className="text-slate-400">Lock Status:</span>
+                    <span className="font-mono font-extrabold uppercase text-slate-200 text-[10px]">
+                      {previewFormCandidate.admissionFormStatus || "IN_PROGRESS"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 4: Document Template Details */}
+              <div className="space-y-2.5">
+                <span className="text-[9px] font-mono font-bold text-indigo-300 uppercase tracking-wider block">Document Template Details</span>
+                <div className="bg-slate-850 border border-slate-800 p-3 rounded-lg space-y-2 text-xs">
+                  {activeLetterhead ? (
+                    <>
+                      <div className="flex justify-between items-center text-[10px]">
+                        <span className="text-slate-400">Template Master:</span>
+                        <span className="font-bold text-slate-200 truncate max-w-[135px]" title={activeLetterhead.name}>
+                          {activeLetterhead.name}
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center text-[10px]">
+                        <span className="text-slate-400 font-mono text-[9px]">Vector Format:</span>
+                        <span className="font-mono bg-indigo-950 text-indigo-300 px-1.5 py-0.2 rounded text-[8px] uppercase font-bold border border-indigo-900/60">
+                          {activeLetterhead.fileType} Override
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center text-[10px]/normal pt-1.5 border-t border-slate-800">
+                        <span className="text-slate-400">Status Check:</span>
+                        <span className="font-extrabold uppercase text-emerald-400 text-[9px] flex items-center gap-1">
+                          <Check className="w-3 h-3 text-emerald-400 shrink-0" /> DEFAULT ACTIVE
+                        </span>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-[10px] text-slate-500 leading-relaxed font-sans">
+                      No active layout override. Rendering custom multi-logo template head instead.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Status Indicator Panel */}
+              <div className="space-y-2">
+                <span className="text-[9px] font-mono font-bold text-indigo-300 uppercase tracking-wider block">Security Seals</span>
+                {previewFormCandidate.admissionFormStatus === "CONFIRMED" || previewFormCandidate.admissionFormStatus === "LOCKED" ? (
+                  <div className="bg-emerald-900/10 border border-emerald-505 p-3 rounded-lg flex items-center gap-2">
+                    <Lock className="w-5 h-5 text-emerald-450 shrink-0" />
+                    <div>
+                      <span className="font-mono text-[9px] font-extrabold uppercase text-emerald-400 tracking-wider block">SYSTEM SEAL ACTIVE</span>
+                      <span className="text-[9px] text-slate-400 leading-none">Database modifications frozen.</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-amber-900/10 border border-amber-505 p-3 rounded-lg flex items-center gap-2">
+                    <Unlock className="w-5 h-5 text-amber-500 shrink-0 animate-pulse" />
+                    <div>
+                      <span className="font-mono text-[9px] font-extrabold uppercase text-amber-400 tracking-wider block">UNSEALED PROFILE</span>
+                      <span className="text-[9px] text-slate-400 leading-none">A4 forms active for candidate edit draft.</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+            </div>
+
+            {/* Left sidebar minor warning disclaimer */}
+            <div className="p-4 border-t border-slate-800 bg-slate-950/40 text-center font-mono text-[8px] text-slate-500 uppercase leading-normal">
+              Official document review mode. Verification bounds apply.
+            </div>
+          </div>
+
+          {/* MAIN DOCUMENT PREVIEW: Paper Staging backdrop with Centered Mockup */}
+          <div className="flex-1 bg-slate-950 flex flex-col h-full overflow-hidden relative">
+            
+            {/* Action Header bar inside document preview */}
+            <div className="p-4 bg-slate-900/40 border-b border-slate-800 flex items-center justify-between z-10 shrink-0 select-none text-left">
+              <div className="flex items-center gap-2">
+                <Building className="w-4 h-4 text-indigo-400" />
+                <span className="text-xs font-mono uppercase font-black text-slate-350">Mockup Stage Preview Canvas</span>
+              </div>
+              <span className="text-[10px] font-mono bg-slate-850 px-2 py-0.5 rounded text-slate-450 border border-slate-800">
+                1:1 Scale A4 Simulation Center
+              </span>
+            </div>
+
+            {/* Scrollable sandbox with centered paper */}
+            <div className="flex-1 bg-slate-900/70 p-4 md:p-8 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-800 flex justify-center items-start">
+              {loadingPreview ? (
+                <div className="flex flex-col items-center justify-center gap-2 text-slate-550 py-32 font-mono text-xs">
+                  <Loader2 className="w-8 h-8 animate-spin text-indigo-500" />
+                  <span>Synthesizing official document layout and assets...</span>
+                </div>
+              ) : previewHtml ? (
+                /* Pure A4 Dimensions mockup layout with smooth shadow */
+                <div className="w-[210mm] min-h-[297mm] h-[297mm] bg-white rounded shadow-2xl border border-slate-700/60 overflow-hidden shrink-0 flex flex-col justify-between transition animate-in zoom-in-95 duration-300">
+                  <iframe
+                    id="form-preview-iframe"
+                    title="Official Form Pre-render Sandbox"
+                    srcDoc={previewHtml}
+                    className="w-full h-full border-none shadow-none bg-white font-sans"
+                  />
+                </div>
+              ) : (
+                <div className="text-slate-400 font-mono text-xs py-16">
+                  Admission Form document context was unable to compile.
+                </div>
+              )}
+            </div>
+
+            {/* STICKY STAGED ACTION CONTROL BAR */}
+            <div className="p-4 bg-slate-900/90 backdrop-blur-md border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 shrink-0 select-none font-sans text-left z-10">
+              
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Print Form Action */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const iframe = document.getElementById("form-preview-iframe") as HTMLIFrameElement;
+                    if (iframe && iframe.contentWindow) {
+                      iframe.contentWindow.focus();
+                      iframe.contentWindow.print();
+                    } else {
+                      alert("Frame container is loading assets.");
+                    }
+                  }}
+                  className="px-4.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg text-xs flex items-center gap-1.5 transition cursor-pointer shadow-sm hover:shadow-indigo-500/20"
+                >
+                  <Printer className="w-4 h-4 text-indigo-200" />
+                  <span>Print Form A4</span>
+                </button>
+
+                {/* Download PDF Form */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.open(`/api/admissions/${previewFormCandidate.id}/form/pdf`, "_blank");
+                  }}
+                  className="px-4.5 py-2 bg-slate-800 hover:bg-slate-750 text-white border border-slate-700 font-bold rounded-lg text-xs flex items-center gap-1.5 transition cursor-pointer shadow-xs"
+                >
+                  <Download className="w-4 h-4 text-slate-400" />
+                  <span>Download PDF Document</span>
+                </button>
+
+                {/* Download Word Document Form */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.open(`/api/admissions/${previewFormCandidate.id}/form/docx`, "_blank");
+                  }}
+                  className="px-4.5 py-2 bg-slate-800 hover:bg-slate-750 text-sky-400 border border-slate-700 font-bold rounded-lg text-xs flex items-center gap-1.5 transition cursor-pointer shadow-xs"
+                >
+                  <FileText className="w-4 h-4 text-sky-505" />
+                  <span>Download Microsoft Word</span>
+                </button>
+
+                {/* Regenerate sequential Reference Code with review authority */}
+                <button
+                  type="button"
+                  onClick={() => handleRegenerateReferenceCode(previewFormCandidate.id)}
+                  title="Regenerate Sequential Code parameters"
+                  className="px-4.5 py-2 bg-slate-805 hover:bg-slate-750 text-amber-500 border border-slate-700 rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-xs"
+                >
+                  <Sparkles className="w-4 h-4 text-amber-500" />
+                  <span>Regenerate Reference Code</span>
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {/* Confirm & Lock Form action toggler */}
+                {previewFormCandidate.admissionFormStatus !== "CONFIRMED" && previewFormCandidate.admissionFormStatus !== "LOCKED" ? (
+                  <button
+                    type="button"
+                    onClick={() => handleConfirmAndLockForm(previewFormCandidate.id)}
+                    className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-xs flex items-center gap-1.5 transition cursor-pointer shadow-md hover:shadow-emerald-550/20"
+                  >
+                    <CheckCircle2 className="w-4 h-4 text-emerald-200 animate-bounce" />
+                    <span>Seal, Confirm & Lock</span>
+                  </button>
+                ) : (
+                  <div className="px-4 py-1.5 bg-rose-950/30 border border-rose-900 rounded-lg text-rose-455 text-[10px] font-mono uppercase font-black tracking-widest flex items-center gap-1.5">
+                    <Lock className="w-3.5 h-3.5 text-rose-500" />
+                    <span>Form Locked & Sealed</span>
+                  </div>
+                )}
+
+                {/* Dismiss Drawer Panel */}
+                <button
+                  type="button"
+                  onClick={() => setPreviewFormCandidate(null)}
+                  className="px-5 py-2 bg-slate-750 hover:bg-slate-700 text-slate-300 font-bold rounded-lg text-xs flex items-center gap-1.5 transition cursor-pointer shadow-xs border border-slate-700"
+                >
+                  <span>Close Preview</span>
+                </button>
+              </div>
+
+            </div>
+
+          </div>
+        </div>
+      )}
 
       {/* 5. INTERACTIVE PRINTABLE LETTERS PREVIEW MODAL */}
       {previewCandidate && (

@@ -56,17 +56,26 @@ export interface Beneficiary {
   // Extended Lifecycle & Admission Workflow
   admissionStatus?: "Draft" | "Pending" | "Admission Generated" | "Admission Sent" | "Offer Viewed" | "Acceptance Pending" | "Acceptance Uploaded" | "Under Review" | "Accepted" | "Enrolled" | "Training In Progress" | "Training Completed" | "Certified" | "Alumni" | "Acceptance Rejected" | "Admitted";
   admissionRef?: string;
+  admissionFormRef?: string;
   admissionLetterGeneratedAt?: string;
   admissionLetterSentAt?: string;
   admissionFormCompleted?: boolean;
-  admissionFormStatus?: "Pending" | "Draft" | "Submitted" | "Verified";
+  admissionFormStatus?: "Pending" | "Draft" | "Submitted" | "Verified" | "NOT_GENERATED" | "GENERATED" | "IN_PROGRESS" | "VIEWED" | "CONFIRMED" | "LOCKED";
   admissionFormData?: {
     emergencyName?: string;
     emergencyPhone?: string;
     guardianName?: string;
+    guardianAddress?: string;
+    guardianPhone?: string;
+    physicalChallenge?: string;
+    bankAccountHolder?: string;
+    bankName?: string;
+    bankSortCode?: string;
+    bankAccountNumber?: string;
+    bvn?: string;
     highestQualification?: string;
     priorKnowledge?: string;
-    medicalDeclaration?: boolean;
+    medicalDeclaration?: boolean | string;
     submissionDate?: string;
   };
   acceptanceLetterUploaded?: boolean;
@@ -77,6 +86,10 @@ export interface Beneficiary {
   acceptanceLetterCheckedBy?: string;
   acceptanceLetterCheckedAt?: string;
   admissionLetterUrl?: string;
+  admissionFormGeneratedAt?: string;
+  admissionFormConfirmedAt?: string;
+  admissionFormViewedAt?: string;
+  admissionFormPdfUrl?: string;
   enrollmentLetterUrl?: string;
   certificateUrl?: string;
   
@@ -269,5 +282,19 @@ export interface WorkflowHistory {
   changedBy: string;
   changedAt: string;
   remarks?: string;
+}
+
+export interface InstitutionLetterhead {
+  id: string;
+  name: string;
+  description?: string;
+  fileUrl: string;
+  thumbnailUrl?: string;
+  fileType: "PDF" | "PNG" | "JPG" | "JPEG";
+  isDefault: boolean;
+  isActive: boolean;
+  uploadedBy: string;
+  createdAt: string;
+  updatedAt: string;
 }
 

@@ -7,7 +7,7 @@ import pg from "pg";
 import fs from "fs";
 import path from "path";
 import bcrypt from "bcryptjs";
-import { Beneficiary, ProgramStatus, AuditLog, CustomField, OrganizationSettings, TrainingProgram, WorkflowHistory } from "../types";
+import { Beneficiary, ProgramStatus, AuditLog, CustomField, OrganizationSettings, TrainingProgram, WorkflowHistory, InstitutionLetterhead } from "../types";
 
 const { Pool } = pg;
 const DB_FILE = path.join(process.cwd(), "database_ideas_tvet.json");
@@ -198,11 +198,16 @@ const SCHEMA_DDL = `
     beneficiary_id VARCHAR(50) REFERENCES beneficiaries(id) ON DELETE CASCADE UNIQUE,
     admission_status VARCHAR(100) DEFAULT 'Pending',
     admission_ref VARCHAR(100) UNIQUE,
+    admission_form_ref VARCHAR(100) UNIQUE,
     admission_letter_generated_at TIMESTAMP WITH TIME ZONE,
     admission_letter_sent_at TIMESTAMP WITH TIME ZONE,
     admission_form_completed BOOLEAN DEFAULT false,
     admission_form_status VARCHAR(50) DEFAULT 'Pending',
     admission_form_data JSONB DEFAULT '{}'::jsonb,
+    admission_form_generated_at TIMESTAMP WITH TIME ZONE,
+    admission_form_confirmed_at TIMESTAMP WITH TIME ZONE,
+    admission_form_viewed_at TIMESTAMP WITH TIME ZONE,
+    admission_form_pdf_url TEXT,
     admission_letter_versions JSONB DEFAULT '[]'::jsonb,
     admission_form_versions JSONB DEFAULT '[]'::jsonb,
     training_progress JSONB DEFAULT '{}'::jsonb,
@@ -444,6 +449,22 @@ const SCHEMA_DDL = `
     remarks TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_workflow_history_beneficiary_id ON workflow_history(beneficiary_id);
+
+  -- Institution letterheads library table
+  CREATE TABLE IF NOT EXISTS institution_letterheads (
+    id VARCHAR(100) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    file_url TEXT NOT NULL,
+    thumbnail_url TEXT,
+    file_type VARCHAR(20) NOT NULL,
+    is_default BOOLEAN DEFAULT FALSE,
+    is_active BOOLEAN DEFAULT TRUE,
+    uploaded_by VARCHAR(100) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_institution_letterheads_default ON institution_letterheads(is_default) WHERE is_default = TRUE;
 `;
 
 /**
@@ -575,6 +596,15 @@ export async function initDb(): Promise<void> {
       ALTER TABLE admissions ADD COLUMN IF NOT EXISTS acceptance_letter_checked_by VARCHAR(255);
       ALTER TABLE admissions ADD COLUMN IF NOT EXISTS acceptance_letter_checked_at TIMESTAMP WITH TIME ZONE;
       ALTER TABLE admissions ADD COLUMN IF NOT EXISTS acceptance_letter_remarks TEXT;
+      
+      ALTER TABLE admissions ADD COLUMN IF NOT EXISTS admission_form_completed BOOLEAN DEFAULT false;
+      ALTER TABLE admissions ADD COLUMN IF NOT EXISTS admission_form_status VARCHAR(50) DEFAULT 'Pending';
+      ALTER TABLE admissions ADD COLUMN IF NOT EXISTS admission_form_data JSONB DEFAULT '{}'::jsonb;
+      ALTER TABLE admissions ADD COLUMN IF NOT EXISTS admission_form_generated_at TIMESTAMP WITH TIME ZONE;
+      ALTER TABLE admissions ADD COLUMN IF NOT EXISTS admission_form_confirmed_at TIMESTAMP WITH TIME ZONE;
+      ALTER TABLE admissions ADD COLUMN IF NOT EXISTS admission_form_viewed_at TIMESTAMP WITH TIME ZONE;
+      ALTER TABLE admissions ADD COLUMN IF NOT EXISTS admission_form_pdf_url TEXT;
+      ALTER TABLE admissions ADD COLUMN IF NOT EXISTS admission_form_ref VARCHAR(100) UNIQUE;
     `);
 
     // Ensure document_delivery_logs is bootstrapped independently
@@ -701,22 +731,29 @@ export async function initDb(): Promise<void> {
 /**
  * Helper to load JSON file state (to back up operations and map schemas)
  */
-function loadJsonState(): { customFields: CustomField[]; beneficiaries: Beneficiary[]; auditLogs: AuditLog[] } {
+function loadJsonState(): { customFields: CustomField[]; beneficiaries: Beneficiary[]; auditLogs: AuditLog[]; institutionLetterheads?: InstitutionLetterhead[] } {
   try {
     if (fs.existsSync(DB_FILE)) {
-      return JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+      const data = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+      if (!data.institutionLetterheads) {
+        data.institutionLetterheads = [];
+      }
+      return data;
     }
   } catch (e) {
     console.error("[DB] Failed to read JSON file fallback state:", e);
   }
-  return { customFields: [], beneficiaries: [], auditLogs: [] };
+  return { customFields: [], beneficiaries: [], auditLogs: [], institutionLetterheads: [] };
 }
 
 /**
  * Helper to save JSON file state
  */
-function saveJsonState(state: { customFields: CustomField[]; beneficiaries: Beneficiary[]; auditLogs: AuditLog[] }) {
+function saveJsonState(state: { customFields: CustomField[]; beneficiaries: Beneficiary[]; auditLogs: AuditLog[]; institutionLetterheads?: InstitutionLetterhead[] }) {
   try {
+    if (!state.institutionLetterheads) {
+      state.institutionLetterheads = [];
+    }
     fs.writeFileSync(DB_FILE, JSON.stringify(state, null, 2), "utf-8");
   } catch (e) {
     console.error("[DB] Failed to write JSON file fallback state:", e);
@@ -1105,9 +1142,10 @@ export class DbRepo {
                b.guardian_name, b.guardian_address, b.guardian_phone, b.physical_challenge,
                b.bank_account_holder, b.bank_name, b.bank_sort_code, b.bank_account_number, b.education_qualification, b.date_of_birth,
                b.created_at, b.updated_at,
-               adm.admission_status, adm.admission_ref, adm.admission_letter_generated_at, 
+               adm.admission_status, adm.admission_ref, adm.admission_form_ref, adm.admission_letter_generated_at, 
                adm.admission_letter_sent_at, adm.admission_form_completed, adm.admission_form_status, 
-               adm.training_progress
+               adm.training_progress, adm.admission_form_generated_at, adm.admission_form_confirmed_at,
+               adm.admission_form_viewed_at, adm.admission_form_pdf_url
         FROM beneficiaries b
         LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
         WHERE b.deleted_at IS NULL
@@ -1206,10 +1244,15 @@ export class DbRepo {
 
           admissionStatus: row.admission_status || "Draft",
           admissionRef: row.admission_ref || "",
+          admissionFormRef: row.admission_form_ref || "",
           admissionLetterGeneratedAt: row.admission_letter_generated_at ? row.admission_letter_generated_at.toISOString() : undefined,
           admissionLetterSentAt: row.admission_letter_sent_at ? row.admission_letter_sent_at.toISOString() : undefined,
           admissionFormCompleted: !!row.admission_form_completed,
           admissionFormStatus: row.admission_form_status || "Pending",
+          admissionFormGeneratedAt: row.admission_form_generated_at ? row.admission_form_generated_at.toISOString() : undefined,
+          admissionFormConfirmedAt: row.admission_form_confirmed_at ? row.admission_form_confirmed_at.toISOString() : undefined,
+          admissionFormViewedAt: row.admission_form_viewed_at ? row.admission_form_viewed_at.toISOString() : undefined,
+          admissionFormPdfUrl: row.admission_form_pdf_url || "",
           trainingProgress: row.training_progress || {},
 
           acceptanceLetterUploaded: accVersions.length > 0,
@@ -1280,11 +1323,12 @@ export class DbRepo {
 
       // Hydrate Admissions
       const admRes = await pool.query(
-        `SELECT admission_status, admission_ref, admission_letter_generated_at, 
+        `SELECT admission_status, admission_ref, admission_form_ref, admission_letter_generated_at, 
                 admission_letter_sent_at, admission_form_completed, admission_form_status, 
                 admission_form_data, admission_letter_versions, admission_form_versions, training_progress,
                 acceptance_letter_uploaded_at, acceptance_letter_status, acceptance_letter_url,
-                acceptance_letter_checked_by, acceptance_letter_checked_at, acceptance_letter_remarks
+                acceptance_letter_checked_by, acceptance_letter_checked_at, acceptance_letter_remarks,
+                admission_form_generated_at, admission_form_confirmed_at, admission_form_viewed_at, admission_form_pdf_url
          FROM admissions
          WHERE beneficiary_id = $1 AND deleted_at IS NULL`,
         [id]
@@ -1368,10 +1412,15 @@ export class DbRepo {
 
         admissionStatus: adm.admission_status || "Draft",
         admissionRef: adm.admission_ref || "",
+        admissionFormRef: adm.admission_form_ref || "",
         admissionLetterGeneratedAt: adm.admission_letter_generated_at ? adm.admission_letter_generated_at.toISOString() : undefined,
         admissionLetterSentAt: adm.admission_letter_sent_at ? adm.admission_letter_sent_at.toISOString() : undefined,
         admissionFormCompleted: !!adm.admission_form_completed,
         admissionFormStatus: adm.admission_form_status || "Pending",
+        admissionFormGeneratedAt: adm.admission_form_generated_at ? adm.admission_form_generated_at.toISOString() : undefined,
+        admissionFormConfirmedAt: adm.admission_form_confirmed_at ? adm.admission_form_confirmed_at.toISOString() : undefined,
+        admissionFormViewedAt: adm.admission_form_viewed_at ? adm.admission_form_viewed_at.toISOString() : undefined,
+        admissionFormPdfUrl: adm.admission_form_pdf_url || "",
         admissionFormData: adm.admission_form_data || {},
         admissionLetterVersions: adm.admission_letter_versions || [],
         admissionFormVersions: adm.admission_form_versions || [],
@@ -1414,6 +1463,64 @@ export class DbRepo {
       }
       const state = loadJsonState();
       return state.beneficiaries.find(b => b.id === id) || null;
+    }
+  }
+
+  /**
+   * Generates or retrieves an official unique sequential Form Reference Number: IDEAS-AF-YYYY-000001
+   */
+  static async getOrGenerateAdmissionFormRef(id: string, force: boolean = false): Promise<string> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      const bIdx = state.beneficiaries.findIndex(b => b.id === id);
+      if (bIdx === -1) {
+        return `IDEAS-AF-${new Date().getFullYear()}-000001`;
+      }
+      const existing = state.beneficiaries[bIdx].admissionFormRef;
+      if (existing && !force) {
+        return existing;
+      }
+      const withRef = state.beneficiaries.filter(b => b.admissionFormRef && b.admissionFormRef.startsWith("IDEAS-AF-"));
+      const nextSeq = withRef.length + 1;
+      const year = new Date().getFullYear();
+      const newRef = `IDEAS-AF-${year}-${String(nextSeq).padStart(6, "0")}`;
+      state.beneficiaries[bIdx].admissionFormRef = newRef;
+      saveJsonState(state);
+      return newRef;
+    }
+
+    try {
+      if (!force) {
+        const existingRes = await pool.query(
+          "SELECT admission_form_ref FROM admissions WHERE beneficiary_id = $1",
+          [id]
+        );
+        if (existingRes.rows.length > 0 && existingRes.rows[0].admission_form_ref) {
+          return existingRes.rows[0].admission_form_ref;
+        }
+      }
+
+      // Generate a new sequential reference
+      const countRes = await pool.query(
+        "SELECT count(*) as total FROM admissions WHERE admission_form_ref IS NOT NULL AND admission_form_ref LIKE 'IDEAS-AF-%'"
+      );
+      const nextSeq = Number(countRes.rows[0]?.total || 0) + 1;
+      const year = new Date().getFullYear();
+      const newRef = `IDEAS-AF-${year}-${String(nextSeq).padStart(6, "0")}`;
+
+      // Insert/Update admissions record with this reference
+      await pool.query(
+        "INSERT INTO admissions (beneficiary_id, admission_form_ref) VALUES ($1, $2) ON CONFLICT (beneficiary_id) DO UPDATE SET admission_form_ref = $2",
+        [id, newRef]
+      );
+
+      return newRef;
+    } catch (e) {
+      console.error("[DB Repo] Failed to get or generate admission form reference:", e);
+      // Safe fallback counter
+      const year = new Date().getFullYear();
+      return `IDEAS-AF-${year}-000099`;
     }
   }
 
@@ -1576,14 +1683,16 @@ export class DbRepo {
       // 2. Upsert admission extending metrics
       await client.query(
         `INSERT INTO admissions (
-           beneficiary_id, admission_status, admission_ref, admission_letter_generated_at, 
+           beneficiary_id, admission_status, admission_ref, admission_form_ref, admission_letter_generated_at, 
            admission_letter_sent_at, admission_form_completed, admission_form_status, 
            admission_form_data, admission_letter_versions, admission_form_versions, 
-           training_progress, created_at, updated_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
+           training_progress, admission_form_generated_at, admission_form_confirmed_at,
+           admission_form_viewed_at, admission_form_pdf_url, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW())
          ON CONFLICT (beneficiary_id) DO UPDATE SET
            admission_status = EXCLUDED.admission_status,
            admission_ref = EXCLUDED.admission_ref,
+           admission_form_ref = EXCLUDED.admission_form_ref,
            admission_letter_generated_at = EXCLUDED.admission_letter_generated_at,
            admission_letter_sent_at = EXCLUDED.admission_letter_sent_at,
            admission_form_completed = EXCLUDED.admission_form_completed,
@@ -1592,11 +1701,16 @@ export class DbRepo {
            admission_letter_versions = EXCLUDED.admission_letter_versions,
            admission_form_versions = EXCLUDED.admission_form_versions,
            training_progress = EXCLUDED.training_progress,
+           admission_form_generated_at = EXCLUDED.admission_form_generated_at,
+           admission_form_confirmed_at = EXCLUDED.admission_form_confirmed_at,
+           admission_form_viewed_at = EXCLUDED.admission_form_viewed_at,
+           admission_form_pdf_url = EXCLUDED.admission_form_pdf_url,
            updated_at = NOW()`,
         [
           b.id,
           b.admissionStatus || "Pending",
           b.admissionRef || null,
+          b.admissionFormRef || null,
           b.admissionLetterGeneratedAt ? new Date(b.admissionLetterGeneratedAt) : null,
           b.admissionLetterSentAt ? new Date(b.admissionLetterSentAt) : null,
           !!b.admissionFormCompleted,
@@ -1604,7 +1718,11 @@ export class DbRepo {
           JSON.stringify(b.admissionFormData || {}),
           JSON.stringify(b.admissionLetterVersions || []),
           JSON.stringify(b.admissionFormVersions || []),
-          JSON.stringify(b.trainingProgress || {})
+          JSON.stringify(b.trainingProgress || {}),
+          b.admissionFormGeneratedAt ? new Date(b.admissionFormGeneratedAt) : null,
+          b.admissionFormConfirmedAt ? new Date(b.admissionFormConfirmedAt) : null,
+          b.admissionFormViewedAt ? new Date(b.admissionFormViewedAt) : null,
+          b.admissionFormPdfUrl || null
         ]
       );
 
@@ -2589,6 +2707,12 @@ export class DbRepo {
     byLga: { [key: string]: number };
     recentActivities?: any[];
     acceptanceSummary?: any;
+    admissionFormSummary?: {
+      generated: number;
+      viewed: number;
+      confirmed: number;
+      pendingConfirmation: number;
+    };
   }> {
     const pool = getPgPool();
     if (!pool || !isPgActive) {
@@ -2602,6 +2726,7 @@ export class DbRepo {
       const byTsp: { [key: string]: number } = {};
       const byState: { [key: string]: number } = {};
       const byLga: { [key: string]: number } = {};
+      const admissionFormSummary = { generated: 0, viewed: 0, confirmed: 0, pendingConfirmation: 0 };
 
       for (const b of beneficiariesList) {
         summary.total++;
@@ -2615,6 +2740,18 @@ export class DbRepo {
           summary.underReview++;
         } else {
           summary.pending++;
+        }
+
+        if (b.admissionFormPdfUrl || b.admissionFormGeneratedAt) {
+          admissionFormSummary.generated++;
+          if (b.admissionFormConfirmedAt) {
+            admissionFormSummary.confirmed++;
+          } else {
+            admissionFormSummary.pendingConfirmation++;
+          }
+        }
+        if (b.admissionFormViewedAt) {
+          admissionFormSummary.viewed++;
         }
 
         const sector = b.skillSector || "Computer Repairs";
@@ -2633,7 +2770,7 @@ export class DbRepo {
         byLga[city] = (byLga[city] || 0) + 1;
       }
 
-      return { summary, bySector, byProgram, byTsp, byState, byLga };
+      return { summary, bySector, byProgram, byTsp, byState, byLga, admissionFormSummary };
     }
 
     try {
@@ -2727,14 +2864,33 @@ export class DbRepo {
       // Fetch recentActivities
       const recentActivities = await DbRepo.getRecentAdmissionsActivities();
 
-      return { summary, bySector, byProgram, byTsp, byState, byLga, recentActivities, acceptanceSummary };
+      // Fetch admission form stats
+      const formStatsRes = await pool.query(`
+        SELECT 
+          COUNT(CASE WHEN admission_form_pdf_url IS NOT NULL OR admission_form_generated_at IS NOT NULL THEN 1 END) as generated,
+          COUNT(CASE WHEN admission_form_viewed_at IS NOT NULL THEN 1 END) as viewed,
+          COUNT(CASE WHEN admission_form_confirmed_at IS NOT NULL THEN 1 END) as confirmed,
+          COUNT(CASE WHEN (admission_form_pdf_url IS NOT NULL OR admission_form_generated_at IS NOT NULL) AND admission_form_confirmed_at IS NULL THEN 1 END) as pending
+        FROM admissions
+        WHERE deleted_at IS NULL
+      `);
+      const formRow = formStatsRes.rows[0] || {};
+      const admissionFormSummary = {
+        generated: parseInt(formRow.generated || "0", 10),
+        viewed: parseInt(formRow.viewed || "0", 10),
+        confirmed: parseInt(formRow.confirmed || "0", 10),
+        pendingConfirmation: parseInt(formRow.pending || "0", 10)
+      };
+
+      return { summary, bySector, byProgram, byTsp, byState, byLga, recentActivities, acceptanceSummary, admissionFormSummary };
     } catch (e) {
       console.error("[DB Repo] Failed to load admissions stats:", e);
       return {
         summary: { total: 0, pending: 0, underReview: 0, admitted: 0, rejected: 0 },
         bySector: {}, byProgram: {}, byTsp: {}, byState: {}, byLga: {},
         recentActivities: [],
-        acceptanceSummary: { NOT_SUBMITTED: 0, SUBMITTED: 0, UNDER_VERIFICATION: 0, ACCEPTED: 0, REJECTED: 0 }
+        acceptanceSummary: { NOT_SUBMITTED: 0, SUBMITTED: 0, UNDER_VERIFICATION: 0, ACCEPTED: 0, REJECTED: 0 },
+        admissionFormSummary: { generated: 0, viewed: 0, confirmed: 0, pendingConfirmation: 0 }
       };
     }
   }
@@ -2847,7 +3003,15 @@ export class DbRepo {
       }
 
       if (status !== "all") {
-        list = list.filter(b => (b.admissionStatus || "Pending").toLowerCase() === status.toLowerCase());
+        if (["GENERATED", "VIEWED", "IN_PROGRESS", "CONFIRMED", "LOCKED", "NOT_GENERATED"].includes(status.toUpperCase())) {
+          if (status === "NOT_GENERATED") {
+            list = list.filter(b => !b.admissionFormStatus || b.admissionFormStatus === "NOT_GENERATED" || b.admissionFormStatus === "Pending");
+          } else {
+            list = list.filter(b => (b.admissionFormStatus || "").toUpperCase() === status.toUpperCase());
+          }
+        } else {
+          list = list.filter(b => (b.admissionStatus || "Pending").toLowerCase() === status.toLowerCase());
+        }
       }
       if (sector !== "all") {
         list = list.filter(b => b.skillSector === sector);
@@ -2886,7 +3050,12 @@ export class DbRepo {
         hasPhoto: b.photo ? (b.photo.length > 5) : false,
         state: b.state,
         batch: b.batch,
-        createdAt: b.createdAt
+        createdAt: b.createdAt,
+        admissionFormRef: b.admissionFormRef || b.admissionRef || "",
+        admissionFormStatus: b.admissionFormStatus || "NOT_GENERATED",
+        admissionFormGeneratedAt: b.admissionFormGeneratedAt || null,
+        admissionFormViewedAt: b.admissionFormViewedAt || null,
+        admissionFormConfirmedAt: b.admissionFormConfirmedAt || null
       }));
 
       return { rows, totalCount, page, pageSize, totalPages };
@@ -2905,7 +3074,12 @@ export class DbRepo {
         "(b.photo IS NOT NULL AND b.photo != '') as has_photo",
         "b.state",
         "b.batch",
-        "b.created_at"
+        "b.created_at",
+        "adm.admission_form_status",
+        "adm.admission_form_ref",
+        "adm.admission_form_generated_at",
+        "adm.admission_form_viewed_at",
+        "adm.admission_form_confirmed_at"
       ];
 
       let queryWhere = "WHERE b.deleted_at IS NULL ";
@@ -2920,9 +3094,19 @@ export class DbRepo {
       }
 
       if (status !== "all") {
-        queryWhere += `AND COALESCE(adm.admission_status, 'Pending') = $${paramCount} `;
-        params.push(status);
-        paramCount++;
+        if (["GENERATED", "VIEWED", "IN_PROGRESS", "CONFIRMED", "LOCKED", "NOT_GENERATED"].includes(status.toUpperCase())) {
+          if (status === "NOT_GENERATED") {
+            queryWhere += `AND (adm.admission_form_status IS NULL OR adm.admission_form_status = 'Pending' OR adm.admission_form_status = 'NOT_GENERATED') `;
+          } else {
+            queryWhere += `AND adm.admission_form_status = $${paramCount} `;
+            params.push(status);
+            paramCount++;
+          }
+        } else {
+          queryWhere += `AND COALESCE(adm.admission_status, 'Pending') = $${paramCount} `;
+          params.push(status);
+          paramCount++;
+        }
       }
 
       if (sector !== "all") {
@@ -3504,6 +3688,152 @@ export class DbRepo {
     } catch (e) {
       console.error("[DB Repo] admissions paged list aggregates fail:", e);
       return { rows: [], totalCount: 0, page, pageSize, totalPages: 1 };
+    }
+  }
+
+  /**
+   * Retrieves all registered institution letterhead templates in the workspace
+   */
+  static async getLetterheads(): Promise<InstitutionLetterhead[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      // JSON File fallback
+      return loadJsonState().institutionLetterheads || [];
+    }
+
+    try {
+      const res = await pool.query(
+        "SELECT id, name, description, file_url, thumbnail_url, file_type, is_default, is_active, uploaded_by, created_at, updated_at FROM institution_letterheads ORDER BY created_at DESC"
+      );
+      return res.rows.map(r => ({
+        id: r.id,
+        name: r.name,
+        description: r.description || undefined,
+        fileUrl: r.file_url,
+        thumbnailUrl: r.thumbnail_url || undefined,
+        fileType: r.file_type as "PDF" | "PNG" | "JPG" | "JPEG",
+        isDefault: !!r.is_default,
+        isActive: !!r.is_active,
+        uploadedBy: r.uploaded_by,
+        createdAt: r.created_at ? r.created_at.toISOString() : new Date().toISOString(),
+        updatedAt: r.updated_at ? r.updated_at.toISOString() : new Date().toISOString()
+      }));
+    } catch (e) {
+      console.error("[DB Repo] Failed to load letterheads from PG, falling back to JSON:", e);
+      return loadJsonState().institutionLetterheads || [];
+    }
+  }
+
+  /**
+   * Retrieves the current default, active institutional document letterhead template
+   */
+  static async getActiveLetterhead(): Promise<InstitutionLetterhead | null> {
+    const list = await this.getLetterheads();
+    const activeDefault = list.find(l => l.isActive && l.isDefault);
+    if (activeDefault) return activeDefault;
+    // Fallback to first active one if no default is selected
+    const activeFirst = list.find(l => l.isActive);
+    return activeFirst || null;
+  }
+
+  /**
+   * Saves or updates a letterhead. Ensures that if the letterhead is set as default,
+   * any other default letterhead is cleared/deactivated as default.
+   */
+  static async saveLetterhead(lh: InstitutionLetterhead): Promise<InstitutionLetterhead> {
+    const pool = getPgPool();
+    const listInFallback = async () => {
+      const state = loadJsonState();
+      if (!state.institutionLetterheads) state.institutionLetterheads = [];
+      
+      // If setting this one to default, reset others in JSON state
+      if (lh.isDefault && lh.isActive) {
+        state.institutionLetterheads.forEach(item => {
+          if (item.id !== lh.id) {
+            item.isDefault = false;
+          }
+        });
+      }
+      const index = state.institutionLetterheads.findIndex(item => item.id === lh.id);
+      if (index >= 0) {
+        state.institutionLetterheads[index] = lh;
+      } else {
+        state.institutionLetterheads.push(lh);
+      }
+      saveJsonState(state);
+      return lh;
+    };
+
+    if (!pool || !isPgActive) {
+      return await listInFallback();
+    }
+
+    try {
+      // If setting this one as default, run transactional reset of others
+      if (lh.isDefault && lh.isActive) {
+        await pool.query(
+          "UPDATE institution_letterheads SET is_default = FALSE WHERE id <> $1",
+          [lh.id]
+        );
+      }
+
+      await pool.query(
+        `INSERT INTO institution_letterheads (
+          id, name, description, file_url, thumbnail_url, file_type, 
+          is_default, is_active, uploaded_by, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         ON CONFLICT (id) DO UPDATE SET
+           name = EXCLUDED.name,
+           description = EXCLUDED.description,
+           file_url = EXCLUDED.file_url,
+           thumbnail_url = EXCLUDED.thumbnail_url,
+           file_type = EXCLUDED.file_type,
+           is_default = EXCLUDED.is_default,
+           is_active = EXCLUDED.is_active,
+           uploaded_by = EXCLUDED.uploaded_by,
+           updated_at = NOW()`,
+        [
+          lh.id, lh.name, lh.description || null, lh.fileUrl, lh.thumbnailUrl || null, 
+          lh.fileType, lh.isDefault, lh.isActive, lh.uploadedBy, 
+          lh.createdAt ? new Date(lh.createdAt) : new Date(), 
+          lh.updatedAt ? new Date(lh.updatedAt) : new Date()
+        ]
+      );
+      return lh;
+    } catch (e) {
+      console.error("[DB Repo] Failed to save letterhead to Postgres, committing fallback:", e);
+      return await listInFallback();
+    }
+  }
+
+  /**
+   * Deletes a registered letterhead background from the database list.
+   */
+  static async deleteLetterhead(id: string): Promise<boolean> {
+    const pool = getPgPool();
+    const fallbackDelete = () => {
+      const state = loadJsonState();
+      if (!state.institutionLetterheads) state.institutionLetterheads = [];
+      const updated = state.institutionLetterheads.filter(item => item.id !== id);
+      const isDeleted = updated.length < state.institutionLetterheads.length;
+      state.institutionLetterheads = updated;
+      saveJsonState(state);
+      return isDeleted;
+    };
+
+    if (!pool || !isPgActive) {
+      return fallbackDelete();
+    }
+
+    try {
+      const res = await pool.query(
+        "DELETE FROM institution_letterheads WHERE id = $1",
+        [id]
+      );
+      return (res.rowCount ?? 0) > 0;
+    } catch (e) {
+      console.error("[DB Repo] Failed to delete letterhead from Postgres, committing fallback:", e);
+      return fallbackDelete();
     }
   }
 }

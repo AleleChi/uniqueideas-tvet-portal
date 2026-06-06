@@ -472,6 +472,22 @@ app.post("/api/admissions/bulk-transition", requireAuth, requireRole(["SUPER_ADM
 app.post("/api/admissions/acceptance/review", requireAuth, requireRole(["SUPER_ADMIN", "REVIEW_OFFICER", "ADMIN_OFFICER"]), AdmissionController.reviewAcceptanceLetter);
 app.get("/api/admissions/:id/letter", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", "TRAINEE"]), AdmissionController.getAdmissionLetterData);
 
+// --- Admission Form Module ---
+app.get("/api/admissions/verify/:reference", AdmissionController.verifyForm);
+app.post("/api/admissions/export-jobs", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.createExportJob);
+app.get("/api/admissions/export-jobs/:jobId", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.getExportJobStatus);
+app.get("/api/admissions/export-jobs/download/:jobId", AdmissionController.downloadExportJob);
+
+app.post("/api/admissions/:id/generate-form", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "TRAINEE"]), AdmissionController.generateForm);
+app.get("/api/admissions/:id/form", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", "TRAINEE"]), AdmissionController.getForm);
+app.post("/api/admissions/:id/save-form", requireAuth, requireRole(["SUPER_ADMIN", "TRAINEE"]), AdmissionController.saveForm);
+app.get("/api/admissions/:id/form/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", "TRAINEE"]), AdmissionController.getFormPdf);
+app.get("/api/admissions/:id/form/docx", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", "TRAINEE"]), AdmissionController.getFormDocx);
+app.post("/api/admissions/bulk-export", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.bulkExportAdmissionForms);
+app.post("/api/admissions/:id/confirm-form", requireAuth, requireRole(["SUPER_ADMIN", "TRAINEE"]), AdmissionController.confirmForm);
+app.post("/api/admissions/:id/unlock-form", requireAuth, requireRole(["SUPER_ADMIN"]), AdmissionController.unlockForm);
+app.post("/api/admissions/:id/regenerate-reference", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), AdmissionController.regenerateReference);
+
 // ==========================================
 // ADMISSIONS REPORTING API ENDPOINTS
 // ==========================================
@@ -1464,6 +1480,105 @@ app.put("/api/organization-settings", requireAuth, requireRole(["SUPER_ADMIN", "
   }
 });
 
+// Letterhead Library Management Endpoints
+app.get("/api/letterheads", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
+  try {
+    const list = await DbRepo.getLetterheads();
+    res.json(list);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/letterheads/active", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
+  try {
+    const active = await DbRepo.getActiveLetterhead();
+    res.json(active);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/letterheads", requireAuth, requireRole(["SUPER_ADMIN"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { name, description, fileUrl, thumbnailUrl, fileType, isDefault, isActive } = req.body;
+    if (!name || !fileUrl || !fileType) {
+      return res.status(400).json({ error: "Name, file URL and file type are required" });
+    }
+
+    const newLh = {
+      id: "lh_" + crypto.randomBytes(12).toString("hex"),
+      name,
+      description,
+      fileUrl,
+      thumbnailUrl,
+      fileType,
+      isDefault: !!isDefault,
+      isActive: isActive !== undefined ? !!isActive : true,
+      uploadedBy: req.user!.email,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    const saved = await DbRepo.saveLetterhead(newLh);
+    await logAction(req.user!.email, "LETTERHEAD_CREATE", `Registered new document letterhead template: '${name}'`);
+    res.status(201).json(saved);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put("/api/letterheads/:id", requireAuth, requireRole(["SUPER_ADMIN"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description, fileUrl, thumbnailUrl, fileType, isDefault, isActive } = req.body;
+    
+    const list = await DbRepo.getLetterheads();
+    const existing = list.find(l => l.id === id);
+    if (!existing) {
+      return res.status(404).json({ error: "Letterhead template not found" });
+    }
+
+    const updatedLh = {
+      ...existing,
+      name: name !== undefined ? name : existing.name,
+      description: description !== undefined ? description : existing.description,
+      fileUrl: fileUrl !== undefined ? fileUrl : existing.fileUrl,
+      thumbnailUrl: thumbnailUrl !== undefined ? thumbnailUrl : existing.thumbnailUrl,
+      fileType: fileType !== undefined ? fileType : existing.fileType,
+      isDefault: isDefault !== undefined ? !!isDefault : existing.isDefault,
+      isActive: isActive !== undefined ? !!isActive : existing.isActive,
+      updatedAt: new Date().toISOString()
+    };
+
+    const saved = await DbRepo.saveLetterhead(updatedLh);
+    await logAction(req.user!.email, "LETTERHEAD_UPDATE", `Updated letterhead template configuration: '${updatedLh.name}'`);
+    res.json(saved);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/letterheads/:id", requireAuth, requireRole(["SUPER_ADMIN"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    const list = await DbRepo.getLetterheads();
+    const existing = list.find(l => l.id === id);
+    if (!existing) {
+      return res.status(404).json({ error: "Letterhead template not found" });
+    }
+
+    const success = await DbRepo.deleteLetterhead(id);
+    if (success) {
+      await logAction(req.user!.email, "LETTERHEAD_DELETE", `Purged document letterhead template: '${existing.name}'`);
+      return res.json({ success: true });
+    }
+    res.status(400).json({ error: "Failed to delete template" });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Training programs / batches resources
 app.get("/api/training-programs", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
   try {
@@ -1769,6 +1884,19 @@ app.put("/api/beneficiaries/:id", requireAuth, async (req: AuthenticatedRequest,
     const original = await DbRepo.getBeneficiaryById(id);
     if (original) {
       const data = req.body;
+      
+      // Lock check: prevent modification to locked form fields unless SUPER_ADMIN
+      if ((original.admissionFormStatus === "CONFIRMED" || original.admissionFormStatus === "LOCKED" || original.admissionFormCompleted) && req.user!.role !== "SUPER_ADMIN") {
+        const lockedFields = [
+          "guardianName", "guardianAddress", "guardianPhone", 
+          "physicalChallenge", "bankAccountHolder", "bankName", 
+          "bankSortCode", "bankAccountNumber", "bvn", "admissionFormStatus", "admissionFormCompleted"
+        ];
+        const isTryingToModifyLockedField = lockedFields.some(field => data[field] !== undefined && data[field] !== (original as any)[field]);
+        if (isTryingToModifyLockedField) {
+          return res.status(409).json({ error: "Admission Form already finalized" });
+        }
+      }
       
       if (data.admissionStatus && data.admissionStatus !== original.admissionStatus) {
         if (!isValidTransition(original.admissionStatus, data.admissionStatus)) {

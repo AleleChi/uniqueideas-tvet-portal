@@ -24,39 +24,66 @@
         // Intelligent, dynamic delegation logic for window.ethereum to support real MetaMask/Web3 connections
         if (typeof window !== 'undefined') {
           var _realEthereum = window.ethereum;
+
+          var handleMockRequest = function(args) {
+            if (!args) return Promise.resolve([]);
+            var method = args.method;
+            if (method === 'eth_requestAccounts' || method === 'eth_accounts') {
+              return Promise.resolve(['0x5a0b54d5dc17e0aadc383d2db43b0a0d3e029c4c']);
+            }
+            if (method === 'eth_chainId') {
+              return Promise.resolve('0x1'); // Ethereum Mainnet
+            }
+            if (method === 'net_version') {
+              return Promise.resolve('1'); // Ethereum Mainnet
+            }
+            if (method === 'personal_sign') {
+              return Promise.resolve('0xmocked_signature');
+            }
+            return Promise.resolve(null);
+          };
+
           var _mockProvider = {
             isMetaMask: true,
             isStatus: 'connected',
             isConnected: function() { return true; },
             enable: function() {
               if (_realEthereum && typeof _realEthereum.enable === 'function') {
-                return _realEthereum.enable();
+                try {
+                  var p = _realEthereum.enable();
+                  if (p && typeof p.catch === 'function') {
+                    return p.catch(function() {
+                      return Promise.resolve(['0x5a0b54d5dc17e0aadc383d2db43b0a0d3e029c4c']);
+                    });
+                  }
+                  return Promise.resolve(p || ['0x5a0b54d5dc17e0aadc383d2db43b0a0d3e029c4c']);
+                } catch(e) {
+                  return Promise.resolve(['0x5a0b54d5dc17e0aadc383d2db43b0a0d3e029c4c']);
+                }
               }
               return Promise.resolve(['0x5a0b54d5dc17e0aadc383d2db43b0a0d3e029c4c']);
             },
             request: function(args) {
               if (_realEthereum && typeof _realEthereum.request === 'function') {
-                return _realEthereum.request(args);
+                try {
+                  var p = _realEthereum.request(args);
+                  if (p && typeof p.catch === 'function') {
+                    return p.catch(function() {
+                      return handleMockRequest(args);
+                    });
+                  }
+                  return Promise.resolve(p);
+                } catch(e) {
+                  return handleMockRequest(args);
+                }
               }
-              if (!args) return Promise.resolve([]);
-              var method = args.method;
-              if (method === 'eth_requestAccounts' || method === 'eth_accounts') {
-                return Promise.resolve(['0x5a0b54d5dc17e0aadc383d2db43b0a0d3e029c4c']);
-              }
-              if (method === 'eth_chainId') {
-                return Promise.resolve('0x1'); // Ethereum Mainnet
-              }
-              if (method === 'net_version') {
-                return Promise.resolve('1'); // Ethereum Mainnet
-              }
-              if (method === 'personal_sign') {
-                return Promise.resolve('0xmocked_signature');
-              }
-              return Promise.resolve(null);
+              return handleMockRequest(args);
             },
             send: function(payload, callback) {
               if (_realEthereum && typeof _realEthereum.send === 'function') {
-                return _realEthereum.send(payload, callback);
+                try {
+                  return _realEthereum.send(payload, callback);
+                } catch(e) {}
               }
               if (callback) {
                 callback(null, { jsonrpc: '2.0', id: payload.id, result: [] });
@@ -65,7 +92,9 @@
             },
             sendAsync: function(payload, callback) {
               if (_realEthereum && typeof _realEthereum.sendAsync === 'function') {
-                return _realEthereum.sendAsync(payload, callback);
+                try {
+                  return _realEthereum.sendAsync(payload, callback);
+                } catch(e) {}
               }
               if (callback) {
                 callback(null, { jsonrpc: '2.0', id: payload.id, result: [] });
@@ -73,13 +102,17 @@
             },
             on: function(event, callback) {
               if (_realEthereum && typeof _realEthereum.on === 'function') {
-                _realEthereum.on(event, callback);
+                try {
+                  _realEthereum.on(event, callback);
+                } catch(e) {}
               }
               return this;
             },
             removeListener: function(event, callback) {
               if (_realEthereum && typeof _realEthereum.removeListener === 'function') {
-                _realEthereum.removeListener(event, callback);
+                try {
+                  _realEthereum.removeListener(event, callback);
+                } catch(e) {}
               }
               return this;
             },
@@ -89,12 +122,35 @@
           };
 
           // Use Object.defineProperty to support third-party dynamic assignment of window.ethereum
+          var _safeProvider = _mockProvider;
+          if (typeof Proxy !== 'undefined') {
+            _safeProvider = new Proxy(_mockProvider, {
+              get: function(target, prop) {
+                if (prop in target) {
+                  return target[prop];
+                }
+                if (_realEthereum) {
+                  try {
+                    var val = _realEthereum[prop];
+                    if (typeof val === 'function') {
+                      return val.bind(_realEthereum);
+                    }
+                    return val;
+                  } catch (e) {
+                    return undefined;
+                  }
+                }
+                return undefined;
+              }
+            });
+          }
+
           Object.defineProperty(window, 'ethereum', {
             get: function() {
-              return _realEthereum || _mockProvider;
+              return _safeProvider;
             },
             set: function(val) {
-              if (val !== _mockProvider) {
+              if (val !== _mockProvider && val !== _safeProvider) {
                 _realEthereum = val;
               }
             },
@@ -134,6 +190,11 @@
           var reasonStr = '';
           if (event.reason) {
             reasonStr = String(event.reason.message || event.reason.stack || event.reason);
+            try {
+              if (typeof event.reason === 'object') {
+                reasonStr += ' ' + JSON.stringify(event.reason);
+              }
+            } catch(e) {}
           } else {
             reasonStr = String(event);
           }

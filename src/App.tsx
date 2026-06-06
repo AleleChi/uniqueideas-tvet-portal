@@ -747,7 +747,7 @@ export default function App() {
 
           {activeTab === "audits" && <AuditTrail logs={auditLogs} />}
 
-          {activeTab === "settings" && <SettingsWorkspace />}
+          {activeTab === "settings" && <SettingsWorkspace session={session} />}
 
         </main>
       </div>

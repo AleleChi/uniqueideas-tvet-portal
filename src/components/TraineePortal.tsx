@@ -4,11 +4,32 @@
  */
 
 import React, { useState, useEffect } from "react";
-import { UserSession, Beneficiary, ProgramStatus, Gender } from "../types";
-import { authFetch, downloadWithAuth } from "../utils/authFetch";
-import { 
-  LogOut, FileText, Download, CheckCircle, Clock, AlertCircle, 
-  Send, User, ShieldAlert, KeyRound, Key, RefreshCw, Eye, EyeOff, UploadCloud, CheckCircle2 
+import { UserSession, Beneficiary, ProgramStatus } from "../types";
+import { authFetch } from "../utils/authFetch";
+import { AdmissionFormPage } from "./AdmissionFormPage";
+import {
+  LogOut,
+  FileText,
+  Download,
+  CheckCircle,
+  Clock,
+  AlertCircle,
+  Send,
+  User,
+  ShieldAlert,
+  KeyRound,
+  RefreshCw,
+  Eye,
+  EyeOff,
+  UploadCloud,
+  CheckSquare,
+  CheckCircle2,
+  Menu,
+  X,
+  Bell,
+  BookOpen,
+  FolderLock,
+  Info
 } from "lucide-react";
 
 interface TraineePortalProps {
@@ -20,7 +41,11 @@ export function TraineePortal({ session, onLogout }: TraineePortalProps) {
   const [candidate, setCandidate] = useState<Beneficiary | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
-  
+
+  // Navigation
+  const [activeTab, setActiveTab] = useState<"dashboard" | "profile" | "letter" | "form" | "documents" | "notifications">("dashboard");
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
   // Custom Supplementary Form Inputs
   const [emergencyName, setEmergencyName] = useState("");
   const [emergencyPhone, setEmergencyPhone] = useState("");
@@ -28,7 +53,7 @@ export function TraineePortal({ session, onLogout }: TraineePortalProps) {
   const [highestQualification, setHighestQualification] = useState("SSCE / WASSCE");
   const [priorKnowledge, setPriorKnowledge] = useState("None");
   const [medicalDeclaration, setMedicalDeclaration] = useState("No medical declarations or special assistance required.");
-  
+
   // Acceptance Response Files State
   const [handSignedBase64, setHandSignedBase64] = useState<string | null>(null);
   const [formSubmitting, setFormSubmitting] = useState(false);
@@ -56,7 +81,7 @@ export function TraineePortal({ session, onLogout }: TraineePortalProps) {
       if (res.ok) {
         const data = await res.json();
         setCandidate(data);
-        
+
         // Prepopulate if form already filed
         if (data.admissionFormCompleted && data.admissionFormData) {
           const form = data.admissionFormData;
@@ -117,7 +142,6 @@ export function TraineePortal({ session, onLogout }: TraineePortalProps) {
           submissionDate: new Date().toISOString()
         },
         admissionStatus: "Acceptance Sent",
-        // Fallback placeholder is a self-generated dynamic placeholder URL if no file is provided
         acceptanceLetterUploaded: true,
         acceptanceLetterUrl: handSignedBase64 || "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?auto=format&fit=crop&q=80&w=300",
         acceptanceLetterUploadedAt: new Date().toISOString()
@@ -181,30 +205,87 @@ export function TraineePortal({ session, onLogout }: TraineePortalProps) {
     }
   };
 
-  /**
-   * Status trackers mapping
-   */
   const getStepStatus = (step: number) => {
     if (!candidate) return "PENDING";
-    
     const status = candidate.admissionStatus || "Pending";
-    
-    if (step === 1) {
-      return "CHECKED"; // Offer sent is always true for logged in trainees
-    }
-    if (step === 2) {
-      return candidate.admissionFormCompleted ? "CHECKED" : "CURRENT";
-    }
+    if (step === 1) return "CHECKED";
+    if (step === 2) return candidate.admissionFormCompleted ? "CHECKED" : "CURRENT";
     if (step === 3) {
       if (!candidate.admissionFormCompleted) return "PENDING";
       if (status === "Accepted") return "CHECKED";
       if (status === "Acceptance Rejected") return "ALERT";
       return "CURRENT";
     }
-    if (step === 4) {
-      return candidate.status === ProgramStatus.VERIFIED ? "CHECKED" : "PENDING";
-    }
+    if (step === 4) return candidate.status === ProgramStatus.VERIFIED ? "CHECKED" : "PENDING";
     return "PENDING";
+  };
+
+  const getNotificationsList = () => {
+    const list = [];
+    if (!candidate) return [];
+
+    if (candidate.admissionLetterUrl) {
+      list.push({
+        id: "notif-1",
+        title: "Admission Letter Ready",
+        desc: "Your official provisional Offer of Admission letter has been compiled in TVET registry database.",
+        time: "Just now",
+        type: "success"
+      });
+    }
+
+    // Dynamic warning notifications if form not complete
+    if (!candidate.admissionFormCompleted) {
+      list.push({
+        id: "notif-2",
+        title: "Complete Supplementary Info",
+        desc: "Please fill, scan sign, and submit your Supplementary Intake & E-Signature contract immediately.",
+        time: "1 hour ago",
+        type: "warning"
+      });
+    } else {
+      list.push({
+        id: "notif-2-comp",
+        title: "Supplementary Form Completed",
+        desc: "Supplementary intake parameters successfully synced and locks registered.",
+        time: "Completed",
+        type: "success"
+      });
+    }
+
+    // Checks for formal registry Admission Form
+    if (candidate.admissionFormPdfUrl) {
+      list.push({
+        id: "notif-3",
+        title: "Admission Form Ready",
+        desc: "You have a new Admission Form available.",
+        time: "Recently",
+        type: "info"
+      });
+    }
+
+    if (candidate.admissionFormStatus === "LOCKED" || candidate.admissionFormStatus === "CONFIRMED") {
+      list.push({
+        id: "notif-4",
+        title: "Form Lock Sealed",
+        desc: "Admission Form successfully confirmed.",
+        time: "Completed",
+        type: "success"
+      });
+    }
+
+    if (candidate.admissionFormStatus === "VIEWED" || candidate.admissionFormStatus === "IN_PROGRESS") {
+      // Reopened check
+      list.push({
+        id: "notif-5",
+        title: "Admission Form Active Draft",
+        desc: "Your Admission Form has been reopened by an administrator.",
+        time: "Action required",
+        type: "warning"
+      });
+    }
+
+    return list;
   };
 
   if (isLoading) {
@@ -225,7 +306,7 @@ export function TraineePortal({ session, onLogout }: TraineePortalProps) {
           <ShieldAlert className="w-12 h-12 text-rose-500 mx-auto" />
           <h2 className="text-lg font-bold text-slate-900 font-display">Authorisation Error</h2>
           <p className="text-xs text-slate-500 leading-relaxed font-mono">{errorMessage || "Invalid profile link reference"}</p>
-          <button 
+          <button
             onClick={onLogout}
             className="bg-slate-900 hover:bg-slate-800 text-white font-bold py-2 px-6 rounded-lg text-xs transition uppercase cursor-pointer"
           >
@@ -238,500 +319,686 @@ export function TraineePortal({ session, onLogout }: TraineePortalProps) {
 
   const isFormCompleted = candidate.admissionFormCompleted;
   const isEnrolled = candidate.status === ProgramStatus.VERIFIED;
+  const notifications = getNotificationsList();
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col justify-between font-sans select-none overflow-x-hidden">
+    <div className="min-h-screen bg-slate-50 flex flex-col font-sans select-none overflow-x-hidden md:flex-row">
       
-      {/* Dynamic Student Portal Top Bar Header */}
-      <header className="bg-slate-900 text-white p-5 border-b border-indigo-950 flex flex-col sm:flex-row items-center justify-between gap-4 z-10 shadow-md">
-        <div className="flex items-center gap-3 text-left">
-          <div className="h-10 w-10 bg-indigo-650 rounded-lg flex items-center justify-center text-white font-bold font-mono text-sm leading-none flex-shrink-0">
-            {candidate.firstName.substring(0, 1)}{candidate.lastName.substring(0, 1)}
+      {/* LEFT SIDEBAR navigation on desktop, slide drawer on mobile */}
+      <aside className="w-full md:w-64 bg-slate-900 text-slate-200 flex flex-col border-r border-slate-950 shrink-0 select-none">
+        {/* Sidebar Header Brand block representation */}
+        <div className="p-5 border-b border-indigo-950 flex flex-row items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-9 bg-indigo-650 rounded-lg flex items-center justify-center text-white font-black font-mono text-sm">
+              {candidate.firstName.substring(0, 1)}{candidate.lastName.substring(0, 1)}
+            </div>
+            <div className="min-w-0">
+              <h2 className="text-xs font-black text-white truncate max-w-[130px]">{candidate.firstName} {candidate.lastName}</h2>
+              <span className="text-[9px] text-slate-400 font-mono">IDF-{candidate.id}</span>
+            </div>
           </div>
-          <div className="min-w-0">
-            <h1 className="text-sm font-extrabold text-slate-100 flex items-center gap-1.5 font-display select-text">
-              {candidate.firstName} {candidate.lastName}
-              <span className="text-[9px] px-1.5 py-0.5 bg-yellow-500 text-slate-950 rounded font-bold font-mono">ID: {candidate.id}</span>
-            </h1>
-            <p className="text-[10px] text-slate-450 font-semibold font-mono tracking-wide mt-0.5" title="Accredited TSP">
-              PROGRAM COHORT: Computer Hardware and Cell Phone Repairs
-            </p>
-          </div>
+          {/* Mobile hamburger menu toggle */}
+          <button
+            onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+            className="text-slate-400 hover:text-white md:hidden"
+          >
+            {isMobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          </button>
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="text-right hidden md:block">
-            <span className="text-[9px] font-bold text-slate-400 font-mono block leading-none">CANDIDATE WORKSPACE</span>
-            <span className="text-[10px] text-emerald-400 font-mono font-bold block mt-1">● RESPONDER PORTAL LIVE</span>
+        {/* Sidebar Nav menu links items */}
+        <nav className={`flex-grow p-4 space-y-1.5 md:block ${isMobileMenuOpen ? "block" : "hidden"}`}>
+          {[
+            { id: "dashboard", label: "Dashboard", icon: <BookOpen className="w-4 h-4" /> },
+            { id: "profile", label: "Profile", icon: <User className="w-4 h-4" /> },
+            { id: "letter", label: "Admission Letter", icon: <FileText className="w-4 h-4" /> },
+            { id: "form", label: "Admission Form", icon: <CheckSquare className="w-4 h-4" />, highlight: true },
+            { id: "documents", label: "Documents", icon: <FolderLock className="w-4 h-4" /> },
+            { id: "notifications", label: "Notifications", icon: <Bell className="w-4 h-4" />, count: notifications.length }
+          ].map((item) => (
+            <button
+              key={item.id}
+              onClick={() => {
+                setActiveTab(item.id as any);
+                setIsMobileMenuOpen(false);
+              }}
+              className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold tracking-wide transition-all duration-150 cursor-pointer text-left ${
+                activeTab === item.id
+                  ? "bg-indigo-600 text-white font-black shadow-md shadow-indigo-900/30 font-display"
+                  : "text-slate-400 hover:text-white hover:bg-slate-800/40 font-medium"
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                {item.icon}
+                <span>{item.label}</span>
+              </div>
+              {item.count ? (
+                <span className="bg-rose-500 text-white font-black font-mono text-[9px] px-1.5 py-0.5 rounded-full">{item.count}</span>
+              ) : item.highlight ? (
+                <span className="bg-indigo-500/35 text-indigo-300 font-bold font-mono text-[8px] px-2 py-0.5 rounded uppercase tracking-wider">NEW</span>
+              ) : null}
+            </button>
+          ))}
+        </nav>
+
+        {/* Sidebar structural Footer log out */}
+        <div className={`p-4 border-t border-indigo-950 md:block ${isMobileMenuOpen ? "block" : "hidden"}`}>
+          <div className="bg-slate-950/45 p-3 rounded-xl mb-4 text-left">
+            <span className="text-[9px] font-black text-slate-500 font-mono block uppercase">Status Network</span>
+            <span className="text-[9px] text-emerald-400 font-semibold font-mono block mt-1">● TRAINEE SECURED PORTAL</span>
           </div>
 
           <button
             onClick={onLogout}
-            className="flex items-center gap-2 bg-red-950/40 hover:bg-red-900/60 text-red-300 border border-red-900/30 font-semibold py-2 px-4 rounded-lg text-xs transition cursor-pointer"
+            className="w-full flex items-center justify-center gap-2 bg-red-950/40 hover:bg-red-900/60 text-red-300 border border-red-900/30 font-bold py-2 px-4 rounded-xl text-xs transition cursor-pointer font-mono"
           >
-            <LogOut className="w-3.5 h-3.5" />
+            <LogOut className="w-4 h-4" />
             <span>Sign Out</span>
           </button>
         </div>
-      </header>
+      </aside>
 
-      {/* Main Core Student Workspace Frame */}
-      <main className="flex-grow max-w-7xl w-full mx-auto p-4 sm:p-6 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-8">
+      {/* RIGHT WORKSPACE DISPLAY AREA container frame */}
+      <main className="flex-grow flex flex-col min-h-screen overflow-y-auto">
         
-        {/* LEFT COLUMN: Checklists and printable documents (7 columns wide) */}
-        <div className="lg:col-span-7 flex flex-col space-y-6">
-          
-          {/* Section 1: Tracker Progress Checklist Card */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-6 md:p-8 shadow-sm flex flex-col space-y-6">
-            <h2 className="text-sm font-bold tracking-wider font-mono text-slate-400 uppercase text-left">
-              Enrollment Status Checklist
-            </h2>
-
-            {/* Visual Tracking Nodes */}
-            <div className="flex flex-col space-y-5 text-left relative">
-              
-              {/* Tracker items loops */}
-              <div className="flex items-start gap-4">
-                <div className="flex flex-col items-center flex-shrink-0">
-                  <div className="h-7 w-7 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-700">
-                    <CheckCircle className="w-4 h-4" />
-                  </div>
-                  <div className="h-10 w-0.5 bg-emerald-250"></div>
-                </div>
-                <div className="space-y-0.5">
-                  <h3 className="text-xs font-bold text-slate-900 font-display">1. Official Offer of Admission Sent</h3>
-                  <p className="text-[10px] text-slate-400 leading-normal font-medium max-w-md">
-                    Provisional offer issued in Federal TVET enrollment system. Reference Code: <strong className="font-mono text-slate-650">{candidate.admissionRef || "IDEAS/TVET/ADM/PENDING"}</strong>.
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-4">
-                <div className="flex flex-col items-center flex-shrink-0">
-                  <div className={`h-7 w-7 rounded-full flex items-center justify-center ${
-                    getStepStatus(2) === "CHECKED" 
-                      ? "bg-emerald-100 text-emerald-700" 
-                      : "bg-indigo-50 text-indigo-650 border border-indigo-200"
-                  }`}>
-                    {getStepStatus(2) === "CHECKED" ? <CheckCircle className="w-4 h-4" /> : <Clock className="w-4 h-4 animate-pulse" />}
-                  </div>
-                  <div className={`h-10 w-0.5 ${getStepStatus(2) === "CHECKED" ? "bg-emerald-250" : "bg-slate-200"}`}></div>
-                </div>
-                <div className="space-y-0.5">
-                  <h3 className="text-xs font-bold text-slate-900 font-display">2. Supplementary Intake Form & E-Signature Contract</h3>
-                  <p className="text-[10px] text-slate-400 leading-normal font-medium max-w-md">
-                    {candidate.admissionFormCompleted 
-                      ? "Form completed and response letter successfully logged in database and backed up."
-                      : "Action required. Please fill out details and sign the provisional contract on the right sidebar."
-                    }
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-4">
-                <div className="flex flex-col items-center flex-shrink-0">
-                  <div className={`h-7 w-7 rounded-full flex items-center justify-center ${
-                    getStepStatus(3) === "CHECKED" 
-                      ? "bg-emerald-100 text-emerald-700" 
-                      : getStepStatus(3) === "ALERT" 
-                        ? "bg-rose-100 text-rose-700 animate-bounce" 
-                        : "bg-slate-100 text-slate-400 border border-slate-200"
-                  }`}>
-                    {getStepStatus(3) === "CHECKED" && <CheckCircle className="w-4 h-4" />}
-                    {getStepStatus(3) === "ALERT" && <AlertCircle className="w-4 h-4" />}
-                    {getStepStatus(3) === "CURRENT" && <Clock className="w-4 h-4 animate-spin text-indigo-600" />}
-                    {getStepStatus(3) === "PENDING" && <Clock className="w-4 h-4" />}
-                  </div>
-                  <div className={`h-10 w-0.5 ${getStepStatus(3) === "CHECKED" ? "bg-emerald-250" : "bg-slate-200"}`}></div>
-                </div>
-                <div className="space-y-0.5">
-                  <h3 className="text-xs font-bold text-slate-900 font-display">3. Institutional Documents Review</h3>
-                  <p className="text-[10px] text-slate-400 leading-normal font-medium max-w-md">
-                    {candidate.admissionStatus === "Accepted" && "Approved! Formal documents reviewed and confirmed."}
-                    {candidate.admissionStatus === "Acceptance Rejected" && "Response Rejected. Lacks hand signature or next of kin mismatch. Please update details."}
-                    {candidate.admissionStatus === "Acceptance Sent" && "Awaiting Review. Administrators notified and verifying files."}
-                    {candidate.admissionStatus !== "Accepted" && candidate.admissionStatus !== "Acceptance Sent" && candidate.admissionStatus !== "Acceptance Rejected" && "Waiting for student to upload signed acceptance documents."}
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-4">
-                <div className="flex flex-col items-center flex-shrink-0">
-                  <div className={`h-7 w-7 rounded-full flex items-center justify-center ${
-                    getStepStatus(4) === "CHECKED" 
-                      ? "bg-emerald-100 text-emerald-700 font-bold scale-110 shadow-sm" 
-                      : "bg-slate-100 text-slate-400 border border-slate-200"
-                  }`}>
-                    <CheckCircle className="w-4 h-4" />
-                  </div>
-                </div>
-                <div className="space-y-0.5">
-                  <h3 className="text-xs font-bold text-slate-900 font-display">4. Enrollment Active & Confirmed</h3>
-                  <p className="text-[10px] text-slate-400 leading-normal font-medium max-w-md">
-                    {candidate.status === ProgramStatus.VERIFIED
-                      ? "Officially Registered! Download your Enrollment Confirmation letter below."
-                      : "Enrolls automatically when your signed response letter is approved by reviewers."
-                    }
-                  </p>
-                </div>
-              </div>
-
-            </div>
-
+        {/* Compact Header banner row */}
+        <header className="bg-white border-b border-slate-200 py-4 px-6 flex flex-row items-center justify-between shrink-0">
+          <div className="text-left">
+            <span className="text-[10px] text-indigo-650 font-mono font-bold tracking-wider uppercase block">IDEAS-TVET Registry System</span>
+            <h1 className="text-sm font-black text-slate-900 tracking-tight mt-0.5">
+              Welcome, {candidate.firstName} {candidate.lastName}
+            </h1>
           </div>
-
-          {/* Section 2: PDF Document Cabinet Area */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-6 md:p-8 shadow-sm flex flex-col space-y-6">
-            <h2 className="text-sm font-bold tracking-wider font-mono text-slate-400 uppercase text-left">
-              Official PDF Letter Downloads
-            </h2>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              
-              {/* Card A: Admission Letter */}
-              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col justify-between text-left space-y-4">
-                <div className="space-y-2">
-                  <div className="p-2.5 bg-indigo-50 rounded-lg text-indigo-900 w-fit">
-                    <FileText className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="text-xs font-bold text-slate-900 font-display">Admission Letter</h3>
-                    <p className="text-[9px] text-slate-500 font-mono mt-0.5 uppercase tracking-wide">Federal branding · A4 printable</p>
-                  </div>
-                </div>
-                {candidate.admissionLetterUrl ? (
-                  <a 
-                    href={candidate.admissionLetterUrl}
-                    target="_blank"
-                    rel="referrer"
-                    className="w-full bg-slate-900 hover:bg-indigo-950 text-white font-bold py-2 rounded-lg text-[10px] text-center uppercase tracking-wider flex items-center justify-center gap-1.5 transition select-text"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Download</span>
-                  </a>
-                ) : (
-                  <button disabled className="w-full bg-slate-100 text-slate-350 cursor-not-allowed font-bold py-2 rounded-lg text-[10px] text-center uppercase tracking-wider">
-                    Not Ready
-                  </button>
-                )}
-              </div>
-
-              {/* Card B: Acceptance Letter Template */}
-              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col justify-between text-left space-y-4">
-                <div className="space-y-2">
-                  <div className="p-2.5 bg-emerald-50 rounded-lg text-emerald-900 w-fit">
-                    <FileText className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="text-xs font-bold text-slate-900 font-display">Acceptance Letter</h3>
-                    <p className="text-[9px] text-slate-500 font-mono mt-0.5 uppercase tracking-wide">Completed copy for records</p>
-                  </div>
-                </div>
-                {candidate.acceptanceLetterUrl ? (
-                  <a 
-                    href={candidate.acceptanceLetterUrl}
-                    target="_blank"
-                    rel="referrer"
-                    className="w-full bg-slate-900 hover:bg-emerald-950 text-white font-bold py-2 rounded-lg text-[10px] text-center uppercase tracking-wider flex items-center justify-center gap-1.5 transition select-text"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Download</span>
-                  </a>
-                ) : (
-                  <button disabled className="w-full bg-slate-100 text-slate-350 cursor-not-allowed font-bold py-2 rounded-lg text-[10px] text-center uppercase tracking-wider">
-                    Awaiting upload
-                  </button>
-                )}
-              </div>
-
-              {/* Card C: Enrollment Certificate */}
-              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col justify-between text-left space-y-4">
-                <div className="space-y-2">
-                  <div className="p-2.5 bg-amber-50 rounded-lg text-amber-900 w-fit">
-                    <FileText className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="text-xs font-bold text-slate-900 font-display">Enrollment Confirm</h3>
-                    <p className="text-[9px] text-slate-500 font-mono mt-0.5 uppercase tracking-wide">Class scheduling details</p>
-                  </div>
-                </div>
-                {isEnrolled && candidate.enrollmentLetterUrl ? (
-                  <a 
-                    href={candidate.enrollmentLetterUrl}
-                    target="_blank"
-                    rel="referrer"
-                    className="w-full bg-indigo-950 hover:bg-indigo-910 text-white font-bold py-2 rounded-lg text-[10px] text-center uppercase tracking-wider flex items-center justify-center gap-1.5 transition select-text"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Download</span>
-                  </a>
-                ) : (
-                  <button disabled className="w-full bg-slate-100 text-slate-350 cursor-not-allowed font-bold py-2 rounded-lg text-[10px] text-center uppercase tracking-wider" title="Awaiting Acceptance Approval">
-                    Pending Approval
-                  </button>
-                )}
-              </div>
-
-            </div>
+          <div className="text-right hidden sm:block">
+            <span className="text-[9px] font-mono text-slate-400 uppercase font-black block">SECTOR FACILITY COHORT:</span>
+            <span className="text-[10px] font-semibold text-slate-700 block mt-0.5 truncate max-w-xs">{candidate.skillSector || "Computer Repairs Area"}</span>
           </div>
+        </header>
 
-          {/* Section 3: Change Password Block */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-6 md:p-8 shadow-sm flex flex-col space-y-5 text-left">
-            <div className="flex items-center gap-2">
-              <KeyRound className="w-5 h-5 text-slate-500" />
-              <h2 className="text-sm font-bold tracking-wider font-mono text-slate-400 uppercase">
-                Privacy & Credentials Settings
-              </h2>
-            </div>
-            <p className="text-[11px] text-slate-500 leading-normal max-w-lg">
-              Changing your default entry credentials prevents unauthorized third-party record modifications and shields your profile from tampering.
-            </p>
+        {/* Dynamic Tab Body switches */}
+        <div className="p-4 sm:p-6 md:p-8 flex-grow">
+          {activeTab === "dashboard" && (
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-8 max-w-6xl mx-auto">
+              
+              {/* Left 7 Columns: status tracking checklist details */}
+              <div className="lg:col-span-8 flex flex-col space-y-6">
+                
+                <div className="bg-white border border-slate-250 p-6 md:p-8 rounded-2xl shadow-xs text-left space-y-6">
+                  <h2 className="text-xs font-bold font-mono text-slate-400 uppercase tracking-widest leading-none">
+                    Enrollment Tracker
+                  </h2>
 
-            <form onSubmit={handlePasswordChange} className="grid grid-cols-1 md:grid-cols-3 gap-4 font-mono">
-              <div className="space-y-1">
-                <label className="text-[9.5px] font-bold text-slate-505 uppercase">Current Password</label>
-                <div className="relative">
-                  <input
-                    type={pwdShowCur ? "text" : "password"}
-                    required
-                    placeholder="••••••••"
-                    value={currentPassword}
-                    onChange={(e) => setCurrentPassword(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 pl-3 pr-8 focus:outline-none focus:ring-1 focus:ring-indigo-600 text-xs text-slate-800"
-                  />
+                  <div className="flex flex-col space-y-6 relative">
+                    {/* Progress checkpoints map */}
+                    <div className="flex items-start gap-4">
+                      <div className="flex flex-col items-center flex-shrink-0">
+                        <div className="h-8 w-8 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-700 font-bold">
+                          <CheckCircle className="w-4.5 h-4.5" />
+                        </div>
+                        <div className="h-12 w-0.5 bg-emerald-250"></div>
+                      </div>
+                      <div className="space-y-1 pt-0.5">
+                        <h4 className="text-xs font-bold text-slate-900 font-display">1. Provisional Letter Issued</h4>
+                        <p className="text-[11px] text-slate-500 leading-relaxed font-mono">
+                          Provisional Offer of Admission issued in registry DB. System Code: <strong className="text-slate-800 font-mono">{candidate.admissionRef || "IDEAS/TVET/ADM/OK"}</strong>.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-start gap-4">
+                      <div className="flex flex-col items-center flex-shrink-0">
+                        <div className={`h-8 w-8 rounded-full flex items-center justify-center font-bold ${
+                          getStepStatus(2) === "CHECKED"
+                            ? "bg-emerald-100 text-emerald-700"
+                            : "bg-indigo-50 text-indigo-750 border border-indigo-200"
+                        }`}>
+                          {getStepStatus(2) === "CHECKED" ? <CheckCircle className="w-4.5 h-4.5" /> : <Clock className="w-4.5 h-4.5 animate-pulse" />}
+                        </div>
+                        <div className={`h-12 w-0.5 ${getStepStatus(2) === "CHECKED" ? "bg-emerald-250" : "bg-slate-200"}`}></div>
+                      </div>
+                      <div className="space-y-1 pt-0.5">
+                        <h4 className="text-xs font-bold text-slate-900 font-display">2. Supplementary Form Completeness</h4>
+                        <p className="text-[11px] text-slate-500 leading-relaxed font-mono">
+                          {candidate.admissionFormCompleted
+                            ? "✓ Form responses successfully locked and backed up in databases."
+                            : "Action required. Complete your guarantor contact on the profile settings tab before registry lock."}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-start gap-4">
+                      <div className="flex flex-col items-center flex-shrink-0">
+                        <div className={`h-8 w-8 rounded-full flex items-center justify-center font-bold ${
+                          getStepStatus(3) === "CHECKED"
+                            ? "bg-emerald-100 text-emerald-700"
+                            : getStepStatus(3) === "ALERT"
+                            ? "bg-rose-100 text-rose-700 animate-bounce"
+                            : "bg-slate-100 text-slate-450 border border-slate-200"
+                        }`}>
+                          {getStepStatus(3) === "CHECKED" && <CheckCircle className="w-4.5 h-4.5" />}
+                          {getStepStatus(3) === "ALERT" && <AlertCircle className="w-4.5 h-4.5" />}
+                          {getStepStatus(3) === "CURRENT" && <Clock className="w-4.5 h-4.5 animate-spin text-indigo-600" />}
+                          {getStepStatus(3) === "PENDING" && <Clock className="w-4.5 h-4.5" />}
+                        </div>
+                        <div className={`h-12 w-0.5 ${getStepStatus(3) === "CHECKED" ? "bg-emerald-250" : "bg-slate-200"}`}></div>
+                      </div>
+                      <div className="space-y-1 pt-0.5">
+                        <h4 className="text-xs font-bold text-slate-900 font-display">3. Documentary Integrity Checks</h4>
+                        <p className="text-[11px] text-slate-500 leading-relaxed font-mono">
+                          {candidate.admissionStatus === "Accepted" && "✓ Success! Formal documents certified."}
+                          {candidate.admissionStatus === "Acceptance Rejected" && "⚠️ Letter scans rejected. Guardian / BVN name mismatch. Please verify."}
+                          {candidate.admissionStatus === "Acceptance Sent" && "(Pending verification) Dossier uploaded and awaiting administrative approval."}
+                          {candidate.admissionStatus !== "Accepted" && candidate.admissionStatus !== "Acceptance Sent" && candidate.admissionStatus !== "Acceptance Rejected" && "Awaiting hand-signed letter scanned upload actions."}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-start gap-4">
+                      <div className="flex flex-col items-center flex-shrink-0">
+                        <div className={`h-8 w-8 rounded-full flex items-center justify-center font-bold ${
+                          getStepStatus(4) === "CHECKED"
+                            ? "bg-emerald-100 text-emerald-700 shadow-md ring-4 ring-emerald-50 scale-110"
+                            : "bg-slate-100 text-slate-450 border border-slate-200"
+                        }`}>
+                          <CheckCircle className="w-4.5 h-4.5" />
+                        </div>
+                      </div>
+                      <div className="space-y-1 pt-0.5">
+                        <h4 className="text-xs font-bold text-slate-900 font-display">4. Official Enrollment Sealed</h4>
+                        <p className="text-[11px] text-slate-500 leading-relaxed font-mono">
+                          {candidate.status === ProgramStatus.VERIFIED
+                            ? "✓ Fully Verfied Registrar status! Class schedules active on TVET facilities."
+                            : "Dossier locks automatically when the registry approved verification completes."}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Dashboard Quick Notification overview */}
+                <div className="bg-slate-1 dark:bg-slate-900/10 border border-slate-200 p-5 rounded-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4 text-left">
+                  <div className="space-y-1">
+                    <h3 className="text-xs font-bold text-slate-800 font-display">Complete Your Registry Admission Form</h3>
+                    <p className="text-[11.5px] text-slate-500 max-w-md font-mono leading-relaxed">
+                      Initialize bank disbursal channels and parent contact data directly to prepare printable verification forms in TVET databases.
+                    </p>
+                  </div>
                   <button
-                    type="button"
-                    onClick={() => setPwdShowCur(!pwdShowCur)}
-                    className="absolute right-2 top-3 text-slate-400 hover:text-slate-600"
+                    onClick={() => setActiveTab("form")}
+                    className="shrink-0 bg-indigo-600 hover:bg-slate-900 text-white font-bold py-2 px-5 rounded-lg text-[10.5px] uppercase font-mono transition shadow-lg tracking-wider"
                   >
-                    {pwdShowCur ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    Enter Form
                   </button>
                 </div>
+
               </div>
 
-              <div className="space-y-1 font-mono">
-                <label className="text-[9.5px] font-bold text-slate-505 uppercase">New Password</label>
-                <div className="relative font-mono">
-                  <input
-                    type={pwdShowNew ? "text" : "password"}
-                    required
-                    placeholder="Create replacing secret"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 pl-3 pr-8 focus:outline-none focus:ring-1 focus:ring-indigo-600 text-xs text-slate-800"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setPwdShowNew(!pwdShowNew)}
-                    className="absolute right-2 top-3 text-slate-400 hover:text-slate-600 font-mono"
-                  >
-                    {pwdShowNew ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                  </button>
+              {/* Right 4 Columns: Side widgets details / quick help info */}
+              <div className="lg:col-span-4 space-y-6 text-left">
+                
+                {/* Visual support assistance help info */}
+                <div className="bg-gradient-to-br from-slate-900 to-indigo-950 text-slate-100 p-6 rounded-2xl shadow-md border border-slate-800/60 text-left space-y-4">
+                  <span className="text-[8px] font-mono tracking-widest text-indigo-400 font-bold uppercase">SECURED TOKEN LINK</span>
+                  <div className="space-y-1">
+                    <h3 className="text-sm font-extrabold font-display">Accredited Repairs Area</h3>
+                    <p className="text-[10px] text-indigo-300 font-mono tracking-wide mt-0.5 leading-relaxed">
+                      You are allocated under Mobile Repairs & Electronics Maintenance TVET initiative facility track programs.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2 text-[10.5px] font-mono text-slate-300 pt-3 border-t border-indigo-950/50">
+                    <div className="flex justify-between">
+                      <span className="text-slate-450">Facility:</span>
+                      <span className="font-extrabold truncate text-slate-100 tracking-tight max-w-[150px]">{candidate.tsp || "Not set"}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-450">Session Area:</span>
+                      <span className="font-extrabold text-slate-100">Cohort Batch 1</span>
+                    </div>
+                  </div>
                 </div>
-              </div>
 
-              <div className="space-y-1">
-                <label className="text-[9.5px] font-bold text-slate-505 uppercase">Verify Password</label>
-                <input
-                  type="password"
-                  required
-                  placeholder="Repeat new password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-600"
-                />
-              </div>
-
-              <div className="col-span-1 md:col-span-3 flex items-center justify-between gap-4 pt-1">
-                <div className="min-w-0">
-                  {pwdError && <p className="text-[10px] font-bold text-red-650">{pwdError}</p>}
-                  {pwdSuccess && <p className="text-[10px] font-bold text-emerald-650 flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3" />
-                    <span>{pwdSuccess}</span>
-                  </p>}
+                {/* Quick Info Box */}
+                <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs text-left space-y-2">
+                  <h4 className="text-[10px] text-slate-400 font-mono font-bold uppercase tracking-widest leading-none">REGISTRATION GUIDELINE</h4>
+                  <p className="text-[10.5px] text-slate-505 font-mono leading-relaxed">
+                    Make sure to upload signed scanned copy of your provisional admission letter on the profile section, then complete your bank account details under the formal admission form workspace!
+                  </p>
                 </div>
-                <button
-                  type="submit"
-                  disabled={pwdLoading}
-                  className="bg-indigo-950 hover:bg-slate-900 disabled:opacity-50 text-white font-bold py-2 px-5 rounded-lg text-[10px] uppercase tracking-wider font-sans transition flex-shrink-0 cursor-pointer"
-                >
-                  {pwdLoading ? "Modifying..." : "Update Secrets"}
-                </button>
+
               </div>
-            </form>
-          </div>
-
-        </div>
-
-        {/* RIGHT COLUMN: Supplementary Intake & Forms upload (5 columns wide) */}
-        <div className="lg:col-span-5 flex flex-col space-y-6">
-          
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-6 md:p-8 shadow-sm flex flex-col space-y-6 text-left">
-            <div className="space-y-2 border-b border-slate-100 pb-4">
-              <h2 className="text-sm font-bold tracking-wider font-mono text-slate-450 uppercase">
-                Intake & E-Signature Intake Form
-              </h2>
-              <p className="text-[11px] text-slate-505 leading-normal font-medium">
-                Please complete your supplemental biographical registry parameters and confirm your physical seat reservation.
-              </p>
-            </div>
-
-            {successResponse && (
-              <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3.5 text-xs text-emerald-800 font-semibold space-y-1 shadow-xs">
-                <div className="flex items-center gap-1.5">
-                  <CheckCircle className="w-4 h-4 text-emerald-600 flex-shrink-0" />
-                  <span>Submission registered!</span>
-                </div>
-                <p className="text-[10px] text-emerald-600 leading-normal font-mono font-medium">{successResponse}</p>
-              </div>
-            )}
-
-            <form onSubmit={submitTraineeResponse} className="space-y-4">
               
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider">Next of Kin Name</label>
-                <input
-                  type="text"
-                  required
-                  disabled={isFormCompleted}
-                  placeholder="Enter contact full name"
-                  value={emergencyName}
-                  onChange={(e) => setEmergencyName(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-600 font-medium"
-                />
-              </div>
+            </div>
+          )}
 
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider">Next of Kin Phone Number</label>
-                <input
-                  type="tel"
-                  required
-                  disabled={isFormCompleted}
-                  placeholder="e.g., +234 803 123 4567"
-                  value={emergencyPhone}
-                  onChange={(e) => setEmergencyPhone(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-600 font-mono"
-                />
-              </div>
+          {activeTab === "profile" && (
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-8 max-w-6xl mx-auto">
+              {/* Profile setup layout: Supplementary form (7 cols), Privacy key details (5 cols) */}
+              <div className="lg:col-span-7">
+                <div className="bg-white border border-slate-200 rounded-2xl p-6 md:p-8 shadow-xs flex flex-col space-y-6 text-left">
+                  <div className="space-y-1.5 border-b border-slate-100 pb-4">
+                    <h2 className="text-xs font-bold tracking-widest font-mono text-slate-400 uppercase">
+                      Intake & E-Signature Support Form
+                    </h2>
+                    <p className="text-[11px] text-slate-550 leading-relaxed font-mono">
+                      Complete supplementary profile variables and sign physical placement seat reserving sheets.
+                    </p>
+                  </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider">Guardian Name</label>
-                  <input
-                    type="text"
-                    disabled={isFormCompleted}
-                    placeholder="Father/Mother/Sponsor"
-                    value={guardianName}
-                    onChange={(e) => setGuardianName(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-800 focus:outline-none"
-                  />
-                </div>
+                  {successResponse && (
+                    <div className="bg-emerald-50 border border-emerald-250 rounded-xl p-4 text-xs text-emerald-800 font-semibold space-y-1.5 shadow-xs">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle className="w-4.5 h-4.5 text-emerald-600 flex-shrink-0" />
+                        <span className="font-bold">E-Signature recorded successfully!</span>
+                      </div>
+                      <p className="text-[10.5px] text-emerald-600 leading-normal font-mono">{successResponse}</p>
+                    </div>
+                  )}
 
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider">Highest Education</label>
-                  <select
-                    disabled={isFormCompleted}
-                    value={highestQualification}
-                    onChange={(e) => setHighestQualification(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-800 focus:outline-none"
-                  >
-                    <option value="SSCE / WASSCE">SSCE / WASSCE</option>
-                    <option value="ND / OND">ND / OND</option>
-                    <option value="HND / B.Sc">HND / B.Sc</option>
-                    <option value="Master's / Postgraduate">Master's / Postgrad</option>
-                    <option value="Other Skills Certificate">Other Skills Certificate</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider">Prior Phone/Repair Experience</label>
-                <div className="flex gap-4">
-                  {["None", "Basic", "Experienced"].map((lvl) => (
-                    <label key={lvl} className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-slate-500">
+                  <form onSubmit={submitTraineeResponse} className="space-y-4">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-450 font-mono uppercase tracking-wider">Next of Kin Contact Name</label>
                       <input
-                        type="radio"
+                        type="text"
+                        required
                         disabled={isFormCompleted}
-                        name="priorExperience"
-                        value={lvl}
-                        checked={priorKnowledge === lvl}
-                        onChange={() => setPriorKnowledge(lvl)}
-                        className="text-indigo-650 focus:ring-indigo-500"
+                        placeholder="Full name of next of kin"
+                        value={emergencyName}
+                        onChange={(e) => setEmergencyName(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-600"
                       />
-                      <span>{lvl}</span>
-                    </label>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-450 font-mono uppercase tracking-wider">Next of Kin contact Phone</label>
+                      <input
+                        type="tel"
+                        required
+                        disabled={isFormCompleted}
+                        placeholder="e.g. +234 803 111 2222"
+                        value={emergencyPhone}
+                        onChange={(e) => setEmergencyPhone(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-600 font-mono"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-450 font-mono uppercase tracking-wider">Guardian Name</label>
+                        <input
+                          type="text"
+                          disabled={isFormCompleted}
+                          placeholder="Parent/Sponsor Name"
+                          value={guardianName}
+                          onChange={(e) => setGuardianName(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-800 focus:outline-none"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-450 font-mono uppercase tracking-wider">Highest Education Level</label>
+                        <select
+                          disabled={isFormCompleted}
+                          value={highestQualification}
+                          onChange={(e) => setHighestQualification(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-805"
+                        >
+                          <option value="SSCE / WASSCE">SSCE / WASSCE</option>
+                          <option value="ND / OND">ND / OND</option>
+                          <option value="HND / B.Sc">HND / B.Sc</option>
+                          <option value="Master's / Postgraduate">Master's / Postgrad</option>
+                          <option value="Other Skills Certificate">Other Skills Certificate</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-450 font-mono uppercase tracking-wider">Prior Electronics repair Experience</label>
+                      <div className="flex gap-4">
+                        {["None", "Basic", "Experienced"].map((lvl) => (
+                          <label key={lvl} className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-slate-500">
+                            <input
+                              type="radio"
+                              disabled={isFormCompleted}
+                              name="priorExperience"
+                              value={lvl}
+                              checked={priorKnowledge === lvl}
+                              onChange={() => setPriorKnowledge(lvl)}
+                              className="text-indigo-600 focus:ring-indigo-500"
+                            />
+                            <span>{lvl}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-450 font-mono uppercase tracking-wider">Medical/Physical Assistance declaration</label>
+                      <textarea
+                        disabled={isFormCompleted}
+                        rows={2}
+                        value={medicalDeclaration}
+                        onChange={(e) => setMedicalDeclaration(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-800 focus:outline-none"
+                      />
+                    </div>
+
+                    {/* Scanned upload signed image representation field */}
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-slate-450 font-mono uppercase tracking-wider">Hand-Signed Acceptance Scan</label>
+                      {candidate.acceptanceLetterUrl ? (
+                        <div className="border border-indigo-100 bg-indigo-50/40 rounded-xl p-4 text-center text-xs text-indigo-950 font-semibold flex items-center justify-center gap-1.5 font-mono">
+                          <CheckCircle className="w-4 h-4 text-emerald-600" />
+                          <span>Scanned letter is verified and filed safely.</span>
+                        </div>
+                      ) : (
+                        <div className="border-2 border-dashed border-slate-250 hover:border-indigo-600 bg-slate-50 rounded-xl p-5 text-center transition cursor-pointer relative">
+                          <input
+                            id="signed-upload-control"
+                            type="file"
+                            accept="image/*,application/pdf"
+                            onChange={handleFileUpload}
+                            className="absolute inset-0 opacity-0 cursor-pointer"
+                          />
+                          {handSignedBase64 ? (
+                            <div className="space-y-1.5">
+                              <CheckCircle className="w-5 h-5 text-emerald-600 mx-auto" />
+                              <p className="text-[10px] text-slate-800 font-bold font-mono uppercase">scan selected</p>
+                              <p className="text-[9px] text-slate-400 font-mono">Image data buffered. Ready to send.</p>
+                            </div>
+                          ) : (
+                            <div className="space-y-1.5">
+                              <UploadCloud className="w-6 h-6 text-slate-400 mx-auto" />
+                              <p className="text-[10px] text-slate-705 font-bold uppercase">Click to select files</p>
+                              <p className="text-[9px] text-slate-400">PDF, JPG, PNG formats up to 2MB supported</p>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {!isFormCompleted && (
+                      <button
+                        type="submit"
+                        disabled={formSubmitting}
+                        className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold py-3 px-4 rounded-xl text-xs flex items-center justify-center gap-2 mt-4 transition uppercase shadow-md cursor-pointer font-mono"
+                      >
+                        {formSubmitting ? "Uploading variables..." : "Register signed response"}
+                        {!formSubmitting && <Send className="w-4 h-4" />}
+                      </button>
+                    )}
+                  </form>
+                </div>
+              </div>
+
+              {/* Password update section column */}
+              <div className="lg:col-span-5">
+                <div className="bg-white border border-slate-200 rounded-2xl p-6 md:p-8 shadow-xs flex flex-col space-y-5 text-left">
+                  <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+                    <KeyRound className="w-5 h-5 text-slate-450" />
+                    <h2 className="text-xs font-bold tracking-widest font-mono text-slate-400 uppercase">
+                      Security Credentials Setting
+                    </h2>
+                  </div>
+                  <p className="text-[10.5px] text-slate-500 font-mono leading-relaxed">
+                    Prevent unauthorized placement modifications by changing your default assigned gateway key hashes regularly.
+                  </p>
+
+                  <form onSubmit={handlePasswordChange} className="space-y-4 font-mono">
+                    <div className="space-y-1">
+                      <label className="text-[9.5px] font-bold text-slate-500 uppercase">Current secret</label>
+                      <div className="relative">
+                        <input
+                          type={pwdShowCur ? "text" : "password"}
+                          required
+                          placeholder="••••••••"
+                          value={currentPassword}
+                          onChange={(e) => setCurrentPassword(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 pl-3 pr-8 focus:outline-none focus:ring-1 focus:ring-indigo-600 text-xs font-mono text-slate-805"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setPwdShowCur(!pwdShowCur)}
+                          className="absolute right-2.5 top-3 text-slate-400 hover:text-slate-650"
+                        >
+                          {pwdShowCur ? <EyeOff className="w-4.5 h-4.5" /> : <Eye className="w-4.5 h-4.5" />}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[9.5px] font-bold text-slate-500 uppercase">New secret</label>
+                      <div className="relative">
+                        <input
+                          type={pwdShowNew ? "text" : "password"}
+                          required
+                          placeholder="New password code"
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 pl-3 pr-8 focus:outline-none focus:ring-1 focus:ring-indigo-600 text-xs font-mono text-slate-805"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setPwdShowNew(!pwdShowNew)}
+                          className="absolute right-2.5 top-3 text-slate-400 hover:text-slate-650"
+                        >
+                          {pwdShowNew ? <EyeOff className="w-4.5 h-4.5" /> : <Eye className="w-4.5 h-4.5" />}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1 font-mono">
+                      <label className="text-[9.5px] font-bold text-slate-505 uppercase">Verify replacement</label>
+                      <input
+                        type="password"
+                        required
+                        placeholder="Repeat password code"
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs text-slate-805 focus:outline-none focus:ring-1 focus:ring-indigo-600"
+                      />
+                    </div>
+
+                    <div className="pt-2 flex flex-col space-y-1">
+                      {pwdError && <p className="text-[10px] font-bold text-rose-600">{pwdError}</p>}
+                      {pwdSuccess && (
+                        <p className="text-[10px] font-bold text-emerald-600 flex items-center gap-1">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>{pwdSuccess}</span>
+                        </p>
+                      )}
+                      <button
+                        type="submit"
+                        disabled={pwdLoading}
+                        className="w-full bg-slate-900 hover:bg-slate-950 disabled:opacity-50 text-white font-bold py-2.5 px-4 rounded-lg text-[10px] uppercase font-mono tracking-wider transition cursor-pointer"
+                      >
+                        {pwdLoading ? "Modifying..." : "Update Secrets"}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === "letter" && (
+            <div className="max-w-4xl mx-auto text-left space-y-6">
+              {/* Admission Letter page layout */}
+              <div className="bg-white border border-slate-200 p-6 md:p-8 rounded-2xl shadow-xs text-left space-y-4">
+                <div className="border-b border-slate-100 pb-3">
+                  <h3 className="text-sm font-bold text-slate-900 font-display">Admissions Document Manager</h3>
+                  <p className="text-xs text-slate-500 font-mono">Verify and fetch your approved letters in Federal Registry databases.</p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 flex flex-col justify-between text-left space-y-4">
+                    <div className="space-y-2">
+                      <div className="p-2.5 bg-indigo-50 text-indigo-900 rounded-lg w-fit">
+                        <FileText className="w-6 h-6" />
+                      </div>
+                      <h4 className="text-xs font-bold text-slate-900">Offer of Admission letter</h4>
+                      <p className="text-[10.5px] text-slate-500 leading-normal font-mono">Download formal Ministry of Education provisional seat allocation confirmation letter.</p>
+                    </div>
+
+                    {candidate.admissionLetterUrl ? (
+                      <a
+                        href={candidate.admissionLetterUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="w-full bg-slate-900 hover:bg-indigo-950 text-white font-bold py-2 px-4 rounded-lg text-xs tracking-wider uppercase text-center block"
+                      >
+                        <Download className="w-4 h-4 mx-auto inline" />
+                        <span className="ml-2">Download (PDF)</span>
+                      </a>
+                    ) : (
+                      <button disabled className="w-full bg-slate-100 text-slate-350 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed">
+                        Awaiting Letter Allocation
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 flex flex-col justify-between text-left space-y-4">
+                    <div className="space-y-2">
+                      <div className="p-2.5 bg-emerald-50 text-emerald-900 rounded-lg w-fit">
+                        <CheckCircle className="w-6 h-6" />
+                      </div>
+                      <h4 className="text-xs font-bold text-slate-900">Enrollment Confirmation certificate</h4>
+                      <p className="text-[10.5px] text-slate-500 leading-normal font-mono">Available automatically once your uploaded scanned acceptance reviews successfully complete.</p>
+                    </div>
+
+                    {isEnrolled && candidate.enrollmentLetterUrl ? (
+                      <a
+                        href={candidate.enrollmentLetterUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="w-full bg-emerald-650 hover:bg-emerald-700 text-white font-bold py-2 px-4 rounded-lg text-xs tracking-wider uppercase text-center block"
+                      >
+                        <Download className="w-4 h-4 mx-auto inline" />
+                        <span className="ml-2">Download (PDF)</span>
+                      </a>
+                    ) : (
+                      <button disabled className="w-full bg-slate-100 text-slate-350 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed uppercase font-mono text-[9px]">
+                        Pending Acceptance Review
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === "form" && (
+            <AdmissionFormPage
+              candidate={candidate}
+              onRefresh={fetchProfile}
+            />
+          )}
+
+          {activeTab === "documents" && (
+            <div className="max-w-4xl mx-auto text-left space-y-6">
+              <div className="bg-white border border-slate-200 p-6 md:p-8 rounded-2xl shadow-xs text-left">
+                <div className="border-b border-slate-100 pb-3 mb-5">
+                  <h3 className="text-xs font-bold font-mono text-slate-400 uppercase tracking-widest leading-none">Structured Student Document Cabinet</h3>
+                  <p className="text-xs mt-1 text-slate-500 font-mono">Durable cloud backing files registered on system registry servers.</p>
+                </div>
+
+                <div className="space-y-3">
+                  {[
+                    { name: "Provisional Offer of Admission Letter", size: "A4 Printable", url: candidate.admissionLetterUrl, ready: !!candidate.admissionLetterUrl },
+                    { name: "Formal Signed Acceptance Scan Draft", size: "Scanned Template Upload", url: candidate.acceptanceLetterUrl, ready: !!candidate.acceptanceLetterUrl },
+                    { name: "Official System Verification Admission Form", size: "Encrypted Dossier PDF", url: `/api/admissions/${candidate.id}/form/pdf`, ready: !!candidate.admissionFormPdfUrl },
+                    { name: "Official Federal Enrollment Confirmation Certificate", size: "Enrollment Confirmed", url: candidate.enrollmentLetterUrl, ready: isEnrolled && !!candidate.enrollmentLetterUrl }
+                  ].map((doc, idx) => (
+                    <div key={idx} className="flex items-center justify-between p-3.5 border border-slate-100 rounded-xl hover:bg-slate-50 transition-colors">
+                      <div className="flex items-center gap-3">
+                        <div className={`p-2 rounded-lg ${doc.ready ? "bg-indigo-50 text-indigo-650" : "bg-slate-100 text-slate-350"}`}>
+                          <FileText className="w-5 h-5" />
+                        </div>
+                        <div className="text-left">
+                          <h4 className="text-xs font-bold text-slate-850 leading-none">{doc.name}</h4>
+                          <span className="text-[10px] text-slate-400 font-mono mt-1.5 block">{doc.size}</span>
+                        </div>
+                      </div>
+
+                      {doc.ready ? (
+                        <a
+                          href={doc.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-[11px] font-bold text-indigo-650 hover:text-indigo-900 uppercase font-mono flex items-center gap-1 transition"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>Download</span>
+                        </a>
+                      ) : (
+                        <span className="text-[10px] font-medium font-mono text-slate-350 bg-slate-50 px-2.5 py-1 rounded">NOT ACTIVE</span>
+                      )}
+                    </div>
                   ))}
                 </div>
               </div>
+            </div>
+          )}
 
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider">Health/Special Assistance Needs</label>
-                <textarea
-                  disabled={isFormCompleted}
-                  rows={2}
-                  value={medicalDeclaration}
-                  onChange={(e) => setMedicalDeclaration(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-800 font-medium focus:outline-none"
-                />
-              </div>
-
-              {/* Hand-signed or Drawn acceptance letters upload box */}
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider">Hand-Signed Acceptance Scan (Max 2MB)</label>
-                
-                {candidate.acceptanceLetterUrl ? (
-                  <div className="border border-indigo-100 bg-indigo-50/40 rounded-xl p-4 text-center text-xs text-indigo-950 font-semibold flex items-center justify-center gap-1.5">
-                    <CheckCircle className="w-4 h-4 text-emerald-600 flex-shrink-0" />
-                    <span>Acceptance document uploaded and backed up.</span>
+          {activeTab === "notifications" && (
+            <div className="max-w-4xl mx-auto space-y-6">
+              <div className="bg-white border border-slate-200 p-6 md:p-8 rounded-2xl shadow-xs text-left">
+                <div className="border-b border-slate-100 pb-3 mb-5 flex justify-between items-center">
+                  <div>
+                    <h3 className="text-xs font-bold font-mono text-slate-400 uppercase tracking-widest leading-none">System Notification events Center</h3>
+                    <p className="text-xs text-slate-500 mt-1 font-mono">Official automated activity logs dispatched to student portal link records.</p>
                   </div>
-                ) : (
-                  <div className="border-2 border-dashed border-slate-200 hover:border-indigo-650 bg-slate-50 rounded-xl p-5 text-center transition cursor-pointer relative">
-                    <input
-                      id="hand-signed-upload"
-                      type="file"
-                      accept="image/*,application/pdf"
-                      onChange={handleFileUpload}
-                      className="absolute inset-0 opacity-0 cursor-pointer"
-                    />
-                    {handSignedBase64 ? (
-                      <div className="space-y-1">
-                        <CheckCircle className="w-5 h-5 text-emerald-600 mx-auto" />
-                        <p className="text-[10px] text-slate-800 font-bold font-mono uppercase tracking-wide">Document successfully selected</p>
-                        <p className="text-[9px] text-slate-450 font-mono">Format: image / raster base64 parsed. Ready to submit.</p>
+                  <span className="text-[10px] font-mono bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded font-bold font-mono">LIVE FEED ACTIVE</span>
+                </div>
+
+                <div className="space-y-3.5">
+                  {notifications.map((n) => (
+                    <div
+                      key={n.id}
+                      className={`p-4 border rounded-xl flex gap-3 text-left transition-all duration-150 ${
+                        n.type === "success"
+                          ? "bg-emerald-50/50 border-emerald-150"
+                          : n.type === "warning"
+                          ? "bg-amber-50/50 border-amber-150"
+                          : "bg-indigo-50/40 border-indigo-150"
+                      }`}
+                    >
+                      <div className="mt-0.5 shrink-0">
+                        {n.type === "success" ? (
+                          <CheckCircle className="w-5 h-5 text-emerald-600" />
+                        ) : n.type === "warning" ? (
+                          <AlertCircle className="w-5 h-5 text-amber-600" />
+                        ) : (
+                          <Info className="w-5 h-5 text-indigo-600" />
+                        )}
                       </div>
-                    ) : (
                       <div className="space-y-1">
-                        <UploadCloud className="w-6 h-6 text-slate-400 mx-auto" />
-                        <p className="text-[10px] text-slate-700 font-bold uppercase tracking-wider">Upload / Scan signed letter</p>
-                        <p className="text-[9px] text-slate-400">Click to locate template or drag scanned file here</p>
+                        <div className="flex justify-between items-start gap-4">
+                          <h4 className="text-xs font-extrabold text-slate-900">{n.title}</h4>
+                          <span className="text-[9px] font-mono font-medium text-slate-400">{n.time}</span>
+                        </div>
+                        <p className="text-xs text-slate-650 leading-relaxed font-mono">{n.desc}</p>
                       </div>
-                    )}
-                  </div>
-                )}
+                    </div>
+                  ))}
+                  {notifications.length === 0 && (
+                    <div className="p-8 text-center text-slate-350 font-mono text-xs">
+                      No notification messages located.
+                    </div>
+                  )}
+                </div>
               </div>
-
-              {!isFormCompleted && (
-                <button
-                  type="submit"
-                  disabled={formSubmitting}
-                  className="w-full bg-emerald-650 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold py-3 px-4 rounded-xl text-xs flex items-center justify-center gap-2 tracking-wide uppercase transition shadow-md cursor-pointer"
-                >
-                  {formSubmitting ? "Uploading forms..." : "Submit Enrollment Response"}
-                  {!formSubmitting && <Send className="w-4 h-4 text-white" />}
-                </button>
-              )}
-
-            </form>
-          </div>
+            </div>
+          )}
 
         </div>
 
-      </main>
+        {/* Unified Portal footer notices */}
+        <footer className="bg-white border-t border-slate-200 py-4 px-6 text-center text-[10px] text-slate-400 font-mono mt-auto shrink-0">
+          <p>© {new Date().getFullYear()} Federal Ministry of Education · IDEAS-TVET Skills Sector Initiative</p>
+        </footer>
 
-      {/* Trainee Portal footer notices */}
-      <footer className="bg-white border-t border-slate-200 py-4 px-6 text-center text-[10px] text-slate-400 font-mono mt-auto">
-        <p>© {new Date().getFullYear()} Federal Ministry of Education · IDEAS-TVET Skills Sector Initiative</p>
-      </footer>
+      </main>
 
     </div>
   );

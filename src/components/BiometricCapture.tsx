@@ -273,7 +273,7 @@ export function BiometricCapture({ beneficiary, onPhotoCaptured, onClose }: Biom
     quality: number = 0.7
   ): Promise<string> => {
     return new Promise((resolve) => {
-      const img = new Image();
+      const img = document.createElement("img");
       img.onload = () => {
         const canvas = document.createElement("canvas");
         canvas.width = targetWidth;

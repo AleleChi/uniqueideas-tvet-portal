@@ -6,13 +6,14 @@
 import React, { useState, useEffect } from "react";
 import { 
   Building, UserCheck, MapPin, Mail, Phone, Upload, Trash2, Plus, 
-  Save, CheckCircle, AlertCircle, Award, BookOpen, Clock, Tag, RefreshCw 
+  Save, CheckCircle, AlertCircle, Award, BookOpen, Clock, Tag, RefreshCw,
+  FileText, Sparkles, Loader2
 } from "lucide-react";
 import { OrganizationSettings, TrainingProgram } from "../types";
 import { authFetch } from "../utils/authFetch";
 import { useNotification } from "./NotificationContext";
 
-export function SettingsWorkspace() {
+export function SettingsWorkspace({ session }: { session?: { username?: string; role?: string; email?: string } | null }) {
   const { showToast, confirmDelete } = useNotification();
   const [settings, setSettings] = useState<OrganizationSettings>({
     id: "ideas_default",
@@ -81,10 +82,167 @@ export function SettingsWorkspace() {
     photoAlbumHeader: "idle"
   });
 
+  const [activeSubTab, setActiveSubTab] = useState<"general" | "letterheads">("general");
+  const [letterheads, setLetterheads] = useState<any[]>([]);
+  const [activeLetterhead, setActiveLetterhead] = useState<any | null>(null);
+  const [isLoadingLetterheads, setIsLoadingLetterheads] = useState(false);
+  const [uploadingLetterhead, setUploadingLetterhead] = useState(false);
+  const [newLetterheadName, setNewLetterheadName] = useState("");
+  const [newLetterheadDescription, setNewLetterheadDescription] = useState("");
+  const [letterheadIsDefault, setLetterheadIsDefault] = useState(false);
+
   useEffect(() => {
     fetchSettings();
     fetchPrograms();
+    fetchLetterheads();
   }, []);
+
+  const fetchLetterheads = async () => {
+    setIsLoadingLetterheads(true);
+    try {
+      const res = await authFetch("/api/letterheads");
+      if (res.ok) {
+        const data = await res.json();
+        setLetterheads(data);
+        const active = data.find((l: any) => l.isDefault && l.isActive);
+        setActiveLetterhead(active || null);
+      }
+    } catch (e) {
+      console.error("Failed to fetch letterheads in client settings:", e);
+    } finally {
+      setIsLoadingLetterheads(false);
+    }
+  };
+
+  const handleSetDefaultLetterhead = async (id: string) => {
+    try {
+      const res = await authFetch(`/api/letterheads/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isDefault: true, isActive: true })
+      });
+      if (res.ok) {
+        showToast("Letterhead updated as system default!", "success");
+        await fetchLetterheads();
+      } else {
+        const err = await res.json();
+        showToast(err.error || "Failed activating default template", "error");
+      }
+    } catch (e) {
+      console.error(e);
+      showToast("Network error updating default letterhead template.", "error");
+    }
+  };
+
+  const handleDeleteLetterhead = async (id: string, name: string) => {
+    confirmDelete({
+      title: "Delete Letterhead Template",
+      message: `Are you sure you want to delete the formal letterhead template '${name}'? This action is permanent and cannot be undone.`,
+      onConfirm: async () => {
+        try {
+          const res = await authFetch(`/api/letterheads/${id}`, {
+            method: "DELETE"
+          });
+          if (res.ok) {
+            showToast("Letterhead template deleted successfully", "success");
+            await fetchLetterheads();
+          } else {
+            showToast("Unauthorized. Only SUPER_ADMIN users can perform this action.", "error");
+          }
+        } catch (e) {
+          console.error(e);
+          showToast("Network error deleting letterhead template.", "error");
+        }
+      }
+    });
+  };
+
+  const handleUploadLetterheadTemplate = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Validate role
+    if (session?.role !== "SUPER_ADMIN") {
+      showToast("Operation Restricted: Only SUPER_ADMIN is permitted to upload new letterhead templates.", "error");
+      e.target.value = "";
+      return;
+    }
+
+    // Validate Name field first
+    const finalName = newLetterheadName.trim() || file.name.split(".")[0];
+
+    const allowedExtensions = ["png", "jpg", "jpeg", "pdf"];
+    const extension = file.name.split(".").pop()?.toLowerCase() || "";
+    if (!allowedExtensions.includes(extension)) {
+      showToast("Invalid template format. Only PNG, JPG, JPEG, and PDF documents are supported.", "error");
+      e.target.value = "";
+      return;
+    }
+
+    setUploadingLetterhead(true);
+    showToast("Processing document template binary...", "info");
+
+    try {
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64Content = reader.result as string;
+        try {
+          // 1. Upload file
+          const uploadRes = await authFetch("/api/upload-asset", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              fileContent: base64Content,
+              fileName: `template_${finalName.toLowerCase().replace(/[^a-z0-9]/g, "_")}`,
+              folder: "ideas_letterheads"
+            })
+          });
+
+          if (!uploadRes.ok) throw new Error("Upload to asset storage failed.");
+          const { secureUrl } = await uploadRes.json();
+
+          // 2. Save letterhead record
+          const saveRes = await authFetch("/api/letterheads", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: finalName,
+              description: newLetterheadDescription || `Official government head template in ${extension.toUpperCase()} style.`,
+              fileUrl: secureUrl,
+              thumbnailUrl: secureUrl, // Same for simplicity
+              fileType: extension.toUpperCase(),
+              isDefault: letterheadIsDefault,
+              isActive: true
+            })
+          });
+
+          if (saveRes.ok) {
+            showToast("Success: Letterhead template imported successfully!", "success");
+            setNewLetterheadName("");
+            setNewLetterheadDescription("");
+            setLetterheadIsDefault(false);
+            await fetchLetterheads();
+          } else {
+            const err = await saveRes.json();
+            throw new Error(err.error || "Failed saving letterhead meta parameters.");
+          }
+        } catch (err: any) {
+          console.error(err);
+          showToast(err.message || "Failed uploading letterhead document template.", "error");
+        } finally {
+          setUploadingLetterhead(false);
+        }
+      };
+
+      reader.readAsDataURL(file);
+    } catch (err) {
+      console.error(err);
+      showToast("Error processing file parameters locally.", "error");
+      setUploadingLetterhead(false);
+    } finally {
+      e.target.value = "";
+    }
+  };
 
   const fetchSettings = async () => {
     try {
@@ -335,8 +493,34 @@ export function SettingsWorkspace() {
           <span>Reload Parameters</span>
         </button>
       </div>
- 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+      {/* Dynamic Sub-tab Navigation */}
+      <div className="flex border-b border-slate-200 gap-6 mt-4 pb-0.5">
+        <button
+          onClick={() => setActiveSubTab("general")}
+          className={`pb-3.5 px-2 font-bold text-xs tracking-wider uppercase border-b-2 transition inline-flex items-center gap-2 cursor-pointer ${
+            activeSubTab === "general"
+              ? "border-indigo-600 text-indigo-600"
+              : "border-transparent text-slate-500 hover:text-slate-800"
+          }`}
+        >
+          <Building className="w-4 h-4" />
+          General settings & batches
+        </button>
+        <button
+          onClick={() => setActiveSubTab("letterheads")}
+          className={`pb-3.5 px-2 font-bold text-xs tracking-wider uppercase border-b-2 transition inline-flex items-center gap-2 cursor-pointer ${
+            activeSubTab === "letterheads"
+              ? "border-indigo-600 text-indigo-600"
+              : "border-transparent text-slate-500 hover:text-slate-800"
+          }`}
+        >
+          <FileText className="w-4 h-4" />
+          Letterhead library ({letterheads.length})
+        </button>
+      </div>
+
+      {activeSubTab === "general" ? (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
         
         {/* LEFT COMPONENT: ORGANIZATION DETAILS & LOGO/STAMP GRAPHICS */}
         <div className="lg:col-span-12 xl:col-span-7 bg-white rounded-2xl border border-slate-200/85 p-6 shadow-sm space-y-6">
@@ -1505,6 +1689,255 @@ export function SettingsWorkspace() {
         </div>
 
       </div>
+      ) : (
+        /* LETTERHEAD LIBRARY TAB VIEW CONTAINER */
+        <div className="space-y-8 animate-in fade-in duration-300">
+          
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+            
+            {/* LEFT AREA: UPLOAD & NEW TEMPLATE ENTRY BLOCK */}
+            <div className="lg:col-span-12 xl:col-span-5 bg-white rounded-2xl border border-slate-200/85 p-6 shadow-sm space-y-6">
+              <div className="flex items-center gap-3 border-b border-slate-150 pb-4">
+                <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg">
+                  <Upload className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-slate-900 text-left">Upload Template Master</h3>
+                  <p className="text-[11px] text-slate-450 text-left mt-0.5">Import new PNG, JPG, or PDF template files</p>
+                </div>
+              </div>
+
+              {session?.role !== "SUPER_ADMIN" ? (
+                <div className="p-4 rounded-xl flex items-start gap-3 border bg-amber-50/70 border-amber-200 text-amber-800">
+                  <AlertCircle className="w-5 h-5 flex-shrink-0 text-amber-600 mt-0.5" />
+                  <div className="text-left flex-1">
+                    <span className="font-bold text-xs text-amber-950 block uppercase tracking-wide">Read-Only Mode</span>
+                    <p className="text-xs text-amber-900 mt-1 leading-relaxed">
+                      Your current role does not have authorization rights to upload or activate master letterhead assets. Only a <strong>SUPER_ADMIN</strong> user changes are synchronized.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex flex-col gap-1.5 text-left">
+                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                      Template Name
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Kano GTC Official Letterhead"
+                      value={newLetterheadName}
+                      onChange={(e) => setNewLetterheadName(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-250 py-2 px-3 rounded-lg text-xs font-semibold focus:bg-white focus:border-indigo-500 transition outline-none"
+                    />
+                  </div>
+
+                  <div className="flex flex-col gap-1.5 text-left">
+                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                      Template Description
+                    </label>
+                    <textarea
+                      rows={3}
+                      placeholder="e.g. Formal header layout for GTC Kano offer sheets..."
+                      value={newLetterheadDescription}
+                      onChange={(e) => setNewLetterheadDescription(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-250 py-2 px-3 rounded-lg text-xs font-semibold focus:bg-white focus:border-indigo-500 transition outline-none resize-none"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-3 py-1 text-left">
+                    <label className="relative inline-flex items-center cursor-pointer select-none">
+                      <input 
+                        type="checkbox" 
+                        className="sr-only peer"
+                        checked={letterheadIsDefault}
+                        onChange={(e) => setLetterheadIsDefault(e.target.checked)}
+                      />
+                      <div className="w-10 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+                      <span className="ml-3 text-xs font-bold text-slate-705">Set as System Default Template</span>
+                    </label>
+                  </div>
+
+                  <div className="pt-4 border-t border-slate-150">
+                    <label className={`w-full min-h-[140px] px-6 py-8 bg-slate-50 hover:bg-slate-100/80 border border-dashed border-slate-300 rounded-2xl flex flex-col items-center justify-center gap-3 transition ${uploadingLetterhead ? "pointer-events-none opacity-60" : "cursor-pointer"}`}>
+                      {uploadingLetterhead ? (
+                        <>
+                          <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
+                          <span className="text-xs font-bold text-slate-700">Publishing letterhead page vectors...</span>
+                        </>
+                      ) : (
+                        <>
+                          <div className="p-3 bg-white border border-slate-150 rounded-xl shadow-xs text-slate-550 flex items-center justify-center">
+                            <Upload className="w-6 h-6 text-slate-400" />
+                          </div>
+                          <div className="text-center">
+                            <span className="text-xs font-bold text-indigo-600 block">Click to Browse File</span>
+                            <span className="text-[10px] text-slate-400 block mt-1 font-sans">Accepts PDF, PNG, JPG, JPEG up to 5MB</span>
+                          </div>
+                        </>
+                      )}
+                      <input 
+                        type="file" 
+                        accept="image/*,application/pdf" 
+                        onChange={handleUploadLetterheadTemplate}
+                        disabled={uploadingLetterhead}
+                        className="hidden" 
+                      />
+                    </label>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* RIGHT AREA: THE ACTIVE PREVIEW AND ALL TEMPLATES LIST */}
+            <div className="lg:col-span-12 xl:col-span-7 space-y-6">
+              
+              {/* Active display overlay */}
+              <div className="bg-gradient-to-br from-indigo-950 to-slate-900 text-white rounded-2xl p-6 shadow-md border border-indigo-900 text-left flex flex-col sm:flex-row gap-5 items-center">
+                <div className="p-4 bg-indigo-905 bg-indigo-900/30 border border-indigo-700/40 rounded-xl flex items-center justify-center shrink-0 w-24 h-24 overflow-hidden relative shadow-inner">
+                  {activeLetterhead ? (
+                    <img 
+                      src={activeLetterhead.fileUrl} 
+                      alt="Active Letterhead" 
+                      className="max-h-full max-w-full object-contain" 
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <FileText className="w-10 h-10 text-indigo-400 opacity-60" />
+                  )}
+                  {activeLetterhead && (
+                    <span className="absolute bottom-1 right-1 px-1 rounded font-mono text-[8px] bg-emerald-500 text-emerald-955 uppercase font-black tracking-tight leading-none">
+                      {activeLetterhead.fileType}
+                    </span>
+                  )}
+                </div>
+                <div className="flex-1 space-y-1.5 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] font-mono font-black text-indigo-400 bg-indigo-950/80 px-2 py-0.5 rounded-full border border-indigo-900/40 uppercase tracking-widest leading-none">
+                      Default Letterhead Head
+                    </span>
+                    <span className="h-2 w-2 rounded-full bg-emerald-450 bg-emerald-400 animate-pulse"></span>
+                  </div>
+                  <h4 className="text-sm font-bold text-white truncate">
+                    {activeLetterhead ? activeLetterhead.name : "Standard Multi-Logo Header Active"}
+                  </h4>
+                  <p className="text-slate-400 text-xs leading-relaxed">
+                    {activeLetterhead 
+                      ? activeLetterhead.description 
+                      : "The system is currently defaulting to the split federal multi-image header arrangement configured under standard settings options."}
+                  </p>
+                  {activeLetterhead && (
+                    <div className="text-[10px] text-slate-450 font-mono flex flex-wrap gap-x-4 gap-y-1 pt-1.5">
+                      <span>Ref Layout: <span className="text-white uppercase font-bold">{activeLetterhead.fileType}</span></span>
+                      <span>Uploaded By: <span className="text-white">{activeLetterhead.uploadedBy || "System Admin"}</span></span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Template Library List Card */}
+              <div className="bg-white rounded-2xl border border-slate-200/85 p-6 shadow-sm space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <h3 className="font-bold text-xs text-slate-900 uppercase tracking-wider text-left">
+                    Template Masters Library ({letterheads.length})
+                  </h3>
+                  {isLoadingLetterheads && (
+                    <Loader2 className="w-4 h-4 text-indigo-600 animate-spin" />
+                  )}
+                </div>
+
+                {letterheads.length === 0 ? (
+                  <div className="text-center py-16 text-slate-400 text-xs flex flex-col items-center gap-2 border border-dashed border-slate-200 rounded-2xl w-full">
+                    <FileText className="w-10 h-10 text-slate-350" />
+                    <span className="font-bold text-slate-800">No custom letterhead masters deployed.</span>
+                    <span className="text-[11px] text-slate-400 max-w-xs leading-normal">
+                      Use the upload console on the left to add a custom official state or federation template.
+                    </span>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {letterheads.map((item) => (
+                      <div 
+                        key={item.id} 
+                        className={`p-4 bg-slate-50 border rounded-xl flex flex-col justify-between gap-4 text-left transition hover:border-slate-300 relative ${
+                          item.isDefault && item.isActive ? "border-indigo-500 ring-1 ring-indigo-505" : "border-slate-200"
+                        }`}
+                      >
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-750 border border-indigo-100 uppercase">
+                              {item.fileType}
+                            </span>
+                            {item.isDefault && item.isActive && (
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-850 text-[9px] font-black tracking-wide uppercase">
+                                DEFAULT ACTIVE
+                              </span>
+                            )}
+                          </div>
+                          <h4 className="text-xs font-bold text-slate-800 truncate" title={item.name}>
+                            {item.name}
+                          </h4>
+                          <p className="text-[10px] text-slate-500 font-medium leading-relaxed line-clamp-2" title={item.description}>
+                            {item.description}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-2 pt-3 border-t border-slate-150">
+                          <span className="text-[9px] text-slate-400 truncate max-w-[120px]" title={`Uploaded by ${item.uploadedBy}`}>
+                            By {item.uploadedBy?.split("@")[0] || "Admin"}
+                          </span>
+                          
+                          <div className="flex items-center gap-1.5">
+                            {/* Activate Default Trigger */}
+                            {(!item.isDefault || !item.isActive) && (
+                              <button
+                                type="button"
+                                onClick={() => handleSetDefaultLetterhead(item.id)}
+                                disabled={session?.role !== "SUPER_ADMIN"}
+                                className="px-2.5 py-1 bg-white hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-white text-indigo-600 border border-slate-205 rounded-lg text-[10px] font-bold uppercase transition select-none cursor-pointer"
+                                title="Activate formal template overrides"
+                              >
+                                Activate
+                              </button>
+                            )}
+
+                            {/* View Original File */}
+                            <a
+                              href={item.fileUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="p-1 px-2.5 bg-white border border-slate-200 hover:border-slate-300 text-slate-600 rounded-lg text-[10px] font-bold whitespace-nowrap text-center block"
+                              title="Original Source Vector File link"
+                            >
+                              View
+                            </a>
+
+                            {/* Delete Trigger */}
+                            {(item.isDefault && item.isActive) ? null : (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteLetterhead(item.id, item.name)}
+                                disabled={session?.role !== "SUPER_ADMIN"}
+                                className="p-1.5 bg-white border border-slate-200 hover:border-rose-300 text-slate-400 hover:text-rose-600 rounded-lg cursor-pointer transition disabled:opacity-40 hover:bg-rose-50"
+                                title="Purge template index"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+            </div>
+          </div>
+
+        </div>
+      )}
 
     </div>
   );

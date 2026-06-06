@@ -193,6 +193,7 @@ export class PdfService {
    */
   static async generateAdmissionLetterPdf(beneficiary: Beneficiary, meta?: any, returnHtml: boolean = false): Promise<Buffer | string> {
     const settings = await this.getSettings();
+    const activeLetterhead = await DbRepo.getActiveLetterhead();
     const admissionRef = beneficiary.admissionRef || `IDEAS/TVET/ADM/${beneficiary.id.split("-").pop()}/${new Date().getFullYear()}`;
     const genderSalutation = beneficiary.gender && String(beneficiary.gender).toUpperCase() === "FEMALE" ? "Miss" : "Mr";
     const dateStr = beneficiary.admissionLetterGeneratedAt 
@@ -239,37 +240,43 @@ export class PdfService {
         </style>
       </head>
       <body>
-        <div class="border-frame">
-          ${settings.watermarkEnabled ? `<div class="watermark">${settings.watermarkText || "SECURED REGISTRY DOCUMENT"}</div>` : ""}
+        <div class="border-frame" style="position: relative; z-index: 2; padding: ${activeLetterhead ? "40mm 20mm 30mm 20mm" : "25px"}; border: ${activeLetterhead ? "none" : "1px solid #e2e8f0"}; box-sizing: border-box;">
+          ${settings.watermarkEnabled ? `<div class="watermark" style="z-index: 0;">${settings.watermarkText || "SECURED REGISTRY DOCUMENT"}</div>` : ""}
           
-          ${(settings.admissionLetterheadUrl || settings.letterheadUrl) ? `
-            <div style="text-align: center; margin-bottom: 20px; position: relative; z-index: 10; width: 100%;">
-              <img src="${settings.admissionLetterheadUrl || settings.letterheadUrl}" style="width: 100%; max-height: 90px; object-fit: contain; display: block;" referrerPolicy="no-referrer">
+          ${activeLetterhead ? `
+            <div class="letterhead-background" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none;">
+              <img src="${activeLetterhead.fileUrl}" style="width: 100%; height: 100%; object-fit: cover; opacity: 1.0;" referrerPolicy="no-referrer" />
             </div>
           ` : `
-            <!-- DYNAMIC TSP TYPOGRAPHIC LETTERHEAD BRANDING -->
-            <div style="border-bottom: 3px solid #000000; padding-bottom: 10px; margin-bottom: 20px; position: relative; z-index: 10; font-family: Arial, sans-serif;">
-              <table style="width: 100%; border-collapse: collapse;">
-                <tr>
-                  <td style="vertical-align: top; text-align: left;">
-                    <div style="margin-bottom: 4px;">
-                      <span style="background-color: #000000; color: #ffffff; font-size: 8px; font-weight: bold; padding: 2px 5px; border-radius: 2px; text-transform: uppercase; letter-spacing: 1.5px;">TSP PARTNER</span>
-                      <span style="font-size: 9px; color: #64748b; font-weight: bold; margin-left: 5px; text-transform: uppercase; letter-spacing: 0.5px;">IDEAS Project TVET Program</span>
-                    </div>
-                    <h2 style="font-size: 16px; font-weight: 900; color: #0f172a; margin: 0; text-transform: uppercase; letter-spacing: -0.5px;">
-                      ${settings.organizationName || beneficiary.tsp || "State TVET Board, Kano"}
-                    </h2>
-                    <p style="font-size: 10px; color: #475569; margin: 4px 0 0 0; font-weight: 600;">
-                      ${settings.contactAddress || "No. 45 Gwarzo Road, Kano State, Nigeria"}
-                    </p>
-                  </td>
-                  <td style="vertical-align: bottom; text-align: right; font-size: 9px; color: #475569; font-family: monospace; white-space: nowrap; line-height: 1.4;">
-                    <div>Phone: ${settings.contactPhone || "+234 803 123 4567"}</div>
-                    <div>Email: ${settings.contactEmail || "kano-tvet@ideas-initiative.org"}</div>
-                  </td>
-                </tr>
-              </table>
-            </div>
+            ${(settings.admissionLetterheadUrl || settings.letterheadUrl) ? `
+              <div style="text-align: center; margin-bottom: 20px; position: relative; z-index: 10; width: 100%;">
+                <img src="${settings.admissionLetterheadUrl || settings.letterheadUrl}" style="width: 100%; max-height: 90px; object-fit: contain; display: block;" referrerPolicy="no-referrer">
+              </div>
+            ` : `
+              <!-- DYNAMIC TSP TYPOGRAPHIC LETTERHEAD BRANDING -->
+              <div style="border-bottom: 3px solid #000000; padding-bottom: 10px; margin-bottom: 20px; position: relative; z-index: 10; font-family: Arial, sans-serif;">
+                <table style="width: 100%; border-collapse: collapse;">
+                  <tr>
+                    <td style="vertical-align: top; text-align: left;">
+                      <div style="margin-bottom: 4px;">
+                        <span style="background-color: #000000; color: #ffffff; font-size: 8px; font-weight: bold; padding: 2px 5px; border-radius: 2px; text-transform: uppercase; letter-spacing: 1.5px;">TSP PARTNER</span>
+                        <span style="font-size: 9px; color: #64748b; font-weight: bold; margin-left: 5px; text-transform: uppercase; letter-spacing: 0.5px;">IDEAS Project TVET Program</span>
+                      </div>
+                      <h2 style="font-size: 16px; font-weight: 900; color: #0f172a; margin: 0; text-transform: uppercase; letter-spacing: -0.5px;">
+                        ${settings.organizationName || beneficiary.tsp || "State TVET Board, Kano"}
+                      </h2>
+                      <p style="font-size: 10px; color: #475569; margin: 4px 0 0 0; font-weight: 600;">
+                        ${settings.contactAddress || "No. 45 Gwarzo Road, Kano State, Nigeria"}
+                      </p>
+                    </td>
+                    <td style="vertical-align: bottom; text-align: right; font-size: 9px; color: #475569; font-family: monospace; white-space: nowrap; line-height: 1.4;">
+                      <div>Phone: ${settings.contactPhone || "+234 803 123 4567"}</div>
+                      <div>Email: ${settings.contactEmail || "kano-tvet@ideas-initiative.org"}</div>
+                    </td>
+                  </tr>
+                </table>
+              </div>
+            `}
           `}
 
           <table class="metadata-table" style="position: relative; z-index: 10;">
@@ -348,6 +355,7 @@ export class PdfService {
    */
   static async generateAcceptanceLetterPdf(beneficiary: Beneficiary, meta?: any, returnHtml: boolean = false): Promise<Buffer | string> {
     const settings = await this.getSettings();
+    const activeLetterhead = await DbRepo.getActiveLetterhead();
     const dateStr = beneficiary.acceptanceLetterUploadedAt
       ? new Date(beneficiary.acceptanceLetterUploadedAt).toLocaleDateString("en-GB")
       : new Date().toLocaleDateString("en-GB");
@@ -388,33 +396,39 @@ export class PdfService {
         </style>
       </head>
       <body>
-        <div class="border-frame">
-          ${meta?.watermarkEnabled ? `<div class="watermark">${meta.watermarkText || "SECURED REGISTRY DOCUMENT"}</div>` : ""}
+        <div class="border-frame" style="position: relative; z-index: 2; padding: ${activeLetterhead ? "40mm 20mm 30mm 20mm" : "35px"}; border: ${activeLetterhead ? "none" : "1.5px solid #2e7d32"}; box-sizing: border-box;">
+          ${meta?.watermarkEnabled ? `<div class="watermark" style="z-index: 0;">${meta.watermarkText || "SECURED REGISTRY DOCUMENT"}</div>` : ""}
           
-          ${settings.acceptanceLetterheadUrl ? `
-            <div style="text-align: center; margin-bottom: 25px; position: relative; z-index: 10; width: 100%;">
-              <img src="${settings.acceptanceLetterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
-            </div>
-          ` : settings.letterheadUrl ? `
-            <div style="text-align: center; margin-bottom: 25px; position: relative; z-index: 10; width: 100%;">
-              <img src="${settings.letterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
+          ${activeLetterhead ? `
+            <div class="letterhead-background" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none;">
+              <img src="${activeLetterhead.fileUrl}" style="width: 100%; height: 100%; object-fit: cover; opacity: 1.0;" referrerPolicy="no-referrer" />
             </div>
           ` : `
-            <!-- THREE-LOGO GOVERNMENT HEADER FALLBACK -->
-            <table class="logo-header-table" style="position: relative; z-index: 10; width: 100%; border-collapse: collapse; margin-bottom: 10px;">
-              <tr>
-                <td style="width: 33%; text-align: left; vertical-align: middle;">
-                  ${this.renderLogo(settings.fmeLogoUrl, this.getFederalCrestSvg(), "70px", "70px")}
-                </td>
-                <td style="width: 34%; text-align: center; vertical-align: middle;">
-                  ${this.renderLogo(settings.ideasLogoUrl, this.getIdeasLogoSvg(), "80px", "70px")}
-                </td>
-                <td style="width: 33%; text-align: right; vertical-align: middle;">
-                  ${this.renderLogo(settings.worldBankLogoUrl, this.getWorldBankLogoSvg(), "70px", "70px")}
-                </td>
-              </tr>
-            </table>
-            <div class="divider-line" style="position: relative; z-index: 10;"></div>
+            ${settings.acceptanceLetterheadUrl ? `
+              <div style="text-align: center; margin-bottom: 25px; position: relative; z-index: 10; width: 100%;">
+                <img src="${settings.acceptanceLetterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
+              </div>
+            ` : settings.letterheadUrl ? `
+              <div style="text-align: center; margin-bottom: 25px; position: relative; z-index: 10; width: 100%;">
+                <img src="${settings.letterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
+              </div>
+            ` : `
+              <!-- THREE-LOGO GOVERNMENT HEADER FALLBACK -->
+              <table class="logo-header-table" style="position: relative; z-index: 10; width: 100%; border-collapse: collapse; margin-bottom: 10px;">
+                <tr>
+                  <td style="width: 33%; text-align: left; vertical-align: middle;">
+                    ${this.renderLogo(settings.fmeLogoUrl, this.getFederalCrestSvg(), "70px", "70px")}
+                  </td>
+                  <td style="width: 34%; text-align: center; vertical-align: middle;">
+                    ${this.renderLogo(settings.ideasLogoUrl, this.getIdeasLogoSvg(), "80px", "70px")}
+                  </td>
+                  <td style="width: 33%; text-align: right; vertical-align: middle;">
+                    ${this.renderLogo(settings.worldBankLogoUrl, this.getWorldBankLogoSvg(), "70px", "70px")}
+                  </td>
+                </tr>
+              </table>
+              <div class="divider-line" style="position: relative; z-index: 10;"></div>
+            `}
           `}
 
           <div style="text-align: right; font-family: monospace; font-size: 12px; margin-bottom: 20px; color: #424242; position: relative; z-index: 10;">
@@ -490,9 +504,44 @@ export class PdfService {
    */
   static async generateAdmissionFormPdf(beneficiary: Beneficiary, meta?: any, returnHtml: boolean = false): Promise<Buffer | string> {
     const settings = await this.getSettings();
+    const activeLetterhead = await DbRepo.getActiveLetterhead();
     const dateStr = beneficiary.admissionFormData?.submissionDate
       ? new Date(beneficiary.admissionFormData.submissionDate).toLocaleDateString("en-GB")
       : new Date().toLocaleDateString("en-GB");
+
+    // Dynamic generation of Form Ref and QR Code meta
+    const formRef = beneficiary.admissionFormRef || await DbRepo.getOrGenerateAdmissionFormRef(beneficiary.id);
+    beneficiary.admissionFormRef = formRef;
+
+    if (!meta) {
+      meta = {};
+    }
+    if (!meta.verificationCode) {
+      meta.verificationCode = formRef;
+    }
+    if (!meta.qrDataUrl) {
+      const origin = process.env.APP_URL || "https://ideas-tvet-system.org";
+      const verifyLink = `${origin}/api/admissions/verify/${formRef}`;
+      meta.qrDataUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(verifyLink)}`;
+    }
+
+    const format = (v: any, fallback = "Not Provided") => {
+      if (v === undefined || v === null || String(v).trim() === "") return fallback;
+      const s = String(v).trim();
+      if (s.toUpperCase() === "N/A" || s === "") return fallback;
+      return s;
+    };
+
+    const fullName = `${format(beneficiary.lastName).toUpperCase()}, ${format(beneficiary.firstName).toUpperCase()} ${beneficiary.otherName ? beneficiary.otherName.toUpperCase() : ""}`.trim();
+    
+    const buildAddress = () => {
+      const addr = beneficiary.residentialAddress || "";
+      const city = beneficiary.city || "";
+      const state = beneficiary.state || "";
+      const parts = [addr, city, state ? `${state} State` : ""].filter(p => p.trim() !== "");
+      return parts.length > 0 ? parts.join(", ") : "Not Provided";
+    };
+    const contactAddress = buildAddress();
 
     // Dynamic field list rendering as two-column table rows
     let customFieldsHtml = "";
@@ -501,7 +550,7 @@ export class PdfService {
         customFieldsHtml += `
           <tr>
             <td class="attrib-label">${key.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}</td>
-            <td class="attrib-value">${val || "N/A"}</td>
+            <td class="attrib-value">${format(val)}</td>
           </tr>
         `;
       }
@@ -704,36 +753,42 @@ export class PdfService {
         </style>
       </head>
       <body>
-        <div class="border-frame">
-          ${meta?.watermarkEnabled ? `<div class="watermark">${meta.watermarkText || "SECURED REGISTRY DOCUMENT"}</div>` : ""}
+        <div class="border-frame" style="position: relative; z-index: 2; padding: ${activeLetterhead ? "40mm 20mm 30mm 20mm" : "10px"}; min-height: 245mm; border: ${activeLetterhead ? "none" : "none"}; box-sizing: border-box;">
+          ${meta?.watermarkEnabled ? `<div class="watermark" style="z-index: 0;">${meta.watermarkText || "SECURED REGISTRY DOCUMENT"}</div>` : ""}
           
-          ${settings.letterheadUrl ? `
-            <div style="text-align: center; margin-bottom: 20px; position: relative; z-index: 10; width: 100%;">
-              <img src="${settings.letterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
+          ${activeLetterhead ? `
+            <div class="letterhead-background" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none;">
+              <img src="${activeLetterhead.fileUrl}" style="width: 100%; height: 100%; object-fit: cover; opacity: 1.0;" referrerPolicy="no-referrer" />
             </div>
           ` : `
-            <!-- HORIZONTAL LOGO BAR -->
-            <table class="logo-header-table" style="position: relative; z-index: 10; width: 100%; border-collapse: collapse; margin-bottom: 10px;">
-              <tr>
-                <td style="width: 33%; text-align: left; vertical-align: middle;">
-                  ${this.renderLogo(settings.fmeLogoUrl, this.getFederalCrestSvg(), "70px", "70px")}
-                </td>
-                <td style="width: 34%; text-align: center; vertical-align: middle;">
-                  ${this.renderLogo(settings.ideasLogoUrl, this.getIdeasLogoSvg(), "80px", "70px")}
-                </td>
-                <td style="width: 33%; text-align: right; vertical-align: middle;">
-                  ${this.renderLogo(settings.worldBankLogoUrl, this.getWorldBankLogoSvg(), "70px", "70px")}
-                </td>
-              </tr>
-            </table>
-            <!-- SEPARATOR SYSTEM -->
-            <div class="divider-line" style="position: relative; z-index: 10;"></div>
+            ${settings.letterheadUrl ? `
+              <div style="text-align: center; margin-bottom: 20px; position: relative; z-index: 10; width: 100%;">
+                <img src="${settings.letterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
+              </div>
+            ` : `
+              <!-- HORIZONTAL LOGO BAR -->
+              <table class="logo-header-table" style="position: relative; z-index: 10; width: 100%; border-collapse: collapse; margin-bottom: 10px;">
+                <tr>
+                  <td style="width: 33%; text-align: left; vertical-align: middle;">
+                    ${this.renderLogo(settings.fmeLogoUrl, this.getFederalCrestSvg(), "70px", "70px")}
+                  </td>
+                  <td style="width: 34%; text-align: center; vertical-align: middle;">
+                    ${this.renderLogo(settings.ideasLogoUrl, this.getIdeasLogoSvg(), "80px", "70px")}
+                  </td>
+                  <td style="width: 33%; text-align: right; vertical-align: middle;">
+                    ${this.renderLogo(settings.worldBankLogoUrl, this.getWorldBankLogoSvg(), "70px", "70px")}
+                  </td>
+                </tr>
+              </table>
+              <!-- SEPARATOR SYSTEM -->
+              <div class="divider-line" style="position: relative; z-index: 10;"></div>
+            `}
           `}
 
           <!-- DOCUMENT TITLE -->
           <div style="text-align: center; margin-bottom: 20px; position: relative; z-index: 10;">
-            <div style="font-family: 'Inter', Arial, sans-serif; font-size: 15pt; font-weight: bold; text-transform: uppercase; color: #000000; letter-spacing: 0.5px; line-height: 1.2;">IDEAS-TVET Initiative</div>
-            <div style="font-family: 'Inter', Arial, sans-serif; font-size: 13pt; font-weight: bold; text-transform: uppercase; color: #000000; letter-spacing: 0.5px; line-height: 1.2; margin-top: 4px;">Trainee Admission Form</div>
+            <div style="font-family: 'Inter', Arial, sans-serif; font-size: 15pt; font-weight: bold; text-transform: uppercase; color: #000000; letter-spacing: 0.5px; line-height: 1.2;">IDEAS-TVET INITIATIVE</div>
+            <div style="font-family: 'Inter', Arial, sans-serif; font-size: 13pt; font-weight: bold; text-transform: uppercase; color: #000000; letter-spacing: 0.5px; line-height: 1.2; margin-top: 4px;">TRAINEE ADMISSION FORM</div>
           </div>
 
           <!-- DOSSIER METADATA AND CANDIDATE PHOTOGRAPH -->
@@ -742,7 +797,8 @@ export class PdfService {
               <td style="width: 75%; padding-right: 15px;">
                 <div style="font-size: 8.5pt; color: #1e293b; line-height: 1.5;">
                   <strong style="color: #000000; font-size: 9.5pt; text-transform: uppercase;">Central Registry Candidate Dossier</strong><br/>
-                  <span style="font-family: monospace; font-weight: bold; background-color: #f1f5f9; padding: 2px 6px; border: 1px solid #cbd5e1; border-radius: 3px; display: inline-block; margin-top: 6px; font-size: 9pt;">CANDIDATE ID: ${beneficiary.id}</span><br/>
+                  <span style="font-family: monospace; font-weight: bold; background-color: #f1f5f9; padding: 2px 6px; border: 1px solid #cbd5e1; border-radius: 3px; display: inline-block; margin-top: 6px; font-size: 9pt;">CANDIDATE ID: ${beneficiary.id}</span>
+                  <span style="font-family: monospace; font-weight: bold; background-color: #e0f2fe; padding: 2px 6px; border: 1px solid #93c5fd; border-radius: 3px; display: inline-block; margin-top: 6px; font-size: 9pt; color: #0369a1;">FORM REF: ${beneficiary.admissionFormRef}</span><br/>
                   <span style="font-weight: 600; color: #475569; display: inline-block; margin-top: 5px;">Registry Generated: ${dateStr}</span><br/>
                   <p style="margin: 6px 0 0 0; font-size: 8pt; color: #64748b; text-align: justify; line-height: 1.4;">
                     This record represents the official audited registration blueprint for the candidate under the TVET Skill Enhancement Initiatives. All biometric, BVN identity tokens, and educational markers have been fully reconciled.
@@ -778,8 +834,8 @@ export class PdfService {
           <table class="details-table">
             <thead>
               <tr style="background-color: #fafafa; border-bottom: 1.5px solid #000000;">
-                <th style="font-family: 'Inter', Arial, sans-serif; font-size: 9.5pt; font-weight: bold; text-align: left; padding: 7px 12px; border: 1px solid #000000; text-transform: uppercase; width: 44%;">Field</th>
-                <th style="font-family: 'Inter', Arial, sans-serif; font-size: 9.5pt; font-weight: bold; text-align: left; padding: 7px 12px; border: 1px solid #000000; text-transform: uppercase; width: 56%;">Details of Trainee</th>
+                <th style="font-family: 'Inter', Arial, sans-serif; font-size: 9.5pt; font-weight: bold; text-align: left; padding: 7px 12px; border: 1px solid #000000; text-transform: uppercase; width: 44%;">FIELD</th>
+                <th style="font-family: 'Inter', Arial, sans-serif; font-size: 9.5pt; font-weight: bold; text-align: left; padding: 7px 12px; border: 1px solid #000000; text-transform: uppercase; width: 56%;">DETAILS</th>
               </tr>
             </thead>
             <tbody>
@@ -789,86 +845,103 @@ export class PdfService {
               </tr>
               <tr>
                 <td class="attrib-label">Name of Trainee (Surname First)</td>
-                <td class="attrib-value">${beneficiary.lastName.toUpperCase()}, ${beneficiary.firstName.toUpperCase()} ${beneficiary.otherName ? beneficiary.otherName.toUpperCase() : ""}</td>
+                <td class="attrib-value">${fullName}</td>
               </tr>
               <tr>
                 <td class="attrib-label">Skill Applied For</td>
-                <td class="attrib-value">${(beneficiary.skillSector || "Computer Hardware and Cell Phone Repairs").toUpperCase()}</td>
+                <td class="attrib-value">${format(beneficiary.skillSector).toUpperCase()}</td>
               </tr>
               <tr>
                 <td class="attrib-label">National Identification Number</td>
-                <td class="attrib-value">${beneficiary.nin || "N/A"}</td>
+                <td class="attrib-value">${format(beneficiary.nin)}</td>
               </tr>
               <tr>
                 <td class="attrib-label">Phone Number (WhatsApp)</td>
-                <td class="attrib-value">${beneficiary.phoneNumber || "N/A"}</td>
+                <td class="attrib-value">${format(beneficiary.phoneNumber)}</td>
               </tr>
               <tr>
                 <td class="attrib-label">Email</td>
-                <td class="attrib-value">${beneficiary.email || "N/A"}</td>
+                <td class="attrib-value">${format(beneficiary.email)}</td>
               </tr>
               <tr>
                 <td class="attrib-label">Contact Address</td>
-                <td class="attrib-value">${beneficiary.residentialAddress || "N/A"}, ${beneficiary.city || "N/A"}, ${beneficiary.state || "N/A"} State</td>
+                <td class="attrib-value">${contactAddress}</td>
               </tr>
               <tr>
-                <td class="attrib-label">Date of Birth (DD/MM/YYYY)</td>
-                <td class="attrib-value">${beneficiary.dateOfBirth || "N/A"}</td>
-              </tr>
-              <tr>
-                <td class="attrib-label">Highest Educational Qualification</td>
-                <td class="attrib-value">${beneficiary.educationQualification || "N/A"}</td>
+                <td class="attrib-label">Date of Birth</td>
+                <td class="attrib-value">${format(beneficiary.dateOfBirth)}</td>
               </tr>
 
               <!-- SECTION B -->
               <tr>
-                <td colspan="2" class="section-header-cell">SECTION B: PARENT/GUARDIAN INFORMATION</td>
+                <td colspan="2" class="section-header-cell">SECTION B: PARENT / GUARDIAN SECTION</td>
               </tr>
               <tr>
-                <td class="attrib-label">Name of Parent/Guardian</td>
-                <td class="attrib-value">${beneficiary.guardianName || "N/A"}</td>
+                <td class="attrib-label">Name of Parent / Guardian</td>
+                <td class="attrib-value">${format(beneficiary.guardianName)}</td>
               </tr>
               <tr>
-                <td class="attrib-label">Address of Parent/Guardian</td>
-                <td class="attrib-value">${beneficiary.guardianAddress || "N/A"}</td>
+                <td class="attrib-label">Address of Parent / Guardian</td>
+                <td class="attrib-value">${format(beneficiary.guardianAddress)}</td>
               </tr>
               <tr>
-                <td class="attrib-label">Phone Number of Parent/Guardian</td>
-                <td class="attrib-value">${beneficiary.guardianPhone || "N/A"}</td>
+                <td class="attrib-label">Phone Number of Parent / Guardian</td>
+                <td class="attrib-value">${format(beneficiary.guardianPhone)}</td>
               </tr>
 
               <!-- SECTION C -->
               <tr>
-                <td colspan="2" class="section-header-cell">SECTION C: SPECIAL NEEDS</td>
+                <td colspan="2" class="section-header-cell">SECTION C: PHYSICAL CHALLENGE SECTION</td>
               </tr>
               <tr>
-                <td class="attrib-label">Any Physical Challenge?</td>
-                <td class="attrib-value">${beneficiary.physicalChallenge || "None"}</td>
+                <td class="attrib-label">Any Physical Challenge</td>
+                <td class="attrib-value">${format(beneficiary.physicalChallenge, "Not Provided")}</td>
               </tr>
 
               <!-- SECTION D -->
               <tr>
-                <td colspan="2" class="section-header-cell">SECTION D: BANK DETAILS</td>
+                <td colspan="2" class="section-header-cell">SECTION D: BANK DETAILS SECTION</td>
               </tr>
               <tr>
-                <td class="attrib-label">Name of Account Holder</td>
-                <td class="attrib-value">${beneficiary.bankAccountHolder ? beneficiary.bankAccountHolder.toUpperCase() : (beneficiary.firstName + " " + beneficiary.lastName).toUpperCase()}</td>
+                <td class="attrib-label">Account Holder</td>
+                <td class="attrib-value">${format(beneficiary.bankAccountHolder ? beneficiary.bankAccountHolder.toUpperCase() : (beneficiary.firstName + " " + beneficiary.lastName).toUpperCase())}</td>
               </tr>
               <tr>
                 <td class="attrib-label">BVN</td>
-                <td class="attrib-value">${beneficiary.bvn || "N/A"}</td>
+                <td class="attrib-value">${format(beneficiary.bvn)}</td>
               </tr>
               <tr>
                 <td class="attrib-label">Bank Name</td>
-                <td class="attrib-value">${beneficiary.bankName || "N/A"}</td>
+                <td class="attrib-value">${format(beneficiary.bankName)}</td>
               </tr>
               <tr>
-                <td class="attrib-label">Bank Sort Code</td>
-                <td class="attrib-value">${beneficiary.bankSortCode || "N/A"}</td>
+                <td class="attrib-label">Sort Code</td>
+                <td class="attrib-value">${format(beneficiary.bankSortCode)}</td>
               </tr>
               <tr>
-                <td class="attrib-label">Bank Account Number</td>
-                <td class="attrib-value">${beneficiary.bankAccountNumber || "N/A"}</td>
+                <td class="attrib-label">Account Number</td>
+                <td class="attrib-value">${format(beneficiary.bankAccountNumber)}</td>
+              </tr>
+
+              <!-- SECTION E -->
+              <tr>
+                <td colspan="2" class="section-header-cell">SECTION E: DECLARATION SECTION</td>
+              </tr>
+              <tr>
+                <td colspan="2" style="padding: 12px; font-size: 9.5pt; line-height: 1.5; border: 1px solid #000000; background-color: #ffffff; color: #000000;">
+                  I hereby confirm that the information contained in this admission form is correct and belongs to me.
+                  <br/><br/>
+                  <table style="width: 100%; border-collapse: collapse; border: none; margin-top: 15px;">
+                    <tr style="border: none;">
+                      <td style="width: 50%; border: none; padding: 0; font-family: 'Inter', Arial, sans-serif; font-size: 9pt; color: #000000;">
+                        Signature Line: _____________________________________
+                      </td>
+                      <td style="width: 50%; border: none; padding: 0; text-align: right; font-family: 'Inter', Arial, sans-serif; font-size: 9pt; color: #000000;">
+                        Date Line: _____________________________________
+                      </td>
+                    </tr>
+                  </table>
+                </td>
               </tr>
               
               ${customFieldsHtml ? `
@@ -1082,6 +1155,7 @@ export class PdfService {
    */
   static async generateEnrollmentConfirmationPdf(beneficiary: Beneficiary, meta?: any, returnHtml: boolean = false): Promise<Buffer | string> {
     const settings = await this.getSettings();
+    const activeLetterhead = await DbRepo.getActiveLetterhead();
     const dateStr = beneficiary.updatedAt 
       ? new Date(beneficiary.updatedAt).toLocaleDateString("en-GB") 
       : new Date().toLocaleDateString("en-GB");
@@ -1137,32 +1211,39 @@ export class PdfService {
         </style>
       </head>
       <body>
-        <div class="border-frame">
-          ${meta?.watermarkEnabled ? `<div class="watermark">${meta.watermarkText || "SECURED REGISTRY DOCUMENT"}</div>` : ""}
-          ${settings.enrollmentLetterheadUrl ? `
-            <div style="text-align: center; margin-bottom: 25px; position: relative; z-index: 10; width: 100%;">
-              <img src="${settings.enrollmentLetterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
-            </div>
-          ` : settings.letterheadUrl ? `
-            <div style="text-align: center; margin-bottom: 25px; position: relative; z-index: 10; width: 100%;">
-              <img src="${settings.letterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
+        <div class="border-frame" style="position: relative; z-index: 2; padding: ${activeLetterhead ? "40mm 20mm 30mm 20mm" : "30px"}; border: ${activeLetterhead ? "none" : "2px solid #008751"}; box-sizing: border-box;">
+          ${meta?.watermarkEnabled ? `<div class="watermark" style="z-index: 0;">${meta.watermarkText || "SECURED REGISTRY DOCUMENT"}</div>` : ""}
+          
+          ${activeLetterhead ? `
+            <div class="letterhead-background" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none;">
+              <img src="${activeLetterhead.fileUrl}" style="width: 100%; height: 100%; object-fit: cover; opacity: 1.0;" referrerPolicy="no-referrer" />
             </div>
           ` : `
-            <!-- THREE-LOGO GOVERNMENT HEADER FALLBACK -->
-            <table class="logo-header-table" style="position: relative; z-index: 10; width: 100%; border-collapse: collapse; margin-bottom: 10px;">
-              <tr>
-                <td style="width: 33%; text-align: left; vertical-align: middle;">
-                  ${this.renderLogo(settings.fmeLogoUrl, this.getFederalCrestSvg(), "70px", "70px")}
-                </td>
-                <td style="width: 34%; text-align: center; vertical-align: middle;">
-                  ${this.renderLogo(settings.ideasLogoUrl, this.getIdeasLogoSvg(), "80px", "70px")}
-                </td>
-                <td style="width: 33%; text-align: right; vertical-align: middle;">
-                  ${this.renderLogo(settings.worldBankLogoUrl, this.getWorldBankLogoSvg(), "70px", "70px")}
-                </td>
-              </tr>
-            </table>
-            <div class="divider-line" style="position: relative; z-index: 10;"></div>
+            ${settings.enrollmentLetterheadUrl ? `
+              <div style="text-align: center; margin-bottom: 25px; position: relative; z-index: 10; width: 100%;">
+                <img src="${settings.enrollmentLetterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
+              </div>
+            ` : settings.letterheadUrl ? `
+              <div style="text-align: center; margin-bottom: 25px; position: relative; z-index: 10; width: 100%;">
+                <img src="${settings.letterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
+              </div>
+            ` : `
+              <!-- THREE-LOGO GOVERNMENT HEADER FALLBACK -->
+              <table class="logo-header-table" style="position: relative; z-index: 10; width: 100%; border-collapse: collapse; margin-bottom: 10px;">
+                <tr>
+                  <td style="width: 33%; text-align: left; vertical-align: middle;">
+                    ${this.renderLogo(settings.fmeLogoUrl, this.getFederalCrestSvg(), "70px", "70px")}
+                  </td>
+                  <td style="width: 34%; text-align: center; vertical-align: middle;">
+                    ${this.renderLogo(settings.ideasLogoUrl, this.getIdeasLogoSvg(), "80px", "70px")}
+                  </td>
+                  <td style="width: 33%; text-align: right; vertical-align: middle;">
+                    ${this.renderLogo(settings.worldBankLogoUrl, this.getWorldBankLogoSvg(), "70px", "70px")}
+                  </td>
+                </tr>
+              </table>
+              <div class="divider-line" style="position: relative; z-index: 10;"></div>
+            `}
           `}
           
           <div class="title-box" style="position: relative; z-index: 10;">Official Trainee Biometrics Enrollment Confirmation Letter</div>
@@ -1386,5 +1467,333 @@ export class PdfService {
 
     if (returnHtml) return htmlContent;
     return await this.compileHtmlToPdfBuffer(htmlContent, true);
+  }
+
+  /**
+   * Generates a Word (.docx / .doc) compatible representation of the Trainee Admission Form on demand.
+   * Word matches the exact structure as requested with tables, section dividers, and the official header format.
+   */
+  static async generateAdmissionFormDocx(beneficiary: Beneficiary, meta?: any): Promise<Buffer> {
+    const settings = await this.getSettings();
+    const activeLetterhead = await DbRepo.getActiveLetterhead();
+    const dateStr = beneficiary.admissionFormData?.submissionDate
+      ? new Date(beneficiary.admissionFormData.submissionDate).toLocaleDateString("en-GB")
+      : new Date().toLocaleDateString("en-GB");
+
+    // Dynamic generation of Form Ref
+    const formRef = beneficiary.admissionFormRef || await DbRepo.getOrGenerateAdmissionFormRef(beneficiary.id);
+    beneficiary.admissionFormRef = formRef;
+
+    const format = (v: any, fallback = "Not Provided") => {
+      if (v === undefined || v === null || String(v).trim() === "") return fallback;
+      const s = String(v).trim();
+      if (s.toUpperCase() === "N/A" || s === "") return fallback;
+      return s;
+    };
+
+    const fullName = `${format(beneficiary.lastName).toUpperCase()}, ${format(beneficiary.firstName).toUpperCase()} ${beneficiary.otherName ? beneficiary.otherName.toUpperCase() : ""}`.trim();
+    
+    const buildAddress = () => {
+      const addr = beneficiary.residentialAddress || "";
+      const city = beneficiary.city || "";
+      const state = beneficiary.state || "";
+      const parts = [addr, city, state ? `${state} State` : ""].filter(p => p.trim() !== "");
+      return parts.length > 0 ? parts.join(", ") : "Not Provided";
+    };
+    const contactAddress = buildAddress();
+
+    let customFieldsRows = "";
+    if (beneficiary.customFields && typeof beneficiary.customFields === "object") {
+      for (const [key, val] of Object.entries(beneficiary.customFields)) {
+        customFieldsRows += `
+          <tr>
+            <td class="attrib-label">${key.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}</td>
+            <td class="attrib-value">${format(val)}</td>
+          </tr>
+        `;
+      }
+    }
+
+    const htmlContent = `
+      <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+      <head>
+        <meta charset="utf-8">
+        <title>Admission Registration Form - ${beneficiary.lastName}</title>
+        <!--[if gte mso 9]><xml>
+         <w:WordDocument>
+          <w:View>Print</w:View>
+          <w:Zoom>100</w:Zoom>
+          <w:DoNotOptimizeForBrowser/>
+         </w:WordDocument>
+        </xml><![endif]-->
+        <style>
+          @page {
+            size: 21.0cm 29.7cm; /* A4 size */
+            margin: 2.0cm 2.0cm 2.0cm 2.0cm;
+          }
+          body { 
+            font-family: Arial, sans-serif; 
+            color: #000000; 
+            line-height: 1.4;
+          }
+          .logo-header-table {
+            width: 100%;
+            margin-bottom: 15px;
+          }
+          .title-text {
+            text-align: center;
+            font-weight: bold;
+            font-size: 15pt;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+          }
+          .subtitle-text {
+            text-align: center;
+            font-weight: bold;
+            font-size: 13pt;
+            text-transform: uppercase;
+            margin-top: 5px;
+            letter-spacing: 0.5px;
+          }
+          .details-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            margin-bottom: 20px;
+          }
+          .details-table th, .details-table td {
+            border: 1px solid #000000;
+            padding: 8px;
+            font-size: 9.5pt;
+            vertical-align: top;
+          }
+          .table-header {
+            background-color: #f2f2f2;
+            font-weight: bold;
+            text-transform: uppercase;
+          }
+          .section-title-row {
+            background-color: #000000;
+            color: #ffffff;
+            font-weight: bold;
+            text-transform: uppercase;
+            font-size: 9.5pt;
+            padding: 8px;
+          }
+          .attrib-label {
+            font-weight: bold;
+            background-color: #f9f9f9;
+            text-transform: uppercase;
+            width: 44%;
+          }
+          .attrib-value {
+            width: 56%;
+            font-weight: bold;
+          }
+          .declaration-box {
+            border: 1px solid #000000;
+            padding: 12px;
+            font-size: 10pt;
+            background-color: #ffffff;
+            margin-top: 20px;
+          }
+          .signature-table {
+            width: 100%;
+            margin-top: 30px;
+          }
+          .footer-text {
+            text-align: center;
+            font-size: 7.5pt;
+            color: #666666;
+            margin-top: 40px;
+            border-top: 1px solid #cccccc;
+            padding-top: 10px;
+          }
+        </style>
+      </head>
+      <body>
+        <div>
+          <!-- OFFICIAL LETTERHEAD OVERLAY -->
+          ${activeLetterhead ? `
+          <div style="text-align: center; margin-bottom: 20px;">
+            <img src="${activeLetterhead.fileUrl}" style="width: 100%; max-height: 120px; object-fit: contain;" />
+            <div style="font-size: 8pt; color: #666666; margin-top: 5px; font-weight: bold; text-transform: uppercase;">
+              OFFICIAL TEMPLATE: ${activeLetterhead.name.toUpperCase()}
+            </div>
+          </div>
+          <hr style="border: 1px solid #000000; margin-bottom: 20px;" />
+          ` : `
+          <!-- OFFICIAL GRAPHICS REPLACEMENT BAR -->
+          <table class="logo-header-table" border="0" cellspacing="0" cellpadding="0">
+            <tr>
+              <td align="center" style="font-weight: bold; font-size: 10pt; text-transform: uppercase;">
+                FEDERAL MINISTRY OF EDUCATION • IDEAS-TVET INITIATIVE • WORLD BANK COOPERATIVE DOSSIER
+              </td>
+            </tr>
+          </table>
+          <hr style="border: 1px solid #000000; margin-bottom: 20px;" />
+          `}
+
+          <!-- DOCUMENT CENTERING HEADER -->
+          <div class="title-text">IDEAS-TVET INITIATIVE</div>
+          <div class="subtitle-text">TRAINEE ADMISSION FORM</div>
+          <br/>
+
+          <!-- CANDIDATE METADATA SNAPSHOT -->
+          <p style="font-size: 10pt;">
+            <strong>CENTRAL REGISTRY CANDIDATE DOSSIER</strong><br/>
+            Candidate Reference ID: ${beneficiary.id}<br/>
+            Official Form Reference: ${beneficiary.admissionFormRef}<br/>
+            Registry Generated: ${dateStr}
+          </p>
+
+          <table class="details-table" border="1" cellspacing="0" cellpadding="8">
+            <thead>
+              <tr class="table-header">
+                <th align="left" style="width: 44%">FIELD</th>
+                <th align="left" style="width: 56%">DETAILS</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- SECTION A -->
+              <tr>
+                <td colspan="2" class="section-title-row" style="background-color: #000000; color: #ffffff; font-weight: bold;">SECTION A: TRAINEE INFORMATION</td>
+              </tr>
+              <tr>
+                <td class="attrib-label">Name of Trainee (Surname First)</td>
+                <td class="attrib-value">${fullName}</td>
+              </tr>
+              <tr>
+                <td class="attrib-label">Skill Applied For</td>
+                <td class="attrib-value">${format(beneficiary.skillSector).toUpperCase()}</td>
+              </tr>
+              <tr>
+                <td class="attrib-label">National Identification Number</td>
+                <td class="attrib-value">${format(beneficiary.nin)}</td>
+              </tr>
+              <tr>
+                <td class="attrib-label">Phone Number (WhatsApp)</td>
+                <td class="attrib-value">${format(beneficiary.phoneNumber)}</td>
+              </tr>
+              <tr>
+                <td class="attrib-label">Email</td>
+                <td class="attrib-value">${format(beneficiary.email)}</td>
+              </tr>
+              <tr>
+                <td class="attrib-label">Contact Address</td>
+                <td class="attrib-value">${contactAddress}</td>
+              </tr>
+              <tr>
+                <td class="attrib-label">Date of Birth</td>
+                <td class="attrib-value">${format(beneficiary.dateOfBirth)}</td>
+              </tr>
+
+              <!-- SECTION B -->
+              <tr>
+                <td colspan="2" class="section-title-row" style="background-color: #000000; color: #ffffff; font-weight: bold;">SECTION B: PARENT / GUARDIAN SECTION</td>
+              </tr>
+              <tr>
+                <td class="attrib-label">Name of Parent / Guardian</td>
+                <td class="attrib-value">${format(beneficiary.guardianName)}</td>
+              </tr>
+              <tr>
+                <td class="attrib-label">Address of Parent / Guardian</td>
+                <td class="attrib-value">${format(beneficiary.guardianAddress)}</td>
+              </tr>
+              <tr>
+                <td class="attrib-label">Phone Number of Parent / Guardian</td>
+                <td class="attrib-value">${format(beneficiary.guardianPhone)}</td>
+              </tr>
+
+              <!-- SECTION C -->
+              <tr>
+                <td colspan="2" class="section-title-row" style="background-color: #000000; color: #ffffff; font-weight: bold;">SECTION C: PHYSICAL CHALLENGE SECTION</td>
+              </tr>
+              <tr>
+                <td class="attrib-label">Any Physical Challenge</td>
+                <td class="attrib-value">${format(beneficiary.physicalChallenge, "Not Provided")}</td>
+              </tr>
+
+              <!-- SECTION D -->
+              <tr>
+                <td colspan="2" class="section-title-row" style="background-color: #000000; color: #ffffff; font-weight: bold;">SECTION D: BANK DETAILS SECTION</td>
+              </tr>
+              <tr>
+                <td class="attrib-label">Account Holder</td>
+                <td class="attrib-value">${format(beneficiary.bankAccountHolder ? beneficiary.bankAccountHolder.toUpperCase() : (beneficiary.firstName + " " + beneficiary.lastName).toUpperCase())}</td>
+              </tr>
+              <tr>
+                <td class="attrib-label">BVN</td>
+                <td class="attrib-value">${format(beneficiary.bvn)}</td>
+              </tr>
+              <tr>
+                <td class="attrib-label">Bank Name</td>
+                <td class="attrib-value">${format(beneficiary.bankName)}</td>
+              </tr>
+              <tr>
+                <td class="attrib-label">Sort Code</td>
+                <td class="attrib-value">${format(beneficiary.bankSortCode)}</td>
+              </tr>
+              <tr>
+                <td class="attrib-label">Account Number</td>
+                <td class="attrib-value">${format(beneficiary.bankAccountNumber)}</td>
+              </tr>
+
+              <!-- SECTION E -->
+              <tr>
+                <td colspan="2" class="section-title-row" style="background-color: #000000; color: #ffffff; font-weight: bold;">SECTION E: DECLARATION SECTION</td>
+              </tr>
+              <tr>
+                <td colspan="2" style="padding: 12px; font-size: 10pt; background-color: #ffffff; border: 1px solid #000000;">
+                  I hereby confirm that the information contained in this admission form is correct and belongs to me.
+                  <br/><br/>
+                  <table style="width: 100%; border: none; margin-top: 15px;" border="0">
+                    <tr>
+                      <td style="width: 50%; border: none;">
+                        Signature Line: _____________________________________
+                      </td>
+                      <td style="width: 50%; border: none; text-align: right;">
+                        Date Line: _____________________________________
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+              
+              ${customFieldsRows}
+            </tbody>
+          </table>
+
+          <div class="declaration-box">
+            <strong>REGISTRY VERIFICATION ATTESTATION:</strong> This printed dossier represents a complete audited snapshot representing the candidate's formal registration and stipend milestone logs under the federally governed IDEAS-TVET programme. All biographical datasets, system references, and linked bank accounts have been cryptographically locked within the centralized database registry.
+          </div>
+
+          <!-- SIGN-OFF SEALS -->
+          <table class="signature-table" border="0" style="width: 100%;">
+            <tr>
+              <td valign="top" style="width: 45%;">
+                <strong>Trainee Validation</strong><br/><br/>
+                Trainee Signature/Thumbprint: _________________<br/><br/>
+                Date: _______________________
+              </td>
+              <td style="width: 10%;"></td>
+              <td valign="top" style="width: 45%;">
+                <strong>Registrar Verification</strong><br/><br/>
+                Verified By: __________________<br/><br/>
+                Signature: ___________________<br/><br/>
+                Date: ________________________
+              </td>
+            </tr>
+          </table>
+
+          <div class="footer-text">
+            IDEAS-TVET ENROLLMENT SYSTEM CENTRAL REGISTRATION RECORD • GENERATION DATE: ${dateStr} • CLASSIFIED FEDERAL TVET DOSSIER DATABASE
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    return Buffer.from(htmlContent, "utf-8");
   }
 }
