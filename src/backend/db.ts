@@ -2548,4 +2548,350 @@ export class DbRepo {
       return [];
     }
   }
+
+  /**
+   * Fetch aggregated statistics for admissions
+   */
+  static async getAdmissionsStats(): Promise<{
+    summary: { total: number; pending: number; underReview: number; admitted: number; rejected: number };
+    bySector: { [key: string]: number };
+    byProgram: { [key: string]: number };
+    byTsp: { [key: string]: number };
+    byState: { [key: string]: number };
+    byLga: { [key: string]: number };
+  }> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      // In JSON simulation, scan in memory
+      const state = loadJsonState();
+      const beneficiariesList = state.beneficiaries as Beneficiary[];
+      
+      const summary = { total: 0, pending: 0, underReview: 0, admitted: 0, rejected: 0 };
+      const bySector: { [key: string]: number } = {};
+      const byProgram: { [key: string]: number } = {};
+      const byTsp: { [key: string]: number } = {};
+      const byState: { [key: string]: number } = {};
+      const byLga: { [key: string]: number } = {};
+
+      for (const b of beneficiariesList) {
+        summary.total++;
+        const statusStr = (b.admissionStatus || "Pending").toLowerCase();
+
+        if (statusStr === "accepted" || statusStr === "admitted" || statusStr === "enrolled" || statusStr === "training in progress" || statusStr === "training completed" || statusStr === "certified" || statusStr === "alumni") {
+          summary.admitted++;
+        } else if (statusStr === "acceptance rejected" || statusStr === "rejected") {
+          summary.rejected++;
+        } else if (statusStr === "under review" || statusStr === "acceptance uploaded") {
+          summary.underReview++;
+        } else {
+          summary.pending++;
+        }
+
+        const sector = b.skillSector || "Computer Repairs";
+        bySector[sector] = (bySector[sector] || 0) + 1;
+
+        const program = b.program || "IDEAS-TVET";
+        byProgram[program] = (byProgram[program] || 0) + 1;
+
+        const tsp = b.tsp || "Unique Technology Nig. Ltd";
+        byTsp[tsp] = (byTsp[tsp] || 0) + 1;
+
+        const stateName = (b.state || "Unassigned").replace(" State", "");
+        byState[stateName] = (byState[stateName] || 0) + 1;
+
+        const city = b.city || "Owerri Central";
+        byLga[city] = (byLga[city] || 0) + 1;
+      }
+
+      return { summary, bySector, byProgram, byTsp, byState, byLga };
+    }
+
+    try {
+      // Direct high-efficiency groupings in Postgres
+      const summaryRes = await pool.query(`
+        SELECT COALESCE(adm.admission_status, 'Pending') as status, COUNT(*) as count
+         FROM beneficiaries b
+         LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
+         WHERE b.deleted_at IS NULL
+         GROUP BY COALESCE(adm.admission_status, 'Pending')
+      `);
+
+      const summary = { total: 0, pending: 0, underReview: 0, admitted: 0, rejected: 0 };
+      for (const r of summaryRes.rows) {
+        const val = parseInt(r.count, 10);
+        summary.total += val;
+        const statusStr = r.status.toLowerCase();
+
+        if (statusStr === "accepted" || statusStr === "admitted" || statusStr === "enrolled" || statusStr === "training in progress" || statusStr === "training completed" || statusStr === "certified" || statusStr === "alumni") {
+          summary.admitted += val;
+        } else if (statusStr === "acceptance rejected" || statusStr === "rejected") {
+          summary.rejected += val;
+        } else if (statusStr === "under review" || statusStr === "acceptance uploaded") {
+          summary.underReview += val;
+        } else {
+          summary.pending += val;
+        }
+      }
+
+      const sectorRes = await pool.query(`
+        SELECT b.skill_sector, COUNT(*) as count 
+         FROM beneficiaries b WHERE b.deleted_at IS NULL GROUP BY b.skill_sector
+      `);
+      const bySector: { [key: string]: number } = {};
+      for (const r of sectorRes.rows) {
+        bySector[r.skill_sector || "Computer Repairs"] = parseInt(r.count, 10);
+      }
+
+      const programRes = await pool.query(`
+        SELECT b.program, COUNT(*) as count 
+         FROM beneficiaries b WHERE b.deleted_at IS NULL GROUP BY b.program
+      `);
+      const byProgram: { [key: string]: number } = {};
+      for (const r of programRes.rows) {
+        byProgram[r.program || "IDEAS-TVET"] = parseInt(r.count, 10);
+      }
+
+      const tspRes = await pool.query(`
+        SELECT b.tsp, COUNT(*) as count 
+         FROM beneficiaries b WHERE b.deleted_at IS NULL GROUP BY b.tsp
+      `);
+      const byTsp: { [key: string]: number } = {};
+      for (const r of tspRes.rows) {
+        byTsp[r.tsp || "Unique Tech"] = parseInt(r.count, 10);
+      }
+
+      const stateRes = await pool.query(`
+        SELECT b.state, COUNT(*) as count 
+         FROM beneficiaries b WHERE b.deleted_at IS NULL GROUP BY b.state
+      `);
+      const byState: { [key: string]: number } = {};
+      for (const r of stateRes.rows) {
+        const name = (r.state || "Unassigned").replace(" State", "");
+        byState[name] = parseInt(r.count, 10);
+      }
+
+      const lgaRes = await pool.query(`
+        SELECT b.city, COUNT(*) as count 
+         FROM beneficiaries b WHERE b.deleted_at IS NULL GROUP BY b.city
+      `);
+      const byLga: { [key: string]: number } = {};
+      for (const r of lgaRes.rows) {
+        byLga[r.city || "Owerri Central"] = parseInt(r.count, 10);
+      }
+
+      return { summary, bySector, byProgram, byTsp, byState, byLga };
+    } catch (e) {
+      console.error("[DB Repo] Failed to load admissions stats:", e);
+      return {
+        summary: { total: 0, pending: 0, underReview: 0, admitted: 0, rejected: 0 },
+        bySector: {}, byProgram: {}, byTsp: {}, byState: {}, byLga: {}
+      };
+    }
+  }
+
+  /**
+   * Fetch paginated list of admissions with selective non-photo column projections
+   */
+  static async getAdmissionsPaged(options: {
+    page: number;
+    pageSize: number;
+    search?: string;
+    status?: string;
+    sector?: string;
+    tsp?: string;
+    state?: string;
+    dateApplied?: string;
+    sortBy?: string;
+    sortOrder?: "ASC" | "DESC";
+  }): Promise<{
+    rows: Array<{
+      id: string;
+      referenceNumber: string;
+      name: string;
+      sector: string;
+      tsp: string;
+      admissionStatus: string;
+      hasPhoto: boolean;
+      state: string;
+      batch: string;
+      createdAt: string;
+    }>;
+    totalCount: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
+  }> {
+    const page = Math.max(1, options.page);
+    const pageSize = Math.min(100, Math.max(1, options.pageSize));
+    const offset = (page - 1) * pageSize;
+    const search = options.search || "";
+    const status = options.status || "all";
+    const sector = options.sector || "all";
+    const tsp = options.tsp || "all";
+    const state = options.state || "all";
+    
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      // In JSON simulation, read list on the fly
+      const stateData = loadJsonState();
+      let list = stateData.beneficiaries as Beneficiary[];
+
+      // Filter in memory
+      if (search) {
+        const q = search.toLowerCase();
+        list = list.filter(b => 
+          (b.firstName || "").toLowerCase().includes(q) ||
+          (b.lastName || "").toLowerCase().includes(q) ||
+          (b.id || "").toLowerCase().includes(q) ||
+          (b.nin || "").includes(q) ||
+          (b.bvn || "").includes(q)
+        );
+      }
+
+      if (status !== "all") {
+        list = list.filter(b => (b.admissionStatus || "Pending").toLowerCase() === status.toLowerCase());
+      }
+      if (sector !== "all") {
+        list = list.filter(b => b.skillSector === sector);
+      }
+      if (tsp !== "all") {
+        list = list.filter(b => b.tsp === tsp);
+      }
+      if (state !== "all") {
+        list = list.filter(b => b.state === state);
+      }
+
+      // Sort in memory
+      const sortBy = options.sortBy || "createdAt";
+      const sortOrder = options.sortOrder || "DESC";
+      list = list.sort((a: any, b: any) => {
+        let valA = a[sortBy] || "";
+        let valB = b[sortBy] || "";
+        if (sortOrder === "ASC") {
+          return valA > valB ? 1 : -1;
+        } else {
+          return valA < valB ? 1 : -1;
+        }
+      });
+
+      const totalCount = list.length;
+      const totalPages = Math.ceil(totalCount / pageSize) || 1;
+      const sliced = list.slice(offset, offset + pageSize);
+
+      const rows = sliced.map(b => ({
+        id: b.id,
+        referenceNumber: b.admissionRef || "DRAFT",
+        name: `${b.lastName}, ${b.firstName}`,
+        sector: b.skillSector,
+        tsp: b.tsp,
+        admissionStatus: b.admissionStatus || "Pending",
+        hasPhoto: b.photo ? (b.photo.length > 5) : false,
+        state: b.state,
+        batch: b.batch,
+        createdAt: b.createdAt
+      }));
+
+      return { rows, totalCount, page, pageSize, totalPages };
+    }
+
+    try {
+      // 1. Build dynamic parameterized SQL search conditions
+      const selectParts = [
+        "b.id",
+        "COALESCE(adm.admission_ref, 'DRAFT') as reference_number",
+        "b.first_name",
+        "b.last_name",
+        "b.skill_sector",
+        "b.tsp",
+        "COALESCE(adm.admission_status, 'Pending') as admission_status",
+        "(b.photo IS NOT NULL AND b.photo != '') as has_photo",
+        "b.state",
+        "b.batch",
+        "b.created_at"
+      ];
+
+      let queryWhere = "WHERE b.deleted_at IS NULL ";
+      const params: any[] = [];
+      let paramCount = 1;
+
+      if (search) {
+        const searchPattern = `%${search.toLowerCase()}%`;
+        queryWhere += `AND (LOWER(b.first_name) LIKE $${paramCount} OR LOWER(b.last_name) LIKE $${paramCount} OR LOWER(b.id) LIKE $${paramCount} OR LOWER(b.nin) LIKE $${paramCount} OR LOWER(b.bvn) LIKE $${paramCount}) `;
+        params.push(searchPattern);
+        paramCount++;
+      }
+
+      if (status !== "all") {
+        queryWhere += `AND COALESCE(adm.admission_status, 'Pending') = $${paramCount} `;
+        params.push(status);
+        paramCount++;
+      }
+
+      if (sector !== "all") {
+        queryWhere += `AND b.skill_sector = $${paramCount} `;
+        params.push(sector);
+        paramCount++;
+      }
+
+      if (tsp !== "all") {
+        queryWhere += `AND b.tsp = $${paramCount} `;
+        params.push(tsp);
+        paramCount++;
+      }
+
+      if (state !== "all") {
+        queryWhere += `AND b.state = $${paramCount} `;
+        params.push(state);
+        paramCount++;
+      }
+
+      // Count Query
+      const countRes = await pool.query(
+        `SELECT COUNT(*) as count 
+         FROM beneficiaries b
+         LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
+         ${queryWhere}`,
+        params
+      );
+      const totalCount = parseInt(countRes.rows[0].count || "0", 10);
+      const totalPages = Math.ceil(totalCount / pageSize) || 1;
+
+      // sorting
+      const sortColumn = options.sortBy === "name" ? "b.last_name" : "b.created_at";
+      const sortDirection = options.sortOrder === "ASC" ? "ASC" : "DESC";
+
+      // Append limits/offset parameters for safe retrieval block
+      const paginationParams = [...params, pageSize, offset];
+      const limitParamIndex = paramCount;
+      const offsetParamIndex = paramCount + 1;
+
+      const pagedStr = `
+        SELECT ${selectParts.join(", ")}
+        FROM beneficiaries b
+        LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
+        ${queryWhere}
+        ORDER BY ${sortColumn} ${sortDirection}
+        LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}
+      `;
+
+      const rowsRes = await pool.query(pagedStr, paginationParams);
+      const rows = rowsRes.rows.map(r => ({
+        id: r.id,
+        referenceNumber: r.reference_number,
+        name: `${r.last_name}, ${r.first_name}`,
+        sector: r.skill_sector,
+        tsp: r.tsp,
+        admissionStatus: r.admission_status,
+        hasPhoto: !!r.has_photo,
+        state: r.state,
+        batch: r.batch,
+        createdAt: r.created_at.toISOString()
+      }));
+
+      return { rows, totalCount, page, pageSize, totalPages };
+    } catch (e) {
+      console.error("[DB Repo] Failed to get paginated admissions records:", e);
+      return { rows: [], totalCount: 0, page, pageSize, totalPages: 1 };
+    }
+  }
 }

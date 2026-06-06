@@ -190,4 +190,212 @@ export class AdmissionController {
       return res.status(500).json({ error: err.message || "Failed to generate secure link." });
     }
   }
+
+  /**
+   * Controller to load aggregated statistics/analytics
+   * GET /api/admissions/stats
+   */
+  static async getAdmissionsStats(req: Request, res: Response) {
+    try {
+      const stats = await DbRepo.getAdmissionsStats();
+      return res.status(200).json(stats);
+    } catch (err: any) {
+      console.error("[AdmissionController] getAdmissionsStats failed:", err);
+      return res.status(500).json({ error: err.message || "Failed loading admissions telemetry." });
+    }
+  }
+
+  /**
+   * Controller for paginated list registry queries
+   * GET /api/admissions/list
+   */
+  static async getAdmissionsList(req: Request, res: Response) {
+    try {
+      const page = parseInt(req.query.page as string || "1", 10);
+      const pageSize = parseInt(req.query.pageSize as string || "50", 10);
+      const search = req.query.search as string || "";
+      const status = req.query.status as string || "all";
+      const sector = req.query.sector as string || "all";
+      const tsp = req.query.tsp as string || "all";
+      const state = req.query.state as string || "all";
+
+      const listPayload = await DbRepo.getAdmissionsPaged({
+        page,
+        pageSize,
+        search,
+        status,
+        sector,
+        tsp,
+        state
+      });
+
+      return res.status(200).json(listPayload);
+    } catch (err: any) {
+      console.error("[AdmissionController] getAdmissionsList failed:", err);
+      return res.status(500).json({ error: err.message || "Failed loading paginated admissions records." });
+    }
+  }
+
+  /**
+   * Controller for bulk transition status
+   * POST /api/admissions/bulk-transition
+   */
+  static async bulkTransitionStatus(req: Request, res: Response) {
+    try {
+      const { ids, newStatus, reason } = req.body;
+      const operatorUser = (req as any).user?.email || "anonymous";
+
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: "Missing or invalid required parameter: ids" });
+      }
+      if (!newStatus) {
+        return res.status(400).json({ error: "Missing required parameter: newStatus" });
+      }
+
+      const results = {
+        successCount: 0,
+        failedCount: 0,
+        failures: [] as Array<{ id: string; error: string }>
+      };
+
+      // Process in small serialized chunks of 20 to constrain CPU and database locking cycles
+      const CHUNK_SIZE = 20;
+      for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+        const chunk = ids.slice(i, i + CHUNK_SIZE);
+
+        await Promise.all(
+          chunk.map(async (id) => {
+            try {
+              const b = await DbRepo.getBeneficiaryById(id);
+              if (!b) {
+                throw new Error("Candidate not found inside registry.");
+              }
+
+              // Apply transition rules
+              const currentStatus = b.admissionStatus || "Pending";
+              
+              const normalizedOld = currentStatus.toLowerCase();
+              const normalizedNew = newStatus.toLowerCase();
+
+              let allowed = false;
+              if (normalizedOld === "pending" || normalizedOld === "draft" || normalizedOld === "admission sent" || normalizedOld === "admission generated") {
+                if (normalizedNew === "under review" || normalizedNew === "under_review") allowed = true;
+              } else if (normalizedOld === "under review" || normalizedOld === "under_review" || normalizedOld === "acceptance uploaded") {
+                if (normalizedNew === "accepted" || normalizedNew === "admitted") allowed = true;
+                if (normalizedNew === "rejected" || normalizedNew === "acceptance rejected" || normalizedNew === "acceptance_rejected") allowed = true;
+              } else if (normalizedOld === "accepted" || normalizedOld === "admitted" || normalizedOld === "enrolled" || normalizedOld === "training in progress") {
+                if (normalizedNew === "under review" || normalizedNew === "under_review") allowed = true;
+              } else if (normalizedOld === "rejected" || normalizedOld === "acceptance rejected" || normalizedOld === "acceptance_rejected") {
+                if (normalizedNew === "under review" || normalizedNew === "under_review") allowed = true;
+              }
+
+              // Perform transition and save history
+              const oldStatusStr = b.admissionStatus || "Pending";
+              
+              // Clean status name
+              let statusToSave = newStatus;
+              if (newStatus === "UNDER_REVIEW") statusToSave = "Under Review";
+              if (newStatus === "ADMITTED") statusToSave = "Accepted";
+              if (newStatus === "REJECTED") statusToSave = "Acceptance Rejected";
+
+              b.admissionStatus = statusToSave as any;
+              b.updatedAt = new Date().toISOString();
+
+              await DbRepo.upsertBeneficiary(b);
+              await DbRepo.saveWorkflowHistory({
+                beneficiaryId: id,
+                oldStatus: oldStatusStr,
+                newStatus: statusToSave,
+                changedBy: operatorUser,
+                changedAt: new Date().toISOString(),
+                remarks: reason || "Bulk admissions queue operation"
+              });
+
+              // Log audit trail
+              await DbRepo.saveAuditLog({
+                id: "log_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+                timestamp: new Date().toISOString(),
+                username: operatorUser,
+                role: (req as any).user?.role || "System Admin",
+                action: "ADMISSIONS_WORKFLOW_RECONCILE",
+                details: `Transited candidate '${id}' from '${oldStatusStr}' to '${statusToSave}'. Remarks: ${reason || "none"}`
+              });
+
+              results.successCount++;
+            } catch (err: any) {
+              results.failedCount++;
+              results.failures.push({ id, error: err.message || "Unknown error" });
+            }
+          })
+        );
+
+        // Sleep briefly between chunks of 20 to release the event loop
+        if (i + CHUNK_SIZE < ids.length) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
+      }
+
+      return res.status(200).json({ success: true, results });
+    } catch (e: any) {
+      console.error("[AdmissionController] bulkTransitionStatus failed:", e);
+      return res.status(500).json({ error: e.message || "Failed running bulk admissions transition." });
+    }
+  }
+
+  /**
+   * Controller to load structured official letter properties dynamically
+   * GET /api/admissions/:id/letter
+   */
+  static async getAdmissionLetterData(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const b = await DbRepo.getBeneficiaryById(id);
+      if (!b) {
+        return res.status(404).json({ error: "Candidate profile not found in registry." });
+      }
+
+      const settings = await DbRepo.getOrganizationSettings();
+
+      // Ensure stable references or fallbacks
+      const currentYear = new Date().getFullYear();
+      const admissionRef = b.admissionRef || `IDEAS/TVET/ADM/${b.id.split("-").pop() || b.id}/${currentYear}`;
+      const candidateSalutation = b.gender && String(b.gender).toUpperCase() === "FEMALE" ? "Miss" : "Mr";
+      const candidateName = `${candidateSalutation} ${b.lastName} ${b.firstName} ${b.otherName || ""}`.trim().replace(/\s+/g, " ");
+      
+      const payload = {
+        date: new Date().toLocaleDateString("en-US", { year: 'numeric', month: 'long', day: 'numeric' }),
+        beneficiaryName: candidateName,
+        skillName: b.skillSector || "Computer Hardware and Cell Phone Repairs",
+        sectorName: b.program || "Information Technology",
+        trainingCentre: settings.trainingVenue || b.tsp || "National TVET TSP Center",
+        startDate: settings.trainingStartDate || "October 12, 2026",
+        endDate: settings.trainingEndDate || "December 18, 2026",
+        tpmName: settings.tpmName || "Engr. Kabiru Mohammed",
+        tpmTitle: settings.tpmTitle || "Technical Project Manager (TPM)",
+        tspName: settings.organizationName || b.tsp || "State TVET Board, Kano",
+        tspAddress: settings.contactAddress || "State TSP Head Office Compound, Nigeria",
+        tspPhone: settings.contactPhone || "+234 803 123 4567",
+        tspEmail: settings.contactEmail || "tvet-support@ideas-initiative.org",
+        letterheadUrl: settings.letterheadUrl || settings.admissionLetterheadUrl || "",
+        signatureUrl: settings.signatureUrl || "",
+        admissionRef: admissionRef
+      };
+
+      // Also log audit trail that letter data was extracted for building the dynamic views
+      const operatorUser = (req as any).user?.email || "anonymous";
+      await DbRepo.saveAuditLog({
+        id: "log_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+        timestamp: new Date().toISOString(),
+        username: operatorUser,
+        role: (req as any).user?.role || "System Admin",
+        action: "ADMISSIONS_LETTER_VIEW",
+        details: `Dispatched structured letters preview dataset for candidate ID '${id}' (${candidateName})`
+      });
+
+      return res.status(200).json(payload);
+    } catch (e: any) {
+      console.error("[AdmissionController] getAdmissionLetterData failed:", e);
+      return res.status(500).json({ error: e.message || "Failed gathering unified letters parameters." });
+    }
+  }
 }

@@ -194,16 +194,17 @@ export class PdfService {
   static async generateAdmissionLetterPdf(beneficiary: Beneficiary, meta?: any, returnHtml: boolean = false): Promise<Buffer | string> {
     const settings = await this.getSettings();
     const admissionRef = beneficiary.admissionRef || `IDEAS/TVET/ADM/${beneficiary.id.split("-").pop()}/${new Date().getFullYear()}`;
+    const genderSalutation = beneficiary.gender && String(beneficiary.gender).toUpperCase() === "FEMALE" ? "Miss" : "Mr";
     const dateStr = beneficiary.admissionLetterGeneratedAt 
-      ? new Date(beneficiary.admissionLetterGeneratedAt).toLocaleDateString("en-GB") 
-      : new Date().toLocaleDateString("en-GB");
+      ? new Date(beneficiary.admissionLetterGeneratedAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }) 
+      : new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
 
     const htmlContent = `
       <!DOCTYPE html>
       <html lang="en">
       <head>
         <meta charset="UTF-8">
-        <title>Offer of Admission - Ref: ${admissionRef}</title>
+        <title>Admission Letter - Ref: ${admissionRef}</title>
         <style>
           @page { size: A4; margin: 15mm; }
           body { font-family: 'Times New Roman', Times, serif; color: #0f172a; line-height: 1.5; margin: 0; padding: 10px; background-color: #ffffff; }
@@ -211,25 +212,12 @@ export class PdfService {
           .logo-header-table { width: 100%; border-collapse: collapse; margin-bottom: 5px; }
           .logo-header-table td { vertical-align: middle; padding: 0; }
           .divider-line { border-bottom: 3px double #000000; width: 100%; margin: 10px 0 15px 0; }
-          .header-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; border-bottom: 3px double #008751; padding-bottom: 12px; }
-          .header-crest { width: 80px; text-align: left; vertical-align: middle; }
-          .header-text-col { text-align: center; vertical-align: middle; }
-          .header-text-col h1 { margin: 0; font-size: 20px; color: #008751; text-transform: uppercase; font-weight: bold; letter-spacing: 0.5px; }
-          .header-text-col .sub-title { margin: 4px 0 0 0; font-size: 10px; font-weight: bold; color: #d4af37; letter-spacing: 1.5px; text-transform: uppercase; }
-          .header-text-col .contacts { margin: 5px 0 0 0; font-size: 9.5px; color: #475569; }
           .metadata-table { width: 100%; border-collapse: collapse; margin-top: 15px; margin-bottom: 20px; font-size: 13px; }
           .metadata-table td { padding: 4px 0; }
-          .recipient-box { background-color: #f8fafc; border: 1px solid #e2e8f0; border-left: 4px solid #008751; padding: 12px; margin-bottom: 20px; border-radius: 3px; }
-          .recipient-box strong { color: #0f172a; font-size: 14px; }
-          .letter-title { text-align: center; font-size: 15px; font-weight: bold; text-transform: uppercase; margin: 25px 0 15px 0; text-decoration: underline; color: #008751; letter-spacing: 0.5px; }
+          .letter-title { text-align: left; font-size: 14px; font-weight: bold; text-transform: uppercase; margin: 15px 0 15px 0; text-decoration: underline; color: #000000; letter-spacing: 0.5px; }
           .letter-content { font-size: 13px; text-align: justify; }
-          .letter-content p { margin: 12px 0; text-indent: 25px; }
-          .signatures { display: table; width: 100%; margin-top: 40px; page-break-inside: avoid; }
-          .sig-row { display: table-row; }
-          .sig-block { display: table-cell; width: 33%; text-align: center; font-size: 12px; vertical-align: top; }
-          .sig-line { width: 85%; margin: 0 auto 5px auto; border-bottom: 1px solid #475569; height: 40px; position: relative; }
-          .sig-font { font-family: 'Georgia', serif; font-style: italic; color: #1e3a8a; position: absolute; bottom: 3px; width: 100%; text-align: center; font-size: 16px; font-weight: 500; }
-          .stamp { border: 2px dashed #008751; color: #008751; font-weight: bold; text-transform: uppercase; font-size: 10px; padding: 4px 8px; display: inline-block; transform: rotate(-5deg); margin-top: 8px; border-radius: 3px; letter-spacing: 0.5px; }
+          .letter-content p { margin: 12px 0; text-indent: 0; }
+          .signatures { margin-top: 40px; page-break-inside: avoid; }
           .footer-note { text-align: center; font-size: 8.5px; color: #94a3b8; position: absolute; bottom: 15px; width: 100%; left: 0; font-family: Arial, sans-serif; letter-spacing: 0.5px; }
           ${settings.watermarkEnabled ? `
           .watermark {
@@ -282,62 +270,52 @@ export class PdfService {
 
           <table class="metadata-table" style="position: relative; z-index: 10;">
             <tr>
-              <td><strong>Letter Reference:</strong> ${admissionRef}</td>
-              <td style="text-align: right;"><strong>Date of Issue:</strong> ${dateStr}</td>
+              <td><strong>Date:</strong> ${dateStr}</td>
+              <td style="text-align: right;"><strong>Ref:</strong> ${admissionRef}</td>
             </tr>
           </table>
 
-          <div class="recipient-box" style="position: relative; z-index: 10;">
-            TO CANDIDATE:<br>
-            <strong>${beneficiary.firstName.toUpperCase()} ${beneficiary.lastName.toUpperCase()} ${beneficiary.otherName ? beneficiary.otherName.toUpperCase() : ""}</strong><br>
-            <span style="font-size: 11px; color: #475569; font-family: Arial, sans-serif;">
-              Candidate ID Ref: ${beneficiary.id} | National NIN: ${beneficiary.nin} | State of Hub: ${beneficiary.state}
-            </span>
-          </div>
-
-          <div class="letter-title" style="position: relative; z-index: 10;">Provisional Offer of Admission into Federal Literacy & Technical Skills Training</div>
-
           <div class="salutation" style="position: relative; z-index: 10; font-size: 13px; font-weight: bold; margin-bottom: 12px;">
-            Dear ${beneficiary.firstName.toUpperCase()} ${beneficiary.lastName.toUpperCase()} ${beneficiary.otherName ? beneficiary.otherName.toUpperCase() : ""},
+            Dear Mr/Mrs/Miss: ${genderSalutation} ${beneficiary.lastName} ${beneficiary.firstName} ${beneficiary.otherName || ""}
           </div>
+
+          <div class="letter-title" style="position: relative; z-index: 10;">ADMISSION LETTER</div>
 
           <div class="letter-content" style="position: relative; z-index: 10;">
-            <p>On behalf of the Governing Board of ${settings.organizationName}, and in collaboration with the Federal Ministry of Education under the <strong>Innovation Development and Effectiveness in Acquisition of Skills (IDEAS-TVET)</strong> project, we are pleased to offer you provisional admission into the intensive professional training cohort majoring in <strong>${beneficiary.skillSector || "Computer Hardware and Cell Phone Repairs"}</strong> (Sector/Category: <strong>${beneficiary.program || "Technical & Vocational Education"}</strong>).</p>
+            <p>We are pleased to inform you that you have been selected to participate in the short-term technical and vocational education and training (TVET) Program, sponsored by the IDEAS Project.</p>
             
-            <p>This program is fully certified by the Federal Board of Technical Education under development grant schemes. The training will take place at your assigned training venue: <strong>${settings.trainingVenue || settings.contactAddress || "Government Technical College (GTC), Kano"}</strong>. Your training cohort is scheduled to commence on <strong>${settings.trainingStartDate || "October 12, 2026"}</strong> and conclude on <strong>${settings.trainingEndDate || "December 18, 2026"}</strong>.</p>
+            <p>This program aims to equip you with relevant skills and competencies in <strong>${beneficiary.skillSector || "Computer Hardware and Cell Phone Repairs"}</strong> under <strong>${beneficiary.program || "Technical & Vocational Education"}</strong> Sector.</p>
             
-            <p>Please note that your study tracker incorporates active daily biometrics authentication locks. In accordance with national audit guidelines, you must log a minimum of 90 classroom hours in the attendance log to qualify for final certification and milestone stipend disbursements.</p>
+            <p>The training will take place at <strong>${settings.trainingVenue || settings.contactAddress || "Government Technical College (GTC), Kano"}</strong><br>From <strong>${settings.trainingStartDate || "October 12, 2026"}</strong> To <strong>${settings.trainingEndDate || "December 18, 2026"}</strong>.</p>
             
-            <p>To accept this offer, please access your custom response link securely, complete the additional emergency contact panels, and submit your signed Acceptance Form within seven working days of this dispatch.</p>
+            <p style="margin-bottom: 4px;">As a participant in this program, you are expected to:</p>
+            <ul style="list-style-type: none; padding-left: 15px; margin-top: 2px; margin-bottom: 12px;">
+              <li style="margin-bottom: 4px;">• Attend all training sessions and activities (at least 65% monthly attendance)</li>
+              <li style="margin-bottom: 4px;">• Participate in class discussions</li>
+              <li style="margin-bottom: 4px;">• Adhere to the Training Service Provider's rules and regulations</li>
+            </ul>
             
-            <p>Please accept our warmest congratulations on your selection. We look forward to your successful enrollment and development.</p>
+            <p>The IDEAS Project will cover the tuition and stipends for transportation only.</p>
+            
+            <p>Kindly confirm your acceptance of this admission with an acceptance letter to this effect.</p>
           </div>
 
           <div class="signatures" style="position: relative; z-index: 10; margin-top: 35px;">
-            <div class="sig-row">
-              <div class="sig-block">
-                <div class="sig-line">
-                  ${settings.signatureUrl ? `
-                    <img src="${settings.signatureUrl}" style="max-height: 45px; position: absolute; bottom: 5px; left: 50%; transform: translateX(-50%);" referrerPolicy="no-referrer">
-                  ` : `
-                    <span class="sig-font">${settings.tpmName}</span>
-                  `}
-                </div>
-                <strong>${settings.tpmTitle}</strong><br>${settings.organizationName}
-              </div>
-              <div class="sig-block">
-                <div class="sig-line">
-                  <span class="sig-font" style="color: #0369a1;">A. Abubakar</span>
-                </div>
-                <strong>Accredited Registrar</strong><br>Federal Registry
-                ${settings.stampUrl ? `
-                  <div style="margin-top: 8px;">
-                    <img src="${settings.stampUrl}" style="max-height: 60px; width: auto;" referrerPolicy="no-referrer">
-                  </div>
+            <div>
+              <p style="font-size: 13px; margin: 0 0 15px 0;">Kind regards</p>
+              
+              <div style="margin-top: 15px;">
+                ${settings.signatureUrl ? `
+                  <img src="${settings.signatureUrl}" style="max-height: 45px; display: block;" referrerPolicy="no-referrer">
                 ` : `
-                  <div class="stamp">REGISTRY LOGGED</div>
+                  <span style="font-family: 'Georgia', serif; font-style: italic; font-size: 14px; font-weight: bold; color: #1e3a8a;">${settings.tpmName}</span>
                 `}
+                <div style="width: 180px; border-bottom: 1px dashed #475569; margin: 4px 0 6px 0;"></div>
+                <strong style="font-size: 12px; text-transform: uppercase;">${settings.tpmName}</strong><br>
+                <span style="font-size: 10px; color: #64748b; font-family: Arial, sans-serif; text-transform: uppercase; letter-spacing: 0.5px;">TPM Signature</span>
               </div>
+            </div>
+          </div>
               ${meta?.qrDataUrl ? `
               <div style="display: table-cell; width: 33%; text-align: right; vertical-align: bottom;">
                 <div style="display: inline-block; text-align: center; border: 1px solid #cbd5e1; padding: 5px; border-radius: 6px; background-color: #f8fafc;">

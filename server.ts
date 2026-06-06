@@ -466,6 +466,11 @@ app.post("/api/email/production-test", requireAuth, requireRole(["SUPER_ADMIN", 
   }
 });
 
+app.get("/api/admissions/stats", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.getAdmissionsStats);
+app.get("/api/admissions/list", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.getAdmissionsList);
+app.post("/api/admissions/bulk-transition", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.bulkTransitionStatus);
+app.get("/api/admissions/:id/letter", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", "TRAINEE"]), AdmissionController.getAdmissionLetterData);
+
 app.get("/api/admissions/email-health", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), AdmissionController.getEmailHealth);
 app.post("/api/admissions/send-offer", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), AdmissionController.sendOffer);
 app.get("/api/admissions/validate-token", AdmissionController.validateToken);

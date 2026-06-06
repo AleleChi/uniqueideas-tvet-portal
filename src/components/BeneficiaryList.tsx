@@ -13,6 +13,7 @@ import { BeneficiaryDetails } from "./BeneficiaryDetails";
 import { NewEnrollmentForm } from "./NewEnrollmentForm";
 import { authFetch } from "../utils/authFetch";
 import { SecureBeneficiaryImage } from "./SecureBeneficiaryImage";
+import { AdmissionsWorkspace } from "./AdmissionsWorkspace";
 
 interface BeneficiaryListProps {
   beneficiaries: Beneficiary[];
@@ -314,6 +315,18 @@ export function BeneficiaryList({
         }}
         preloadedPhoto={tempCreatedPhoto || (liveBeneficiary ? liveBeneficiary.photo : null)}
         beneficiary={liveBeneficiary}
+      />
+    );
+  }
+
+  if (viewMode === "list" && subTabMode === "admissions") {
+    return (
+      <AdmissionsWorkspace 
+        session={session} 
+        onSelectCandidate={(c) => {
+          const fullObj = beneficiaries.find(b => b.id === c.id) || c;
+          handleLaunchDetails(fullObj);
+        }} 
       />
     );
   }
