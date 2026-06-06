@@ -984,83 +984,26 @@ export function BeneficiaryDetails({
 
   // Generate simple printable view for A4 letter
   const printAdmissionLetter = async () => {
-    window.open(`${API_BASE_URL}/api/admissions/download-letter/${beneficiary.id}`, "_blank");
+    setPreviewDoc({
+      id: `preview_adm_${beneficiary.id}`,
+      documentType: "ADMISSION_LETTER",
+      version: 1,
+      pdfUrl: `${API_BASE_URL}/api/documents/download/${beneficiary.id}/admission?format=pdf&inline=true`,
+      generatedBy: "System Operator",
+      createdAt: new Date().toISOString()
+    });
   };
 
   // Generate simple printable view for Form
   const printAdmissionForm = () => {
-    const printWindow = window.open("", "_blank");
-    if (!printWindow) return;
-    
-    const formHtml = `
-      <html>
-      <head>
-        <title>Official Admission Enrollment Form - ID ${beneficiary.id}</title>
-        <style>
-          body { font-family: Arial, sans-serif; padding: 40px; color: #1e293b; line-height: 1.5; font-size: 13px; }
-          .header { text-align: center; border-bottom: 2px solid #0f172a; padding-bottom: 10px; margin-bottom: 25px; }
-          .header h1 { font-size: 20px; margin: 0; font-weight: bold; color: #0f172a; text-transform: uppercase; }
-          .header p { font-size: 11px; margin: 5px 0 0 0; color: #64748b; font-weight: bold; text-transform: uppercase; }
-          .form-title { text-align: center; font-size: 15px; font-weight: bold; background: #e2e8f0; padding: 6px; text-transform: uppercase; margin-bottom: 20px; border: 1px solid #cbd5e1; }
-          .section-title { font-size: 12px; font-weight: bold; text-transform: uppercase; color: #1e3a8a; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; margin: 20px 0 10px 0; }
-          .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; }
-          .field { display: flex; flex-direction: column; }
-          .label { font-size: 10px; font-weight: bold; text-transform: uppercase; color: #64748b; margin-bottom: 3px; }
-          .value { font-size: 13px; font-weight: 600; padding: 6px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px; }
-          .terms { font-size: 11px; text-align: justify; margin-top: 30px; line-height: 1.4; color: #475569; }
-          .signatures { display: flex; justify-content: space-between; margin-top: 40px; }
-          .sig-box { width: 45%; text-align: center; }
-          .sig-line { border-bottom: 1px solid #475569; height: 40px; margin-bottom: 5px; }
-        </style>
-      </head>
-      <body>
-        <div class="header">
-          <h1>Unique Technology Nig. Ltd</h1>
-          <p>IDEAS-TVET Beneficiary Registration Catalog</p>
-        </div>
-        
-        <div class="form-title">Federal Trainee Biometrics Enrollment Contract</div>
-
-        <div class="section-title">1. Beneficiary Demographics</div>
-        <div class="grid">
-          <div class="field"><span class="label">Candidate Name</span><span class="value">${beneficiary.firstName} ${beneficiary.lastName}</span></div>
-          <div class="field"><span class="label">Program Registry ID</span><span class="value">${beneficiary.id}</span></div>
-          <div class="field"><span class="label">NIN Number</span><span class="value">${beneficiary.nin}</span></div>
-          <div class="field"><span class="label">BVN Number</span><span class="value">${beneficiary.bvn}</span></div>
-          <div class="field"><span class="label">State / City</span><span class="value">${beneficiary.state} (${beneficiary.city})</span></div>
-          <div class="field"><span class="label">Skill Track Sector</span><span class="value">Computer Hardware & Cell Repairs</span></div>
-        </div>
-
-        <div class="section-title">2. Supplemental Registry Form Fields</div>
-        <div class="grid">
-          <div class="field"><span class="label">Next of Kin / Emergency Contact</span><span class="value">${formFields.emergencyName || "NOT SPECIFIED"}</span></div>
-          <div class="field"><span class="label">Emergency Contact Phone</span><span class="value">${formFields.emergencyPhone || "NOT SPECIFIED"}</span></div>
-          <div class="field"><span class="label">Parent / Sponsor Name</span><span class="value">${formFields.guardianName || "NOT SPECIFIED"}</span></div>
-          <div class="field"><span class="label">Highest Academic Achievement</span><span class="value">${formFields.highestQualification}</span></div>
-          <div class="field"><span class="label">Prior Device Repairs Knowledge Level</span><span class="value">${formFields.priorKnowledge}</span></div>
-          <div class="field"><span class="label">Form Submission Date</span><span class="value">${beneficiary.admissionFormData?.submissionDate ? new Date(beneficiary.admissionFormData.submissionDate).toLocaleDateString("en-GB") : new Date().toLocaleDateString("en-GB")}</span></div>
-        </div>
-
-        <div class="terms">
-          <strong>Declarative Attestation:</strong> I hereby declare that the details provided are true to the best of my knowledge and that I agree to conform to all academic protocols, biometrics tracking requirements, and disciplinary standards enacted by Unique Technology Nig. Ltd coordinates under Ministry guidelines.
-        </div>
-
-        <div class="signatures">
-          <div class="sig-box">
-            <div class="sig-line"></div>
-            <strong>Candidate Endorsement</strong>
-          </div>
-          <div class="sig-box">
-            <div class="sig-line"></div>
-            <strong>Verified Hub Coordinator Seal</strong>
-          </div>
-        </div>
-        <script>window.print();</script>
-      </body>
-      </html>
-    `;
-    printWindow.document.write(formHtml);
-    printWindow.document.close();
+    setPreviewDoc({
+      id: `preview_frm_${beneficiary.id}`,
+      documentType: "ADMISSION_FORM",
+      version: 1,
+      pdfUrl: `${API_BASE_URL}/api/admissions/${beneficiary.id}/form/pdf`,
+      generatedBy: "System Operator",
+      createdAt: new Date().toISOString()
+    });
   };
 
   // Derived variables for quick tab handles

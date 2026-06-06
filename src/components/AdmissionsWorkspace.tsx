@@ -7,7 +7,7 @@ import React, { useState, useEffect } from "react";
 import { 
   Search, ShieldAlert, X, Check, Eye, Printer, Users, CheckCircle2, 
   XCircle, AlertCircle, Loader2, ChevronLeft, ChevronRight, Building, 
-  MapPin, Sliders, Sparkles, Download, ArrowUpDown, Lock, Unlock, History, FileText
+  MapPin, Sliders, Sparkles, Download, ArrowUpDown, Lock, Unlock, History, FileText, Play
 } from "lucide-react";
 import { authFetch } from "../utils/authFetch";
 
@@ -1331,23 +1331,75 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
             </div>
           </div>
 
-          {/* CURRENT TEMPLATE OVERRIDE INDICATOR */}
-          <div className="bg-indigo-950/[0.03] border border-indigo-155 border-indigo-200/60 p-3 rounded-xl flex items-center justify-between gap-4 text-xs font-sans text-left mb-3">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div className="p-1.5 bg-indigo-50 border border-indigo-100 rounded-lg text-indigo-600 shrink-0">
-                <Sparkles className="w-4 h-4 text-indigo-500 animate-pulse" />
+          {/* CURRENT TEMPLATE OVERRIDE INDICATOR & OPERATIONS CENTER */}
+          <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs font-sans text-xs flex flex-col gap-4 text-left mb-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+              <div>
+                <h5 className="font-extrabold text-slate-900 uppercase font-display text-[12px] tracking-wider flex items-center gap-1.5">
+                  <FileText className="w-4 h-4 text-indigo-600" />
+                  Official Template Operations Center
+                </h5>
+                <p className="text-slate-400 text-[10px] mt-0.5">
+                  Verify vector layer scale alignment, metadata consistency, and typography overlay positions before dispatching batch exports.
+                </p>
               </div>
-              <div className="min-w-0">
-                <span className="text-[9px] font-mono font-bold block text-slate-400 uppercase tracking-widest leading-none mb-0.5">Active Header Template Override</span>
-                <span className="font-bold text-xs text-slate-800 block truncate">
-                  {activeLetterhead ? `${activeLetterhead.name}` : "Federal Multi-Logo Standard arrangement"}
-                </span>
+              <div className="flex items-center gap-2">
+                {/* PREVIEW BUTTON */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!activeLetterhead) {
+                      alert("No active letterhead override is configured. Standard Federal arrangement will be previewed.");
+                      window.open("/assets/fme_crest.png", "_blank");
+                    } else {
+                      window.open(activeLetterhead.fileUrl, "_blank");
+                    }
+                  }}
+                  className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-1.5 px-3 rounded-lg flex items-center gap-1.5 transition text-[10px] uppercase tracking-wider cursor-pointer border border-slate-250 shrink-0"
+                >
+                  <Eye className="w-3 h-3" /> Preview Vector
+                </button>
+
+                {/* TEST RENDER BUTTON */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const sampleId = candidates[0]?.id || "SAMPLE-0001";
+                    alert(`Compiling temporary Test Render for template verification.\nSample Candidate ID: ${sampleId}.\nThis sandbox rendering performs no database edits and triggers zero workflow state side-effects.`);
+                    window.open(`/api/documents/download/${sampleId}/admission?format=pdf&inline=true`, "_blank");
+                  }}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold py-1.5 px-3 rounded-lg flex items-center gap-1.5 transition text-[10px] uppercase tracking-wider cursor-pointer shadow-xs shrink-0"
+                >
+                  <Play className="w-3 h-3 text-indigo-200 animate-pulse" /> Test Render
+                </button>
               </div>
             </div>
-            <div className="flex items-center gap-1.5 shrink-0">
-              <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider ${activeLetterhead ? "bg-emerald-100 text-emerald-850 border border-emerald-200" : "bg-slate-100 text-slate-500 border border-slate-200"}`}>
-                {activeLetterhead ? `${activeLetterhead.fileType} OVERRIDE ACTIVE` : "NO OVERRIDE ACTIVE"}
-              </span>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 bg-slate-50/70 p-3 rounded-xl border border-slate-150">
+              <div>
+                <span className="text-[9px] text-slate-400 font-bold uppercase tracking-widest block mb-0.5">Template Master</span>
+                <span className="font-bold text-slate-800 text-xs truncate block">
+                  {activeLetterhead ? activeLetterhead.name : "System Traditional"}
+                </span>
+              </div>
+              <div>
+                <span className="text-[9px] text-slate-400 font-bold uppercase tracking-widest block mb-0.5">Raster Format / Extension</span>
+                <span className="font-bold text-slate-800 text-xs block">
+                  {activeLetterhead ? `${activeLetterhead.fileType} Page Vector` : "SVG Default Assets"}
+                </span>
+              </div>
+              <div>
+                <span className="text-[9px] text-slate-400 font-bold uppercase tracking-widest block mb-0.5">Template Version</span>
+                <span className="font-mono font-bold text-slate-800 text-xs block">
+                  {activeLetterhead ? (activeLetterhead.name.match(/v\d+$/i) ? activeLetterhead.name.match(/v\d+$/i)[0] : "v1") : "v1.0-standard"}
+                </span>
+              </div>
+              <div>
+                <span className="text-[9px] text-slate-400 font-bold uppercase tracking-widest block mb-0.5">Last Sync Updated</span>
+                <span className="font-mono font-bold text-slate-800 text-[10px] block">
+                  {activeLetterhead ? new Date(activeLetterhead.updatedAt).toLocaleDateString("en-GB") : "System Boot Epoch"}
+                </span>
+              </div>
             </div>
           </div>
 

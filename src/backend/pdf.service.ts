@@ -34,6 +34,19 @@ export class PdfService {
   }
 
   /**
+   * Helper to resolve the correct image background URL for a letterhead.
+   * If it is a PDF, we transform it to .png so Cloudinary can render the first page.
+   */
+  private static getLetterheadBgUrl(activeLetterhead: any): string {
+    if (!activeLetterhead) return "";
+    const url = activeLetterhead.fileUrl || "";
+    if (url.toLowerCase().endsWith(".pdf")) {
+      return url.substring(0, url.length - 4) + ".png";
+    }
+    return url;
+  }
+
+  /**
    * Helper to render raw HTML content into a PDF Buffer using chromium / puppeteer.
    * If puppeteer fails due to sandbox or library limitations, it returns the HTML source buffer
    * as a graceful fallback.
@@ -207,9 +220,34 @@ export class PdfService {
         <meta charset="UTF-8">
         <title>Admission Letter - Ref: ${admissionRef}</title>
         <style>
+          ${activeLetterhead ? `
+          @page {
+            size: A4 portrait;
+            margin: 0 !important;
+          }
+          body {
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 210mm;
+            height: 297mm;
+            box-sizing: border-box;
+            background-color: #ffffff;
+          }
+          .border-frame {
+            border: none !important;
+            padding: 40mm 20mm 30mm 20mm !important;
+            margin: 0 !important;
+            border-radius: 0 !important;
+            width: 210mm;
+            height: 297mm;
+            box-sizing: border-box;
+            position: relative;
+          }
+          ` : `
           @page { size: A4; margin: 15mm; }
           body { font-family: 'Times New Roman', Times, serif; color: #0f172a; line-height: 1.5; margin: 0; padding: 10px; background-color: #ffffff; }
           .border-frame { border: 1px solid #e2e8f0; padding: 25px; border-radius: 4px; min-height: 250mm; position: relative; }
+          `}
           .logo-header-table { width: 100%; border-collapse: collapse; margin-bottom: 5px; }
           .logo-header-table td { vertical-align: middle; padding: 0; }
           .divider-line { border-bottom: 3px double #000000; width: 100%; margin: 10px 0 15px 0; }
@@ -240,12 +278,12 @@ export class PdfService {
         </style>
       </head>
       <body>
-        <div class="border-frame" style="position: relative; z-index: 2; padding: ${activeLetterhead ? "40mm 20mm 30mm 20mm" : "25px"}; border: ${activeLetterhead ? "none" : "1px solid #e2e8f0"}; box-sizing: border-box;">
+        <div class="border-frame" style="position: relative; z-index: 2; box-sizing: border-box;">
           ${settings.watermarkEnabled ? `<div class="watermark" style="z-index: 0;">${settings.watermarkText || "SECURED REGISTRY DOCUMENT"}</div>` : ""}
           
           ${activeLetterhead ? `
-            <div class="letterhead-background" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none;">
-              <img src="${activeLetterhead.fileUrl}" style="width: 100%; height: 100%; object-fit: cover; opacity: 1.0;" referrerPolicy="no-referrer" />
+            <div class="letterhead-background" style="position: absolute; top: 0; left: 0; width: 210mm; height: 297mm; z-index: -1; pointer-events: none;">
+              <img src="${PdfService.getLetterheadBgUrl(activeLetterhead)}" style="width: 100%; height: 100%; object-fit: fill; opacity: 1.0;" referrerPolicy="no-referrer" />
             </div>
           ` : `
             ${(settings.admissionLetterheadUrl || settings.letterheadUrl) ? `
@@ -367,9 +405,34 @@ export class PdfService {
         <meta charset="UTF-8">
         <title>Offer Acceptance Letter - Candidate: ${beneficiary.id}</title>
         <style>
+          ${activeLetterhead ? `
+          @page {
+            size: A4 portrait;
+            margin: 0 !important;
+          }
+          body {
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 210mm;
+            height: 297mm;
+            box-sizing: border-box;
+            background-color: #ffffff;
+          }
+          .border-frame {
+            border: none !important;
+            padding: 40mm 20mm 30mm 20mm !important;
+            margin: 0 !important;
+            border-radius: 0 !important;
+            width: 210mm;
+            height: 297mm;
+            box-sizing: border-box;
+            position: relative;
+          }
+          ` : `
           @page { size: A4; margin: 20mm; }
           body { font-family: 'Times New Roman', Times, serif; color: #011627; line-height: 1.6; margin: 0; padding: 0; background-color: #ffffff; }
           .border-frame { border: 1.5px solid #2e7d32; padding: 35px; border-radius: 6px; min-height: 240mm; position: relative; box-sizing: border-box; }
+          `}
           .divider-line { border-bottom: 2px solid #2e7d32; margin-top: 10px; margin-bottom: 25px; width: 100%; }
           .title-box { text-align: center; font-size: 15px; font-weight: bold; background: #e8f5e9; padding: 10px; text-transform: uppercase; margin-bottom: 30px; border: 1px solid #a5d6a7; color: #1b5e20; letter-spacing: 0.5px; }
           .declarative-text { font-size: 14px; text-align: justify; margin-top: 30px; line-height: 1.8; }
@@ -396,12 +459,12 @@ export class PdfService {
         </style>
       </head>
       <body>
-        <div class="border-frame" style="position: relative; z-index: 2; padding: ${activeLetterhead ? "40mm 20mm 30mm 20mm" : "35px"}; border: ${activeLetterhead ? "none" : "1.5px solid #2e7d32"}; box-sizing: border-box;">
+        <div class="border-frame" style="position: relative; z-index: 2; box-sizing: border-box;">
           ${meta?.watermarkEnabled ? `<div class="watermark" style="z-index: 0;">${meta.watermarkText || "SECURED REGISTRY DOCUMENT"}</div>` : ""}
           
           ${activeLetterhead ? `
-            <div class="letterhead-background" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none;">
-              <img src="${activeLetterhead.fileUrl}" style="width: 100%; height: 100%; object-fit: cover; opacity: 1.0;" referrerPolicy="no-referrer" />
+            <div class="letterhead-background" style="position: absolute; top: 0; left: 0; width: 210mm; height: 297mm; z-index: -1; pointer-events: none;">
+              <img src="${PdfService.getLetterheadBgUrl(activeLetterhead)}" style="width: 100%; height: 100%; object-fit: fill; opacity: 1.0;" referrerPolicy="no-referrer" />
             </div>
           ` : `
             ${settings.acceptanceLetterheadUrl ? `
@@ -563,6 +626,33 @@ export class PdfService {
         <meta charset="UTF-8">
         <title>Admission Registration Form - Candidate ID: ${beneficiary.id}</title>
         <style>
+          ${activeLetterhead ? `
+          @page {
+            size: A4 portrait;
+            margin: 0 !important;
+          }
+          body {
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 210mm;
+            height: 297mm;
+            box-sizing: border-box;
+            background-color: #ffffff;
+            font-family: 'Inter', Arial, sans-serif; 
+            color: #1a202c; 
+            line-height: 1.4; 
+          }
+          .border-frame {
+            border: none !important;
+            padding: 40mm 20mm 30mm 20mm !important;
+            margin: 0 !important;
+            border-radius: 0 !important;
+            width: 210mm;
+            height: 297mm;
+            box-sizing: border-box;
+            position: relative;
+          }
+          ` : `
           @page { size: A4 portrait; margin: 15mm 15mm 20mm 15mm; }
           body { 
             font-family: 'Inter', Arial, sans-serif; 
@@ -577,6 +667,7 @@ export class PdfService {
             min-height: 245mm; 
             position: relative; 
           }
+          `}
           
           /* Watermark styling */
           ${meta?.watermarkEnabled ? `
@@ -753,12 +844,12 @@ export class PdfService {
         </style>
       </head>
       <body>
-        <div class="border-frame" style="position: relative; z-index: 2; padding: ${activeLetterhead ? "40mm 20mm 30mm 20mm" : "10px"}; min-height: 245mm; border: ${activeLetterhead ? "none" : "none"}; box-sizing: border-box;">
+        <div class="border-frame" style="position: relative; z-index: 2; box-sizing: border-box;">
           ${meta?.watermarkEnabled ? `<div class="watermark" style="z-index: 0;">${meta.watermarkText || "SECURED REGISTRY DOCUMENT"}</div>` : ""}
           
           ${activeLetterhead ? `
-            <div class="letterhead-background" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none;">
-              <img src="${activeLetterhead.fileUrl}" style="width: 100%; height: 100%; object-fit: cover; opacity: 1.0;" referrerPolicy="no-referrer" />
+            <div class="letterhead-background" style="position: absolute; top: 0; left: 0; width: 210mm; height: 297mm; z-index: -1; pointer-events: none;">
+              <img src="${PdfService.getLetterheadBgUrl(activeLetterhead)}" style="width: 100%; height: 100%; object-fit: fill; opacity: 1.0;" referrerPolicy="no-referrer" />
             </div>
           ` : `
             ${settings.letterheadUrl ? `
@@ -1167,9 +1258,37 @@ export class PdfService {
         <meta charset="UTF-8">
         <title>Enrollment Confirmation - Candidate: ${beneficiary.id}</title>
         <style>
+          ${activeLetterhead ? `
+          @page {
+            size: A4 portrait;
+            margin: 0 !important;
+          }
+          body {
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 210mm;
+            height: 297mm;
+            box-sizing: border-box;
+            background-color: #ffffff;
+            font-family: Arial, sans-serif; 
+            color: #1e293b; 
+            line-height: 1.5; 
+          }
+          .border-frame {
+            border: none !important;
+            padding: 40mm 20mm 30mm 20mm !important;
+            margin: 0 !important;
+            border-radius: 0 !important;
+            width: 210mm;
+            height: 297mm;
+            box-sizing: border-box;
+            position: relative;
+          }
+          ` : `
           @page { size: A4; margin: 15mm; }
           body { font-family: Arial, sans-serif; color: #1e293b; line-height: 1.5; margin: 0; padding: 10px; background-color: #ffffff; }
           .border-frame { border: 2px solid #008751; padding: 30px; border-radius: 6px; min-height: 240mm; position: relative; }
+          `}
           .header { text-align: center; border-bottom: 2px solid #008751; padding-bottom: 12px; margin-bottom: 25px; }
           .header h1 { font-size: 20px; margin: 0; font-weight: bold; color: #008751; text-transform: uppercase; }
           .header p { font-size: 10px; margin: 4px 0 0 0; color: #d4af37; font-weight: bold; letter-spacing: 1px; text-transform: uppercase; }
@@ -1211,12 +1330,12 @@ export class PdfService {
         </style>
       </head>
       <body>
-        <div class="border-frame" style="position: relative; z-index: 2; padding: ${activeLetterhead ? "40mm 20mm 30mm 20mm" : "30px"}; border: ${activeLetterhead ? "none" : "2px solid #008751"}; box-sizing: border-box;">
+        <div class="border-frame" style="position: relative; z-index: 2; box-sizing: border-box;">
           ${meta?.watermarkEnabled ? `<div class="watermark" style="z-index: 0;">${meta.watermarkText || "SECURED REGISTRY DOCUMENT"}</div>` : ""}
           
           ${activeLetterhead ? `
-            <div class="letterhead-background" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none;">
-              <img src="${activeLetterhead.fileUrl}" style="width: 100%; height: 100%; object-fit: cover; opacity: 1.0;" referrerPolicy="no-referrer" />
+            <div class="letterhead-background" style="position: absolute; top: 0; left: 0; width: 210mm; height: 297mm; z-index: -1; pointer-events: none;">
+              <img src="${PdfService.getLetterheadBgUrl(activeLetterhead)}" style="width: 100%; height: 100%; object-fit: fill; opacity: 1.0;" referrerPolicy="no-referrer" />
             </div>
           ` : `
             ${settings.enrollmentLetterheadUrl ? `

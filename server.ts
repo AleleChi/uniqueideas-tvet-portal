@@ -1339,6 +1339,7 @@ app.post("/api/admissions/reject-acceptance", requireAuth, requireRole(["SUPER_A
 app.get("/api/admissions/download-letter/:id", async (req, res) => {
   try {
     const { id } = req.params;
+    const inline = req.query.inline === "true";
     const beneficiary = await DbRepo.getBeneficiaryById(id);
     if (!beneficiary) {
       return res.status(404).send("Beneficiary candidate not found");
@@ -1347,7 +1348,7 @@ app.get("/api/admissions/download-letter/:id", async (req, res) => {
     const pdfBuffer = await PdfService.generateAdmissionLetterPdf(beneficiary);
 
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename=Admission_Letter_${beneficiary.id}.pdf`);
+    res.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename=Admission_Letter_${beneficiary.id}.pdf`);
     return res.status(200).send(pdfBuffer);
   } catch (e: any) {
     console.error("[GET /api/admissions/download-letter] Error compiling PDF document:", e);
@@ -1360,6 +1361,7 @@ app.get("/api/documents/download/:id/:type", async (req, res) => {
   try {
     const { id, type } = req.params;
     const format = req.query.format || "pdf"; // "pdf" or "word"
+    const inline = req.query.inline === "true";
 
     const beneficiary = await DbRepo.getBeneficiaryById(id);
     if (!beneficiary) {
@@ -1398,7 +1400,7 @@ app.get("/api/documents/download/:id/:type", async (req, res) => {
       return res.status(200).send(data);
     } else {
       res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `attachment; filename=${type}_${beneficiary.id}.pdf`);
+      res.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename=${type}_${beneficiary.id}.pdf`);
       return res.status(200).send(data);
     }
   } catch (e: any) {
@@ -1506,9 +1508,19 @@ app.post("/api/letterheads", requireAuth, requireRole(["SUPER_ADMIN"]), async (r
       return res.status(400).json({ error: "Name, file URL and file type are required" });
     }
 
+    const list = await DbRepo.getLetterheads();
+    const baseName = name.replace(/\s+v\d+$/i, "").trim();
+    const countSameBase = list.filter(l => l.name.toLowerCase().startsWith(baseName.toLowerCase())).length;
+    let finalName = name;
+    if (countSameBase > 0) {
+      finalName = `${baseName} v${countSameBase + 1}`;
+    } else {
+      finalName = `${baseName} v1`;
+    }
+
     const newLh = {
       id: "lh_" + crypto.randomBytes(12).toString("hex"),
-      name,
+      name: finalName,
       description,
       fileUrl,
       thumbnailUrl,
@@ -1521,7 +1533,7 @@ app.post("/api/letterheads", requireAuth, requireRole(["SUPER_ADMIN"]), async (r
     };
 
     const saved = await DbRepo.saveLetterhead(newLh);
-    await logAction(req.user!.email, "LETTERHEAD_CREATE", `Registered new document letterhead template: '${name}'`);
+    await logAction(req.user!.email, "LETTERHEAD_CREATE", `Registered new document letterhead template: '${finalName}'`);
     res.status(201).json(saved);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
