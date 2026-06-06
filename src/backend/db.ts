@@ -465,6 +465,45 @@ const SCHEMA_DDL = `
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
   );
   CREATE INDEX IF NOT EXISTS idx_institution_letterheads_default ON institution_letterheads(is_default) WHERE is_default = TRUE;
+
+  -- Document dispatches log & tracking table
+  CREATE TABLE IF NOT EXISTS document_dispatches (
+    id UUID PRIMARY KEY,
+    beneficiary_id VARCHAR(50) REFERENCES beneficiaries(id) ON DELETE CASCADE,
+    document_type VARCHAR(50) NOT NULL,
+    document_reference VARCHAR(100),
+    email_address VARCHAR(255) NOT NULL,
+    status VARCHAR(50) NOT NULL,
+    sent_at TIMESTAMP WITH TIME ZONE,
+    opened_at TIMESTAMP WITH TIME ZONE,
+    downloaded_at TIMESTAMP WITH TIME ZONE,
+    failed_at TIMESTAMP WITH TIME ZONE,
+    failure_reason TEXT,
+    delivery_provider VARCHAR(100),
+    message_id VARCHAR(255),
+    secure_token VARCHAR(255) UNIQUE,
+    expires_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_dispatch_status ON document_dispatches(status);
+  CREATE INDEX IF NOT EXISTS idx_dispatch_beneficiary ON document_dispatches(beneficiary_id);
+  CREATE INDEX IF NOT EXISTS idx_dispatch_token ON document_dispatches(secure_token);
+  CREATE INDEX IF NOT EXISTS idx_dispatch_document ON document_dispatches(document_type);
+
+  -- Email templates table
+  CREATE TABLE IF NOT EXISTS email_templates (
+    id UUID PRIMARY KEY,
+    name VARCHAR(255) UNIQUE NOT NULL,
+    template_type VARCHAR(50) NOT NULL,
+    subject TEXT NOT NULL,
+    body_html TEXT NOT NULL,
+    body_text TEXT,
+    is_default BOOLEAN DEFAULT FALSE,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
 `;
 
 /**
@@ -731,28 +770,61 @@ export async function initDb(): Promise<void> {
 /**
  * Helper to load JSON file state (to back up operations and map schemas)
  */
-function loadJsonState(): { customFields: CustomField[]; beneficiaries: Beneficiary[]; auditLogs: AuditLog[]; institutionLetterheads?: InstitutionLetterhead[] } {
+function loadJsonState(): { 
+  customFields: CustomField[]; 
+  beneficiaries: Beneficiary[]; 
+  auditLogs: AuditLog[]; 
+  institutionLetterheads?: InstitutionLetterhead[];
+  documentDispatches?: any[];
+  emailTemplates?: any[];
+} {
   try {
     if (fs.existsSync(DB_FILE)) {
       const data = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
       if (!data.institutionLetterheads) {
         data.institutionLetterheads = [];
       }
+      if (!data.documentDispatches) {
+        data.documentDispatches = [];
+      }
+      if (!data.emailTemplates) {
+        data.emailTemplates = [];
+      }
       return data;
     }
   } catch (e) {
     console.error("[DB] Failed to read JSON file fallback state:", e);
   }
-  return { customFields: [], beneficiaries: [], auditLogs: [], institutionLetterheads: [] };
+  return { 
+    customFields: [], 
+    beneficiaries: [], 
+    auditLogs: [], 
+    institutionLetterheads: [],
+    documentDispatches: [],
+    emailTemplates: []
+  };
 }
 
 /**
  * Helper to save JSON file state
  */
-function saveJsonState(state: { customFields: CustomField[]; beneficiaries: Beneficiary[]; auditLogs: AuditLog[]; institutionLetterheads?: InstitutionLetterhead[] }) {
+function saveJsonState(state: { 
+  customFields: CustomField[]; 
+  beneficiaries: Beneficiary[]; 
+  auditLogs: AuditLog[]; 
+  institutionLetterheads?: InstitutionLetterhead[];
+  documentDispatches?: any[];
+  emailTemplates?: any[];
+}) {
   try {
     if (!state.institutionLetterheads) {
       state.institutionLetterheads = [];
+    }
+    if (!state.documentDispatches) {
+      state.documentDispatches = [];
+    }
+    if (!state.emailTemplates) {
+      state.emailTemplates = [];
     }
     fs.writeFileSync(DB_FILE, JSON.stringify(state, null, 2), "utf-8");
   } catch (e) {
@@ -3833,6 +3905,339 @@ export class DbRepo {
       return (res.rowCount ?? 0) > 0;
     } catch (e) {
       console.error("[DB Repo] Failed to delete letterhead from Postgres, committing fallback:", e);
+      return fallbackDelete();
+    }
+  }
+
+  // --- DOCUMENT DISPATCH METHODS ---
+
+  static async getDocumentDispatches(): Promise<any[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return loadJsonState().documentDispatches || [];
+    }
+    try {
+      const res = await pool.query(
+        `SELECT id, beneficiary_id as "beneficiaryId", document_type as "documentType", 
+                document_reference as "documentReference", email_address as "emailAddress", 
+                status, sent_at as "sentAt", opened_at as "openedAt", downloaded_at as "downloadedAt", 
+                failed_at as "failedAt", failure_reason as "failureReason", delivery_provider as "deliveryProvider", 
+                message_id as "messageId", secure_token as "secureToken", expires_at as "expiresAt", 
+                created_at as "createdAt", updated_at as "updatedAt" 
+         FROM document_dispatches 
+         ORDER BY created_at DESC`
+      );
+      return res.rows;
+    } catch (e) {
+      console.error("[DB Repo] Failed to get document dispatches from PG, falling back to JSON:", e);
+      return loadJsonState().documentDispatches || [];
+    }
+  }
+
+  static async getDocumentDispatchByToken(token: string): Promise<any | null> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      return (state.documentDispatches || []).find(d => d.secureToken === token) || null;
+    }
+    try {
+      const res = await pool.query(
+        `SELECT id, beneficiary_id as "beneficiaryId", document_type as "documentType", 
+                document_reference as "documentReference", email_address as "emailAddress", 
+                status, sent_at as "sentAt", opened_at as "openedAt", downloaded_at as "downloadedAt", 
+                failed_at as "failedAt", failure_reason as "failureReason", delivery_provider as "deliveryProvider", 
+                message_id as "messageId", secure_token as "secureToken", expires_at as "expiresAt", 
+                created_at as "createdAt", updated_at as "updatedAt" 
+         FROM document_dispatches 
+         WHERE secure_token = $1`,
+        [token]
+      );
+      return res.rows[0] || null;
+    } catch (e) {
+      console.error("[DB Repo] Failed to get document dispatch by token from PG, falling back to JSON:", e);
+      const state = loadJsonState();
+      return (state.documentDispatches || []).find(d => d.secureToken === token) || null;
+    }
+  }
+
+  static async getDocumentDispatchById(id: string): Promise<any | null> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      return (state.documentDispatches || []).find(d => d.id === id) || null;
+    }
+    try {
+      const res = await pool.query(
+        `SELECT id, beneficiary_id as "beneficiaryId", document_type as "documentType", 
+                document_reference as "documentReference", email_address as "emailAddress", 
+                status, sent_at as "sentAt", opened_at as "openedAt", downloaded_at as "downloadedAt", 
+                failed_at as "failedAt", failure_reason as "failureReason", delivery_provider as "deliveryProvider", 
+                message_id as "messageId", secure_token as "secureToken", expires_at as "expiresAt", 
+                created_at as "createdAt", updated_at as "updatedAt" 
+         FROM document_dispatches 
+         WHERE id = $1`,
+        [id]
+      );
+      return res.rows[0] || null;
+    } catch (e) {
+      console.error("[DB Repo] Failed to get document dispatch by ID from PG, falling back to JSON:", e);
+      const state = loadJsonState();
+      return (state.documentDispatches || []).find(d => d.id === id) || null;
+    }
+  }
+
+  static async getDocumentDispatchesByBeneficiary(beneficiaryId: string): Promise<any[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      return (state.documentDispatches || []).filter(d => d.beneficiaryId === beneficiaryId);
+    }
+    try {
+      const res = await pool.query(
+        `SELECT id, beneficiary_id as "beneficiaryId", document_type as "documentType", 
+                document_reference as "documentReference", email_address as "emailAddress", 
+                status, sent_at as "sentAt", opened_at as "openedAt", downloaded_at as "downloadedAt", 
+                failed_at as "failedAt", failure_reason as "failureReason", delivery_provider as "deliveryProvider", 
+                message_id as "messageId", secure_token as "secureToken", expires_at as "expiresAt", 
+                created_at as "createdAt", updated_at as "updatedAt" 
+         FROM document_dispatches 
+         WHERE beneficiary_id = $1 
+         ORDER BY created_at DESC`,
+        [beneficiaryId]
+      );
+      return res.rows;
+    } catch (e) {
+      console.error("[DB Repo] Failed to get dispatches by beneficiary from PG, falling back to JSON:", e);
+      const state = loadJsonState();
+      return (state.documentDispatches || []).filter(d => d.beneficiaryId === beneficiaryId);
+    }
+  }
+
+  static async saveDocumentDispatch(d: any): Promise<any> {
+    const pool = getPgPool();
+    const saveFallback = () => {
+      const state = loadJsonState();
+      if (!state.documentDispatches) state.documentDispatches = [];
+      const index = state.documentDispatches.findIndex(item => item.id === d.id);
+      if (index >= 0) {
+        state.documentDispatches[index] = { ...state.documentDispatches[index], ...d, updatedAt: new Date().toISOString() };
+      } else {
+        state.documentDispatches.push({ ...d, createdAt: d.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() });
+      }
+      saveJsonState(state);
+      return d;
+    };
+
+    if (!pool || !isPgActive) {
+      return saveFallback();
+    }
+
+    try {
+      await pool.query(
+        `INSERT INTO document_dispatches (
+          id, beneficiary_id, document_type, document_reference, email_address, status,
+          sent_at, opened_at, downloaded_at, failed_at, failure_reason,
+          delivery_provider, message_id, secure_token, expires_at, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+         ON CONFLICT (id) DO UPDATE SET
+           beneficiary_id = EXCLUDED.beneficiary_id,
+           document_type = EXCLUDED.document_type,
+           document_reference = EXCLUDED.document_reference,
+           email_address = EXCLUDED.email_address,
+           status = EXCLUDED.status,
+           sent_at = EXCLUDED.sent_at,
+           opened_at = EXCLUDED.opened_at,
+           downloaded_at = EXCLUDED.downloaded_at,
+           failed_at = EXCLUDED.failed_at,
+           failure_reason = EXCLUDED.failure_reason,
+           delivery_provider = EXCLUDED.delivery_provider,
+           message_id = EXCLUDED.message_id,
+           secure_token = EXCLUDED.secure_token,
+           expires_at = EXCLUDED.expires_at,
+           updated_at = NOW()`,
+        [
+          d.id, d.beneficiaryId, d.documentType, d.documentReference || null, d.emailAddress, d.status,
+          d.sentAt ? new Date(d.sentAt) : null,
+          d.openedAt ? new Date(d.openedAt) : null,
+          d.downloadedAt ? new Date(d.downloadedAt) : null,
+          d.failedAt ? new Date(d.failedAt) : null,
+          d.failureReason || null, d.deliveryProvider || null, d.messageId || null,
+          d.secureToken || null,
+          d.expiresAt ? new Date(d.expiresAt) : null,
+          d.createdAt ? new Date(d.createdAt) : new Date(),
+          d.updatedAt ? new Date(d.updatedAt) : new Date()
+        ]
+      );
+      return d;
+    } catch (e) {
+      console.error("[DB Repo] Failed to save document dispatch to PG, falling back to JSON:", e);
+      return saveFallback();
+    }
+  }
+
+  // --- EMAIL TEMPLATES ENGINE METHODS ---
+
+  static async getEmailTemplates(): Promise<any[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return loadJsonState().emailTemplates || [];
+    }
+    try {
+      const res = await pool.query(
+        `SELECT id, name, template_type as "templateType", subject, body_html as "bodyHtml", 
+                body_text as "bodyText", is_default as "isDefault", is_active as "isActive", 
+                created_at as "createdAt", updated_at as "updatedAt" 
+         FROM email_templates 
+         ORDER BY created_at DESC`
+      );
+      return res.rows.map(r => ({ ...r, isDefault: !!r.isDefault, isActive: !!r.isActive }));
+    } catch (e) {
+      console.error("[DB Repo] Failed to get email templates from PG, falling back to JSON:", e);
+      return loadJsonState().emailTemplates || [];
+    }
+  }
+
+  static async getEmailTemplateById(id: string): Promise<any | null> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      return (state.emailTemplates || []).find(t => t.id === id) || null;
+    }
+    try {
+      const res = await pool.query(
+        `SELECT id, name, template_type as "templateType", subject, body_html as "bodyHtml", 
+                body_text as "bodyText", is_default as "isDefault", is_active as "isActive", 
+                created_at as "createdAt", updated_at as "updatedAt" 
+         FROM email_templates 
+         WHERE id = $1`,
+        [id]
+      );
+      if (!res.rows[0]) return null;
+      return { ...res.rows[0], isDefault: !!res.rows[0].isDefault, isActive: !!res.rows[0].isActive };
+    } catch (e) {
+      console.error("[DB Repo] Failed to get email template by ID from PG, falling back to JSON:", e);
+      const state = loadJsonState();
+      return (state.emailTemplates || []).find(t => t.id === id) || null;
+    }
+  }
+
+  static async getEmailTemplateByType(type: string): Promise<any | null> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      const items = state.emailTemplates || [];
+      const match = items.find(t => t.templateType === type && t.isDefault && t.isActive) ||
+                    items.find(t => t.templateType === type && t.isActive) ||
+                    items.find(t => t.templateType === type);
+      return match || null;
+    }
+    try {
+      const res = await pool.query(
+        `SELECT id, name, template_type as "templateType", subject, body_html as "bodyHtml", 
+                body_text as "bodyText", is_default as "isDefault", is_active as "isActive", 
+                created_at as "createdAt", updated_at as "updatedAt" 
+         FROM email_templates 
+         WHERE template_type = $1 
+         ORDER BY is_default DESC, created_at DESC`,
+        [type]
+      );
+      if (!res.rows[0]) return null;
+      return { ...res.rows[0], isDefault: !!res.rows[0].isDefault, isActive: !!res.rows[0].isActive };
+    } catch (e) {
+      console.error("[DB Repo] Failed to get email template by Type from PG, falling back to JSON:", e);
+      const state = loadJsonState();
+      const items = state.emailTemplates || [];
+      const match = items.find(t => t.templateType === type && t.isDefault && t.isActive) ||
+                    items.find(t => t.templateType === type && t.isActive) ||
+                    items.find(t => t.templateType === type);
+      return match || null;
+    }
+  }
+
+  static async saveEmailTemplate(t: any): Promise<any> {
+    const pool = getPgPool();
+    const saveFallback = () => {
+      const state = loadJsonState();
+      if (!state.emailTemplates) state.emailTemplates = [];
+      if (t.isDefault && t.isActive) {
+        state.emailTemplates.forEach(item => {
+          if (item.templateType === t.templateType && item.id !== t.id) {
+            item.isDefault = false;
+          }
+        });
+      }
+      const index = state.emailTemplates.findIndex(item => item.id === t.id);
+      if (index >= 0) {
+        state.emailTemplates[index] = { ...state.emailTemplates[index], ...t, updatedAt: new Date().toISOString() };
+      } else {
+        state.emailTemplates.push({ ...t, createdAt: t.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() });
+      }
+      saveJsonState(state);
+      return t;
+    };
+
+    if (!pool || !isPgActive) {
+      return saveFallback();
+    }
+
+    try {
+      if (t.isDefault && t.isActive) {
+        await pool.query(
+          "UPDATE email_templates SET is_default = FALSE WHERE template_type = $1 AND id <> $2",
+          [t.templateType, t.id]
+        );
+      }
+      await pool.query(
+        `INSERT INTO email_templates (
+          id, name, template_type, subject, body_html, body_text, is_default, is_active, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (id) DO UPDATE SET
+           name = EXCLUDED.name,
+           template_type = EXCLUDED.template_type,
+           subject = EXCLUDED.subject,
+           body_html = EXCLUDED.body_html,
+           body_text = EXCLUDED.body_text,
+           is_default = EXCLUDED.is_default,
+           is_active = EXCLUDED.is_active,
+           updated_at = NOW()`,
+        [
+          t.id, t.name, t.templateType, t.subject, t.bodyHtml, t.bodyText || null,
+          !!t.isDefault, !!t.isActive,
+          t.createdAt ? new Date(t.createdAt) : new Date(),
+          t.updatedAt ? new Date(t.updatedAt) : new Date()
+        ]
+      );
+      return t;
+    } catch (e) {
+      console.error("[DB Repo] Failed to save email template to PG, falling back to JSON:", e);
+      return saveFallback();
+    }
+  }
+
+  static async deleteEmailTemplate(id: string): Promise<boolean> {
+    const pool = getPgPool();
+    const fallbackDelete = () => {
+      const state = loadJsonState();
+      if (!state.emailTemplates) state.emailTemplates = [];
+      const updated = state.emailTemplates.filter(item => item.id !== id);
+      const isDeleted = updated.length < state.emailTemplates.length;
+      state.emailTemplates = updated;
+      saveJsonState(state);
+      return isDeleted;
+    };
+
+    if (!pool || !isPgActive) {
+      return fallbackDelete();
+    }
+
+    try {
+      const res = await pool.query(
+        "DELETE FROM email_templates WHERE id = $1",
+        [id]
+      );
+      return (res.rowCount ?? 0) > 0;
+    } catch (e) {
+      console.error("[DB Repo] Failed to delete email template from PG, falling back to JSON:", e);
       return fallbackDelete();
     }
   }

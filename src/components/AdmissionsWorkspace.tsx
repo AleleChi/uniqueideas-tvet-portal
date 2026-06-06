@@ -10,6 +10,7 @@ import {
   MapPin, Sliders, Sparkles, Download, ArrowUpDown, Lock, Unlock, History, FileText, Play
 } from "lucide-react";
 import { authFetch } from "../utils/authFetch";
+import { DispatchCenter } from "./DispatchCenter";
 
 interface AdmissionsWorkspaceProps {
   session?: { username?: string; role?: string; email?: string } | null;
@@ -54,7 +55,7 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
   const [bulkProgressMsg, setBulkProgressMsg] = useState("");
 
   // Active Workspace Sub-Tab State
-  const [workspaceTab, setWorkspaceTab] = useState<"dashboard" | "letters" | "forms" | "acceptance">("dashboard");
+  const [workspaceTab, setWorkspaceTab] = useState<"dashboard" | "letters" | "forms" | "acceptance" | "dispatches">("dashboard");
 
   // Letter Preview Modal State
   const [previewCandidate, setPreviewCandidate] = useState<any | null>(null);
@@ -530,6 +531,17 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
           }`}
         >
           Acceptance Desk
+        </button>
+        <button
+          type="button"
+          onClick={() => { setWorkspaceTab("dispatches"); setPage(1); }}
+          className={`px-4 py-2 text-xs font-bold font-sans uppercase tracking-wide rounded-lg transition-all duration-205 cursor-pointer ${
+            workspaceTab === "dispatches"
+              ? "bg-indigo-600 text-white shadow-xs"
+              : "text-slate-600 hover:bg-slate-200/60"
+          }`}
+        >
+          Dispatch & Communications
         </button>
       </div>
 
@@ -1098,6 +1110,26 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
 
       </div>
         </>
+      )}
+
+      {/* DOCUMENT DISPATCH & COMMUNICATIONS CENTER */}
+      {workspaceTab === "dispatches" && (
+        <div id="dispatches-hub-root" className="space-y-6 animate-in fade-in duration-250">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-5 text-left font-sans">
+            <div>
+              <span className="text-[10px] font-mono font-black text-indigo-600 uppercase tracking-widest block mb-1">
+                Security Assurance & Document Delivery
+              </span>
+              <h2 className="text-xl font-display font-black text-slate-800 tracking-tight uppercase">
+                Document Dispatch & Communication Platform
+              </h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Monitor live queue transmissions, expire or sign student tokens, customize core email templates, and batch dispatch portals securely.
+              </p>
+            </div>
+          </div>
+          <DispatchCenter candidates={candidates} />
+        </div>
       )}
 
       {/* ADMISSION FORMS MAIN WORKSPACE VIEW */}

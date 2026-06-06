@@ -298,3 +298,36 @@ export interface InstitutionLetterhead {
   updatedAt: string;
 }
 
+export interface EmailTemplate {
+  id: string;
+  name: string;
+  templateType: string; // "ADMISSION_FORM" | "ADMISSION_LETTER" | "ACCEPTANCE_LETTER" | "OFFER_LETTER" | "GENERAL"
+  subject: string;
+  bodyHtml: string;
+  bodyText?: string;
+  isDefault: boolean;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DocumentDispatch {
+  id: string;
+  beneficiaryId: string;
+  documentType: string; // "ADMISSION_FORM" | "ADMISSION_LETTER" | "ACCEPTANCE_LETTER" | "OFFER_LETTER"
+  documentReference?: string;
+  emailAddress: string;
+  status: "NOT_SENT" | "QUEUED" | "PROCESSING" | "SENT" | "DELIVERED" | "OPENED" | "DOWNLOADED" | "FAILED" | "EXPIRED" | "REVOKED";
+  sentAt?: string;
+  openedAt?: string;
+  downloadedAt?: string;
+  failedAt?: string;
+  failureReason?: string;
+  deliveryProvider?: string;
+  messageId?: string;
+  secureToken?: string;
+  expiresAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+

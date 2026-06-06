@@ -6,7 +6,8 @@
 import React, { useState } from "react";
 import { 
   Search, Plus, Download, ChevronRight, Eye, ShieldAlert, Sparkles, 
-  X, Check, Save, UserPlus, AlertTriangle, Users, CameraOff, Sparkles as SparklesIcon 
+  X, Check, Save, UserPlus, AlertTriangle, Users, CameraOff, Sparkles as SparklesIcon,
+  Share2, Bookmark, RotateCcw, FileSpreadsheet
 } from "lucide-react";
 import { Beneficiary, CustomField, Gender, ProgramStatus } from "../types";
 import { BeneficiaryDetails } from "./BeneficiaryDetails";
@@ -92,6 +93,158 @@ export function BeneficiaryList({
   const [batchFilter, setBatchFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [lifecycleFilter, setLifecycleFilter] = useState("all");
+
+  // SMART FILTER EXPERIENCES (Phase 4)
+  const [savedPresets, setSavedPresets] = useState<Array<{
+    id: string;
+    name: string;
+    search: string;
+    gender: string;
+    batch: string;
+    status: string;
+    lifecycle: string;
+    pinned?: boolean;
+  }>>(() => {
+    try {
+      const cached = localStorage.getItem("ideas-filter-presets");
+      if (cached) return JSON.parse(cached);
+    } catch (e) {
+      console.error(e);
+    }
+    return [
+      { id: "preset-ver", name: "Verified Cohort", search: "", gender: "all", batch: "all", status: ProgramStatus.VERIFIED, lifecycle: "all", pinned: true },
+      { id: "preset-drf", name: "Requires Image capture", search: "", gender: "all", batch: "all", status: ProgramStatus.DRAFT, lifecycle: "all", pinned: false }
+    ];
+  });
+
+  const [presetNameInput, setPresetNameInput] = useState("");
+  const [showSavePresetModal, setShowSavePresetModal] = useState(false);
+
+  // Synchronize dynamic parameters URL loading
+  React.useEffect(() => {
+    try {
+      const hashQuery = window.location.hash.includes("?") 
+        ? window.location.hash.split("?")[1] 
+        : window.location.search;
+      if (hashQuery) {
+        const urlParams = new URLSearchParams(hashQuery);
+        const searchVal = urlParams.get("search");
+        const genderVal = urlParams.get("gender");
+        const batchVal = urlParams.get("batch");
+        const statusVal = urlParams.get("status");
+        const lifecycleVal = urlParams.get("lifecycle");
+
+        if (searchVal) setSearch(searchVal);
+        if (genderVal) setGenderFilter(genderVal);
+        if (batchVal) setBatchFilter(batchVal);
+        if (statusVal) setStatusFilter(statusVal);
+        if (lifecycleVal) setLifecycleFilter(lifecycleVal);
+      }
+    } catch (e) {
+      console.error("Query loading failure ignored", e);
+    }
+  }, []);
+
+  const handleSavePreset = () => {
+    if (!presetNameInput.trim()) return;
+    const newPreset = {
+      id: "preset_" + Date.now(),
+      name: presetNameInput,
+      search,
+      gender: genderFilter,
+      batch: batchFilter,
+      status: statusFilter,
+      lifecycle: lifecycleFilter,
+      pinned: false
+    };
+    const updated = [...savedPresets, newPreset];
+    setSavedPresets(updated);
+    localStorage.setItem("ideas-filter-presets", JSON.stringify(updated));
+    setPresetNameInput("");
+    setShowSavePresetModal(false);
+  };
+
+  const handleTogglePinPreset = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const updated = savedPresets.map(p => p.id === id ? { ...p, pinned: !p.pinned } : p);
+    setSavedPresets(updated);
+    localStorage.setItem("ideas-filter-presets", JSON.stringify(updated));
+  };
+
+  const handleRemovePreset = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const updated = savedPresets.filter(p => p.id !== id);
+    setSavedPresets(updated);
+    localStorage.setItem("ideas-filter-presets", JSON.stringify(updated));
+  };
+
+  const handleApplyPreset = (preset: any) => {
+    setSearch(preset.search || "");
+    setGenderFilter(preset.gender || "all");
+    setBatchFilter(preset.batch || "all");
+    setStatusFilter(preset.status || "all");
+    setLifecycleFilter(preset.lifecycle || "all");
+    setCurrentPage(1);
+  };
+
+  const handleClearAllFilters = () => {
+    setSearch("");
+    setGenderFilter("all");
+    setBatchFilter("all");
+    setStatusFilter("all");
+    setLifecycleFilter("all");
+    setCurrentPage(1);
+  };
+
+  const handleShareFilterState = () => {
+    try {
+      const parentUrl = window.location.origin + window.location.pathname;
+      const params = new URLSearchParams();
+      if (search) params.append("search", search);
+      if (genderFilter !== "all") params.append("gender", genderFilter);
+      if (batchFilter !== "all") params.append("batch", batchFilter);
+      if (statusFilter !== "all") params.append("status", statusFilter);
+      if (lifecycleFilter !== "all") params.append("lifecycle", lifecycleFilter);
+
+      const queryStr = params.toString();
+      const shareableLink = `${parentUrl}${window.location.hash.split("?")[0]}${queryStr ? "?" + queryStr : ""}`;
+      
+      navigator.clipboard.writeText(shareableLink);
+      alert("Search results state copied to clipboard! Share the URL to pass this view.");
+    } catch (e) {
+      console.error(e);
+      alert("Failed to access system clipboard.");
+    }
+  };
+
+  const handleExportFilteredCSV = () => {
+    if (filteredList.length === 0) {
+      alert("No matching filtered records found to export.");
+      return;
+    }
+    const headers = ["ID", "LastName", "FirstName", "NIN", "BVN", "State", "Batch", "Lifecycle", "Status"];
+    const rows = filteredList.map(b => [
+      b.id,
+      `"${b.lastName}"`,
+      `"${b.firstName}"`,
+      `"${b.nin}"`,
+      `"${b.bvn}"`,
+      `"${b.state}"`,
+      `"${b.batch}"`,
+      `"${b.admissionStatus || 'Draft'}"`,
+      `"${b.status}"`
+    ]);
+    
+    const csvContent = "data:text/csv;charset=utf-8," 
+      + [headers.join(","), ...rows.map(e => e.join(","))].join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `filtered_tvet_cohort_${Date.now()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   // Pagination page selection state
   const [currentPage, setCurrentPage] = useState(1);
@@ -387,12 +540,89 @@ export function BeneficiaryList({
 
       </div>
 
-      {/* 2. TABULAR WORKSHEET CONTROLS BAR (4.png filter layout) */}
+      {/* 2. TABULAR WORKSHEET CONTROLS BAR (Phase 4 Smart Filters) */}
       <div className="bg-white border border-slate-200/90 rounded-xl p-4 shadow-xs space-y-4">
         
+        {/* Presets and Pinned row */}
+        {savedPresets.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 pb-2 border-b border-dashed border-slate-100 text-left">
+            <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1 shrink-0">
+              <Bookmark className="h-3 w-3 text-indigo-500" /> Presets:
+            </span>
+            <div className="flex flex-wrap gap-1.5 items-center">
+              {savedPresets.map(preset => (
+                <div 
+                  key={preset.id}
+                  onClick={() => handleApplyPreset(preset)}
+                  className="inline-flex items-center gap-1.5 p-1 px-2.5 bg-slate-50 hover:bg-indigo-50 hover:text-indigo-700 rounded-lg text-[10px] font-bold text-slate-650 cursor-pointer transition border border-slate-200"
+                >
+                  <span className="truncate max-w-[120px]">{preset.name}</span>
+                  <button
+                    type="button"
+                    onClick={(e) => handleTogglePinPreset(preset.id, e)}
+                    className="p-0.5 hover:text-amber-600 font-mono text-slate-400 text-[8px]"
+                    title={preset.pinned ? "Unpin filter preset" : "Pin filter preset"}
+                  >
+                    ★
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => handleRemovePreset(preset.id, e)}
+                    className="text-slate-450 hover:text-rose-600 font-sans font-bold text-[10px] ml-0.5"
+                    title="Delete preset"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              
+              <button
+                type="button"
+                onClick={() => setShowSavePresetModal(true)}
+                className="text-[10px] font-bold text-[#008751] hover:text-emerald-700 cursor-pointer flex items-center gap-0.5 font-mono px-1.5"
+              >
+                + Save Present View
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Save Preset Dialog Modal Input */}
+        {showSavePresetModal && (
+          <div className="p-3 bg-slate-50 border rounded-xl flex items-center justify-between gap-3 text-left">
+            <div className="flex-grow max-w-sm">
+              <label htmlFor="preset-name-input" className="sr-only">Query Preset Label</label>
+              <input
+                id="preset-name-input"
+                type="text"
+                placeholder="Give current filters a secure name..."
+                value={presetNameInput}
+                onChange={(e) => setPresetNameInput(e.target.value)}
+                className="w-full bg-white border rounded-lg p-1.5 px-3 text-xs focus:outline-none focus:border-indigo-600"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleSavePreset}
+                className="bg-indigo-600 text-white rounded-lg p-1.5 px-3 text-xs font-bold hover:bg-indigo-500 cursor-pointer"
+              >
+                Confirm Save
+              </button>
+              <button
+                type="button"
+                onClick={() => { setShowSavePresetModal(false); setPresetNameInput(""); }}
+                className="text-xs text-slate-500 hover:text-slate-700 cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           
-          <div className="flex flex-wrap items-center gap-3 flex-1">
+          <div className="flex flex-wrap items-center gap-3 flex-1 text-left">
             <h3 className="font-display font-bold text-indigo-700 text-sm uppercase tracking-wider mr-2">
               {subTabMode === "admissions" 
                 ? "Admissions Office Queue" 
@@ -476,7 +706,7 @@ export function BeneficiaryList({
 
           </div>
 
-          <div className="flex items-center gap-2 self-end lg:self-auto">
+          <div className="flex items-center gap-2 self-end lg:self-auto shrink-0">
             <button
               type="button"
               onClick={handleLaunchCreate}
@@ -488,14 +718,89 @@ export function BeneficiaryList({
             <button
               type="button"
               onClick={onDownloadCSV}
-              className="bg-white hover:bg-slate-50 border border-slate-250 border-slate-200 text-slate-700 py-2 px-4 rounded-lg text-xs font-bold shadow-xs flex items-center gap-1.5 transition outline-none cursor-pointer"
+              className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-750 text-slate-700 py-2 px-4 rounded-lg text-xs font-bold shadow-xs flex items-center gap-1.5 transition outline-none cursor-pointer"
             >
               <Download className="w-3.5 h-3.5 text-slate-400" />
-              Export Excel Data
+              Export National Registry
             </button>
           </div>
 
         </div>
+
+        {/* ACTIVE CHIPS VIEW & CLEAR CONTROLS */}
+        {(search || genderFilter !== "all" || batchFilter !== "all" || statusFilter !== "all" || lifecycleFilter !== "all") && (
+          <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-slate-50/70 border border-dashed rounded-xl text-left animate-in fade-in duration-200">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[10px] font-mono font-bold text-slate-450 uppercase tracking-tight block">
+                Active Queries:
+              </span>
+              
+              {search && (
+                <span className="inline-flex items-center gap-1 p-1 px-2.5 bg-indigo-50 border border-indigo-150 rounded-full text-[10px] font-bold text-indigo-805 text-indigo-700 uppercase leading-none font-sans">
+                  Keyword: {search}
+                  <X className="h-3 w-3 hover:text-rose-600 cursor-pointer shrink-0" onClick={() => setSearch("")} />
+                </span>
+              )}
+
+              {genderFilter !== "all" && (
+                <span className="inline-flex items-center gap-1 p-1 px-2.5 bg-slate-100 border rounded-full text-[10px] font-bold text-slate-700 uppercase leading-none">
+                  Gender: {genderFilter}
+                  <X className="h-2.5 w-2.5 hover:text-rose-600 cursor-pointer shrink-0" onClick={() => setGenderFilter("all")} />
+                </span>
+              )}
+
+              {batchFilter !== "all" && (
+                <span className="inline-flex items-center gap-1 p-1 px-2.5 bg-slate-100 border rounded-full text-[10px] font-bold text-slate-700 uppercase leading-none">
+                  Batch: {batchFilter}
+                  <X className="h-2.5 w-2.5 hover:text-rose-600 cursor-pointer shrink-0" onClick={() => setBatchFilter("all")} />
+                </span>
+              )}
+
+              {statusFilter !== "all" && (
+                <span className="inline-flex items-center gap-1 p-1 px-2.5 bg-slate-100 border rounded-full text-[10px] font-bold text-slate-700 uppercase leading-none">
+                  Status: {statusFilter}
+                  <X className="h-2.5 w-2.5 hover:text-rose-600 cursor-pointer shrink-0" onClick={() => setStatusFilter("all")} />
+                </span>
+              )}
+
+              {lifecycleFilter !== "all" && (
+                <span className="inline-flex items-center gap-1 p-1 px-2.5 bg-slate-100 border rounded-full text-[10px] font-bold text-slate-700 uppercase leading-none">
+                  Lifecycle: {lifecycleFilter}
+                  <X className="h-2.5 w-2.5 hover:text-rose-600 cursor-pointer shrink-0" onClick={() => setLifecycleFilter("all")} />
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleShareFilterState}
+                className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-500 hover:text-slate-800 cursor-pointer border border-slate-205 border-slate-200 p-1 px-2 rounded-lg bg-white bg-white hover:bg-slate-50 transition"
+                title="Copy share link filter state"
+              >
+                <Share2 className="h-3 w-3" /> Copy Link
+              </button>
+
+              <button
+                type="button"
+                onClick={handleExportFilteredCSV}
+                id="generic-export-csv-btn"
+                className="inline-flex items-center gap-1 text-[10px] font-bold text-[#008751] hover:text-emerald-800 cursor-pointer border border-emerald-250 border-emerald-200 p-1 px-2 rounded-lg bg-white bg-white hover:bg-slate-50 transition"
+                title="Export active filtered dataset only"
+              >
+                <FileSpreadsheet className="h-3 w-3" /> Export Filtered ({filteredList.length})
+              </button>
+
+              <button
+                type="button"
+                onClick={handleClearAllFilters}
+                className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-600 hover:text-rose-800 cursor-pointer hover:underline p-1"
+              >
+                <RotateCcw className="h-3 w-3" /> Reset Queries
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* FEATURE 3: BULK OPERATIONS PANEL */}
         {selectedCandidateIds.length > 0 && (

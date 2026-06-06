@@ -20,6 +20,7 @@ import { BiometricCapture } from "./components/BiometricCapture";
 import { PublicResponsePortal } from "./components/PublicResponsePortal";
 import { SettingsWorkspace } from "./components/SettingsWorkspace";
 import { DocumentVerification } from "./components/DocumentVerification";
+import { SecureDocumentPortal } from "./components/SecureDocumentPortal";
 import { Beneficiary, CustomField, AuditLog, UserSession } from "./types";
 import { authFetch, downloadWithAuth } from "./utils/authFetch";
 import { useNotification } from "./components/NotificationContext";
@@ -45,6 +46,14 @@ export default function App() {
   const [tempCreatedPhoto, setTempCreatedPhoto] = useState<string | null>(null);
   const [selectedBeneficiary, setSelectedBeneficiary] = useState<Beneficiary | null>(null);
   const [portalToken, setPortalToken] = useState<string | null>(null);
+  const [secureVerifyToken, setSecureVerifyToken] = useState<string | null>(() => {
+    const pathname = window.location.pathname;
+    if (pathname.startsWith("/documents/verify/")) {
+      return pathname.substring("/documents/verify/".length);
+    }
+    const params = new URLSearchParams(window.location.search);
+    return params.get("dispatchToken") || params.get("secureToken") || null;
+  });
 
   // Synchronous route parsing and navigation guards
   const [currentHash, setCurrentHash] = useState<string>(() => {
@@ -337,6 +346,19 @@ export default function App() {
       <PublicResponsePortal 
         token={portalToken} 
         onClose={() => setPortalToken(null)} 
+      />
+    );
+  }
+
+  // Render Secure Document Verification Portal if a secure verify token is supplied
+  if (secureVerifyToken) {
+    return (
+      <SecureDocumentPortal 
+        token={secureVerifyToken} 
+        onClose={() => {
+          setSecureVerifyToken(null);
+          window.history.pushState({}, "", "/");
+        }} 
       />
     );
   }

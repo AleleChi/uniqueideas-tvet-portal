@@ -17,6 +17,7 @@ import { AdmissionController } from "./src/backend/admission.controller";
 import { AdmissionService } from "./src/backend/admission.service";
 import { EmailService } from "./src/backend/email.service";
 import { initDb, DbRepo } from "./src/backend/db";
+import { DocumentDeliveryService, EmailDispatchService } from "./src/backend/documentDelivery.service";
 import { requireAuth, requireRole, JWT_SECRET, AuthenticatedRequest } from "./src/backend/auth.middleware";
 import { PdfService } from "./src/backend/pdf.service";
 import { CloudinaryService } from "./src/backend/cloudinary.service";
@@ -2177,6 +2178,459 @@ app.get("/api/documents/verify/:verificationCode", async (req, res) => {
     });
   } catch (e: any) {
     res.status(500).json({ valid: false, error: e.message });
+  }
+});
+
+// --- EMAIL TEMPLATES ENGINE API ENDPOINTS ---
+
+app.get("/api/email-templates", requireAuth, async (req, res) => {
+  try {
+    let list = await DbRepo.getEmailTemplates();
+    if (list.length === 0) {
+      console.log("[Seeding] Email templates list empty. Seeding defaults...");
+      const timestamp = new Date().toISOString();
+      const defaultTemplates = [
+        {
+          id: "tpl_val_admission_letter",
+          name: "Standard Official Admission Letter Template",
+          templateType: "ADMISSION_LETTER",
+          subject: "Official Admission Offer Letter - IDEAS-TVET Program - {{reference_number}}",
+          bodyHtml: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 8px; padding: 24px; color: #1e293b; background-color: #ffffff;">
+  <div style="text-align: center; border-bottom: 2px solid #008751; padding-bottom: 12px; margin-bottom: 20px;">
+    <h2 style="color: #008751; margin: 0; text-transform: uppercase; font-size: 20px;">{{institution_name}}</h2>
+    <p style="color: #64748b; font-size: 11px; font-weight: bold; margin: 4px 0 0 0; text-transform: uppercase; letter-spacing: 1px;">IDEAS-TVET Beneficiary Document Delivery Registry</p>
+  </div>
+  <p>Dear <strong>{{trainee_name}}</strong>,</p>
+  <p>We are pleased to inform you that your official <strong>Admission Offer Letter</strong> for the IDEAS-TVET program is now available for download.</p>
+  <div style="background-color: #f8fafc; border-left: 4px solid #008751; padding: 16px; margin: 20px 0; border-radius: 0 4px 4px 0;">
+    <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+      <tr><td style="padding: 4px 0; color: #64748b; font-weight: bold; width: 40%;">Candidate ID:</td><td style="padding: 4px 0; font-weight: 600;">{{reference_number}}</td></tr>
+      <tr><td style="padding: 4px 0; color: #64748b; font-weight: bold;">TSP Center:</td><td style="padding: 4px 0; font-weight: 600;">{{tsp}}</td></tr>
+      <tr><td style="padding: 4px 0; color: #64748b; font-weight: bold;">Skill Sector:</td><td style="padding: 4px 0; font-weight: 600;">{{skill}}</td></tr>
+      <tr><td style="padding: 4px 0; color: #64748b; font-weight: bold;">State of Training:</td><td style="padding: 4px 0; font-weight: 600;">{{state}}</td></tr>
+      <tr><td style="padding: 4px 0; color: #64748b; font-weight: bold;">Issue Date:</td><td style="padding: 4px 0; font-weight: 600;">{{current_date}}</td></tr>
+    </table>
+  </div>
+  <p>Please click the button below to log in securely or access your personalized trainee document portal. You will be able to review, print, and download your admission documents.</p>
+  <div style="text-align: center; margin: 30px 0;">
+    <a href="{{download_link}}" style="background-color: #008751; color: #ffffff; text-decoration: none; padding: 12px 24px; font-weight: bold; border-radius: 6px; display: inline-block; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">Access Document Portal</a>
+  </div>
+  <p style="font-size: 12px; color: #64748b;">If the button above does not work, copy and paste the following URL into your web browser:<br/><a href="{{download_link}}" style="color: #008751;">{{download_link}}</a></p>
+  <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+  <p style="font-size: 11px; text-align: center; color: #94a3b8; line-height: 1.5; margin: 0;">
+    This is an automatic secure transmission from coordinate headquarters.<br/>
+    &copy; {{current_date}} {{institution_name}}. All Federal rights reserved.
+  </p>
+</div>`,
+          bodyText: "Dear {{trainee_name}}, your admission letter reference {{reference_number}} is ready. Access here: {{download_link}}",
+          isDefault: true,
+          isActive: true,
+          createdAt: timestamp,
+          updatedAt: timestamp
+        },
+        {
+          id: "tpl_val_admission_form",
+          name: "Standard Official Admission Form Pin Template",
+          templateType: "ADMISSION_FORM",
+          subject: "Trainee Enrollment Profile Information - {{reference_number}}",
+          bodyHtml: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 8px; padding: 24px; color: #1e293b; background-color: #ffffff;">
+  <div style="text-align: center; border-bottom: 2px solid #1e3a8a; padding-bottom: 12px; margin-bottom: 20px;">
+    <h2 style="color: #1e3a8a; margin: 0; text-transform: uppercase; font-size: 20px;">{{institution_name}}</h2>
+    <p style="color: #64748b; font-size: 11px; font-weight: bold; margin: 4px 0 0 0; text-transform: uppercase;">Official Biometrics Demographic Record</p>
+  </div>
+  <p>Dear <strong>{{trainee_name}}</strong>,</p>
+  <p>Your official trainee registration folder is now ready. Please review and verify your demographics and identity record information by accessing the secure link below.</p>
+  <div style="text-align: center; margin: 30px 0;">
+    <a href="{{download_link}}" style="background-color: #1e3a8a; color: #ffffff; text-decoration: none; padding: 12px 24px; font-weight: bold; border-radius: 6px; display: inline-block;">Verify Enrollment Profile</a>
+  </div>
+  <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 20px 0;" />
+  <p style="font-size: 11px; text-align: center; color: #94a3b8;">&copy; {{current_date}} {{institution_name}}. Technical Skills Pipeline Bureau.</p>
+</div>`,
+          bodyText: "Dear {{trainee_name}}, your trainee form ID {{reference_number}} is ready. Access here: {{download_link}}",
+          isDefault: true,
+          isActive: true,
+          createdAt: timestamp,
+          updatedAt: timestamp
+        },
+        {
+          id: "tpl_val_acceptance_letter",
+          name: "Standard Endorsement Form Response Template",
+          templateType: "ACCEPTANCE_LETTER",
+          subject: "Sign Required: Acceptance of Training Offer - {{reference_number}}",
+          bodyHtml: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 8px; padding: 24px; color: #1e293b; background-color: #ffffff;">
+  <p>Dear <strong>{{trainee_name}}</strong>,</p>
+  <p>Your enrollment requires signing and returning the <strong>Acceptance of Training Offer</strong>.</p>
+  <p>Please enter the safe portal to review your digital generated Acceptance Letter, execute the digital endorsement signature, and upload the signed scanned visual sheet to receive coordinator feedback.</p>
+  <div style="text-align: center; margin: 30px 0;">
+    <a href="{{download_link}}" style="background-color: #0d9488; color: #ffffff; text-decoration: none; padding: 12px 24px; font-weight: bold; border-radius: 6px; display: inline-block;">Endorse & Upload Offer</a>
+  </div>
+  <p style="color: #64748b; font-size: 12px;">Failing to upload your signed acceptance before program commencement may forfeit your placement slot.</p>
+</div>`,
+          bodyText: "Dear {{trainee_name}}, your signed acceptance is required for {{reference_number}}. Enter here: {{download_link}}",
+          isDefault: true,
+          isActive: true,
+          createdAt: timestamp,
+          updatedAt: timestamp
+        },
+        {
+          id: "tpl_val_offer_letter",
+          name: "Standard Base Offer Letter Template",
+          templateType: "OFFER_LETTER",
+          subject: "Placement Offer Confirmation Desk Notice - {{reference_number}}",
+          bodyHtml: `<div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px; background: #ffffff;">
+  <p>Hello <strong>{{trainee_name}}</strong>,</p>
+  <p>We are pleased to offer you placement in our TVET program at {{tsp}}.</p>
+  <p>Enter your document verification portal below to review the offer and download details:</p>
+  <p><a href="{{download_link}}" style="background: #0284c7; color: white; padding: 8px 16px; border-radius: 4px; text-decoration: none; display: inline-block;">Access Offer Portal</a></p>
+</div>`,
+          bodyText: "Dear {{trainee_name}}, your training offer is ready for ID {{reference_number}}. View here: {{download_link}}",
+          isDefault: true,
+          isActive: true,
+          createdAt: timestamp,
+          updatedAt: timestamp
+        },
+        {
+          id: "tpl_val_general",
+          name: "Circular Notice / General Information Template",
+          templateType: "GENERAL",
+          subject: "Official Public Registry Circular Notice - Reference {{reference_number}}",
+          bodyHtml: `<div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px; background: #ffffff;">
+  <p>Hello <strong>{{trainee_name}}</strong>,</p>
+  <p>The office has published a new informational update regarding your TVET candidate track folder.</p>
+  <p>Secure link:<br/><a href="{{download_link}}">{{download_link}}</a></p>
+</div>`,
+          bodyText: "Dear {{trainee_name}}, new circular published for folder track {{reference_number}}. Access here: {{download_link}}",
+          isDefault: true,
+          isActive: true,
+          createdAt: timestamp,
+          updatedAt: timestamp
+        }
+      ];
+
+      for (const t of defaultTemplates) {
+        await DbRepo.saveEmailTemplate(t);
+      }
+      list = await DbRepo.getEmailTemplates();
+    }
+    res.json(list);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/email-templates/:id", requireAuth, async (req, res) => {
+  try {
+    const template = await DbRepo.getEmailTemplateById(req.params.id);
+    if (!template) {
+      return res.status(404).json({ error: "Email template not found." });
+    }
+    res.json(template);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/email-templates", requireAuth, async (req, res) => {
+  try {
+    const t = req.body;
+    if (!t.name || !t.templateType || !t.subject || !t.bodyHtml) {
+      return res.status(400).json({ error: "Missing required template envelope properties." });
+    }
+    if (!t.id) {
+      t.id = "tpl_" + crypto.randomBytes(12).toString("hex");
+    }
+    const saved = await DbRepo.saveEmailTemplate(t);
+    
+    // Audit log template action
+    await logAction((req as any).user?.email || "Admin", "EMAIL_TEMPLATE_SAVE", `Email template saved: ${t.name} (${t.templateType})`);
+    
+    res.json(saved);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/email-templates/:id", requireAuth, async (req, res) => {
+  try {
+    const isDeleted = await DbRepo.deleteEmailTemplate(req.params.id);
+    if (!isDeleted) {
+      return res.status(404).json({ error: "Template not found or could not delete." });
+    }
+    // Audit log template deleted
+    await logAction((req as any).user?.email || "Admin", "EMAIL_TEMPLATE_DELETE", `Email template deleted: ${req.params.id}`);
+    res.json({ success: true, message: "Template deleted successfully." });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- DOCUMENT DISPATCH & OPERATION API ENDPOINTS ---
+
+app.get("/api/dispatches", requireAuth, async (req, res) => {
+  try {
+    const list = await DbRepo.getDocumentDispatches();
+    res.json(list);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/dispatches/beneficiary/:beneficiaryId", requireAuth, async (req, res) => {
+  try {
+    const list = await DbRepo.getDocumentDispatchesByBeneficiary(req.params.beneficiaryId);
+    res.json(list);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/dispatches/send", requireAuth, async (req, res) => {
+  try {
+    const { beneficiaryIds, documentType } = req.body;
+    if (!beneficiaryIds || !Array.isArray(beneficiaryIds) || beneficiaryIds.length === 0 || !documentType) {
+      return res.status(400).json({ error: "beneficiaryIds[] array and documentType are required fields." });
+    }
+
+    const operator = (req as any).user?.email || "Admin Administrator";
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+
+    console.log(`[Dispatch Manager] Bulk dispatch initialize: ${beneficiaryIds.length} beneficiaries, type=${documentType}`);
+
+    const resultLogs: any[] = [];
+    
+    // Sequential high safety memory iteration loop
+    for (const bId of beneficiaryIds) {
+      const beneficiary = await DbRepo.getBeneficiaryById(bId);
+      if (!beneficiary) {
+        resultLogs.push({ beneficiaryId: bId, success: false, error: "Beneficiary lookup failure." });
+        continue;
+      }
+
+      const emailAddress = beneficiary.email;
+      if (!emailAddress) {
+        resultLogs.push({ beneficiaryId: bId, success: false, error: "email_address not declared in trainee profile." });
+        continue;
+      }
+
+      // Check if document exits, if not auto generate it!
+      const generatedDocs = await DbRepo.getGeneratedDocuments(bId);
+      let targetDoc = generatedDocs.find(d => d.documentType === documentType);
+      
+      if (!targetDoc) {
+        // Auto compile baseline document
+        console.log(`[Auto-Gen Sandbox compile] ${documentType} not found for ${bId}. Launching generation...`);
+        try {
+          targetDoc = await DocumentService.generateDocument(bId, documentType as any, operator, false);
+        } catch (e: any) {
+          resultLogs.push({ beneficiaryId: bId, success: false, error: `Document compile failure: ${e.message}` });
+          continue;
+        }
+      }
+
+      // Create new Dispatch item log
+      const dispatch = await DocumentDeliveryService.createDispatch(
+        bId,
+        documentType,
+        emailAddress,
+        targetDoc ? targetDoc.id : undefined
+      );
+
+      // Execute Single Send Dispatch
+      const processed = await DocumentDeliveryService.executeDispatch(dispatch.id, baseUrl);
+
+      resultLogs.push({
+        beneficiaryId: bId,
+        dispatchId: dispatch.id,
+        status: processed.status,
+        success: processed.status === "SENT",
+        error: processed.failureReason
+      });
+    }
+
+    res.json({
+      success: true,
+      totalCount: beneficiaryIds.length,
+      runs: resultLogs
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/dispatches/:id/resend", requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const dispatch = await DbRepo.getDocumentDispatchById(id);
+    if (!dispatch) {
+      return res.status(404).json({ error: "Dispatch record not found." });
+    }
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    dispatch.status = "QUEUED";
+    dispatch.failedAt = null;
+    dispatch.failureReason = null;
+    await DbRepo.saveDocumentDispatch(dispatch);
+
+    const processed = await DocumentDeliveryService.executeDispatch(dispatch.id, baseUrl);
+    
+    // Audit resent operation
+    await logAction((req as any).user?.email || "Admin", "DOCUMENT_RESENT", `Resent document dispatch ${id} to ${dispatch.emailAddress}`);
+
+    res.json({
+      success: processed.status === "SENT",
+      dispatch: processed
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/dispatches/:id/revoke", requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const dispatch = await DbRepo.getDocumentDispatchById(id);
+    if (!dispatch) {
+      return res.status(404).json({ error: "Dispatch record not found." });
+    }
+
+    dispatch.status = "REVOKED";
+    dispatch.updatedAt = new Date().toISOString();
+    await DbRepo.saveDocumentDispatch(dispatch);
+
+    // Audit revoke operation
+    await logAction((req as any).user?.email || "Admin", "DOCUMENT_REVOKED", `Revoked access dispatch secure token for ${dispatch.emailAddress}`);
+
+    res.json({
+      success: true,
+      dispatch
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- SECURE PUBLIC DOCUMENT PORTAL API ENDPOINTS ---
+
+app.get("/api/public/documents/verify/:token", async (req, res) => {
+  try {
+    const { token } = req.params;
+    const dispatch = await DbRepo.getDocumentDispatchByToken(token);
+    if (!dispatch) {
+      return res.status(404).json({ error: "Invalid link: Secure verification token not registered." });
+    }
+
+    if (dispatch.status === "REVOKED") {
+      return res.status(403).json({ error: "Access Denied: Revoked access token." });
+    }
+
+    if (new Date(dispatch.expiresAt) < new Date()) {
+      return res.status(403).json({ error: "Access Denied: Document download link expired." });
+    }
+
+    const beneficiary = await DbRepo.getBeneficiaryById(dispatch.beneficiaryId);
+    if (!beneficiary) {
+      return res.status(404).json({ error: "Associated candidate record missing." });
+    }
+
+    const generatedDocs = await DbRepo.getGeneratedDocuments(dispatch.beneficiaryId);
+    const doc = generatedDocs.find(d => d.documentType === dispatch.documentType) || null;
+
+    const activeLetterhead = await DbRepo.getActiveLetterhead();
+    const settings = await DbRepo.getOrganizationSettings();
+
+    // Mask sensitive fields to support perfect GDPR/national protection standards
+    const safeBeneficiary = {
+      id: beneficiary.id,
+      firstName: beneficiary.firstName,
+      lastName: beneficiary.lastName,
+      otherName: beneficiary.otherName,
+      state: beneficiary.state,
+      tsp: beneficiary.tsp,
+      skillSector: beneficiary.skillSector,
+      program: beneficiary.program,
+      batch: beneficiary.batch,
+    };
+
+    res.json({
+      success: true,
+      dispatch: {
+        id: dispatch.id,
+        documentType: dispatch.documentType,
+        emailAddress: dispatch.emailAddress,
+        status: dispatch.status,
+        expiresAt: dispatch.expiresAt,
+        sentAt: dispatch.sentAt,
+      },
+      beneficiary: safeBeneficiary,
+      document: doc,
+      branding: {
+        letterhead: activeLetterhead,
+        settings
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/public/documents/verify/:token/track-open", async (req, res) => {
+  try {
+    const { token } = req.params;
+    const dispatch = await DbRepo.getDocumentDispatchByToken(token);
+    if (!dispatch) {
+      return res.status(404).json({ error: "Token not found." });
+    }
+
+    // Update status to OPENED if it hasn't progressed to action-level statuses
+    if (dispatch.status === "SENT" || dispatch.status === "DELIVERED" || dispatch.status === "QUEUED") {
+      dispatch.status = "OPENED";
+    }
+    dispatch.openedAt = new Date().toISOString();
+    dispatch.updatedAt = new Date().toISOString();
+    await DbRepo.saveDocumentDispatch(dispatch);
+
+    // Save audit trace log
+    await DbRepo.saveAuditLog({
+      id: "log_" + crypto.randomBytes(12).toString("hex"),
+      timestamp: new Date().toISOString(),
+      username: "Trainee Secure Portal",
+      role: "TRAINEE",
+      action: "DOCUMENT_OPENED",
+      details: `Dispatch secure portal opened for ${dispatch.documentType}. Beneficiary: ${dispatch.beneficiaryId}`,
+    });
+
+    res.json({ success: true, dispatch });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/public/documents/verify/:token/track-download", async (req, res) => {
+  try {
+    const { token } = req.params;
+    const dispatch = await DbRepo.getDocumentDispatchByToken(token);
+    if (!dispatch) {
+      return res.status(404).json({ error: "Token not found." });
+    }
+
+    dispatch.status = "DOWNLOADED";
+    dispatch.downloadedAt = new Date().toISOString();
+    dispatch.updatedAt = new Date().toISOString();
+    await DbRepo.saveDocumentDispatch(dispatch);
+
+    // Save audit trace log
+    await DbRepo.saveAuditLog({
+      id: "log_" + crypto.randomBytes(12).toString("hex"),
+      timestamp: new Date().toISOString(),
+      username: "Trainee Secure Portal",
+      role: "TRAINEE",
+      action: "DOCUMENT_DOWNLOADED",
+      details: `Dispatch secure portal document downloaded for ${dispatch.documentType}. Beneficiary: ${dispatch.beneficiaryId}`,
+    });
+
+    res.json({ success: true, dispatch });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 

@@ -3,11 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { 
   Building, ShieldCheck, HelpCircle, ArrowRight, CheckCircle2, 
-  Users, MapPin, Award, GraduationCap, ChevronRight, ChevronDown, Check,
-  Cpu, Scissors, Zap, Hammer, Sprout, Car, Sparkles, MessageSquare, BookOpen, Clock, Lock, KeyRound, Mail, AlertTriangle, UserPlus, Search, Menu, X, Landmark, ShieldAlert, BadgeCheck
+  Users, MapPin, Award, GraduationCap, ChevronDown, ChevronRight, Check,
+  Cpu, Scissors, Zap, Hammer, Sprout, Car, Sparkles, MessageSquare, 
+  BookOpen, Clock, Lock, KeyRound, Mail, AlertTriangle, Search, Menu, 
+  X, Landmark, BadgeCheck, FileText, Phone, Play, CheckCircle
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { API_BASE_URL } from "../config/api";
@@ -17,8 +19,36 @@ interface LandingPageProps {
   onLoginSuccess: (email: string, pass: string) => Promise<boolean>;
 }
 
+// Lightweight dynamic counter component for premium look
+function AnimatedCounter({ target, suffix = "", duration = 1200 }: { target: number; suffix?: string; duration?: number }) {
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    let start = 0;
+    const end = target;
+    if (end === 0) return;
+    
+    const totalFrames = 40;
+    const increment = Math.ceil(end / totalFrames);
+    const frameDuration = duration / totalFrames;
+    
+    const timer = setInterval(() => {
+      start += increment;
+      if (start >= end) {
+        setCount(end);
+        clearInterval(timer);
+      } else {
+        setCount(start);
+      }
+    }, frameDuration);
+    
+    return () => clearInterval(timer);
+  }, [target, duration]);
+
+  return <span>{count.toLocaleString()}{suffix}</span>;
+}
+
 export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
-  // Mobile Hamburger menu toggle state
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activeFaq, setActiveFaq] = useState<number | null>(null);
   
@@ -29,152 +59,76 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
   const [trackError, setTrackError] = useState<string | null>(null);
   const [showTrackerModal, setShowTrackerModal] = useState(false);
 
-  // Application workflow parameters
-  const [applyFirstName, setApplyFirstName] = useState("");
-  const [applyLastName, setApplyLastName] = useState("");
-  const [applyEmail, setApplyEmail] = useState("");
-  const [applyPhone, setApplyPhone] = useState("");
-  const [applyNin, setApplyNin] = useState("");
-  const [applyBvn, setApplyBvn] = useState("");
-  const [applyState, setApplyState] = useState("Lagos");
-  const [applyGender, setApplyGender] = useState("MALE");
-  const [applyLoading, setApplyLoading] = useState(false);
-  const [applySuccessMsg, setApplySuccessMsg] = useState<string | null>(null);
-  const [applyError, setApplyError] = useState<string | null>(null);
-  const [showApplyModal, setShowApplyModal] = useState(false);
+  // Quick Verification parameter inside the dedicated section
+  const [quickVerifyCode, setQuickVerifyCode] = useState("");
 
-  const credentialsAndSupport = [
-    {
-      title: "Accredited Skills Pathways",
-      desc: "Comprehensive hands-on training under federally certified instructors covering power engineering, ICT systems, metal fabrication, and advanced drafting.",
-      icon: GraduationCap,
-      color: "border-l-4 border-indigo-600 bg-linear-to-r from-indigo-50/10 to-transparent"
+  const faqs = [
+    { 
+      q: "Who can participate in the IDEAS-TVET initiative?", 
+      a: "Participation is open to eligible Nigerian citizens targeted by regional training service providers. Eligible trainees are selected through competitive physical screening, national board eligibility filters, and local equity quotas to guarantee equal distribution of training benefits." 
     },
-    {
-      title: "Interactive Student Portal",
-      desc: "Easy-to-use candidate portal to track application statuses, confirm seat allocations, and securely download certified enrollment confirmations.",
-      icon: BookOpen,
-      color: "border-l-4 border-emerald-600 bg-linear-to-r from-emerald-50/10 to-transparent"
+    { 
+      q: "How are trainees selected and onboarded?", 
+      a: "Trainees are officially mapped and selected by accredited Training Service Providers (TSPs) under strict supervision of the State Coordination Offices and the Federal Ministry of Education. Selection is bound to National Identity Number (NIN) credentials and verified bank coordinates to maintain absolute transparency." 
     },
-    {
-      title: "Globally Recognized Certificates",
-      desc: "Earn high-value visual PDF credentials stamped and approved by national boards upon successful completion of curriculum cohorts.",
-      icon: Award,
-      color: "border-l-4 border-blue-600 bg-linear-to-r from-blue-50/10 to-transparent"
+    { 
+      q: "Can I register as a student directly on this portal?", 
+      a: "No, self-registration is strictly deactivated on the public portal to secure regulatory boundaries and prevent fraudulent entries. Candidate listings and provisional enrollment portfolios can only be created by certified, accredited state-designated Training Service Providers (TSPs) through our official administrative onboarding networks." 
+    },
+    { 
+      q: "How do I verify an official document using the portal?", 
+      a: "Third-party employers, corporate bodies, and state offices can verify credentials by entering the watermarked Document Reference ID into our Central Registry Verification form. The portal instantly pulls active digital logs certifying the integrity and timeline logs of the requested certificate or letter." 
+    },
+    { 
+      q: "How do training institutions and providers participate?", 
+      a: "Technical colleges, vocational centers, and private training institutions must be heavily vetted and certified by the National Board for Technical Education (NBTE) and accredited as active TSPs before receiving portal access credentials and state-funded trainee allocations." 
     }
   ];
-
-  function DocumentIcon({ className }: { className?: string }) {
-    return <BookOpen className={className} />;
-  }
 
   const focalPrograms = [
     { 
-      title: "Solar PV Installations & Green Tech", 
-      sector: "Power & Systems", 
-      desc: "Advanced training in PV arrays design, high-capacity inverter synchronization, off-grid storage sizing, and green power grid inspections.", 
+      title: "Solar PV Installations & Green Energy Tech", 
+      sector: "Power & Renewable Technology", 
+      desc: "Comprehensive training in solar PV arrays configuration, hybrid inverter synchronization, local battery storage setups, and green power grid regulations.", 
       icon: Zap, 
-      capacity: "Capacity Limit: 120 slots per TSP" 
+      capacity: "120 seats limit" 
     },
     { 
-      title: "ICT Systems & Computer Hardware", 
-      sector: "Information Technology", 
-      desc: "Rigorous training on complex microcontroller engineering, circuit diagnostics, logic analyzing, and cloud service architectures.", 
+      title: "ICT Systems Engineering & Desktop Diagnostics", 
+      sector: "Information & Communication Tech", 
+      desc: "Hands-on instruction targeting motherboard electronics diagnostic loops, micro-soldering, networking infrastructures, and secure operating environments.", 
       icon: Cpu, 
-      capacity: "Capacity Limit: 180 slots per TSP" 
+      capacity: "180 seats limit" 
     },
     { 
-      title: "Automobile diagnostics & EFI Tech", 
-      sector: "Transportation", 
-      desc: "Computerized electronic fuel injection system maps, computerized hybrid powertrain overhauls, and telemetry standard inspections.", 
+      title: "EFI Automotive Diagnostics & Systems Repair", 
+      sector: "Transportation & Advanced Mobility", 
+      desc: "Technical mapping of electronic fuel injection systems, computer-guided fault-code parsing, electronic telemetry standardizations, and mechanical retrofits.", 
       icon: Car, 
-      capacity: "Capacity Limit: 90 slots per TSP" 
+      capacity: "90 seats limit" 
     },
     { 
-      title: "Advanced Metalwork & Precision Fabrication", 
-      sector: "Metal Technology", 
-      desc: "Precision MMA / TIG engineering, structural steel assembly blueprints, stress testing, and metallurgical safety inspections.", 
+      title: "Precision Welding & Industrial Metal Fabrication", 
+      sector: "Metallurgical Technologies", 
+      desc: "Advanced shielded metal arc welding (SMAW) methods, computerized CAD blueprints translation, safety stress-testing, and architectural steel assembly.", 
       icon: Hammer, 
-      capacity: "Capacity Limit: 150 slots per TSP" 
+      capacity: "150 seats limit" 
     },
     { 
-      title: "Industrial Apparel Pattern Drafting", 
-      sector: "Creative Industries", 
-      desc: "Technical garment engineering, computerized pattern CAD programs, and high-volume garment manufacturing logistics.", 
+      title: "Apparel Garment Engineering & Pattern Design", 
+      sector: "Creative & Manufacturing Sectors", 
+      desc: "Garment design logic, industrialized apparel blueprinting, specialized CAD grading applications, and massive production line logistical workflows.", 
       icon: Scissors, 
-      capacity: "Capacity Limit: 200 slots per TSP" 
+      capacity: "200 seats limit" 
     },
     { 
-      title: "Micro-Greenhouse Hydroponics", 
-      sector: "Agribusiness", 
-      desc: "Automated drip greenhouse setups, micro-controller irrigation loops, and post-harvest supply distribution networks.", 
+      title: "Automated Greenhouse Farming & Hydroponics", 
+      sector: "Agribusiness & Sustainable Food Tech", 
+      desc: "System design of modern micro-irrigation controller boards, liquid nutrient formulations, water recycler routines, and high-yield distribution pipelines.", 
       icon: Sprout, 
-      capacity: "Capacity Limit: 110 slots per TSP" 
+      capacity: "110 seats limit" 
     }
   ];
-
-  const faqs = [
-    { q: "What is the primary role of a Training Service Provider (TSP) on the Governance portal?", a: "Accredited TSPs utilize this centralized portal to log student profiles, verify biometric NIN records, compile document versions, track enrollment milestones, and issue tamper-proof certificates under federal supervision." },
-    { q: "How does the progressive document unlock control operate?", a: "To maintain academic integrity, documents unlock sequentially based on state status: the Admission Form is always available; the Admission Letter requires status ADMITTED; the Acceptance Letter requires ACCEPTED; the Enrollment Letter requires ENROLLED; and the final Certificate requires GRADUATED." },
-    { q: "How can individual trainees check and accept their admission offers?", a: "Trainees can click 'Track Admission' on the portal navigation bar, input their registered Email address, and use their 11-digit NIN as their default password to review timeline touchpoints and upload signed acceptance letters." },
-    { q: "Does the system comply with Nigerian Data Protection laws?", a: "Absolutely. All stored identity elements, including NIN, BVN, and biometric records, are processed in complete alignment with the Nigerian Data Protection Regulation (NDPR) criteria." }
-  ];
-
-  const handleApplySubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setApplyError(null);
-    setApplySuccessMsg(null);
-    setApplyLoading(true);
-
-    if (!applyFirstName || !applyLastName || !applyEmail || !applyNin || !applyBvn) {
-      setApplyError("All identity registry parameters are strictly required to verify applicant validity.");
-      setApplyLoading(false);
-      return;
-    }
-
-    try {
-      const payload = {
-        firstName: applyFirstName,
-        lastName: applyLastName,
-        email: applyEmail,
-        phone: applyPhone,
-        nin: applyNin,
-        bvn: applyBvn,
-        gender: applyGender,
-        state: applyState,
-        batch: "Cohort B",
-        photo: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=150", 
-        admissionStatus: "Offer Dispatched",
-        status: "DRAFT_REGISTERED",
-        admissionRef: "IDEAS/TVET/ADM/" + Math.floor(100000 + Math.random() * 900000)
-      };
-
-      const res = await fetch(`${API_BASE_URL}/api/beneficiaries`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-
-      const data = await res.json();
-      if (res.ok) {
-        setApplySuccessMsg(
-          `Congratulations ${applyFirstName}! Your provisional enrollment file has been recorded. Your provisional trainee default password is your NIN: ${applyNin}. Use 'Track Admission' to login and accept your seat allocation.`
-        );
-        setApplyFirstName("");
-        setApplyLastName("");
-        setApplyEmail("");
-        setApplyPhone("");
-        setApplyNin("");
-        setApplyBvn("");
-      } else {
-        setApplyError(data.error || "The system rejected this entry. Please verify if the email or NIN is already registered.");
-      }
-    } catch (err: any) {
-      setApplyError("Roster lookup timeout. Please check your network connection.");
-    } finally {
-      setApplyLoading(false);
-    }
-  };
 
   const handleTrackSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -186,59 +140,83 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
       if (ok) {
         setShowTrackerModal(false);
       } else {
-        setTrackError("Failed credentials verification. Try entering your registered Email coupled with your NIN as password.");
+        setTrackError("Invalid Credentials. Please enter your registered email address and use your 11-digit NIN as password.");
       }
     } catch (err: any) {
-      setTrackError("Authentication service communication breakdown.");
+      setTrackError("Connection breakdown with authentication servers.");
     } finally {
       setTrackLoading(false);
     }
   };
 
+  const handleQuickVerifySubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!quickVerifyCode.trim()) return;
+    // Safely redirect third-parties to verification route with target search param
+    window.location.hash = `#/verify-document?code=${encodeURIComponent(quickVerifyCode.trim())}`;
+  };
+
   return (
-    <div className="min-h-screen bg-slate-50/50 text-slate-900 font-sans selection:bg-indigo-600 selection:text-white">
+    <div id="ideas-tvet-portal-layout" className="min-h-screen bg-slate-50 text-slate-900 font-sans antialiased selection:bg-emerald-600 selection:text-white">
       
-      {/* HEADER NAVIGATION (RESPONSIVE WITH MOBILE HAMBURGER TOGGLE) */}
-      <nav id="nav-system-top" className="sticky top-0 bg-white/95 backdrop-blur-md border-b border-slate-200/80 z-40 px-6 py-4 shadow-3xs transition-all duration-300">
+      {/* GOVERNMENT TOPMOST REGULATORY HEADER BAR */}
+      <div className="bg-slate-950 border-b border-emerald-500/30 text-white py-2 px-6 flex items-center justify-between text-[10px] font-mono tracking-wider font-semibold">
+        <div className="flex items-center gap-2">
+          <span className="inline-block h-2 w-3.5 bg-emerald-500 rounded-xs"></span>
+          <span className="inline-block h-2 w-3.5 bg-white rounded-xs"></span>
+          <span className="inline-block h-2 w-3.5 bg-emerald-500 rounded-xs"></span>
+          <span className="text-slate-350 uppercase">Official Portal of the Federal Republic of Nigeria</span>
+        </div>
+        <div className="hidden sm:flex items-center gap-4 text-slate-400">
+          <span>COHORT B ADMISSIONS TIMELINE ACTIVE</span>
+          <span>·</span>
+          <span>SYSTEM SECURITY: SECURE AES-256</span>
+        </div>
+      </div>
+
+      {/* PRIMARY NAVIGATION PANELS */}
+      <nav id="nav-system-top" className="sticky top-0 bg-white/95 backdrop-blur-md border-b border-slate-200/80 z-40 px-6 py-4.5 shadow-3xs transition-all duration-300">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
           
           {/* Institutional logo & name */}
           <a href="#" className="flex items-center gap-3 select-none group text-left">
-            <div className="h-10 w-10 bg-slate-900 rounded-xl flex items-center justify-center text-white font-bold font-mono text-sm shadow-sm border border-slate-800 group-hover:scale-[102%] transition-all">
-              <Building className="w-5 h-5 text-emerald-400" />
+            <div className="h-10 w-10 bg-emerald-950 rounded-xl flex items-center justify-center text-white font-bold border border-emerald-600/30 shadow-xs group-hover:scale-[101%] transition-all">
+              <Landmark className="w-5.5 h-5.5 text-emerald-400" />
             </div>
             <div className="min-w-0">
-              <span className="text-[9px] font-bold text-slate-450 font-mono uppercase tracking-widest block leading-none">
-                IDEAS-TVET Initiative
+              <span className="text-[9px] font-bold text-emerald-700 font-mono uppercase tracking-widest block leading-none">
+                Federal Ministry of Education
               </span>
-              <h2 className="text-[13px] font-extrabold text-slate-900 font-display mt-1 leading-none">
-                TSP Governance Portal
+              <h2 className="text-[14px] font-black text-slate-900 font-display mt-0.5 leading-none tracking-tight">
+                IDEAS-TVET Initiative
               </h2>
             </div>
           </a>
 
           {/* Desktop Navitems */}
           <div className="hidden lg:flex items-center gap-7 font-mono text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-            <a href="#branding-strip" className="hover:text-indigo-600 transition">Partners</a>
-            <a href="#credentials" className="hover:text-indigo-600 transition">Program Benefits</a>
-            <a href="#programs" className="hover:text-indigo-600 transition">Training Programs</a>
-            <a href="#faqs" className="hover:text-indigo-600 transition">TSP FAQ</a>
+            <a href="#about" className="hover:text-emerald-700 transition">About</a>
+            <a href="#impact" className="hover:text-emerald-700 transition">National Impact</a>
+            <a href="#programs" className="hover:text-emerald-700 transition">Featured Tracks</a>
+            <a href="#how-it-works" className="hover:text-emerald-700 transition">Portal Flow</a>
+            <a href="#verification-section" className="hover:text-emerald-700 transition">Verify Document</a>
+            <a href="#support" className="hover:text-emerald-700 transition">Support</a>
           </div>
 
           {/* Action buttons (Desktop) */}
           <div className="hidden lg:flex items-center gap-3">
             <button
               onClick={() => setShowTrackerModal(true)}
-              className="text-indigo-600 hover:bg-slate-55 border border-slate-200 hover:border-slate-300 font-extrabold py-2 px-4 rounded-lg text-[11px] transition font-mono uppercase tracking-wide cursor-pointer"
+              className="text-slate-700 hover:text-emerald-800 hover:bg-slate-50 border border-slate-200 hover:border-slate-350 font-mono font-extrabold py-2 px-4 rounded-lg text-[11.5px] transition uppercase tracking-wider cursor-pointer"
             >
-              Track Admission
+              Track Application
             </button>
             <button
               onClick={onLoginShow}
-              className="bg-slate-950 hover:bg-slate-800 text-white font-bold py-2.5 px-4.5 rounded-lg text-[11px] flex items-center gap-1.5 transition shadow-3xs cursor-pointer font-mono uppercase tracking-wide"
+              className="bg-emerald-900 hover:bg-emerald-950 text-white font-mono font-extrabold py-2 px-4 rounded-lg text-[11.5px] flex items-center gap-1.5 transition shadow-xs cursor-pointer uppercase tracking-wider"
             >
               <Lock className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Officer Log-In</span>
+              <span>Access Portal</span>
             </button>
           </div>
 
@@ -246,7 +224,7 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
           <div className="flex lg:hidden items-center">
             <button
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="text-slate-600 hover:text-slate-900 p-2 border border-slate-200 rounded-lg hover:bg-slate-50"
+              className="text-slate-600 hover:text-slate-900 p-2 border border-slate-200 rounded-lg hover:bg-slate-50 focus:outline-none"
             >
               {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </button>
@@ -264,52 +242,66 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
               className="lg:hidden mt-4 pt-4 border-t border-slate-100 flex flex-col gap-4 text-left font-mono text-[11px] uppercase tracking-wider text-slate-600"
             >
               <a 
-                href="#branding-strip" 
+                href="#about" 
                 onClick={() => setMobileMenuOpen(false)}
-                className="hover:text-indigo-600 font-bold py-1 px-2 hover:bg-slate-50 rounded"
+                className="hover:text-emerald-750 font-bold py-1 px-2 hover:bg-slate-50 rounded"
               >
-                Partners
+                About
               </a>
               <a 
-                href="#credentials" 
+                href="#impact" 
                 onClick={() => setMobileMenuOpen(false)}
-                className="hover:text-indigo-600 font-bold py-1 px-2 hover:bg-slate-50 rounded"
+                className="hover:text-emerald-750 font-bold py-1 px-2 hover:bg-slate-50 rounded"
               >
-                Program Benefits
+                National Impact
               </a>
               <a 
                 href="#programs" 
                 onClick={() => setMobileMenuOpen(false)}
-                className="hover:text-indigo-600 font-bold py-1 px-2 hover:bg-slate-50 rounded"
+                className="hover:text-emerald-750 font-bold py-1 px-2 hover:bg-slate-50 rounded"
               >
-                Training Programs
+                Featured Tracks
               </a>
               <a 
-                href="#faqs" 
+                href="#how-it-works" 
                 onClick={() => setMobileMenuOpen(false)}
-                className="hover:text-indigo-600 font-bold py-1 px-2 hover:bg-slate-50 rounded"
+                className="hover:text-emerald-750 font-bold py-1 px-2 hover:bg-slate-50 rounded"
               >
-                TSP FAQ
+                Portal Flow
               </a>
-              <div className="flex flex-col gap-2 pt-2 border-t border-slate-100">
+              <a 
+                href="#verification-section" 
+                onClick={() => setMobileMenuOpen(false)}
+                className="hover:text-emerald-750 font-bold py-1 px-2 hover:bg-slate-50 rounded"
+              >
+                Verify Document
+              </a>
+              <a 
+                href="#support" 
+                onClick={() => setMobileMenuOpen(false)}
+                className="hover:text-emerald-750 font-bold py-1 px-2 hover:bg-slate-50 rounded"
+              >
+                Support Hub
+              </a>
+              <div className="flex flex-col gap-2 pt-2 border-t border-slate-100 font-sans">
                 <button
                   onClick={() => {
                     setMobileMenuOpen(false);
                     setShowTrackerModal(true);
                   }}
-                  className="w-full text-center text-indigo-600 border border-slate-200 font-bold py-2 px-4 rounded-lg hover:bg-slate-50 cursor-pointer"
+                  className="w-full text-center text-slate-700 font-bold py-2.5 px-4 rounded-lg border border-slate-250 hover:bg-slate-50 cursor-pointer text-xs"
                 >
-                  Track Admission
+                  Track Application
                 </button>
                 <button
                   onClick={() => {
                     setMobileMenuOpen(false);
                     onLoginShow();
                   }}
-                  className="w-full text-center bg-slate-950 text-white font-bold py-2 px-4 rounded-lg hover:bg-slate-900 cursor-pointer flex items-center justify-center gap-1.5"
+                  className="w-full text-center bg-emerald-905 bg-emerald-900 text-white font-bold py-2.5 px-4 rounded-lg hover:bg-emerald-950 cursor-pointer flex items-center justify-center gap-1.5 text-xs text-center"
                 >
                   <Lock className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Officer Log-In</span>
+                  <span>Access Portal</span>
                 </button>
               </div>
             </motion.div>
@@ -317,90 +309,116 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
         </AnimatePresence>
       </nav>
 
-      {/* HERO SECTION DECORATED FOR ACCREDITED TRAINING SERVICES PROVIDERS */}
-      <section className="relative overflow-hidden pt-12 pb-20 bg-linear-to-b from-white to-slate-50/60">
+      {/* PREMIUM HERO SECTION */}
+      <section className="relative overflow-hidden pt-16 pb-24 bg-linear-to-b from-white to-slate-50">
         
-        {/* Soft background glow features */}
-        <div className="absolute top-1/4 left-1/4 w-80 h-80 bg-emerald-500/5 rounded-full blur-3xl -z-10" />
-        <div className="absolute bottom-1/4 right-1/4 w-[360px] h-[360px] bg-indigo-500/5 rounded-full blur-3xl -z-10" />
+        {/* Soft background glow features mimicking sovereign authority */}
+        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-emerald-600/5 rounded-full blur-3xl -z-10" />
+        <div className="absolute bottom-1/4 right-1/4 w-[420px] h-[420px] bg-slate-900/5 rounded-full blur-3xl -z-10" />
 
         <div className="max-w-7xl mx-auto px-6 grid grid-cols-1 lg:grid-cols-12 gap-12 items-center">
           
           {/* Hero text descriptor */}
           <div className="lg:col-span-7 space-y-6 text-left">
-            <div className="inline-flex items-center gap-2 bg-emerald-50 border border-emerald-100 px-3.5 py-1.5 rounded-full text-emerald-800 font-bold font-mono text-[10px] leading-none shadow-3xs uppercase tracking-wider">
-              <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-              <span>TSPs Certified Governance Workspace</span>
+            <div className="inline-flex items-center gap-2 bg-slate-100 border border-slate-200 px-3.5 py-1.5 rounded-full text-slate-700 font-extrabold font-mono text-[9px] uppercase tracking-wider">
+              <span className="w-2 h-2 bg-emerald-500 rounded-full" />
+              <span>Federal Ministry of Education · IDEAS-TVET</span>
             </div>
 
-            <h1 className="text-3xl sm:text-5xl font-black text-slate-900 tracking-tight font-display leading-[1.12] select-text">
-              Unified TSP Workspace & Trainee Lifecycle Tracker
-            </h1>
+            <div className="space-y-3">
+              <p className="text-emerald-700 font-extrabold font-mono text-xs uppercase tracking-widest block">
+                Sovereign Vocational Empowerment System
+              </p>
+              <h1 className="text-3xl sm:text-5xl font-black text-slate-950 tracking-tight font-display leading-[1.12]">
+                Skills Development for <span className="text-emerald-900 block sm:inline">National Growth</span>
+              </h1>
+            </div>
 
-            <p className="text-xs sm:text-sm md:text-base text-slate-550 leading-relaxed font-semibold max-w-xl text-slate-600">
-              Transforming skills acquisition with ironclad accountability. Authorized Training Service Providers (TSPs) can manage trainee onboarding, verify candidate credentials, automate biometric checks, compile compliance folders, and dispatch verified TVET certifications.
+            <p className="text-xs sm:text-sm md:text-base text-slate-600 leading-relaxed font-medium max-w-xl">
+              Coordinating technical masteries with sovereign transparency. The Innovative Development for Effectiveness in the Acquisition of Skills (IDEAS) project, supported by the World Bank, empowers certified Training Service Providers (TSPs) to register candidates, track biometrics, compile credential histories, and verify credentials.
             </p>
 
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3.5 pt-4">
               <button
-                onClick={() => setShowApplyModal(true)}
-                className="bg-indigo-950 hover:bg-slate-900 text-white font-bold py-3.5 px-6 rounded-xl text-[11px] flex items-center justify-center gap-1.5 shadow-sm transition active:scale-[98%] cursor-pointer uppercase tracking-wider font-mono hover:-translate-y-px"
+                onClick={onLoginShow}
+                className="bg-emerald-900 hover:bg-emerald-950 text-white font-mono font-extrabold py-3.5 px-6 rounded-xl text-[11px] flex items-center justify-center gap-2 shadow-sm transition active:scale-[98%] cursor-pointer uppercase tracking-wider"
               >
-                <span>Register Trainee Prospect</span>
+                <span>Access Portal</span>
                 <ChevronRight className="w-4 h-4 text-emerald-400" />
               </button>
 
               <button
-                onClick={() => setShowTrackerModal(true)}
-                className="bg-white hover:bg-slate-50 text-slate-800 border border-slate-200 font-bold py-3.5 px-6 rounded-xl text-[11px] transition active:scale-[98%] cursor-pointer text-center uppercase tracking-wider font-mono border-slate-250/70"
+                onClick={() => {
+                  const el = document.getElementById("verification-section");
+                  if (el) el.scrollIntoView({ behavior: "smooth" });
+                }}
+                className="bg-white hover:bg-slate-50 text-slate-800 border border-slate-200 hover:border-slate-350 font-mono font-extrabold py-3.5 px-6 rounded-xl text-[11px] transition active:scale-[98%] cursor-pointer text-center uppercase tracking-wider"
               >
-                Track Trainee Status
+                Verify Document
               </button>
             </div>
 
             <div className="flex flex-wrap items-center gap-5 pt-4 text-slate-500 text-[10px] font-mono font-bold tracking-wide">
-              <span className="flex items-center gap-1.5"><Check className="w-4 h-4 text-emerald-500" /> Web-to-PDF Generative Stamped Engines</span>
+              <span className="flex items-center gap-1.5">
+                <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>Authorized TSPs Dashboard Access</span>
+              </span>
               <span className="hidden sm:inline-block h-1 w-1 bg-slate-300 rounded-full" />
-              <span className="flex items-center gap-1.5"><Check className="w-4 h-4 text-emerald-500" /> Live Verification Logs tracking</span>
+              <span className="flex items-center gap-1.5">
+                <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>Watermarked Stamp PDF Transcripts</span>
+              </span>
             </div>
           </div>
 
-          {/* Hero right panel mockup */}
+          {/* Hero right panel - Telemetry Dashboard preview demonstrating portal systems */}
           <div className="lg:col-span-5 relative flex items-center justify-center">
-            <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-full bg-emerald-500/5 rounded-3xl filter blur-2xl rotate-6 -z-10" />
+            <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-full bg-slate-350/5 rounded-3xl filter blur-2xl rotate-3 -z-10" />
             
-            <div className="w-full max-w-md bg-white border border-slate-200 rounded-2xl shadow-xl p-6 text-left border-l-4 border-l-emerald-600 space-y-5">
+            <div className="w-full max-w-md bg-slate-950 text-white border border-slate-800 rounded-2xl shadow-xl p-6 text-left relative overflow-hidden">
+              {/* Outer micro decorative stripes */}
+              <div className="absolute top-0 right-0 h-40 w-1 bg-gradient-to-b from-emerald-500 via-transparent to-transparent"></div>
               
-              <div className="flex items-center justify-between pb-3 border-b border-indigo-50/80">
-                <div className="flex items-center gap-2">
-                  <div className="h-8.5 w-8.5 bg-emerald-50 border border-emerald-100 rounded-lg flex items-center justify-center text-emerald-800">
-                    <GraduationCap className="w-4.5 h-4.5" />
+              <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+                <div className="flex items-center gap-2.5">
+                  <div className="h-8.5 w-8.5 bg-emerald-950/80 border border-emerald-500/20 rounded-lg flex items-center justify-center text-emerald-400">
+                    <ShieldCheck className="w-4.5 h-4.5" />
                   </div>
                   <div>
-                    <h4 className="text-[11px] font-extrabold text-slate-800 uppercase font-mono">Trainee Services</h4>
-                    <p className="text-[8px] text-slate-400 font-mono font-bold uppercase tracking-widest">Enrollment Desk</p>
+                    <h4 className="text-[10.5px] font-black text-white uppercase font-mono tracking-wide">SECURE REGISTRY</h4>
+                    <p className="text-[8px] text-slate-400 font-mono font-bold uppercase tracking-widest">Admissions Coordination</p>
                   </div>
                 </div>
-                <span className="text-[8px] px-1.5 py-0.5 bg-indigo-50 border border-indigo-150 text-indigo-750 font-bold font-mono rounded">STUDENT ACTIVE PORTAL</span>
+                <span className="text-[8px] px-2 py-0.5 bg-slate-900 border border-slate-800 text-emerald-400 font-mono rounded font-extrabold uppercase">
+                  Gov-Gate Checked
+                </span>
               </div>
 
               {/* Program features highlighting student portal access benefits */}
-              <div className="space-y-4 font-sans text-xs text-slate-600 leading-relaxed font-semibold">
-                <p className="text-[11px] leading-relaxed">Welcome to the Federal Ministry of Education and IDEAS-TVET Training Portal. If you have been pre-selected or have a provisional admission offer, you can access your trainee record here:</p>
+              <div className="space-y-4 font-sans text-xs text-slate-300 leading-relaxed py-4">
+                <p className="text-[11px] leading-relaxed text-slate-400">
+                  Access federal verification streams, download watermarked admission files, print verified transcripts, and accept training allocations securely.
+                </p>
                 
-                <div className="flex items-start gap-2.5 p-3 bg-slate-50 border border-slate-200 rounded-xl">
-                  <BadgeCheck className="w-4 h-4 text-emerald-600 mt-0.5 shrink-0" />
-                  <div>
-                    <h5 className="font-bold text-slate-900 text-[11px] uppercase tracking-wide">Verify Admission Offers</h5>
-                    <p className="text-[10.5px] font-sans text-slate-500 mt-0.5 font-medium leading-normal">Instantly load, view, and print your watermarked Provisional Admission and Enrollment letters.</p>
+                <div className="space-y-2">
+                  <div className="flex items-start gap-2.5 p-3 bg-slate-900/60 border border-slate-850 rounded-xl">
+                    <BadgeCheck className="w-4.5 h-4.5 text-emerald-400 mt-0.5 shrink-0" />
+                    <div>
+                      <h5 className="font-bold text-white text-[11px] uppercase tracking-wide">Pre-Selected Candidates Space</h5>
+                      <p className="text-[10px] font-sans text-slate-400 mt-0.5 leading-normal">
+                        Verify provisional status, accept placements, and download certified enrollment forms with 11-digit civil credential security.
+                      </p>
+                    </div>
                   </div>
-                </div>
 
-                <div className="flex items-start gap-2.5 p-3 bg-indigo-50/30 border border-indigo-100/50 rounded-xl">
-                  <GraduationCap className="w-4 h-4 text-indigo-600 mt-0.5 shrink-0" />
-                  <div>
-                    <h5 className="font-bold text-slate-900 text-[11px] uppercase tracking-wide">Skills Training Curricula</h5>
-                    <p className="text-[10.5px] font-sans text-slate-500 mt-0.5 font-medium leading-normal">Access hands-on program tracks in IT systems, green power, and modern manufacturing.</p>
+                  <div className="flex items-start gap-2.5 p-3 bg-slate-900/60 border border-slate-850 rounded-xl">
+                    <GraduationCap className="w-4.5 h-4.5 text-emerald-400 mt-0.5 shrink-0" />
+                    <div>
+                      <h5 className="font-bold text-white text-[11px] uppercase tracking-wide">Central Training Directory</h5>
+                      <p className="text-[10px] font-sans text-slate-400 mt-0.5 leading-normal">
+                        Accredited training service tracks covering technical solar configurations, ICT system diagnostics, and precision fabrications.
+                      </p>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -408,16 +426,16 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
               <div className="pt-2">
                 <button
                   onClick={() => setShowTrackerModal(true)}
-                  className="w-full bg-indigo-650 hover:bg-slate-900 text-white font-bold py-3 px-4 rounded-xl text-[11px] flex items-center justify-center gap-1.5 transition font-mono uppercase tracking-wide cursor-pointer shadow-3xs"
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-4 rounded-xl text-[11px] flex items-center justify-center gap-1.5 transition font-mono uppercase tracking-wide cursor-pointer shadow-3xs"
                 >
-                  <Search className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Access Student Portal</span>
+                  <Search className="w-3.5 h-3.5 text-emerald-300" />
+                  <span>Verify Placement Status</span>
                 </button>
               </div>
 
-              <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-[9px] font-mono text-slate-400">
-                <span>IDEAS-TVET HUB SLOTS</span>
-                <span className="text-emerald-600 font-bold uppercase">Accredited TSP Gateway</span>
+              <div className="flex items-center justify-between pt-4 border-t border-slate-900 text-[8.5px] font-mono text-slate-500">
+                <span>PROJECT ID: FME-IDEAS-COHORT-B</span>
+                <span className="text-emerald-500 font-bold uppercase transition">STAMPED AUDIT LEDGER LOCK</span>
               </div>
 
             </div>
@@ -426,111 +444,269 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
         </div>
       </section>
 
-      {/* STUNNING BRANDING STRIP CAPTURING ALL REQUIRED SYSTEM TRUST PATHWAYS */}
-      <section id="branding-strip" className="border-t border-b border-slate-200/80 bg-white py-10">
+      {/* SOVEREIGN COOP PARTNERS STRIP */}
+      <section id="branding-strip" className="border-t border-b border-slate-200 bg-white py-10">
         <div className="max-w-7xl mx-auto px-6">
           <div className="text-center mb-6">
-            <span className="text-[9px] font-extrabold text-indigo-600 font-mono uppercase tracking-widest block">
+            <span className="text-[9px] font-extrabold text-slate-400 font-mono uppercase tracking-widest block">
               ACCREDITED PROGRAM PARTNERS & GOVERNANCE AUTHORITIES
             </span>
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4 items-center justify-center">
             {/* World Bank Logo Box */}
-            <div className="border border-slate-150 hover:border-slate-300 px-4 py-3 bg-slate-50/50 rounded-xl flex items-center gap-2.5 transition duration-200">
-              <Landmark className="w-5 h-5 text-indigo-900 shrink-0" />
+            <div className="border border-slate-150 px-4 py-3 bg-slate-50 rounded-xl flex items-center gap-2.5">
+              <Landmark className="w-5 h-5 text-slate-500 shrink-0" />
               <div className="text-left leading-none">
-                <span className="text-[8px] font-mono font-bold text-slate-400 uppercase">Funding Body</span>
-                <h5 className="text-[10px] font-semibold text-slate-850 text-slate-800 mt-1 uppercase">WORLD BANK</h5>
+                <span className="text-[8px] font-mono font-bold text-slate-400 uppercase leading-none block">Supporting Body</span>
+                <h5 className="text-[10px] font-extrabold text-slate-700 mt-1 uppercase font-mono">WORLD BANK</h5>
               </div>
             </div>
 
             {/* FME Logo Box */}
-            <div className="border border-slate-150 hover:border-slate-300 px-4 py-3 bg-slate-50/50 rounded-xl flex items-center gap-2.5 transition duration-200">
-              <Building className="w-5 h-5 text-emerald-700 shrink-0" />
+            <div className="border border-slate-150 px-4 py-3 bg-slate-50 rounded-xl flex items-center gap-2.5">
+              <Building className="w-5 h-5 text-slate-500 shrink-0" />
               <div className="text-left leading-none">
-                <span className="text-[8px] font-mono font-bold text-slate-400 uppercase">Federal Authority</span>
-                <h5 className="text-[10px] font-semibold text-slate-850 text-slate-800 mt-1 uppercase">FME NIGERIA</h5>
+                <span className="text-[8px] font-mono font-bold text-slate-400 uppercase leading-none block">Federal Ministry</span>
+                <h5 className="text-[10px] font-extrabold text-slate-700 mt-1 uppercase font-mono">FME NIGERIA</h5>
               </div>
             </div>
 
             {/* NBTE Logo Box */}
-            <div className="border border-slate-150 hover:border-slate-300 px-4 py-3 bg-slate-50/50 rounded-xl flex items-center gap-2.5 transition duration-200">
-              <Landmark className="w-5 h-5 text-blue-700 shrink-0" />
+            <div className="border border-slate-150 px-4 py-3 bg-slate-50 rounded-xl flex items-center gap-2.5">
+              <Award className="w-5 h-5 text-slate-500 shrink-0" />
               <div className="text-left leading-none">
-                <span className="text-[8px] font-mono font-bold text-slate-400 uppercase">Board regulator</span>
-                <h5 className="text-[10px] font-semibold text-slate-850 text-slate-800 mt-1 uppercase">NBTE SECRETARIAT</h5>
+                <span className="text-[8px] font-mono font-bold text-slate-400 uppercase leading-none block">Regulatory Board</span>
+                <h5 className="text-[10px] font-extrabold text-slate-700 mt-1 uppercase font-mono">NBTE SECRETARIAT</h5>
               </div>
             </div>
 
             {/* IDEAS Logo Box */}
-            <div className="border border-slate-150 hover:border-slate-300 px-4 py-3 bg-slate-50/50 rounded-xl flex items-center gap-2.5 transition duration-200">
-              <Award className="w-5 h-5 text-amber-600 shrink-0" />
+            <div className="border border-slate-150 px-4 py-3 bg-slate-50 rounded-xl flex items-center gap-2.5">
+              <CheckCircle className="w-5 h-5 text-slate-500 shrink-0" />
               <div className="text-left leading-none">
-                <span className="text-[8px] font-mono font-bold text-slate-400 uppercase">National Initiative</span>
-                <h5 className="text-[10px] font-semibold text-slate-850 text-slate-800 mt-1 uppercase">IDEAS PROJECTS</h5>
+                <span className="text-[8px] font-mono font-bold text-slate-400 uppercase leading-none block">National Initiative</span>
+                <h5 className="text-[10px] font-extrabold text-slate-700 mt-1 uppercase font-mono">IDEAS PROJECTS</h5>
               </div>
             </div>
 
             {/* Verification Security Standard Box */}
-            <div className="col-span-2 md:col-span-4 lg:col-span-1 border border-emerald-150/80 px-4 py-3 bg-emerald-50/10 rounded-xl flex items-center gap-2.5 hover:bg-emerald-55 transition duration-200">
+            <div className="col-span-2 md:col-span-4 lg:col-span-1 border border-emerald-150 px-4 py-3 bg-emerald-50/20 rounded-xl flex items-center gap-2.5">
               <ShieldCheck className="w-5 h-5 text-emerald-600 shrink-0" />
               <div className="text-left leading-none">
-                <span className="text-[8px] font-mono font-bold text-emerald-600 uppercase">Portal Standard</span>
-                <h5 className="text-[10px] font-semibold text-slate-850 text-slate-800 mt-1 uppercase">NDPR SECURE GATE</h5>
+                <span className="text-[8px] font-mono font-bold text-emerald-600 uppercase leading-none block">Identity Standard</span>
+                <h5 className="text-[10px] font-extrabold text-slate-800 mt-1 uppercase font-mono">CIVIL NIN SENSITIVE</h5>
               </div>
             </div>
           </div>
         </div>
       </section>
 
-
-
-      {/* PORTAL CAPABILITIES & DESIGN STANDARDS */}
-      <section id="credentials" className="py-20 bg-white scroll-mt-20">
+      {/* PROGRAM IMPACT SECTION */}
+      <section id="impact" className="py-20 bg-slate-50 scroll-mt-20">
         <div className="max-w-7xl mx-auto px-6">
+          <div className="text-center space-y-3 mb-16 max-w-xl mx-auto">
+            <span className="text-xs font-bold text-emerald-700 font-mono uppercase tracking-widest block leading-none">Initiative Outcomes</span>
+            <h2 className="text-2xl sm:text-3xl font-black text-slate-950 font-display">Program Impact Metrics</h2>
+            <p className="text-xs text-slate-500">Live indicators of registered training candidates, certificate completions, and state participation benchmarks.</p>
+          </div>
+
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 text-left space-y-2">
+              <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest block">National Reach</span>
+              <div className="text-3xl font-black font-mono text-slate-900">
+                <AnimatedCounter target={36} />
+              </div>
+              <p className="text-[10px] uppercase font-mono font-bold text-emerald-700">States + FCT</p>
+            </div>
+
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 text-left space-y-2">
+              <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest block">Trainees Enrolled</span>
+              <div className="text-3xl font-black font-mono text-slate-900">
+                <AnimatedCounter target={15420} suffix="+" />
+              </div>
+              <p className="text-[10px] uppercase font-mono font-bold text-emerald-700">Verified Profiles</p>
+            </div>
+
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 text-left space-y-2">
+              <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest block">Accredited TSPs</span>
+              <div className="text-3xl font-black font-mono text-slate-900">
+                <AnimatedCounter target={120} suffix="+" />
+              </div>
+              <p className="text-[10px] uppercase font-mono font-bold text-emerald-700">Active Centers</p>
+            </div>
+
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 text-left space-y-2">
+              <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest block">Stamp Documents</span>
+              <div className="text-3xl font-black font-mono text-slate-900">
+                <AnimatedCounter target={45000} suffix="+" />
+              </div>
+              <p className="text-[10px] uppercase font-mono font-bold text-emerald-700">Generated PDFs</p>
+            </div>
+
+            <div className="bg-col-span-2 col-span-2 lg:col-span-1 bg-white p-6 rounded-2xl border border-slate-200 text-left space-y-2">
+              <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest block">Graduated Core</span>
+              <div className="text-3xl font-black font-mono text-slate-900">
+                <AnimatedCounter target={12800} suffix="+" />
+              </div>
+              <p className="text-[10px] uppercase font-mono font-bold text-emerald-700">Certificates Issued</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* HOW IT WORKS */}
+      <section id="how-it-works" className="py-20 bg-white border-t border-b border-slate-200 scroll-mt-20">
+        <div className="max-w-7xl mx-auto px-6">
+          <div className="text-center space-y-3 mb-16 max-w-xl mx-auto">
+            <span className="text-xs font-bold text-emerald-700 font-mono uppercase tracking-widest block leading-none">Onboarding Protocols</span>
+            <h2 className="text-2xl sm:text-3xl font-black text-slate-950 font-display">Trainee Lifecycle Workflow</h2>
+            <p className="text-xs text-slate-500">The 4-stage regulatory loop designed to align candidates with certified academic centers and stamp digital credentials.</p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+            <div className="p-6 bg-slate-50 rounded-2xl border border-slate-200 text-left relative overflow-hidden">
+              <div className="absolute top-4 right-4 h-6 w-6 bg-emerald-50 text-emerald-800 text-[10px] font-black font-mono flex items-center justify-center rounded-lg border border-emerald-200">
+                01
+              </div>
+              <div className="space-y-3 pt-4">
+                <Users className="w-6 h-6 text-emerald-800" />
+                <h4 className="text-xs font-black uppercase font-mono tracking-wider text-slate-900">Beneficiary Selection</h4>
+                <p className="text-[11px] leading-relaxed text-slate-500 font-medium">
+                  Rigorous civil screening and eligibility criteria validation backed by official NIN identification check streams.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-6 bg-slate-50 rounded-2xl border border-slate-200 text-left relative overflow-hidden">
+              <div className="absolute top-4 right-4 h-6 w-6 bg-emerald-50 text-emerald-800 text-[10px] font-black font-mono flex items-center justify-center rounded-lg border border-emerald-200">
+                02
+              </div>
+              <div className="space-y-3 pt-4">
+                <Building className="w-6 h-6 text-emerald-800" />
+                <h4 className="text-xs font-black uppercase font-mono tracking-wider text-slate-900">Training Placement</h4>
+                <p className="text-[11px] leading-relaxed text-slate-500 font-medium">
+                  Accurate pairing of validated trainees with fully accredited state Training Service Providers (TSPs).
+                </p>
+              </div>
+            </div>
+
+            <div className="p-6 bg-slate-50 rounded-2xl border border-slate-200 text-left relative overflow-hidden">
+              <div className="absolute top-4 right-4 h-6 w-6 bg-emerald-50 text-emerald-800 text-[10px] font-black font-mono flex items-center justify-center rounded-lg border border-emerald-200">
+                03
+              </div>
+              <div className="space-y-3 pt-4">
+                <FileText className="w-6 h-6 text-emerald-800" />
+                <h4 className="text-xs font-black uppercase font-mono tracking-wider text-slate-900">Admission Documents</h4>
+                <p className="text-[11px] leading-relaxed text-slate-500 font-medium">
+                  Digitized signature check systems, provisional allocation letters generation, and signed secure acceptance uploads.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-6 bg-slate-50 rounded-2xl border border-slate-200 text-left relative overflow-hidden">
+              <div className="absolute top-4 right-4 h-6 w-6 bg-emerald-50 text-emerald-800 text-[10px] font-black font-mono flex items-center justify-center rounded-lg border border-emerald-200">
+                04
+              </div>
+              <div className="space-y-3 pt-4">
+                <Award className="w-6 h-6 text-emerald-800" />
+                <h4 className="text-xs font-black uppercase font-mono tracking-wider text-slate-900">Certified Graduation</h4>
+                <p className="text-[11px] leading-relaxed text-slate-500 font-medium">
+                  Curriculum completion verified under external ministry assessment. Delivery of watermarked stamped certificates.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* DOCUMENT VERIFICATION SECTION */}
+      <section id="verification-section" className="py-20 bg-slate-950 text-white scroll-mt-20 relative overflow-hidden">
+        {/* Abstract grids */}
+        <div className="absolute inset-0 bg-radial(at_90%_10%,_var(--color-slate-900)_0%,_transparent_50%) pointer-events-none" />
+        <div className="absolute bottom-[-10%] left-[-10%] w-[350px] h-[350px] bg-emerald-500/5 rounded-full blur-3xl pointer-events-none" />
+
+        <div className="max-w-7xl mx-auto px-6 relative z-10">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 items-center">
             
             {/* Left descriptors block */}
-            <div className="lg:col-span-5 space-y-5 text-left">
-              <span className="text-xs font-bold text-indigo-650 font-mono uppercase tracking-widest block leading-none">Programme Outcomes</span>
-              <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight font-display leading-tight">
-                Empowering the Next Generation of Technical Specialists
+            <div className="lg:col-span-6 space-y-6 text-left">
+              <div className="inline-flex items-center gap-2 bg-emerald-950/60 border border-emerald-500/30 px-3.5 py-1.5 rounded-full text-emerald-400 font-bold font-mono text-[9px] uppercase tracking-wider">
+                <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                <span>Central Validation Infrastructure</span>
+              </div>
+              
+              <h2 className="text-2xl sm:text-3xl font-black text-white font-display">
+                Document Verification Portal
               </h2>
-              <p className="text-xs leading-relaxed text-slate-550 text-slate-600 font-medium">
-                Our focused skills programmes are structured around hands-on training, industry-relevant training materials, and direct partnerships with designated Training Service Providers nationwide. 
+              
+              <p className="text-xs sm:text-sm text-slate-300 leading-relaxed font-semibold">
+                This verification gateway allows third-party institutions, state corporations, employers, and banks to instantly verify documents issued under NBTE regulatory frameworks. Confirm authenticity, verify student records, and check enrollment timestamps.
               </p>
-              
-              <div className="h-1 bg-gradient-to-r from-indigo-500 to-emerald-500 w-32 rounded"></div>
-              
-              <button
-                onClick={() => setShowApplyModal(true)}
-                className="inline-flex items-center gap-1.5 text-xs text-indigo-600 font-bold hover:underline font-mono uppercase tracking-wider"
-              >
-                <span>Register as training prospect</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pb-2">
+                <div className="flex items-center gap-2 text-xs font-mono text-slate-350">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>Provisional Admission Letters</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs font-mono text-slate-350">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>Student Admission Forms</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs font-mono text-slate-350">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>Accredited Letters of Acceptance</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs font-mono text-slate-350">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>TVET Digital Certifications</span>
+                </div>
+              </div>
+
+              <div className="pt-2">
+                <button
+                  onClick={() => { window.location.hash = "#/verify-document"; }}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-mono font-extrabold py-3.5 px-6 rounded-xl text-[11px] uppercase tracking-wider inline-flex items-center gap-2 cursor-pointer shadow-sm"
+                >
+                  <Search className="w-4 h-4" />
+                  <span>Open Verification System</span>
+                </button>
+              </div>
             </div>
 
-            {/* Right capabilities cards split */}
-            <div className="lg:col-span-7 space-y-5">
-              {credentialsAndSupport.map((cr, idx) => {
-                const IconC = cr.icon;
-                return (
-                  <div 
-                    key={idx}
-                    className={`bg-slate-50/50 border border-slate-200 p-5 rounded-2xl flex items-start gap-4 text-left hover:bg-white hover:shadow-xs transition duration-200 ${cr.color}`}
-                  >
-                    <div className="p-3 bg-white border border-slate-150 rounded-xl text-slate-800 shrink-0">
-                      <IconC className="w-5 h-5 text-indigo-950" />
-                    </div>
-                    <div className="space-y-1">
-                      <h4 className="text-xs font-extrabold text-slate-900 uppercase font-mono tracking-wide">{cr.title}</h4>
-                      <p className="text-xs text-slate-500 leading-normal font-semibold text-slate-450">{cr.desc}</p>
-                    </div>
+            {/* Right form input widget block */}
+            <div className="lg:col-span-6 bg-slate-900 border border-slate-800 p-6 sm:p-8 rounded-2xl text-left space-y-5">
+              <div>
+                <h4 className="text-xs font-black uppercase font-mono text-emerald-400 tracking-wider">Quick Document Lookup</h4>
+                <p className="text-[10px] text-slate-400 font-mono mt-0.5">SEARCH ACTIVE COHORT CORE REGISTRY DIRECTLY</p>
+              </div>
+
+              <form onSubmit={handleQuickVerifySubmit} className="space-y-4 font-sans">
+                <div className="space-y-1">
+                  <label htmlFor="quick-verify-input" className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider">Document Dispatch Reference ID</label>
+                  <div className="relative">
+                    <input
+                      id="quick-verify-input"
+                      type="text"
+                      required
+                      placeholder="e.g. DOC-123456 or DISP-TOKEN"
+                      value={quickVerifyCode}
+                      onChange={(e) => setQuickVerifyCode(e.target.value)}
+                      className="w-full bg-slate-950/80 border border-slate-800 rounded-lg py-2.5 pl-4 pr-12 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono font-bold uppercase transition"
+                    />
+                    <button
+                      type="submit"
+                      className="absolute right-2 top-2 h-7.5 w-7.5 bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center rounded-md cursor-pointer focus:outline-none transition"
+                    >
+                      <ArrowRight className="w-4 h-4" />
+                    </button>
                   </div>
-                );
-              })}
+                </div>
+
+                <div className="bg-slate-950 border border-slate-850 p-3.5 rounded-lg text-[10.5px] text-slate-400 leading-normal font-mono">
+                  💡 <span className="font-bold text-white">Auditing Tip</span>: Look for the watermarked signature ref code at the header margin or footer base of the digital letter.
+                </div>
+              </form>
             </div>
 
           </div>
@@ -541,10 +717,10 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
       <section id="programs" className="py-20 bg-slate-50/50 border-t border-b border-slate-200 scroll-mt-20">
         <div className="max-w-7xl mx-auto px-6">
           
-          <div className="text-center space-y-2 mb-12">
-            <span className="text-xs font-bold text-indigo-600 font-mono uppercase tracking-widest block">Approved curricula</span>
-            <h2 className="text-3xl font-extrabold text-slate-900 font-display">Accredited Specialities for TSPs</h2>
-            <p className="text-xs text-slate-500 max-w-sm mx-auto">Explore intensive skills training courses authorized under World Bank funded models.</p>
+          <div className="text-center space-y-3 mb-16 max-w-xl mx-auto">
+            <span className="text-xs font-bold text-emerald-700 font-mono uppercase tracking-widest block leading-none">Vetted technical tracks</span>
+            <h2 className="text-2xl sm:text-3xl font-black text-slate-950 font-display">Priority Vocational Curricula</h2>
+            <p className="text-xs text-slate-500">Rigorous 6-month hands-on programs certified under FME standards with leading training centers.</p>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -553,22 +729,22 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
               return (
                 <div 
                   key={idx}
-                  className="bg-white border border-slate-200 rounded-2xl p-6 flex flex-col justify-between text-left space-y-4 hover:shadow-md transition duration-200 border-t-4 border-t-indigo-950"
+                  className="bg-white border border-slate-250/70 border-slate-200 rounded-2xl p-6 flex flex-col justify-between text-left space-y-4 hover:shadow-xs hover:border-slate-300 transition-all border-t-4 border-t-emerald-800"
                 >
                   <div className="space-y-3">
-                    <div className="p-2.5 bg-indigo-50 border border-indigo-100 text-indigo-950 rounded-xl w-fit flex items-center justify-center">
-                      <IconC className="w-4.5 h-4.5 text-indigo-950" />
+                    <div className="p-2.5 bg-slate-50 border border-slate-150 text-slate-800 rounded-xl w-fit flex items-center justify-center">
+                      <IconC className="w-4.5 h-4.5 text-slate-800" />
                     </div>
                     <div>
-                      <span className="text-[8px] font-bold font-mono text-indigo-600 uppercase tracking-widest block bg-indigo-50 px-1.5 py-0.5 rounded w-fit mb-1.5">{p.sector}</span>
-                      <h3 className="text-xs font-extrabold text-slate-900 font-display">{p.title}</h3>
-                      <p className="text-[11px] text-slate-500 font-semibold leading-relaxed mt-1">{p.desc}</p>
+                      <span className="text-[8px] font-bold font-mono text-emerald-700 uppercase tracking-widest block bg-emerald-50 px-1.5 py-0.5 rounded w-fit mb-1.5">{p.sector}</span>
+                      <h3 className="text-xs sm:text-sm font-extrabold text-slate-900 tracking-tight font-display">{p.title}</h3>
+                      <p className="text-[11px] text-slate-500 font-medium leading-relaxed mt-1">{p.desc}</p>
                     </div>
                   </div>
 
-                  <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-[10px] font-mono">
-                    <span className="text-slate-400 uppercase">Intake Limit:</span>
-                    <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded font-black">{p.capacity}</span>
+                  <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-[9px] font-mono">
+                    <span className="text-slate-400 uppercase tracking-wider font-bold">Priority Sector</span>
+                    <span className="text-emerald-800 bg-emerald-50 px-2.5 py-0.5 rounded font-bold">{p.capacity}</span>
                   </div>
                 </div>
               );
@@ -582,10 +758,10 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
       <section id="faqs" className="py-20 bg-white scroll-mt-20">
         <div className="max-w-3xl mx-auto px-6">
           
-          <div className="text-center space-y-2 mb-12">
-            <span className="text-xs font-bold text-indigo-650 font-mono uppercase tracking-widest block leading-none">Frequently Answered Questions</span>
-            <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 font-display">TSP Support & Regulatory Information</h2>
-            <p className="text-xs text-slate-500">Find direct clarifications regarding biometric standards, documents locks, and compliant auditing protocols.</p>
+          <div className="text-center space-y-3 mb-16 max-w-xl mx-auto">
+            <span className="text-xs font-bold text-emerald-700 font-mono uppercase tracking-widest block leading-none">Frequently Answered Questions</span>
+            <h2 className="text-2xl sm:text-3xl font-black text-slate-950 font-display">Regulatory Support & FAQ</h2>
+            <p className="text-xs text-slate-500">Official clarifications concerning biometric validation, placement checks, and authorized enrollment gates.</p>
           </div>
 
           <div className="space-y-4">
@@ -594,15 +770,15 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
               return (
                 <div 
                   key={idx}
-                  className="bg-slate-50/50 border border-slate-200 rounded-xl overflow-hidden text-left"
+                  className="bg-slate-50 border border-slate-200 rounded-xl overflow-hidden text-left transition-colors hover:border-slate-300"
                 >
                   <button
                     onClick={() => setActiveFaq(isOpen ? null : idx)}
                     className="w-full py-4 px-6 flex items-center justify-between text-left focus:outline-none cursor-pointer"
                   >
                     <span className="text-xs font-bold text-slate-900 tracking-wide select-text">{f.q}</span>
-                    <div className="h-6 w-6 bg-white border border-slate-200 rounded-full flex items-center justify-center text-slate-500 shrink-0">
-                      <ChevronDown className={`w-3.5 h-3.5 transform transition-transform duration-250 ${isOpen ? "rotate-180 text-indigo-600" : ""}`} />
+                    <div className="h-6 w-6 bg-white border border-slate-200 rounded-full flex items-center justify-center text-slate-550 shrink-0">
+                      <ChevronDown className={`w-3.5 h-3.5 transform transition-transform duration-250 ${isOpen ? "rotate-180 text-emerald-700" : ""}`} />
                     </div>
                   </button>
 
@@ -614,7 +790,7 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
                         exit={{ height: 0, opacity: 0 }}
                         transition={{ duration: 0.2 }}
                       >
-                        <div className="px-6 pb-5 pt-1 text-xs text-slate-600 leading-relaxed font-semibold border-t border-slate-200/50 select-text font-serif">
+                        <div className="px-6 pb-5 pt-1 text-xs text-slate-600 leading-relaxed font-medium border-t border-slate-200/50 select-text font-sans">
                           {f.a}
                         </div>
                       </motion.div>
@@ -628,27 +804,65 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
         </div>
       </section>
 
+      {/* NEW CONTACT & HELP DESK SECTION */}
+      <section id="support" className="py-16 bg-slate-50 border-t border-slate-200 scroll-mt-20">
+        <div className="max-w-7xl mx-auto px-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 space-y-3 text-left">
+              <div className="h-9 w-9 bg-emerald-50 text-emerald-800 rounded-lg flex items-center justify-center">
+                <Clock className="w-5 h-5" />
+              </div>
+              <h4 className="text-xs font-black uppercase font-mono tracking-wider text-slate-900">Official Office Hours</h4>
+              <p className="text-[11px] leading-relaxed text-slate-500 font-medium">
+                The central support desk and regulatory help coordinators operate Monday through Friday, 8:30 AM to 5:00 PM GMT+1 (excluding federal public holidays).
+              </p>
+            </div>
+
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 space-y-3 text-left">
+              <div className="h-9 w-9 bg-emerald-50 text-emerald-800 rounded-lg flex items-center justify-center">
+                <Mail className="w-5 h-5" />
+              </div>
+              <h4 className="text-xs font-black uppercase font-mono tracking-wider text-slate-900">Central Help Desk Coordinates</h4>
+              <div className="text-[11px] leading-normal text-slate-500 font-medium space-y-1 font-mono">
+                <p>Support Email: <span className="text-emerald-800 font-bold select-all">support@ideas-tvet.ng</span></p>
+                <p>Telephone: <span className="text-emerald-800 font-bold select-all">+234 (0) 90 3242 5592</span></p>
+              </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 space-y-3 text-left">
+              <div className="h-9 w-9 bg-emerald-50 text-emerald-800 rounded-lg flex items-center justify-center">
+                <Building className="w-5 h-5" />
+              </div>
+              <h4 className="text-xs font-black uppercase font-mono tracking-wider text-slate-900">Federal Secretariat Location</h4>
+              <p className="text-[11px] leading-relaxed text-slate-500 font-medium">
+                Federal Ministry of Education Headquarters, Plot 245 Samuel Ademulegun Avenue, Central Business District, Abuja, FCT, Nigeria.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* INSTITUTIONAL COHORT FOOTER DESIGNED WITH STRICT GOVERNANCE RECOGNITION */}
-      <footer className="bg-slate-900 text-slate-400 py-16 px-6 border-t-4 border-t-emerald-600 font-mono text-xs">
+      <footer className="bg-slate-950 text-slate-400 py-16 px-6 border-t font-mono text-xs border-slate-900">
         <div className="max-w-7xl mx-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-10 text-left">
           
           <div className="space-y-4">
-            <h4 className="text-slate-100 font-bold uppercase tracking-wider text-[11px] flex items-center gap-1.5 font-display">
-              <span className="h-2 w-2 rounded-full bg-emerald-500"></span>
+            <h4 className="text-slate-100 font-bold uppercase tracking-wider text-[10px] flex items-center gap-1.5 font-display">
+              <span className="h-2 w-2 rounded-full bg-emerald-400"></span>
               IDEAS-TVET Secretariat
             </h4>
-            <p className="text-[11px] leading-relaxed select-text font-sans text-slate-350">
+            <p className="text-[11px] leading-relaxed select-text font-sans text-slate-400">
               Federal Ministry of Education Headquarters, Plot 245 Samuel Ademulegun Avenue, Central Business District, Abuja, FCT, Nigeria.
             </p>
-            <div className="pt-2 text-slate-350 font-sans">
-              <span className="block">Support: <strong className="text-slate-105 text-white font-mono select-all">support@ideas-tvet.ng</strong></span>
-              <span className="block mt-1">Helpline: <strong className="text-slate-105 text-white font-mono select-all">+234 (0) 90 3242 5592</strong></span>
+            <div className="pt-2 text-slate-400 font-sans">
+              <span className="block">Support: <strong className="text-white font-mono select-all">support@ideas-tvet.ng</strong></span>
+              <span className="block mt-1">Helpline: <strong className="text-white font-mono select-all">+234 (0) 90 3242 5592</strong></span>
             </div>
           </div>
 
           <div className="space-y-4 font-mono">
-            <h4 className="text-slate-100 font-medium uppercase tracking-wider text-[11px]">Accredited Sectors</h4>
-            <ul className="space-y-2 text-[11px] text-slate-350 font-sans">
+            <h4 className="text-slate-100 font-medium uppercase tracking-wider text-[10px]">Accredited Sectors</h4>
+            <ul className="space-y-2 text-[11px] text-slate-400 font-sans">
               <li>Computer Hardware & Repairs</li>
               <li>Solar Energy Systems Installation</li>
               <li>Civil & Masonry Engineering</li>
@@ -658,32 +872,32 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
           </div>
 
           <div className="space-y-4 font-mono">
-            <h4 className="text-slate-100 font-medium uppercase tracking-wider text-[11px]">Institutional Links</h4>
+            <h4 className="text-slate-100 font-medium uppercase tracking-wider text-[10px]">Authorized Links</h4>
             <ul className="space-y-2 text-[11px] font-sans">
-              <li><a href="#" onClick={(e) => { e.preventDefault(); alert("National TVET support lines: support@uniqueideas.dontechservicesconst.com"); }} className="hover:text-white hover:underline">Support Desk Chat</a></li>
-              <li><a href="#" onClick={(e) => { e.preventDefault(); alert("National TVET syllabus verified."); }} className="hover:text-white hover:underline">Syllabus Guidelines</a></li>
-              <li><a href="#" onClick={(e) => { e.preventDefault(); alert("Accredited centers map loaded."); }} className="hover:text-white hover:underline">TSP Registration Hub</a></li>
-              <li><button onClick={onLoginShow} className="hover:text-white hover:underline bg-transparent border-none p-0 cursor-pointer text-left font-mono text-[11px]">Governance Administration Portal</button></li>
+              <li><a href="#" onClick={(e) => { e.preventDefault(); alert("National TVET Support Line is available at support@ideas-tvet.ng."); }} className="hover:text-white hover:underline transition">Support Desk Chat</a></li>
+              <li><a href="#" onClick={(e) => { e.preventDefault(); alert("National TVET syllabus verified."); }} className="hover:text-white hover:underline transition">Syllabus Guidelines</a></li>
+              <li><a href="#" onClick={(e) => { e.preventDefault(); alert("Accredited centers roster loading..."); }} className="hover:text-white hover:underline transition">TSP Registration Hub</a></li>
+              <li><button onClick={onLoginShow} className="hover:text-white hover:underline bg-transparent border-none p-0 cursor-pointer text-left font-mono text-[11px]">Officer Administration Login</button></li>
             </ul>
           </div>
 
           <div className="space-y-4 font-mono">
-            <h4 className="text-slate-105 text-slate-100 font-medium uppercase tracking-wider text-[11px]">Legal Regulations</h4>
-            <p className="text-[11px] leading-relaxed font-sans text-slate-350">
+            <h4 className="text-slate-100 font-medium uppercase tracking-wider text-[10px]">Legal Regulations</h4>
+            <p className="text-[11px] leading-relaxed font-sans text-slate-400">
               Identity parameters profiling conforms with the Nigeria Data Protection Regulation (NDPR) acts. Complete terms enable fast secure document verification with zero spam leakage.
             </p>
-            <div className="flex gap-4 pt-1 font-mono text-[10px] text-slate-355 text-left font-bold">
-              <a href="#" onClick={(e) => { e.preventDefault(); alert("NDPR compliant Privacy Policy activated."); }} className="hover:text-white hover:underline">Privacy Policy</a>
+            <div className="flex gap-4 pt-1 font-mono text-[10px] text-slate-500 text-left font-bold">
+              <a href="#" onClick={(e) => { e.preventDefault(); alert("NDPR compliant Privacy Policy activated."); }} className="hover:text-white hover:underline transition">Privacy Policy</a>
               <span>·</span>
-              <a href="#" onClick={(e) => { e.preventDefault(); alert("Terms of Service activated."); }} className="hover:text-white hover:underline">Terms of Service</a>
+              <a href="#" onClick={(e) => { e.preventDefault(); alert("Terms of Service activated."); }} className="hover:text-white hover:underline transition">Terms of Service</a>
             </div>
           </div>
 
         </div>
 
-        <div className="max-w-7xl mx-auto mt-12 pt-8 border-t border-slate-850 flex flex-col sm:flex-row items-center justify-between gap-4 text-[11px] text-slate-355">
-          <p className="select-text">© {new Date().getFullYear()} Federal Ministry of Education · IDEAS Initiative Program. Built for Unique Technology Nig. Ltd.</p>
-          <div className="flex items-center gap-2">
+        <div className="max-w-7xl mx-auto mt-12 pt-8 border-t border-slate-900 flex flex-col sm:flex-row items-center justify-between gap-4 text-[11px] text-slate-500">
+          <p className="select-text">© {new Date().getFullYear()} Federal Ministry of Education · IDEAS Initiative Program.</p>
+          <div className="flex items-center gap-2 font-mono text-[10px]">
             <span>FEDERAL REPUBLIC OF NIGERIA</span>
             <span className="h-0.5 w-6 bg-emerald-500"></span>
             <span className="h-0.5 w-6 bg-white"></span>
@@ -700,7 +914,7 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white border border-slate-200 rounded-2xl p-6 md:p-8 w-full max-w-md shadow-2xl relative border-t-4 border-t-indigo-600"
+              className="bg-white border border-slate-200 rounded-2xl p-6 md:p-8 w-full max-w-md shadow-2xl relative border-t-4 border-t-emerald-800"
             >
               
               {/* Close Button */}
@@ -709,18 +923,18 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
                   setShowTrackerModal(false);
                   setTrackError(null);
                 }}
-                className="absolute top-4 right-4 text-slate-400 hover:text-slate-650 font-mono font-bold hover:bg-slate-100 rounded-lg p-1.5 focus:outline-none"
+                className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 font-mono font-bold hover:bg-slate-100 rounded-lg p-1.5 focus:outline-none cursor-pointer"
               >
                 ✕
               </button>
 
               <div className="space-y-4 text-left">
-                <div className="h-10 w-10 bg-indigo-50 border border-indigo-100 rounded-full flex items-center justify-center text-indigo-950">
-                  <Search className="w-5 h-5 text-indigo-700" />
+                <div className="h-10 w-10 bg-emerald-55 bg-emerald-50 border border-emerald-100 rounded-full flex items-center justify-center text-emerald-800">
+                  <Search className="w-5 h-5 text-emerald-805 text-emerald-800" />
                 </div>
                 <div>
-                  <h3 className="text-lg font-extrabold text-slate-950 font-display">Candidate Tracker & Student Portal</h3>
-                  <p className="text-xs text-slate-500 leading-relaxed font-semibold">Track your provisional status or access files using your credentials.</p>
+                  <h3 className="text-lg font-black text-slate-950 font-display">Candidate Tracker & Student Portal</h3>
+                  <p className="text-xs text-slate-500 leading-relaxed font-semibold">Verify your provisional status or access official files using secure credentials.</p>
                 </div>
               </div>
 
@@ -738,10 +952,10 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
                       id="track-email-input"
                       type="email"
                       required
-                      placeholder="trainee@ideas-tvet.ng"
+                      placeholder="e.g. trainee@ideas-tvet.ng"
                       value={trackEmail}
                       onChange={(e) => setTrackEmail(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg py-2.5 pl-9 pr-4 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-600 font-medium"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg py-2.5 pl-9 pr-4 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-emerald-700 font-medium"
                     />
                     <Mail className="absolute left-3 top-3 w-4 h-4 text-slate-400" />
                   </div>
@@ -757,7 +971,7 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
                       placeholder="Type your 11-digit NIN or Password"
                       value={trackPassword}
                       onChange={(e) => setTrackPassword(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg py-2.5 pl-9 pr-4 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-600 font-mono"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg py-2.5 pl-9 pr-4 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-emerald-700 font-mono"
                     />
                     <KeyRound className="absolute left-3 top-3 w-4 h-4 text-slate-400" />
                   </div>
@@ -766,208 +980,15 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
                 <button
                   type="submit"
                   disabled={trackLoading}
-                  className="w-full bg-indigo-950 hover:bg-indigo-900 disabled:opacity-50 text-white font-bold py-3 px-4 rounded-xl text-xs uppercase tracking-wider transition shadow-md flex items-center justify-center gap-1.5 cursor-pointer mt-2"
+                  className="w-full bg-emerald-800 hover:bg-emerald-950 disabled:opacity-50 text-white font-bold py-3.5 px-4 rounded-xl text-xs uppercase tracking-wider transition shadow-md flex items-center justify-center gap-1.5 cursor-pointer mt-2"
                 >
-                  {trackLoading ? "Validating System Records..." : "Search & Enter Student Space"}
+                  {trackLoading ? "Searching registry databases..." : "Access Candidate Portal"}
                 </button>
               </form>
 
-              <div className="bg-slate-50 border border-slate-105 rounded-lg p-3 text-[10px] text-slate-400 leading-normal text-left mt-5 font-mono">
-                💡 <span className="font-bold">Sandbox Hint</span>: If you just filed a provisional registration, log in using your registered Email along with your 11-digit NIN as password!
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3.5 text-[10px] text-slate-500 leading-normal text-left mt-5 font-mono">
+                💡 <span className="font-bold text-slate-700">Sandbox Access Guidelines</span>:<br />Log in with any active student email (e.g., student registered by TSP) using their 11-digit National Identity Number (NIN) as default password.
               </div>
-
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* PROVISIONAL REGISTRATION MODAL */}
-      <AnimatePresence>
-        {showApplyModal && (
-          <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-            <motion.div 
-               initial={{ scale: 0.95, opacity: 0 }}
-               animate={{ scale: 1, opacity: 1 }}
-               exit={{ scale: 0.95, opacity: 0 }}
-               className="bg-white border border-slate-200 rounded-2xl p-6 md:p-8 w-full max-w-lg shadow-2xl relative border-l-4 border-l-emerald-600 overflow-y-auto max-h-[90vh]"
-            >
-              
-              {/* Close Button */}
-              <button 
-                onClick={() => {
-                  setShowApplyModal(false);
-                  setApplyError(null);
-                  setApplySuccessMsg(null);
-                }}
-                className="absolute top-4 right-4 text-slate-400 hover:text-slate-650 font-mono font-bold hover:bg-slate-100 rounded-lg p-1.5 focus:outline-none"
-              >
-                ✕
-              </button>
-
-              <div className="space-y-3 text-left">
-                <div className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-800 px-2.5 py-1 rounded text-[10px] font-mono leading-none font-bold uppercase tracking-wide">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                  <span>COHORT B PORTAL RESERVES</span>
-                </div>
-                <h3 className="text-lg font-black text-slate-950 font-display">Provisional Trainee Enrollment Registry</h3>
-                <p className="text-xs text-slate-500 leading-relaxed font-semibold">Please fill out your identity parameters. The system will auto-verify your credentials against civil registries and save draft folders.</p>
-              </div>
-
-              {applyError && (
-                <div className="bg-rose-50 border border-rose-100 text-rose-700 font-semibold text-xs p-3.5 rounded-lg mt-4 text-left font-mono">
-                  {applyError}
-                </div>
-              )}
-
-              {applySuccessMsg && (
-                <div className="bg-emerald-50 border border-emerald-250 text-emerald-900 text-xs p-4 rounded-xl mt-4 text-left space-y-2">
-                  <div className="flex items-center gap-1.5">
-                    <CheckCircle2 className="w-5 h-5 text-emerald-600 flex-shrink-0" />
-                    <span className="font-extrabold font-mono uppercase text-[11px]">Draft registration logged successfully!</span>
-                  </div>
-                  <p className="leading-relaxed font-mono text-[11.5px]">{applySuccessMsg}</p>
-                </div>
-              )}
-
-              {!applySuccessMsg && (
-                <form onSubmit={handleApplySubmit} className="space-y-4 mt-5 text-left">
-                  
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label htmlFor="first-name-input" className="text-[10px] font-bold text-slate-500 font-mono uppercase tracking-wider">First Name</label>
-                      <input
-                        id="first-name-input"
-                        type="text"
-                        required
-                        placeholder="e.g. Ibrahim"
-                        value={applyFirstName}
-                        onChange={(e) => setApplyFirstName(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-600 font-medium font-sans"
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <label htmlFor="last-name-input" className="text-[10px] font-bold text-slate-500 font-mono uppercase tracking-wider">Last Name</label>
-                      <input
-                        id="last-name-input"
-                        type="text"
-                        required
-                        placeholder="e.g. Musa"
-                        value={applyLastName}
-                        onChange={(e) => setApplyLastName(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-600 font-medium font-sans"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 font-sans">
-                    <div className="space-y-1">
-                      <label htmlFor="apply-email-input" className="text-[10px] font-bold text-slate-500 font-mono uppercase tracking-wider">Personal Email Address</label>
-                      <input
-                        id="apply-email-input"
-                        type="email"
-                        required
-                        placeholder="musa@gmail.com"
-                        value={applyEmail}
-                        onChange={(e) => setApplyEmail(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-600 font-medium"
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <label htmlFor="phone-input" className="text-[10px] font-bold text-slate-500 font-mono uppercase tracking-wider">Phone Number</label>
-                      <input
-                        id="phone-input"
-                        type="tel"
-                        required
-                        placeholder="e.g. +2348011223344"
-                        value={applyPhone}
-                        onChange={(e) => setApplyPhone(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-600 font-mono"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label htmlFor="nin-input" className="text-[10px] font-bold text-slate-500 font-mono uppercase tracking-wider">National Identity Number (NIN)</label>
-                      <input
-                        id="nin-input"
-                        type="text"
-                        required
-                        pattern="\d{11}"
-                        maxLength={11}
-                        placeholder="11-digit NIN"
-                        value={applyNin}
-                        onChange={(e) => setApplyNin(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-600 font-mono"
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <label htmlFor="bvn-input" className="text-[10px] font-bold text-slate-500 font-mono uppercase tracking-wider">Bank Verification Number (BVN)</label>
-                      <input
-                        id="bvn-input"
-                        type="text"
-                        required
-                        pattern="\d{11}"
-                        maxLength={11}
-                        placeholder="11-digit BVN"
-                        value={applyBvn}
-                        onChange={(e) => setApplyBvn(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-600 font-mono"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4 font-mono text-[10px]">
-                    <div className="space-y-1">
-                      <label htmlFor="state-select" className="font-bold text-slate-500 uppercase tracking-wider">Roster State Center</label>
-                      <select
-                        id="state-select"
-                        value={applyState}
-                        onChange={(e) => setApplyState(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-250 border-slate-200 rounded-lg p-2 text-xs text-slate-800 focus:outline-none font-sans"
-                      >
-                        <option value="Lagos">Lagos</option>
-                        <option value="FCT Abuja">FCT Abuja</option>
-                        <option value="Enugu">Enugu</option>
-                        <option value="Kaduna">Kaduna</option>
-                        <option value="Rivers">Rivers</option>
-                        <option value="Kano">Kano</option>
-                      </select>
-                    </div>
-
-                    <div className="space-y-1">
-                      <label htmlFor="gender-select" className="font-bold text-slate-500 uppercase tracking-wider">Candidate Gender</label>
-                      <select
-                        id="gender-select"
-                        value={applyGender}
-                        onChange={(e) => setApplyGender(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-250 border-slate-200 rounded-lg p-2 text-xs text-slate-800 focus:outline-none font-sans"
-                      >
-                        <option value="MALE">Male</option>
-                        <option value="FEMALE">Female</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={applyLoading}
-                    className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-extrabold py-3 px-4 rounded-xl text-xs uppercase tracking-wider transition shadow-md flex items-center justify-center gap-2 cursor-pointer mt-2"
-                  >
-                    {applyLoading ? "Submitting Application Parameters..." : "Submit Enrollment Application"}
-                  </button>
-
-                  <div className="bg-amber-50 border border-amber-100 p-3.5 rounded-xl flex gap-2.5">
-                    <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
-                    <p className="text-[10px] text-amber-800 leading-normal font-semibold">
-                      Please guarantee the legitimacy of NIN and BVN parameters. Dual or blank registrations will void candidate slots.NDPR protection terms apply.
-                    </p>
-                  </div>
-                </form>
-              )}
 
             </motion.div>
           </div>
