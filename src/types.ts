@@ -72,6 +72,10 @@ export interface Beneficiary {
   acceptanceLetterUploaded?: boolean;
   acceptanceLetterUrl?: string; // base64 or mock url
   acceptanceLetterUploadedAt?: string;
+  acceptanceLetterStatus?: string;
+  acceptanceLetterRemarks?: string;
+  acceptanceLetterCheckedBy?: string;
+  acceptanceLetterCheckedAt?: string;
   admissionLetterUrl?: string;
   enrollmentLetterUrl?: string;
   certificateUrl?: string;

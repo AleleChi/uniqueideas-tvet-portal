@@ -36,6 +36,10 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
   const [tspFilter, setTspFilter] = useState("all");
   const [stateFilter, setStateFilter] = useState("all");
 
+  // Sorting State
+  const [sortBy, setSortBy] = useState("createdAt");
+  const [sortOrder, setSortOrder] = useState<"ASC" | "DESC">("DESC");
+
   // Selection & Bulk State
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [bulkAction, setBulkAction] = useState("");
@@ -54,10 +58,10 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
     fetchOrgSettings();
   }, []);
 
-  // Refetch list whenever query parameters or page changes
+  // Refetch list whenever query parameters or page or sorting changes
   useEffect(() => {
     fetchList();
-  }, [page, pageSize, statusFilter, sectorFilter, tspFilter, stateFilter]);
+  }, [page, pageSize, statusFilter, sectorFilter, tspFilter, stateFilter, sortBy, sortOrder]);
 
   const fetchStats = async () => {
     try {
@@ -96,7 +100,9 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
         status: statusFilter,
         sector: sectorFilter,
         tsp: tspFilter,
-        state: stateFilter
+        state: stateFilter,
+        sortBy,
+        sortOrder
       });
       const res = await authFetch(`/api/admissions/list?${queryParams.toString()}`);
       if (res.ok) {
@@ -110,6 +116,16 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
     } finally {
       setLoadingList(false);
     }
+  };
+
+  const handleSort = (columnKey: string) => {
+    if (sortBy === columnKey) {
+      setSortOrder(order => order === "ASC" ? "DESC" : "ASC");
+    } else {
+      setSortBy(columnKey);
+      setSortOrder("ASC");
+    }
+    setPage(1);
   };
 
   const handleSearchSubmit = (e: React.FormEvent) => {
@@ -235,47 +251,63 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
         ) : stats ? (
           <div className="space-y-6">
             {/* Core Stats Metric Cards */}
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-7 gap-4">
               
-              <div className="bg-slate-50 border border-slate-100 p-4 rounded-xl text-left">
-                <span className="text-[10px] font-mono text-slate-400 font-bold uppercase block">TOTAL APPLICANTS</span>
+              <div className="bg-slate-50 border border-slate-100 p-4 rounded-xl text-left shadow-xs">
+                <span className="text-[9px] font-mono text-slate-400 font-bold uppercase block">TOTAL APPLICANTS</span>
                 <span className="text-xl font-bold text-slate-900 mt-1 block">{stats.summary?.total}</span>
               </div>
 
-              <div className="bg-amber-500/5 border border-amber-500/20 p-4 rounded-xl text-left border-l-4 border-l-amber-500">
-                <span className="text-[10px] font-mono text-amber-600 font-bold uppercase block">PENDING</span>
+              <div className="bg-amber-500/5 border border-amber-500/20 p-4 rounded-xl text-left border-l-4 border-l-amber-500 shadow-xs">
+                <span className="text-[9px] font-mono text-amber-600 font-bold uppercase block">PENDING</span>
                 <span className="text-xl font-bold text-amber-700 mt-1 block">{stats.summary?.pending}</span>
               </div>
 
-              <div className="bg-yellow-500/5 border border-yellow-500/20 p-4 rounded-xl text-left border-l-4 border-l-yellow-500">
-                <span className="text-[10px] font-mono text-yellow-600 font-bold uppercase block">UNDER REVIEW</span>
+              <div className="bg-yellow-500/5 border border-yellow-500/20 p-4 rounded-xl text-left border-l-4 border-l-yellow-500 shadow-xs">
+                <span className="text-[9px] font-mono text-yellow-600 font-bold uppercase block">UNDER REVIEW</span>
                 <span className="text-xl font-bold text-yellow-700 mt-1 block">{stats.summary?.underReview}</span>
               </div>
 
-              <div className="bg-emerald-500/5 border border-emerald-500/20 p-4 rounded-xl text-left border-l-4 border-l-emerald-500">
-                <span className="text-[10px] font-mono text-emerald-600 font-bold uppercase block">ADMITTED</span>
+              <div className="bg-emerald-500/5 border border-emerald-500/20 p-4 rounded-xl text-left border-l-4 border-l-emerald-500 shadow-xs">
+                <span className="text-[9px] font-mono text-emerald-600 font-bold uppercase block">ADMITTED</span>
                 <span className="text-xl font-bold text-emerald-700 mt-1 block">{stats.summary?.admitted}</span>
               </div>
 
-              <div className="bg-rose-500/5 border border-rose-500/20 p-4 rounded-xl text-left border-l-4 border-l-rose-500">
-                <span className="text-[10px] font-mono text-rose-600 font-bold uppercase block">REJECTED</span>
+              <div className="bg-rose-500/5 border border-rose-500/20 p-4 rounded-xl text-left border-l-4 border-l-rose-500 shadow-xs">
+                <span className="text-[9px] font-mono text-rose-600 font-bold uppercase block">REJECTED</span>
                 <span className="text-xl font-bold text-rose-700 mt-1 block">{stats.summary?.rejected}</span>
+              </div>
+
+              {/* Admission Rate Widget */}
+              <div className="bg-indigo-500/5 border border-indigo-500/20 p-4 rounded-xl text-left border-l-4 border-l-indigo-500 shadow-xs">
+                <span className="text-[9px] font-mono text-indigo-600 font-bold uppercase block">ADMISSION RATE</span>
+                <span className="text-xl font-bold text-indigo-700 mt-1 block">
+                  {stats.summary?.total > 0 ? Math.round((stats.summary?.admitted / stats.summary?.total) * 100) : 0}%
+                </span>
+              </div>
+
+              {/* Rejection Rate Widget */}
+              <div className="bg-slate-500/5 border border-slate-500/20 p-4 rounded-xl text-left border-l-4 border-l-slate-400 shadow-xs">
+                <span className="text-[9px] font-mono text-slate-500 font-bold uppercase block">REJECTION RATE</span>
+                <span className="text-xl font-bold text-slate-600 mt-1 block">
+                  {stats.summary?.total > 0 ? Math.round((stats.summary?.rejected / stats.summary?.total) * 100) : 0}%
+                </span>
               </div>
 
             </div>
 
-            {/* Sub-group Progress Distributions */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-2">
+            {/* Sub-group Progress Distributions with Recent Activity Timeline */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6 pt-2">
               
               <div className="space-y-2 text-left">
                 <h4 className="text-[10px] font-bold font-mono text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
                   <Building className="w-3.5 h-3.5 text-indigo-500" /> skill sector distribution
                 </h4>
-                <div className="bg-slate-50 hover:bg-slate-100/50 border border-slate-100 p-3.5 rounded-xl space-y-2.5 max-h-[140px] overflow-y-auto">
+                <div className="bg-slate-50 hover:bg-slate-100/50 border border-slate-100 p-3.5 rounded-xl space-y-2.5 max-h-[160px] overflow-y-auto shadow-xs">
                   {Object.entries(stats.bySector || {}).map(([key, value]: any) => (
                     <div key={key} className="space-y-1">
                       <div className="flex justify-between items-center text-[10px] font-bold text-slate-600 leading-none">
-                        <span className="truncate pr-2">{key}</span>
+                        <span className="truncate pr-2">{key || "Unknown"}</span>
                         <span className="font-mono text-slate-700 font-black">{value}</span>
                       </div>
                       <div className="w-full bg-slate-200 rounded-full h-1">
@@ -290,11 +322,11 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
                 <h4 className="text-[10px] font-bold font-mono text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
                   <Building className="w-3.5 h-3.5 text-emerald-500" /> TVET TSP distribution
                 </h4>
-                <div className="bg-slate-50 hover:bg-slate-100/50 border border-slate-100 p-3.5 rounded-xl space-y-2.5 max-h-[140px] overflow-y-auto">
+                <div className="bg-slate-50 hover:bg-slate-100/50 border border-slate-100 p-3.5 rounded-xl space-y-2.5 max-h-[160px] overflow-y-auto shadow-xs">
                   {Object.entries(stats.byTsp || {}).map(([key, value]: any) => (
                     <div key={key} className="space-y-1">
                       <div className="flex justify-between items-center text-[10px] font-bold text-slate-600 leading-none">
-                        <span className="truncate pr-2">{key}</span>
+                        <span className="truncate pr-2">{key || "Unknown"}</span>
                         <span className="font-mono text-slate-700 font-black">{value}</span>
                       </div>
                       <div className="w-full bg-slate-200 rounded-full h-1">
@@ -309,11 +341,11 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
                 <h4 className="text-[10px] font-bold font-mono text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
                   <MapPin className="w-3.5 h-3.5 text-amber-500" /> geo states / lgas
                 </h4>
-                <div className="bg-slate-50 hover:bg-slate-100/50 border border-slate-100 p-3.5 rounded-xl space-y-2.5 max-h-[140px] overflow-y-auto">
+                <div className="bg-slate-50 hover:bg-slate-100/50 border border-slate-100 p-3.5 rounded-xl space-y-2.5 max-h-[160px] overflow-y-auto shadow-xs">
                   {Object.entries(stats.byState || {}).map(([key, value]: any) => (
                     <div key={key} className="space-y-1">
                       <div className="flex justify-between items-center text-[10px] font-bold text-slate-600 leading-none">
-                        <span className="truncate pr-2">{key} State</span>
+                        <span className="truncate pr-2">{key || "Unknown"} State</span>
                         <span className="font-mono text-slate-700 font-black">{value}</span>
                       </div>
                       <div className="w-full bg-slate-200 rounded-full h-1">
@@ -321,6 +353,38 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
                       </div>
                     </div>
                   ))}
+                </div>
+              </div>
+
+              {/* COLUMN 4: RECENT ADMISSION ACTIVITIES TIMELINE FEED */}
+              <div className="space-y-2 text-left">
+                <h4 className="text-[10px] font-bold font-mono text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-indigo-500 animate-pulse" /> recent activities
+                </h4>
+                <div className="bg-slate-50 hover:bg-slate-100/50 border border-slate-100 p-3 rounded-xl space-y-3 max-h-[160px] overflow-y-auto text-xs shadow-xs font-sans">
+                  {stats.recentActivities && stats.recentActivities.length > 0 ? (
+                    stats.recentActivities.map((act: any) => (
+                      <div key={act.id || Math.random()} className="pb-2 border-b border-slate-200 last:border-0 last:pb-0 space-y-1">
+                        <div className="flex justify-between items-start text-[10px]">
+                          <span className="font-bold text-slate-800 truncate pr-1">{act.beneficiaryName}</span>
+                          <span className="text-[9px] font-mono text-indigo-700 bg-indigo-50 font-bold px-1.5 py-0.5 rounded shrink-0">
+                            {act.newStatus?.replace("Acceptance Letter Status: ", "")}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-slate-500 leading-normal italic">
+                          {act.remarks?.length > 70 ? `${act.remarks.substring(0, 70)}...` : act.remarks || "No evaluation remarks logged."}
+                        </p>
+                        <div className="text-[9px] font-mono text-slate-400 flex justify-between items-center">
+                          <span>Operator: <span className="font-bold text-slate-600">{act.changedBy?.split("@")[0]}</span></span>
+                          <span>{new Date(act.changedAt).toLocaleDateString("en-GB")}</span>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-center py-10 font-mono text-[10px] text-slate-400 uppercase">
+                      No matching audit timeline feed.
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -466,7 +530,7 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
       {/* 4. MAIN REGISTRY WORK SHEET DATA TABLE */}
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
         <div className="overflow-x-auto">
-          <table className="min-w-[900px] w-full text-left border-collapse">
+          <table className="min-w-[950px] w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-100 text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest leading-none">
                 <th className="py-3 px-4 w-12 text-center">
@@ -485,16 +549,73 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
                     className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer h-3.5 w-3.5" 
                   />
                 </th>
-                <th className="py-3 px-4 font-bold text-slate-500">Applicant Name & ID</th>
-                <th className="py-3 px-4 font-bold text-slate-500">Official Status</th>
-                <th className="py-3 px-4 font-bold text-slate-500">Reference Number</th>
-                <th className="py-3 px-4 font-bold text-slate-500">TSP Location Provider</th>
-                <th className="py-3 px-4 font-bold text-slate-500">Operational state</th>
-                <th className="py-3 px-4 font-bold text-slate-500">Photo checklist</th>
-                <th className="py-3 px-4 font-bold text-slate-500 text-center">Action Menu</th>
+                <th 
+                  className="py-3 px-4 font-bold text-slate-500 cursor-pointer hover:bg-slate-100/50"
+                  onClick={() => handleSort("id")}
+                >
+                  <div className="flex items-center gap-1">
+                    Admission ID
+                    <ArrowUpDown className="w-3 h-3 text-slate-400" />
+                  </div>
+                </th>
+                <th 
+                  className="py-3 px-4 font-bold text-slate-500 cursor-pointer hover:bg-slate-100/50"
+                  onClick={() => handleSort("name")}
+                >
+                  <div className="flex items-center gap-1">
+                    Beneficiary Name
+                    <ArrowUpDown className="w-3 h-3 text-slate-400" />
+                  </div>
+                </th>
+                <th 
+                  className="py-3 px-4 font-bold text-slate-500 cursor-pointer hover:bg-slate-100/50"
+                  onClick={() => handleSort("sector")}
+                >
+                  <div className="flex items-center gap-1">
+                    Skill & Sector
+                    <ArrowUpDown className="w-3 h-3 text-slate-400" />
+                  </div>
+                </th>
+                <th 
+                  className="py-3 px-4 font-bold text-slate-500 cursor-pointer hover:bg-slate-100/50"
+                  onClick={() => handleSort("tsp")}
+                >
+                  <div className="flex items-center gap-1">
+                    TSP Location
+                    <ArrowUpDown className="w-3 h-3 text-slate-400" />
+                  </div>
+                </th>
+                <th 
+                  className="py-3 px-4 font-bold text-slate-500 cursor-pointer hover:bg-slate-100/50"
+                  onClick={() => handleSort("state")}
+                >
+                  <div className="flex items-center gap-1">
+                    State
+                    <ArrowUpDown className="w-3 h-3 text-slate-400" />
+                  </div>
+                </th>
+                <th 
+                  className="py-3 px-4 font-bold text-slate-500 cursor-pointer hover:bg-slate-100/50"
+                  onClick={() => handleSort("status")}
+                >
+                  <div className="flex items-center gap-1">
+                    Current Status
+                    <ArrowUpDown className="w-3 h-3 text-slate-400" />
+                  </div>
+                </th>
+                <th 
+                  className="py-3 px-4 font-bold text-slate-500 cursor-pointer hover:bg-slate-100/50"
+                  onClick={() => handleSort("createdAt")}
+                >
+                  <div className="flex items-center gap-1">
+                    Date Applied
+                    <ArrowUpDown className="w-3 h-3 text-slate-400" />
+                  </div>
+                </th>
+                <th className="py-3 px-4 font-bold text-slate-500 text-center">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 text-xs font-semibold text-slate-705 text-slate-650">
+            <tbody className="divide-y divide-slate-100 text-xs font-semibold text-slate-650">
               
               {loadingList ? (
                 <tr>
@@ -534,22 +655,37 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
                     >
                       <td className="py-3 px-4 text-center" onClick={(e) => e.stopPropagation()}>
                         <input 
-                          type="checkbox" 
-                          checked={isChecked}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setSelectedIds(prev => [...prev, c.id]);
-                            } else {
-                              setSelectedIds(prev => prev.filter(id => id !== c.id));
-                            }
-                          }}
-                          className="rounded border-slate-300 text-indigo-600 cursor-pointer h-3.5 w-3.5" 
+                           type="checkbox" 
+                           checked={isChecked}
+                           onChange={(e) => {
+                             if (e.target.checked) {
+                               setSelectedIds(prev => [...prev, c.id]);
+                             } else {
+                               setSelectedIds(prev => prev.filter(id => id !== c.id));
+                             }
+                           }}
+                           className="rounded border-slate-300 text-indigo-600 cursor-pointer h-3.5 w-3.5" 
                         />
                       </td>
 
-                      <td className="py-3 px-4">
-                        <div className="text-left font-semibold text-slate-900 text-sm">{c.name}</div>
-                        <div className="text-[10px] font-mono mt-0.5 text-slate-400 font-bold block">{c.id}</div>
+                      <td className="py-3 px-4 font-mono text-[11px] font-bold text-slate-500">
+                        {c.id}
+                      </td>
+
+                      <td className="py-3 px-4 text-left font-bold text-slate-900 text-sm">
+                        {c.name}
+                      </td>
+
+                      <td className="py-3 px-4 text-left text-[11px] font-medium text-slate-700">
+                        {c.sector || "General Skill Program"}
+                      </td>
+
+                      <td className="py-3 px-4 font-semibold text-[10px] text-slate-600 text-left" title={c.tsp}>
+                        {c.tsp && c.tsp.length > 28 ? `${c.tsp.substring(0, 28)}...` : c.tsp || "Unassigned"}
+                      </td>
+
+                      <td className="py-3 px-4 text-slate-600 text-left font-mono font-medium">
+                        {c.state?.replace(" State", "") || "N/A"}
                       </td>
 
                       <td className="py-3 px-4 text-left">
@@ -558,28 +694,8 @@ export function AdmissionsWorkspace({ session, onSelectCandidate }: AdmissionsWo
                         </span>
                       </td>
 
-                      <td className="py-3 px-4 font-mono text-[11px] font-bold text-indigo-600 text-left">
-                        {c.referenceNumber || "DRAFT_DOCK"}
-                      </td>
-
-                      <td className="py-3 px-4 font-mono text-[10px] text-slate-500 text-left" title={c.tsp}>
-                        {c.tsp.length > 25 ? `${c.tsp.substring(0, 25)}...` : c.tsp}
-                      </td>
-
-                      <td className="py-3 px-4 text-slate-650 text-left font-mono font-medium">
-                        {c.state?.replace(" State", "") || "N/A"}
-                      </td>
-
-                      <td className="py-3 px-4 text-left">
-                        {c.hasPhoto ? (
-                          <span className="font-extrabold text-[9px] font-mono tracking-wider text-emerald-600 bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded leading-none">
-                            PASS PHOTO LOCKED
-                          </span>
-                        ) : (
-                          <span className="font-extrabold text-[9px] font-mono tracking-wider text-amber-600 bg-amber-50 border border-amber-100/60 px-1.5 py-0.5 rounded leading-none uppercase animate-pulse">
-                            Needs snap capture
-                          </span>
-                        )}
+                      <td className="py-3 px-4 font-mono text-[10px] text-slate-550 text-left">
+                        {c.createdAt ? new Date(c.createdAt).toLocaleDateString("en-GB") : "Date Unknown"}
                       </td>
 
                       <td className="py-3 px-4 text-center" onClick={(e) => e.stopPropagation()}>

@@ -206,6 +206,12 @@ const SCHEMA_DDL = `
     admission_letter_versions JSONB DEFAULT '[]'::jsonb,
     admission_form_versions JSONB DEFAULT '[]'::jsonb,
     training_progress JSONB DEFAULT '{}'::jsonb,
+    acceptance_letter_uploaded_at TIMESTAMP WITH TIME ZONE,
+    acceptance_letter_status VARCHAR(100) DEFAULT 'Pending',
+    acceptance_letter_url TEXT,
+    acceptance_letter_checked_by VARCHAR(255),
+    acceptance_letter_checked_at TIMESTAMP WITH TIME ZONE,
+    acceptance_letter_remarks TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP WITH TIME ZONE
@@ -417,6 +423,15 @@ const SCHEMA_DDL = `
   CREATE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE deleted_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token);
   CREATE INDEX IF NOT EXISTS idx_generated_documents_beneficiary_id ON generated_documents(beneficiary_id);
+  CREATE INDEX IF NOT EXISTS idx_beneficiaries_state ON beneficiaries(state) WHERE deleted_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_beneficiaries_tsp ON beneficiaries(tsp) WHERE deleted_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_beneficiaries_skill_sector ON beneficiaries(skill_sector) WHERE deleted_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_admissions_status ON admissions(admission_status) WHERE deleted_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_admissions_acceptance_status ON admissions(acceptance_letter_status) WHERE deleted_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_beneficiaries_state_status ON beneficiaries(state, status) WHERE deleted_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_beneficiaries_tsp_status ON beneficiaries(tsp, status) WHERE deleted_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_beneficiaries_skill_sector_status ON beneficiaries(skill_sector, status) WHERE deleted_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_admissions_benefic_delat ON admissions(beneficiary_id) WHERE deleted_at IS NULL;
 
   -- Status history timeline table
   CREATE TABLE IF NOT EXISTS workflow_history (
@@ -553,6 +568,13 @@ export async function initDb(): Promise<void> {
       ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS training_end_date VARCHAR(100) DEFAULT 'December 18, 2026';
       ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS attendance_threshold INT DEFAULT 80;
       ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS completion_threshold INT DEFAULT 75;
+
+      ALTER TABLE admissions ADD COLUMN IF NOT EXISTS acceptance_letter_uploaded_at TIMESTAMP WITH TIME ZONE;
+      ALTER TABLE admissions ADD COLUMN IF NOT EXISTS acceptance_letter_status VARCHAR(100) DEFAULT 'Pending';
+      ALTER TABLE admissions ADD COLUMN IF NOT EXISTS acceptance_letter_url TEXT;
+      ALTER TABLE admissions ADD COLUMN IF NOT EXISTS acceptance_letter_checked_by VARCHAR(255);
+      ALTER TABLE admissions ADD COLUMN IF NOT EXISTS acceptance_letter_checked_at TIMESTAMP WITH TIME ZONE;
+      ALTER TABLE admissions ADD COLUMN IF NOT EXISTS acceptance_letter_remarks TEXT;
     `);
 
     // Ensure document_delivery_logs is bootstrapped independently
@@ -1260,7 +1282,9 @@ export class DbRepo {
       const admRes = await pool.query(
         `SELECT admission_status, admission_ref, admission_letter_generated_at, 
                 admission_letter_sent_at, admission_form_completed, admission_form_status, 
-                admission_form_data, admission_letter_versions, admission_form_versions, training_progress
+                admission_form_data, admission_letter_versions, admission_form_versions, training_progress,
+                acceptance_letter_uploaded_at, acceptance_letter_status, acceptance_letter_url,
+                acceptance_letter_checked_by, acceptance_letter_checked_at, acceptance_letter_remarks
          FROM admissions
          WHERE beneficiary_id = $1 AND deleted_at IS NULL`,
         [id]
@@ -1354,8 +1378,12 @@ export class DbRepo {
         trainingProgress: adm.training_progress || {},
 
         acceptanceLetterUploaded: accVersions.length > 0,
-        acceptanceLetterUrl: row.acceptance_letter_url || (accVersions.length > 0 ? accVersions[accVersions.length - 1].url : undefined),
-        acceptanceLetterUploadedAt: accVersions.length > 0 ? accVersions[accVersions.length - 1].uploadedAt : undefined,
+        acceptanceLetterUrl: adm.acceptance_letter_url || row.acceptance_letter_url || (accVersions.length > 0 ? accVersions[accVersions.length - 1].url : undefined),
+        acceptanceLetterUploadedAt: adm.acceptance_letter_uploaded_at ? adm.acceptance_letter_uploaded_at.toISOString() : (accVersions.length > 0 ? accVersions[accVersions.length - 1].uploadedAt : undefined),
+        acceptanceLetterStatus: adm.acceptance_letter_status || "NOT_SUBMITTED",
+        acceptanceLetterCheckedBy: adm.acceptance_letter_checked_by || undefined,
+        acceptanceLetterCheckedAt: adm.acceptance_letter_checked_at ? adm.acceptance_letter_checked_at.toISOString() : undefined,
+        acceptanceLetterRemarks: adm.acceptance_letter_remarks || undefined,
         acceptanceLetterVersions: accVersions,
         documentsList: docsList,
         attendanceLogs,
@@ -2559,6 +2587,8 @@ export class DbRepo {
     byTsp: { [key: string]: number };
     byState: { [key: string]: number };
     byLga: { [key: string]: number };
+    recentActivities?: any[];
+    acceptanceSummary?: any;
   }> {
     const pool = getPgPool();
     if (!pool || !isPgActive) {
@@ -2679,13 +2709,81 @@ export class DbRepo {
         byLga[r.city || "Owerri Central"] = parseInt(r.count, 10);
       }
 
-      return { summary, bySector, byProgram, byTsp, byState, byLga };
+      // Fetch acceptance letter statuses count
+      const accLetterRes = await pool.query(`
+        SELECT COALESCE(adm.acceptance_letter_status, 'NOT_SUBMITTED') as status, COUNT(*) as count
+        FROM beneficiaries b
+        LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
+        WHERE b.deleted_at IS NULL
+        GROUP BY COALESCE(adm.acceptance_letter_status, 'NOT_SUBMITTED')
+      `);
+      const acceptanceSummary = { NOT_SUBMITTED: 0, SUBMITTED: 0, UNDER_VERIFICATION: 0, ACCEPTED: 0, REJECTED: 0 } as any;
+      for (const r of accLetterRes.rows) {
+        const rawStatus = String(r.status || "NOT_SUBMITTED").toUpperCase().replace(" ", "_");
+        const mappedStatus = acceptanceSummary.hasOwnProperty(rawStatus) ? rawStatus : "NOT_SUBMITTED";
+        acceptanceSummary[mappedStatus] = (acceptanceSummary[mappedStatus] || 0) + parseInt(r.count, 10);
+      }
+
+      // Fetch recentActivities
+      const recentActivities = await DbRepo.getRecentAdmissionsActivities();
+
+      return { summary, bySector, byProgram, byTsp, byState, byLga, recentActivities, acceptanceSummary };
     } catch (e) {
       console.error("[DB Repo] Failed to load admissions stats:", e);
       return {
         summary: { total: 0, pending: 0, underReview: 0, admitted: 0, rejected: 0 },
-        bySector: {}, byProgram: {}, byTsp: {}, byState: {}, byLga: {}
+        bySector: {}, byProgram: {}, byTsp: {}, byState: {}, byLga: {},
+        recentActivities: [],
+        acceptanceSummary: { NOT_SUBMITTED: 0, SUBMITTED: 0, UNDER_VERIFICATION: 0, ACCEPTED: 0, REJECTED: 0 }
       };
+    }
+  }
+
+  /**
+   * Fetch recent workflows across toda the beneficiary pool (limit 10)
+   */
+  static async getRecentAdmissionsActivities(): Promise<any[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState() as any;
+      const history = state.workflowHistory || [];
+      const sorted = [...history].sort((a: any, b: any) => new Date(b.changedAt).getTime() - new Date(a.changedAt).getTime()).slice(0, 10);
+      return sorted.map((h: any) => {
+        const b = state.beneficiaries?.find((x: any) => x.id === h.beneficiaryId);
+        return {
+          id: h.id,
+          beneficiaryId: h.beneficiaryId,
+          beneficiaryName: b ? `${b.lastName}, ${b.firstName}` : "Unknown Applicant",
+          oldStatus: h.oldStatus,
+          newStatus: h.newStatus,
+          changedBy: h.changedBy,
+          changedAt: h.changedAt,
+          remarks: h.remarks
+        };
+      });
+    }
+    try {
+      const res = await pool.query(`
+        SELECT h.id, h.beneficiary_id, h.old_status, h.new_status, h.changed_by, h.changed_at, h.remarks,
+               b.first_name, b.last_name
+        FROM workflow_history h
+        LEFT JOIN beneficiaries b ON h.beneficiary_id = b.id
+        ORDER BY h.changed_at DESC, h.id DESC
+        LIMIT 10
+      `);
+      return res.rows.map(row => ({
+        id: row.id,
+        beneficiaryId: row.beneficiary_id,
+        beneficiaryName: row.last_name ? `${row.last_name}, ${row.first_name}` : "Unknown Applicant",
+        oldStatus: row.old_status,
+        newStatus: row.new_status,
+        changedBy: row.changed_by,
+        changedAt: row.changed_at ? row.changed_at.toISOString() : new Date().toISOString(),
+        remarks: row.remarks || ""
+      }));
+    } catch (e) {
+      console.error("[DB Repo] Failed to get recent admissions activities:", e);
+      return [];
     }
   }
 
@@ -2857,7 +2955,24 @@ export class DbRepo {
       const totalPages = Math.ceil(totalCount / pageSize) || 1;
 
       // sorting
-      const sortColumn = options.sortBy === "name" ? "b.last_name" : "b.created_at";
+      let sortColumn = "b.created_at";
+      const userSortBy = options.sortBy || "createdAt";
+      if (userSortBy === "name" || userSortBy === "lastName") {
+        sortColumn = "b.last_name";
+      } else if (userSortBy === "id" || userSortBy === "admissionId") {
+        sortColumn = "b.id";
+      } else if (userSortBy === "referenceNumber") {
+        sortColumn = "COALESCE(adm.admission_ref, 'DRAFT')";
+      } else if (userSortBy === "sector" || userSortBy === "skillSector" || userSortBy === "skill") {
+        sortColumn = "b.skill_sector";
+      } else if (userSortBy === "tsp") {
+        sortColumn = "b.tsp";
+      } else if (userSortBy === "state") {
+        sortColumn = "b.state";
+      } else if (userSortBy === "admissionStatus" || userSortBy === "status" || userSortBy === "currentStatus") {
+        sortColumn = "COALESCE(adm.admission_status, 'Pending')";
+      }
+
       const sortDirection = options.sortOrder === "ASC" ? "ASC" : "DESC";
 
       // Append limits/offset parameters for safe retrieval block
@@ -2894,4 +3009,502 @@ export class DbRepo {
       return { rows: [], totalCount: 0, page, pageSize, totalPages: 1 };
     }
   }
+
+  /**
+   * Update acceptance letter review details in admissions table
+   */
+  static async updateAcceptanceLetterStatus(
+    beneficiaryId: string,
+    status: string,
+    checkedBy: string,
+    remarks: string,
+    url?: string
+  ): Promise<boolean> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      // JSON State Update
+      const state = loadJsonState() as any;
+      const b = state.beneficiaries?.find((x: any) => x.id === beneficiaryId);
+      if (b) {
+        b.acceptanceLetterStatus = status;
+        b.acceptanceLetterCheckedBy = checkedBy;
+        b.acceptanceLetterCheckedAt = new Date().toISOString();
+        b.acceptanceLetterRemarks = remarks;
+        if (url) {
+          b.acceptanceLetterUrl = url;
+          b.acceptanceLetterUploaded = true;
+          b.acceptanceLetterUploadedAt = new Date().toISOString();
+        }
+        b.updatedAt = new Date().toISOString();
+        saveJsonState(state);
+        return true;
+      }
+      return false;
+    }
+    try {
+      const parts = [
+        "acceptance_letter_status = $1",
+        "acceptance_letter_checked_by = $2",
+        "acceptance_letter_checked_at = NOW()",
+        "acceptance_letter_remarks = $3",
+        "updated_at = NOW()"
+      ];
+      const params = [status, checkedBy, remarks, beneficiaryId];
+      if (url) {
+        parts.push("acceptance_letter_url = $5");
+        parts.push("acceptance_letter_uploaded_at = NOW()");
+        params.push(url);
+      }
+      const queryStr = `
+        UPDATE admissions
+        SET ${parts.join(", ")}
+        WHERE beneficiary_id = $4 AND deleted_at IS NULL
+      `;
+      const res = await pool.query(queryStr, params);
+      return res.rowCount !== null && res.rowCount > 0;
+    } catch (e) {
+      console.error("[DB Repo] Failed to update acceptance letter status:", e);
+      return false;
+    }
+  }
+
+  /**
+   * Aggregate funnel steps count
+   */
+  static async getAdmissionsFunnelReport(): Promise<{
+    totalRegistered: number;
+    generated: number;
+    sent: number;
+    viewed: number;
+    uploaded: number;
+    accepted: number;
+  }> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      const list = (state.beneficiaries || []) as Beneficiary[];
+      
+      const totalRegistered = list.length;
+      let generated = 0;
+      let sent = 0;
+      let viewed = 0;
+      let uploaded = 0;
+      let accepted = 0;
+
+      list.forEach((b: any) => {
+        const s = (b.admissionStatus || "Pending").toLowerCase();
+        const lStatus = b.acceptanceLetterStatus || "NOT_SUBMITTED";
+        
+        if (["admission generated", "admission sent", "offer viewed", "acceptance uploaded", "accepted"].includes(s)) {
+          generated++;
+        }
+        if (["admission sent", "offer viewed", "acceptance uploaded", "accepted"].includes(s)) {
+          sent++;
+        }
+        if (["offer viewed", "acceptance uploaded", "accepted"].includes(s)) {
+          viewed++;
+        }
+        if (["acceptance uploaded", "accepted"].includes(s) || ["SUBMITTED", "UNDER_VERIFICATION", "ACCEPTED"].includes(lStatus)) {
+          uploaded++;
+        }
+        if (s === "accepted" || lStatus === "ACCEPTED") {
+          accepted++;
+        }
+      });
+
+      return { totalRegistered, generated, sent, viewed, uploaded, accepted };
+    }
+
+    try {
+      const q = `
+        SELECT 
+          COUNT(*) as total_registered,
+          COUNT(CASE WHEN COALESCE(adm.admission_status, 'Pending') IN ('Admission Generated', 'Admission Sent', 'Offer Viewed', 'Acceptance Uploaded', 'Accepted') THEN 1 END) as generated,
+          COUNT(CASE WHEN COALESCE(adm.admission_status, 'Pending') IN ('Admission Sent', 'Offer Viewed', 'Acceptance Uploaded', 'Accepted') THEN 1 END) as sent,
+          COUNT(CASE WHEN COALESCE(adm.admission_status, 'Pending') IN ('Offer Viewed', 'Acceptance Uploaded', 'Accepted') THEN 1 END) as viewed,
+          COUNT(CASE WHEN COALESCE(adm.admission_status, 'Pending') IN ('Acceptance Uploaded', 'Accepted') OR COALESCE(adm.acceptance_letter_status, 'NOT_SUBMITTED') IN ('SUBMITTED', 'UNDER_VERIFICATION', 'ACCEPTED') THEN 1 END) as uploaded,
+          COUNT(CASE WHEN COALESCE(adm.admission_status, 'Pending') = 'Accepted' OR COALESCE(adm.acceptance_letter_status, 'NOT_SUBMITTED') = 'ACCEPTED' THEN 1 END) as accepted
+        FROM beneficiaries b
+        LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
+        WHERE b.deleted_at IS NULL
+      `;
+      const res = await pool.query(q);
+      const row = res.rows[0];
+      return {
+        totalRegistered: parseInt(row.total_registered || "0", 10),
+        generated: parseInt(row.generated || "0", 10),
+        sent: parseInt(row.sent || "0", 10),
+        viewed: parseInt(row.viewed || "0", 10),
+        uploaded: parseInt(row.uploaded || "0", 10),
+        accepted: parseInt(row.accepted || "0", 10)
+      };
+    } catch (e) {
+      console.error("[DB Repo] Funnel SQL compilation failed:", e);
+      return { totalRegistered: 0, generated: 0, sent: 0, viewed: 0, uploaded: 0, accepted: 0 };
+    }
+  }
+
+  /**
+   * Pull grouped TSP center performance metrics
+   */
+  static async getTspPerformanceReport(): Promise<Array<{
+    tsp: string;
+    total: number;
+    admitted: number;
+    submitted: number;
+    underReview: number;
+    verified: number;
+  }>> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      const list = (state.beneficiaries || []) as Beneficiary[];
+      
+      const map: { [key: string]: any } = {};
+      list.forEach((b: any) => {
+        const tspName = b.tsp || "Unique Technology Nig. Ltd";
+        if (!map[tspName]) {
+          map[tspName] = { tsp: tspName, total: 0, admitted: 0, submitted: 0, underReview: 0, verified: 0 };
+        }
+        const m = map[tspName];
+        m.total++;
+        const s = (b.admissionStatus || "Pending").toLowerCase();
+        const lStatus = b.acceptanceLetterStatus || "NOT_SUBMITTED";
+        if (s === "accepted" || lStatus === "ACCEPTED") {
+          m.admitted++;
+        }
+        if (lStatus === "SUBMITTED") {
+          m.submitted++;
+        }
+        if (lStatus === "UNDER_VERIFICATION") {
+          m.underReview++;
+        }
+        if (lStatus === "ACCEPTED") {
+          m.verified++;
+        }
+      });
+
+      return Object.values(map).sort((a, b) => b.total - a.total);
+    }
+
+    try {
+      const q = `
+        SELECT 
+          COALESCE(b.tsp, 'Unique Technology Nig. Ltd') as tsp,
+          COUNT(*) as total,
+          COUNT(CASE WHEN COALESCE(adm.admission_status, 'Pending') = 'Accepted' OR COALESCE(adm.acceptance_letter_status, 'NOT_SUBMITTED') = 'ACCEPTED' THEN 1 END) as admitted,
+          COUNT(CASE WHEN COALESCE(adm.acceptance_letter_status, 'NOT_SUBMITTED') = 'SUBMITTED' THEN 1 END) as submitted,
+          COUNT(CASE WHEN COALESCE(adm.acceptance_letter_status, 'NOT_SUBMITTED') = 'UNDER_VERIFICATION' THEN 1 END) as under_review,
+          COUNT(CASE WHEN COALESCE(adm.acceptance_letter_status, 'NOT_SUBMITTED') = 'ACCEPTED' THEN 1 END) as verified
+        FROM beneficiaries b
+        LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
+        WHERE b.deleted_at IS NULL
+        GROUP BY b.tsp
+        ORDER BY total DESC
+      `;
+      const res = await pool.query(q);
+      return res.rows.map(r => ({
+        tsp: r.tsp,
+        total: parseInt(r.total || "0", 10),
+        admitted: parseInt(r.admitted || "0", 10),
+        submitted: parseInt(r.submitted || "0", 10),
+        underReview: parseInt(r.under_review || "0", 10),
+        verified: parseInt(r.verified || "0", 10)
+      }));
+    } catch (e) {
+      console.error("[DB Repo] TSP SQL aggregates failed:", e);
+      return [];
+    }
+  }
+
+  /**
+   * Pull geographical state boundaries metrics
+   */
+  static async getStatePerformanceReport(): Promise<Array<{
+    state: string;
+    total: number;
+    admitted: number;
+    pending: number;
+  }>> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const stateData = loadJsonState();
+      const list = (stateData.beneficiaries || []) as Beneficiary[];
+      
+      const map: { [key: string]: any } = {};
+      list.forEach((b: any) => {
+        const stateName = b.state || "Imo";
+        if (!map[stateName]) {
+          map[stateName] = { state: stateName, total: 0, admitted: 0, pending: 0 };
+        }
+        const m = map[stateName];
+        m.total++;
+        const s = (b.admissionStatus || "Pending").toLowerCase();
+        const lStatus = b.acceptanceLetterStatus || "NOT_SUBMITTED";
+        if (s === "accepted" || lStatus === "ACCEPTED") {
+          m.admitted++;
+        } else {
+          m.pending++;
+        }
+      });
+
+      return Object.values(map).sort((a, b) => b.total - a.total);
+    }
+
+    try {
+      const q = `
+        SELECT 
+          COALESCE(b.state, 'Imo') as state,
+          COUNT(*) as total,
+          COUNT(CASE WHEN COALESCE(adm.admission_status, 'Pending') = 'Accepted' OR COALESCE(adm.acceptance_letter_status, 'NOT_SUBMITTED') = 'ACCEPTED' THEN 1 END) as admitted,
+          COUNT(CASE WHEN COALESCE(adm.admission_status, 'Pending') != 'Accepted' AND COALESCE(adm.acceptance_letter_status, 'NOT_SUBMITTED') != 'ACCEPTED' THEN 1 END) as pending
+        FROM beneficiaries b
+        LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
+        WHERE b.deleted_at IS NULL
+        GROUP BY b.state
+        ORDER BY total DESC
+      `;
+      const res = await pool.query(q);
+      return res.rows.map(r => ({
+        state: r.state,
+        total: parseInt(r.total || "0", 10),
+        admitted: parseInt(r.admitted || "0", 10),
+        pending: parseInt(r.pending || "0", 10)
+      }));
+    } catch (e) {
+      console.error("[DB Repo] State Performance compilation failed:", e);
+      return [];
+    }
+  }
+
+  /**
+   * Paged query engine for list-based sub-reports
+   */
+  static async getAdmissionsReportPaged(options: {
+    page: number;
+    pageSize: number;
+    search?: string;
+    reportType: "admitted" | "rejected" | "acceptance_status";
+    acceptanceLetterStatus?: string;
+    state?: string;
+    sector?: string;
+    tsp?: string;
+    sortBy?: string;
+    sortOrder?: "ASC" | "DESC";
+  }): Promise<{
+    rows: Array<{
+      id: string;
+      referenceNumber: string;
+      name: string;
+      sector: string;
+      tsp: string;
+      admissionStatus: string;
+      acceptanceLetterStatus: string;
+      state: string;
+      batch: string;
+      createdAt: string;
+    }>;
+    totalCount: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
+  }> {
+    const page = Math.max(1, options.page);
+    const pageSize = Math.min(100, Math.max(1, options.pageSize));
+    const offset = (page - 1) * pageSize;
+    const search = options.search || "";
+    const reportType = options.reportType;
+    const letterStatus = options.acceptanceLetterStatus || "all";
+    const stateFilter = options.state || "all";
+    const sectorFilter = options.sector || "all";
+    const tspFilter = options.tsp || "all";
+
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const stateData = loadJsonState();
+      let list = (stateData.beneficiaries || []) as Beneficiary[];
+
+      // Filter in memory matching base query criteria
+      if (search) {
+        const q = search.toLowerCase();
+        list = list.filter(b => 
+          (b.firstName || "").toLowerCase().includes(q) ||
+          (b.lastName || "").toLowerCase().includes(q) ||
+          (b.id || "").toLowerCase().includes(q) ||
+          (b.nin || "").includes(q) ||
+          (b.bvn || "").includes(q)
+        );
+      }
+
+      // Filter by reportType constraints safely
+      if (reportType === "admitted") {
+        list = list.filter(b => 
+          (b.admissionStatus || "Pending").toLowerCase() === "accepted" || 
+          b.acceptanceLetterStatus === "ACCEPTED"
+        );
+      } else if (reportType === "rejected") {
+        list = list.filter(b => 
+          ["acceptance rejected", "rejected", "declined"].includes((b.admissionStatus || "").toLowerCase()) ||
+          b.acceptanceLetterStatus === "REJECTED"
+        );
+      } else if (reportType === "acceptance_status" && letterStatus !== "all") {
+        list = list.filter(b => (b.acceptanceLetterStatus || "NOT_SUBMITTED") === letterStatus);
+      }
+
+      if (stateFilter !== "all") {
+        list = list.filter(b => b.state === stateFilter);
+      }
+      if (sectorFilter !== "all") {
+        list = list.filter(b => b.skillSector === sectorFilter);
+      }
+      if (tspFilter !== "all") {
+        list = list.filter(b => b.tsp === tspFilter);
+      }
+
+      // Sort
+      const sortBy = options.sortBy || "createdAt";
+      const sortOrder = options.sortOrder || "DESC";
+      list = list.sort((a: any, b: any) => {
+        const valA = a[sortBy] || "";
+        const valB = b[sortBy] || "";
+        if (sortOrder === "ASC") {
+          return valA > valB ? 1 : -1;
+        } else {
+          return valA < valB ? 1 : -1;
+        }
+      });
+
+      const totalCount = list.length;
+      const totalPages = Math.ceil(totalCount / pageSize) || 1;
+      const sliced = list.slice(offset, offset + pageSize);
+
+      const rows = sliced.map(b => ({
+        id: b.id,
+        referenceNumber: b.id ? `A-${b.id.substring(b.id.length - 8).toUpperCase()}` : "DRAFT",
+        name: `${b.lastName || ""}, ${b.firstName || ""}`,
+        sector: b.skillSector || "General Skill Program",
+        tsp: b.tsp || "Unique Technology Nig. Ltd",
+        admissionStatus: b.admissionStatus || "Pending",
+        acceptanceLetterStatus: b.acceptanceLetterStatus || "NOT_SUBMITTED",
+        state: b.state || "Imo",
+        batch: b.batch || "Batch 2026-C",
+        createdAt: b.createdAt || new Date().toISOString()
+      }));
+
+      return { rows, totalCount, page, pageSize, totalPages };
+    }
+
+    try {
+      const selectParts = [
+        "b.id",
+        "COALESCE(adm.admission_ref, 'DRAFT') as reference_number",
+        "b.first_name",
+        "b.last_name",
+        "b.skill_sector",
+        "b.tsp",
+        "COALESCE(adm.admission_status, 'Pending') as admission_status",
+        "COALESCE(adm.acceptance_letter_status, 'NOT_SUBMITTED') as acceptance_letter_status",
+        "b.state",
+        "b.batch",
+        "b.created_at"
+      ];
+
+      let queryWhere = "WHERE b.deleted_at IS NULL ";
+      const params: any[] = [];
+      let paramCount = 1;
+
+      if (search) {
+        const searchPattern = `%${search.toLowerCase()}%`;
+        queryWhere += `AND (LOWER(b.first_name) LIKE $${paramCount} OR LOWER(b.last_name) LIKE $${paramCount} OR LOWER(b.id) LIKE $${paramCount} OR LOWER(b.nin) LIKE $${paramCount} OR LOWER(b.bvn) LIKE $${paramCount}) `;
+        params.push(searchPattern);
+        paramCount++;
+      }
+
+      if (reportType === "admitted") {
+        queryWhere += `AND (COALESCE(adm.admission_status, 'Pending') = 'Accepted' OR COALESCE(adm.acceptance_letter_status, 'NOT_SUBMITTED') = 'ACCEPTED') `;
+      } else if (reportType === "rejected") {
+        queryWhere += `AND (LOWER(COALESCE(adm.admission_status, 'Pending')) IN ('acceptance rejected', 'rejected', 'declined') OR COALESCE(adm.acceptance_letter_status, 'NOT_SUBMITTED') = 'REJECTED') `;
+      } else if (reportType === "acceptance_status" && letterStatus !== "all") {
+        queryWhere += `AND COALESCE(adm.acceptance_letter_status, 'NOT_SUBMITTED') = $${paramCount} `;
+        params.push(letterStatus);
+        paramCount++;
+      }
+
+      if (stateFilter !== "all") {
+        queryWhere += `AND b.state = $${paramCount} `;
+        params.push(stateFilter);
+        paramCount++;
+      }
+
+      if (sectorFilter !== "all") {
+        queryWhere += `AND b.skill_sector = $${paramCount} `;
+        params.push(sectorFilter);
+        paramCount++;
+      }
+
+      if (tspFilter !== "all") {
+        queryWhere += `AND b.tsp = $${paramCount} `;
+        params.push(tspFilter);
+        paramCount++;
+      }
+
+      // Count Query
+      const countRes = await pool.query(
+        `SELECT COUNT(*) as count 
+         FROM beneficiaries b
+         LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
+         ${queryWhere}`,
+        params
+      );
+      const totalCount = parseInt(countRes.rows[0]?.count || "0", 10);
+      const totalPages = Math.ceil(totalCount / pageSize) || 1;
+
+      // Sort
+      const sortBy = options.sortBy || "createdAt";
+      const sortOrder = options.sortOrder || "DESC";
+      let oCol = "b.created_at";
+      if (sortBy === "id") oCol = "b.id";
+      else if (sortBy === "name") oCol = "b.last_name";
+      else if (sortBy === "tsp") oCol = "b.tsp";
+      else if (sortBy === "state") oCol = "b.state";
+      else if (sortBy === "status" || sortBy === "admissionStatus") oCol = "adm.admission_status";
+      else if (sortBy === "acceptanceLetterStatus") oCol = "adm.acceptance_letter_status";
+
+      // Append Limit and Offset parameters
+      const dataParams = [...params];
+      dataParams.push(pageSize);
+      const lIndex = paramCount;
+      dataParams.push(offset);
+      const oIndex = paramCount + 1;
+
+      const itemsQuery = `
+        SELECT ${selectParts.join(", ")}
+        FROM beneficiaries b
+        LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
+         ${queryWhere}
+        ORDER BY ${oCol} ${sortOrder}
+        LIMIT $${lIndex} OFFSET $${oIndex}
+      `;
+
+      const dataRes = await pool.query(itemsQuery, dataParams);
+      const rows = dataRes.rows.map(r => ({
+        id: r.id,
+        referenceNumber: r.reference_number || "DRAFT",
+        name: `${r.last_name || ""}, ${r.first_name || ""}`,
+        sector: r.skill_sector || "General Skill Program",
+        tsp: r.tsp || "Unique Technology Nig. Ltd",
+        admissionStatus: r.admission_status || "Pending",
+        acceptanceLetterStatus: r.acceptance_letter_status || "NOT_SUBMITTED",
+        state: r.state || "Imo",
+        batch: r.batch || "Batch 2026-C",
+        createdAt: r.created_at ? r.created_at.toISOString() : new Date().toISOString()
+      }));
+
+      return { rows, totalCount, page, pageSize, totalPages };
+    } catch (e) {
+      console.error("[DB Repo] admissions paged list aggregates fail:", e);
+      return { rows: [], totalCount: 0, page, pageSize, totalPages: 1 };
+    }
+  }
 }
+

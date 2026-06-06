@@ -35,10 +35,38 @@ export async function authFetch(
 
   const targetUrl = url.startsWith("/api/") ? `${API_BASE_URL}${url}` : url;
 
-  return fetch(targetUrl, {
+  const response = await fetch(targetUrl, {
     ...options,
     headers,
   });
+
+  // Intercept the .json() resolution to adapt normalized API responses back to direct shapes
+  const originalJson = response.json.bind(response);
+  response.json = async function(): Promise<any> {
+    const raw = await originalJson();
+    if (raw && typeof raw === "object" && "success" in raw && "data" in raw) {
+      if (Array.isArray(raw.data)) {
+        const arr = raw.data;
+        Object.defineProperty(arr, "success", { value: raw.success, enumerable: false, writable: true });
+        Object.defineProperty(arr, "data", { value: raw.data, enumerable: false, writable: true });
+        return arr;
+      } else if (raw.data && typeof raw.data === "object") {
+        const obj = { ...raw.data };
+        Object.defineProperty(obj, "success", { value: raw.success, enumerable: false, writable: true });
+        Object.defineProperty(obj, "data", { value: raw.data, enumerable: false, writable: true });
+        // Map any root properties (e.g. totalCount, totalPages) as enumerable properties
+        for (const k of Object.keys(raw)) {
+          if (k !== "data" && k !== "success" && !(k in obj)) {
+            Object.defineProperty(obj, k, { value: raw[k], enumerable: true, writable: true });
+          }
+        }
+        return obj;
+      }
+    }
+    return raw;
+  };
+
+  return response;
 }
 
 /**

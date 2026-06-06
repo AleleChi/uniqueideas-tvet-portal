@@ -398,4 +398,54 @@ export class AdmissionController {
       return res.status(500).json({ error: e.message || "Failed gathering unified letters parameters." });
     }
   }
+
+  /**
+   * Controller for review and audit verification of candidate uploaded acceptance letters
+   * POST /api/admissions/acceptance/review
+   */
+  static async reviewAcceptanceLetter(req: Request, res: Response) {
+    try {
+      const { beneficiaryId, status, remarks } = req.body;
+      const operatorUser = (req as any).user?.email || "anonymous";
+
+      if (!beneficiaryId || !status) {
+        return res.status(400).json({ error: "Missing required parameters: beneficiaryId and status" });
+      }
+
+      const validStatuses = ["NOT_SUBMITTED", "SUBMITTED", "UNDER_VERIFICATION", "ACCEPTED", "REJECTED"];
+      if (!validStatuses.includes(status)) {
+        return res.status(400).json({ error: `Invalid status code '${status}'. Expected one of: ${validStatuses.join(", ")}` });
+      }
+
+      const verified = await DbRepo.updateAcceptanceLetterStatus(beneficiaryId, status, operatorUser, remarks || "");
+      if (!verified) {
+        return res.status(404).json({ error: "Candidate admissions record was not successfully located or updated." });
+      }
+
+      // Log to Workflow history
+      await DbRepo.saveWorkflowHistory({
+        beneficiaryId,
+        oldStatus: "Acceptance Checklist Review",
+        newStatus: `Acceptance Letter Status: ${status}`,
+        changedBy: operatorUser,
+        changedAt: new Date().toISOString(),
+        remarks: remarks || "Acceptance document worksheet audit checked."
+      });
+
+      // Log central Audit Log
+      await DbRepo.saveAuditLog({
+        id: "log_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+        timestamp: new Date().toISOString(),
+        username: operatorUser,
+        role: (req as any).user?.role || "System Admin",
+        action: "ADMISSIONS_ACCEPTANCE_CHECK",
+        details: `Reviewed candidate '${beneficiaryId}' acceptance letters: status set to '${status}'. Remarks: ${remarks || "none"}`
+      });
+
+      return res.status(200).json({ success: true, message: `Candidate acceptance letter status marked as '${status}' successfully.` });
+    } catch (err: any) {
+      console.error("[AdmissionController] reviewAcceptanceLetter failed:", err);
+      return res.status(500).json({ error: err.message || "Failed updating acceptance document review details." });
+    }
+  }
 }

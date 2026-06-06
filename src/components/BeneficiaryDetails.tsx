@@ -9,7 +9,7 @@ import {
   Award, Landmark, Check, Upload, FileText, Calendar, Trash2, Mail, ExternalLink, 
   Download, FileUp, Sparkles, AlertTriangle, FileCode, CheckSquare, Info,
   Copy, RotateCw, RefreshCw, FileSpreadsheet, Search, Filter, X, Eye, ChevronRight,
-  Lock, Unlock
+  Lock, Unlock, Save
 } from "lucide-react";
 import { Beneficiary, ProgramStatus, AuditLog, WorkflowHistory } from "../types";
 import { authFetch, downloadWithAuth } from "../utils/authFetch";
@@ -50,6 +50,48 @@ export function BeneficiaryDetails({
   const [emailStatus, setEmailStatus] = useState<"idle" | "sending" | "sent">("idle");
   const [emailHealth, setEmailHealth] = useState<{ status: string; error?: string } | null>(null);
   const [dragActive, setDragActive] = useState<string | null>(null);
+  
+  // Acceptance letter worksheet local tracking states
+  const [remarksInput, setRemarksInput] = useState(beneficiary.acceptanceLetterRemarks || "");
+  const [selectedLetterStatus, setSelectedLetterStatus] = useState<"NOT_SUBMITTED" | "SUBMITTED" | "UNDER_VERIFICATION" | "ACCEPTED" | "REJECTED">(
+    (beneficiary.acceptanceLetterStatus as any) || "NOT_SUBMITTED"
+  );
+  const [isUpdatingLetter, setIsUpdatingLetter] = useState(false);
+
+  useEffect(() => {
+    setSelectedLetterStatus((beneficiary.acceptanceLetterStatus as any) || "NOT_SUBMITTED");
+    setRemarksInput(beneficiary.acceptanceLetterRemarks || "");
+  }, [beneficiary.acceptanceLetterStatus, beneficiary.acceptanceLetterRemarks]);
+
+  const handleSaveLetterStatus = async () => {
+    setIsUpdatingLetter(true);
+    try {
+      const response = await authFetch(`${API_BASE_URL}/api/admissions/acceptance/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          beneficiaryId: beneficiary.id,
+          status: selectedLetterStatus,
+          remarks: remarksInput
+        })
+      });
+      if (!response.ok) {
+        throw new Error("Unable to save acceptance letter status");
+      }
+      globalShowToast("Acceptance letter verified as " + selectedLetterStatus, "success");
+      await onUpdate({
+        acceptanceLetterStatus: selectedLetterStatus,
+        acceptanceLetterRemarks: remarksInput,
+        acceptanceLetterCheckedBy: session?.email || "anonymous",
+        acceptanceLetterCheckedAt: new Date().toISOString()
+      });
+    } catch (e: any) {
+      globalShowToast(e.message || "Failed to update status", "error");
+    } finally {
+      setIsUpdatingLetter(false);
+    }
+  };
+
   const [copiedLink, setCopiedLink] = useState(false);
   
   // Document automation engine state
@@ -2196,6 +2238,107 @@ export function BeneficiaryDetails({
                 </div>
 
               </div>
+
+              {/* ACCEPTANCE LETTER AUDIT STATUS WORKSHEET */}
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 shadow-xs space-y-4">
+                <h5 className="font-display font-bold text-slate-900 text-xs uppercase pb-2 border-b border-slate-200 flex items-center gap-2">
+                  <CheckSquare className="w-4 h-4 text-slate-700" />
+                  Acceptance Letter Audit & Verification Worksheet
+                </h5>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Left Column: Current Status Metadata */}
+                  <div className="space-y-3 p-3 bg-white border border-slate-150 rounded-lg">
+                    <span className="text-[10px] uppercase font-mono font-bold text-slate-400 block">Worksheet Metadata</span>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="text-slate-500 font-medium">Document Status:</div>
+                      <div>
+                        <span className={`inline-block text-[10px] font-bold font-mono px-2 py-0.5 rounded border uppercase ${
+                          beneficiary.acceptanceLetterStatus === "ACCEPTED"
+                            ? "bg-emerald-55 bg-emerald-50 text-emerald-700 border-emerald-200"
+                            : beneficiary.acceptanceLetterStatus === "REJECTED"
+                            ? "bg-rose-50 text-rose-700 border-rose-200"
+                            : beneficiary.acceptanceLetterStatus === "UNDER_VERIFICATION"
+                            ? "bg-yellow-50 text-yellow-700 border-yellow-200"
+                            : beneficiary.acceptanceLetterStatus === "SUBMITTED"
+                            ? "bg-blue-50 text-blue-700 border-blue-200"
+                            : "bg-slate-100 text-slate-600 border-slate-200"
+                        }`}>
+                          {beneficiary.acceptanceLetterStatus || "NOT_SUBMITTED"}
+                        </span>
+                      </div>
+
+                      <div className="text-slate-500 font-medium">Audited By:</div>
+                      <div className="font-mono text-[11px] text-slate-700">{beneficiary.acceptanceLetterCheckedBy || "Unreviewed"}</div>
+
+                      <div className="text-slate-500 font-medium">Checked At:</div>
+                      <div className="font-mono text-[11px] text-slate-700">
+                        {beneficiary.acceptanceLetterCheckedAt 
+                          ? new Date(beneficiary.acceptanceLetterCheckedAt).toLocaleString("en-GB") 
+                          : "Never"}
+                      </div>
+                    </div>
+
+                    <div className="pt-2 border-t border-slate-100">
+                      <span className="text-[10px] font-mono font-bold text-slate-400 block mb-1">Supervisor Remarks</span>
+                      <div className="p-2 bg-slate-50 rounded text-slate-650 text-slate-600 text-xs italic font-sans min-h-[40px]">
+                        {beneficiary.acceptanceLetterRemarks || "No evaluation remarks logged."}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right Column: Interactive Audit Form */}
+                  <div className="space-y-3">
+                    <span className="text-[10px] uppercase font-mono font-bold text-slate-400 block">Update Audit Status</span>
+                    
+                    <div className="space-y-2">
+                      <label className="text-xs font-bold text-slate-700 uppercase block font-mono">Select Document Status</label>
+                      <select
+                        value={selectedLetterStatus}
+                        onChange={(e) => setSelectedLetterStatus(e.target.value as any)}
+                        className="w-full text-xs font-mono font-bold bg-white border border-slate-300 rounded-lg p-2 focus:ring-1 focus:ring-indigo-505 focus:ring-indigo-500 outline-none"
+                      >
+                        <option value="NOT_SUBMITTED">NOT_SUBMITTED</option>
+                        <option value="SUBMITTED">SUBMITTED</option>
+                        <option value="UNDER_VERIFICATION">UNDER_VERIFICATION</option>
+                        <option value="ACCEPTED">ACCEPTED (Approved Verification)</option>
+                        <option value="REJECTED">REJECTED (Declined Acceptance)</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-xs font-bold text-slate-700 uppercase block font-mono">Evaluation / Audit Remarks</label>
+                      <textarea
+                        value={remarksInput}
+                        onChange={(e) => setRemarksInput(e.target.value)}
+                        placeholder="Add checklist notes, e.g. 'Signed document matches Trainee BVN criteria', or 'Signature mismatch'."
+                        rows={3}
+                        className="w-full text-xs bg-white border border-slate-300 rounded-lg p-2 focus:ring-1 focus:ring-indigo-505 focus:ring-indigo-500 outline-none resize-none font-sans"
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={isUpdatingLetter}
+                      onClick={handleSaveLetterStatus}
+                      className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold py-2.5 px-4 rounded-lg flex items-center justify-center gap-1.5 text-xs tracking-wide transition cursor-pointer active:scale-97 uppercase font-mono"
+                    >
+                      {isUpdatingLetter ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          Saving...
+                        </>
+                      ) : (
+                        <>
+                          <Save className="w-3.5 h-3.5" />
+                          Save Audit Decision
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
               {/* ADMIN DECISION DESK */}
               <div className="bg-slate-900 text-white border border-slate-950 rounded-xl p-5 shadow-xs text-left space-y-4">
                 <div className="flex justify-between items-center pb-2 border-b border-slate-800">

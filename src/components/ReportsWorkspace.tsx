@@ -1,12 +1,9 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { 
   FileSpreadsheet, Image as ImageIcon, FileText, Download, Printer, 
-  CheckCircle2, Compass, AlertCircle, FileImage, Layers, Filter, Check, Landmark, Award 
+  CheckCircle2, Compass, AlertCircle, FileImage, Layers, Filter, Check, Landmark, Award,
+  Users, CheckSquare, Globe, Building2, Search, ChevronLeft, ChevronRight, Info, Calendar, ArrowRight,
+  TrendingUp, Activity, Ban
 } from "lucide-react";
 import { Beneficiary, ProgramStatus } from "../types";
 import { downloadWithAuth } from "../utils/authFetch";
@@ -18,11 +15,152 @@ interface ReportsWorkspaceProps {
 }
 
 export function ReportsWorkspace({ beneficiaries }: ReportsWorkspaceProps) {
-  const [activeReportTab, setActiveReportTab] = useState<"excel" | "album" | "pdf">("excel");
+  const [activeReportTab, setActiveReportTab] = useState<"excel" | "album" | "pdf" | "admissions">("excel");
 
   // Excel filter state
   const [selectedState, setSelectedState] = useState("all");
   const [selectedBatch, setSelectedBatch] = useState("all");
+
+  // Admissions reporting state controls
+  const [selectedAdmissionsReport, setSelectedAdmissionsReport] = useState<
+    "funnel" | "tsp" | "state" | "admitted" | "rejected" | "acceptance"
+  >("funnel");
+
+  // Filters for listings
+  const [reportSearch, setReportSearch] = useState("");
+  const [reportState, setReportState] = useState("all");
+  const [reportTsp, setReportTsp] = useState("all");
+  const [reportSector, setReportSector] = useState("all");
+  const [reportAcceptanceStatus, setReportAcceptanceStatus] = useState("all");
+
+  // Pagination support
+  const [reportPage, setReportPage] = useState(1);
+  const [reportTotalPages, setReportTotalPages] = useState(1);
+  const [reportTotalCount, setReportTotalCount] = useState(0);
+
+  // Result records
+  const [funnelData, setFunnelData] = useState<any>(null);
+  const [tspData, setTspData] = useState<any[]>([]);
+  const [statePerformanceData, setStatePerformanceData] = useState<any[]>([]);
+  const [listData, setListData] = useState<any[]>([]);
+  
+  const [loadingReport, setLoadingReport] = useState(false);
+  const [errorReport, setErrorReport] = useState<string | null>(null);
+
+  // Filter reset helper
+  const handleFilterChange = (setter: (val: any) => void, val: any) => {
+    setter(val);
+    setReportPage(1);
+  };
+
+  // Fetch report data on interaction
+  useEffect(() => {
+    if (activeReportTab !== "admissions") return;
+
+    const fetchReportData = async () => {
+      setLoadingReport(true);
+      setErrorReport(null);
+      try {
+        const { authFetch } = await import("../utils/authFetch");
+        
+        if (selectedAdmissionsReport === "funnel") {
+          const res = await authFetch("/api/reports/admissions/funnel");
+          if (!res.ok) throw new Error("Failed to load funnel stats");
+          const data = await res.json();
+          setFunnelData(data);
+        } else if (selectedAdmissionsReport === "tsp") {
+          const res = await authFetch("/api/reports/admissions/tsp");
+          if (!res.ok) throw new Error("Failed to load TSP statistics");
+          const data = await res.json();
+          setTspData(data);
+        } else if (selectedAdmissionsReport === "state") {
+          const res = await authFetch("/api/reports/admissions/state");
+          if (!res.ok) throw new Error("Failed to load State statistics");
+          const data = await res.json();
+          setStatePerformanceData(data);
+        } else {
+          // List based report: admitted | rejected | acceptance
+          let reportType: "admitted" | "rejected" | "acceptance_status" = "admitted";
+          if (selectedAdmissionsReport === "rejected") {
+            reportType = "rejected";
+          } else if (selectedAdmissionsReport === "acceptance") {
+            reportType = "acceptance_status";
+          }
+
+          const query = new URLSearchParams({
+            page: String(reportPage),
+            pageSize: "10",
+            search: reportSearch,
+            reportType,
+            acceptanceLetterStatus: reportAcceptanceStatus,
+            state: reportState,
+            sector: reportSector,
+            tsp: reportTsp
+          }).toString();
+
+          const res = await authFetch(`/api/reports/admissions/list?${query}`);
+          if (!res.ok) throw new Error("Failed to load report list");
+          const data = await res.json();
+          setListData(data.rows);
+          setReportTotalCount(data.totalCount);
+          setReportTotalPages(data.totalPages);
+        }
+      } catch (err: any) {
+        setErrorReport(err.message || "An error occurred fetching dashboard reports");
+      } finally {
+        setLoadingReport(false);
+      }
+    };
+
+    fetchReportData();
+  }, [
+    activeReportTab,
+    selectedAdmissionsReport,
+    reportPage,
+    reportSearch,
+    reportAcceptanceStatus,
+    reportState,
+    reportSector,
+    reportTsp
+  ]);
+
+  const handleExport = async (format: "excel" | "pdf" | "word") => {
+    try {
+      let reportType: string = selectedAdmissionsReport;
+      if (selectedAdmissionsReport === "acceptance") {
+        reportType = "acceptance_status";
+      } else if (selectedAdmissionsReport === "tsp") {
+        reportType = "tsp_performance";
+      } else if (selectedAdmissionsReport === "state") {
+        reportType = "state_performance";
+      }
+
+      const query = new URLSearchParams({
+        reportType,
+        search: reportSearch,
+        acceptanceLetterStatus: reportAcceptanceStatus,
+        state: reportState,
+        sector: reportSector,
+        tsp: reportTsp
+      }).toString();
+
+      const ext = format === "excel" ? "xls" : format === "word" ? "doc" : "pdf";
+      const downloadFilename = `ideas_${selectedAdmissionsReport}_report_${new Date().toISOString().split("T")[0]}.${ext}`;
+      const endpoint = `/api/export/reports/${format}?${query}`;
+      
+      if (format === "pdf") {
+        // PDF opens print compiler in a new window with exact auth JWT header mapping
+        const { authFetch } = await import("../utils/authFetch");
+        const token = sessionStorage.getItem("token");
+        const urlWithAuth = `${endpoint}${endpoint.includes("?") ? "&" : "?"}token=${token}`;
+        window.open(urlWithAuth, "_blank");
+      } else {
+        await downloadWithAuth(endpoint, downloadFilename);
+      }
+    } catch (err) {
+      console.error("Admissions export failed:", err);
+    }
+  };
 
   const displayList = beneficiaries.filter(b => {
     const sMatch = selectedState === "all" || b.state === selectedState;
@@ -85,6 +223,18 @@ export function ReportsWorkspace({ beneficiaries }: ReportsWorkspaceProps) {
           >
             <FileText className="w-4 h-4 text-rose-500" />
             Official PDF Preview
+          </button>
+
+          <button
+            onClick={() => setActiveReportTab("admissions")}
+            className={`px-3.5 py-1.5 text-xs font-bold rounded-lg flex items-center gap-1.5 cursor-pointer transition ${
+              activeReportTab === "admissions"
+                ? "bg-white text-indigo-950 shadow-sm"
+                : "text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            <Award className="w-4 h-4 text-amber-500" />
+            Admissions Progress Reports
           </button>
         </div>
       </div>
@@ -400,6 +550,571 @@ export function ReportsWorkspace({ beneficiaries }: ReportsWorkspaceProps) {
               <Download className="w-4 h-4" />
               Compile & Download PDF
             </button>
+          </div>
+
+        </div>
+      )}
+
+      {/* ----------------------------------------------------------------- */}
+      {/* VIEW D: ADMISSIONS PROGRESS REPORTS WORKSPACE */}
+      {/* ----------------------------------------------------------------- */}
+      {activeReportTab === "admissions" && (
+        <div className="space-y-6 animate-in fade-in slide-in-from-bottom-3 duration-300">
+          
+          {/* Header Action Section */}
+          <div className="bg-slate-900 text-white rounded-2xl p-6 shadow-xl border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-6">
+            <div className="space-y-1">
+              <span className="text-[10px] font-bold text-amber-400 tracking-widest font-mono uppercase">Section Four: Admissions Progress</span>
+              <h3 className="text-lg font-bold">Federal Admission & Acceptance Registry</h3>
+              <p className="text-xs text-slate-400">
+                Audit real-time conversion rates, TSP performance indicators, and granular admitted/rejected checklists.
+              </p>
+            </div>
+            
+            {/* Quick Exports Toolbar */}
+            <div className="flex flex-wrap items-center gap-2 bg-slate-800 p-1.5 rounded-xl border border-slate-700">
+              <button
+                onClick={() => handleExport("excel")}
+                className="px-3 py-2 text-[11px] font-bold bg-slate-9ml0 hover:bg-slate-700 rounded-lg text-slate-200 flex items-center gap-1.5 transition cursor-pointer"
+                title="Download Excel Worksheet"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+                Excel
+              </button>
+              <button
+                onClick={() => handleExport("word")}
+                className="px-3 py-2 text-[11px] font-bold bg-slate-9ml0 hover:bg-slate-700 rounded-lg text-slate-200 flex items-center gap-1.5 transition cursor-pointer"
+                title="Download Word Audit Document"
+              >
+                <FileText className="w-3.5 h-3.5 text-sky-400" />
+                Word
+              </button>
+              <button
+                onClick={() => handleExport("pdf")}
+                className="px-3 py-2 text-[11px] font-bold bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white flex items-center gap-1.5 transition cursor-pointer shadow-md"
+                title="Compile and Print PDF document"
+              >
+                <Printer className="w-3.5 h-3.5 text-amber-300" />
+                Print / PDF
+              </button>
+            </div>
+          </div>
+
+          {/* Toggle Report Workspace Categories */}
+          <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 bg-slate-100 p-1.5 rounded-2xl border border-slate-200">
+            <button
+              onClick={() => handleFilterChange(setSelectedAdmissionsReport, "funnel")}
+              className={`px-3 py-2.5 rounded-xl text-center text-xs font-bold transition flex flex-col items-center gap-1.5 cursor-pointer ${
+                selectedAdmissionsReport === "funnel"
+                  ? "bg-white text-indigo-950 shadow-sm border border-slate-200/50"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <TrendingUp className="w-4 h-4 text-indigo-500" />
+              <span>Conversion Funnel</span>
+            </button>
+
+            <button
+              onClick={() => handleFilterChange(setSelectedAdmissionsReport, "tsp")}
+              className={`px-3 py-2.5 rounded-xl text-center text-xs font-bold transition flex flex-col items-center gap-1.5 cursor-pointer ${
+                selectedAdmissionsReport === "tsp"
+                  ? "bg-white text-indigo-950 shadow-sm border border-slate-200/50"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <Building2 className="w-4 h-4 text-emerald-500" />
+              <span>TSP Metrics</span>
+            </button>
+
+            <button
+              onClick={() => handleFilterChange(setSelectedAdmissionsReport, "state")}
+              className={`px-3 py-2.5 rounded-xl text-center text-xs font-bold transition flex flex-col items-center gap-1.5 cursor-pointer ${
+                selectedAdmissionsReport === "state"
+                  ? "bg-white text-indigo-950 shadow-sm border border-slate-200/50"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <Globe className="w-4 h-4 text-cyan-500" />
+              <span>State Coverage</span>
+            </button>
+
+            <button
+              onClick={() => handleFilterChange(setSelectedAdmissionsReport, "admitted")}
+              className={`px-3 py-2.5 rounded-xl text-center text-xs font-bold transition flex flex-col items-center gap-1.5 cursor-pointer ${
+                selectedAdmissionsReport === "admitted"
+                  ? "bg-white text-indigo-950 shadow-sm border border-slate-200/50"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <CheckCircle2 className="w-4 h-4 text-sky-500" />
+              <span>Admitted Cohort</span>
+            </button>
+
+            <button
+              onClick={() => handleFilterChange(setSelectedAdmissionsReport, "rejected")}
+              className={`px-3 py-2.5 rounded-xl text-center text-xs font-bold transition flex flex-col items-center gap-1.5 cursor-pointer ${
+                selectedAdmissionsReport === "rejected"
+                  ? "bg-white text-indigo-950 shadow-sm border border-slate-200/50"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <Ban className="w-4 h-4 text-rose-500" />
+              <span>Rejected Cohort</span>
+            </button>
+
+            <button
+              onClick={() => handleFilterChange(setSelectedAdmissionsReport, "acceptance")}
+              className={`px-3 py-2.5 rounded-xl text-center text-xs font-bold transition flex flex-col items-center gap-1.5 cursor-pointer ${
+                selectedAdmissionsReport === "acceptance"
+                  ? "bg-white text-indigo-950 shadow-sm border border-slate-200/50"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <CheckSquare className="w-4 h-4 text-amber-500" />
+              <span>Acceptance Audit</span>
+            </button>
+          </div>
+
+          {/* MAIN DYNAMIC CONTENT COMPILER */}
+          <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm min-h-[350px] relative">
+            
+            {/* Loading Overlay */}
+            {loadingReport && (
+              <div className="absolute inset-0 bg-white/70 backdrop-blur-xs flex flex-col items-center justify-center z-10 rounded-2xl animate-in fade-in duration-200">
+                <Activity className="w-8 h-8 text-indigo-600 animate-pulse" />
+                <span className="text-xs font-bold text-slate-500 mt-2">Loading Registry Data...</span>
+              </div>
+            )}
+
+            {/* Error Indicator */}
+            {errorReport && (
+              <div className="bg-rose-50 border border-rose-200 text-rose-800 p-4 rounded-xl text-xs font-semibold flex items-center gap-2 mb-4">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-600" />
+                <span>{errorReport}</span>
+              </div>
+            )}
+
+            {/* A: CONVERSION FUNNEL VIEW */}
+            {selectedAdmissionsReport === "funnel" && funnelData && (
+              <div className="space-y-8 animate-in fade-in duration-200">
+                <div className="border-b border-slate-100 pb-3 flex justify-between items-center">
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-900 uppercase tracking-tight">National Funnel Analytics</h4>
+                    <p className="text-[11px] text-slate-400">Consolidated progression statistics and status transitions timeline.</p>
+                  </div>
+                  <span className="text-[10px] bg-indigo-50 border border-indigo-200 text-indigo-700 px-2.5 py-1 rounded-full font-mono font-bold uppercase">Consolidated</span>
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                  <div className="bg-slate-50 border border-slate-200/60 rounded-xl p-4 text-center space-y-1">
+                    <span className="text-[9px] font-bold text-slate-400 tracking-wider font-mono">1. PIPELINE</span>
+                    <div className="text-2xl font-bold font-display text-slate-800">{funnelData.totalRegistered}</div>
+                    <span className="text-[9px] text-slate-500 font-mono">Candidates</span>
+                  </div>
+
+                  <div className="bg-slate-50 border border-slate-200/60 rounded-xl p-4 text-center space-y-1">
+                    <span className="text-[9px] font-bold text-slate-400 tracking-wider font-mono">2. OFFERS SENT</span>
+                    <div className="text-2xl font-bold font-display text-slate-800">{funnelData.totalOfferSent}</div>
+                    <span className="text-[9px] text-indigo-600 font-mono">
+                      {funnelData.totalRegistered > 0 ? Math.round((funnelData.totalOfferSent / funnelData.totalRegistered) * 100) : 0}% Yield
+                    </span>
+                  </div>
+
+                  <div className="bg-indigo-50/50 border border-indigo-100 rounded-xl p-4 text-center space-y-1">
+                    <span className="text-[9px] font-bold text-indigo-600 tracking-wider font-mono">3. RESPONSES</span>
+                    <div className="text-2xl font-bold font-display text-indigo-900">{funnelData.totalUploaded}</div>
+                    <span className="text-[9px] text-indigo-700 font-mono">
+                      {funnelData.totalOfferSent > 0 ? Math.round((funnelData.totalUploaded / funnelData.totalOfferSent) * 100) : 0}% Upload Rate
+                    </span>
+                  </div>
+
+                  <div className="bg-slate-50 border border-slate-200/60 rounded-xl p-4 text-center space-y-1">
+                    <span className="text-[9px] font-bold text-slate-400 tracking-wider font-mono">4. REVIEW</span>
+                    <div className="text-2xl font-bold font-display text-slate-800">{funnelData.totalUnderReview}</div>
+                    <span className="text-[9px] text-slate-500 font-mono">Verification Queue</span>
+                  </div>
+
+                  <div className="bg-emerald-50/60 border border-emerald-100 rounded-xl p-4 text-center space-y-1">
+                    <span className="text-[9px] font-bold text-emerald-700 tracking-wider font-mono text-emerald-800">5. ADMITTED</span>
+                    <div className="text-2xl font-bold font-display text-emerald-900">{funnelData.totalVerified}</div>
+                    <span className="text-[9px] text-emerald-700 font-mono font-bold">
+                      {funnelData.totalRegistered > 0 ? Math.round((funnelData.totalVerified / funnelData.totalRegistered) * 100) : 0}% Success
+                    </span>
+                  </div>
+                </div>
+
+                {/* Vertical Progression Funnel bars */}
+                <div className="space-y-4 max-w-2xl mx-auto pt-4">
+                  <span className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-widest block text-center">Fulfillment Progression Stages</span>
+                  
+                  {/* Step 1 */}
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between text-xs">
+                      <span className="font-bold text-slate-700">1. Enrolled & Documented Candidates</span>
+                      <span className="font-mono text-slate-500">{funnelData.totalRegistered} (100%)</span>
+                    </div>
+                    <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
+                      <div className="bg-slate-400 h-full rounded-full transition-all duration-500" style={{ width: "100%" }}></div>
+                    </div>
+                  </div>
+
+                  {/* Step 2 */}
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between text-xs">
+                      <span className="font-bold text-slate-700">2. Official Offers Issued</span>
+                      <span className="font-mono text-slate-600">
+                        {funnelData.totalOfferSent} ({funnelData.totalRegistered > 0 ? Math.round((funnelData.totalOfferSent / funnelData.totalRegistered) * 100) : 0}%)
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
+                      <div className="bg-indigo-500 h-full rounded-full transition-all duration-500" style={{ width: `${funnelData.totalRegistered > 0 ? (funnelData.totalOfferSent / funnelData.totalRegistered) * 100 : 0}%` }}></div>
+                    </div>
+                  </div>
+
+                  {/* Step 3 */}
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between text-xs">
+                      <span className="font-bold text-slate-700">3. Under Review (Pending Verifications)</span>
+                      <span className="font-mono text-slate-600">
+                        {funnelData.totalUnderReview} ({funnelData.totalRegistered > 0 ? Math.round((funnelData.totalUnderReview / funnelData.totalRegistered) * 100) : 0}%)
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
+                      <div className="bg-amber-400 h-full rounded-full transition-all duration-500" style={{ width: `${funnelData.totalRegistered > 0 ? (funnelData.totalUnderReview / funnelData.totalRegistered) * 100 : 0}%` }}></div>
+                    </div>
+                  </div>
+
+                  {/* Step 4 */}
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between text-xs">
+                      <span className="font-bold text-slate-700">4. Accepted & Verified Complete</span>
+                      <span className="font-mono text-emerald-700 font-bold">
+                        {funnelData.totalVerified} ({funnelData.totalRegistered > 0 ? Math.round((funnelData.totalVerified / funnelData.totalRegistered) * 100) : 0}%)
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
+                      <div className="bg-emerald-500 h-full rounded-full transition-all duration-500" style={{ width: `${funnelData.totalRegistered > 0 ? (funnelData.totalVerified / funnelData.totalRegistered) * 100 : 0}%` }}></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* B: TSP PERFORMANCE REGISTRY */}
+            {selectedAdmissionsReport === "tsp" && (
+              <div className="space-y-6 animate-in fade-in duration-200">
+                <div className="border-b border-slate-100 pb-3 flex justify-between items-center">
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-900 uppercase tracking-tight">Technical Partner Performance Scorecard</h4>
+                    <p className="text-[11px] text-slate-400">Aggregated enrollment and verification data grouped by authorized TSP training centers.</p>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[11px] text-slate-600 border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-50 text-[10px] text-slate-400 font-bold uppercase text-left tracking-wider">
+                        <th className="py-3 px-4">Authorized Training Provider (TSP)</th>
+                        <th className="py-3 px-4 text-right">Candidates Enrolled</th>
+                        <th className="py-3 px-4 text-right">Admitted Status</th>
+                        <th className="py-3 px-4 text-right">Uploaded Letters</th>
+                        <th className="py-3 px-4 text-right">Under Review</th>
+                        <th className="py-3 px-4 text-right">Verified Complete</th>
+                        <th className="py-3 px-4 text-right">Enrollment Success Bar</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {tspData.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="py-10 text-center font-medium text-slate-400">No TSP aggregates found. Check back later.</td>
+                        </tr>
+                      ) : (
+                        tspData.map((item, idx) => {
+                          const rate = item.total > 0 ? Math.round((item.verified / item.total) * 100) : 0;
+                          return (
+                            <tr key={idx} className="hover:bg-slate-50/50 transition">
+                              <td className="py-3 px-4 font-bold text-indigo-950">{item.tsp}</td>
+                              <td className="py-3 px-4 text-right font-semibold">{item.total}</td>
+                              <td className="py-3 px-4 text-right text-sky-600 font-semibold">{item.admitted}</td>
+                              <td className="py-3 px-4 text-right text-indigo-500 font-semibold">{item.submitted}</td>
+                              <td className="py-3 px-4 text-right text-amber-500 font-semibold">{item.underReview}</td>
+                              <td className="py-3 px-4 text-right text-emerald-600 font-bold font-mono">{item.verified}</td>
+                              <td className="py-3 px-4">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-24 bg-slate-100 h-2 rounded-full overflow-hidden">
+                                    <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${rate}%` }}></div>
+                                  </div>
+                                  <span className="font-bold text-slate-700 font-mono text-[10px]">{rate}%</span>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* C: STATE COVERAGE ANALYSIS */}
+            {selectedAdmissionsReport === "state" && (
+              <div className="space-y-6 animate-in fade-in duration-200">
+                <div className="border-b border-slate-100 pb-3">
+                  <h4 className="text-sm font-bold text-slate-900 uppercase tracking-tight">Regional Registry Demographics</h4>
+                  <p className="text-[11px] text-slate-400">Geopolitically mapped beneficiary totals, approved statuses, and fulfillment speed metrics.</p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* State Table */}
+                  <div className="overflow-x-auto border border-slate-150 rounded-xl bg-white p-3">
+                    <table className="w-full text-[11px] text-slate-600 border-collapse">
+                      <thead>
+                        <tr className="border-b border-slate-200 text-[9px] text-slate-400 font-bold uppercase text-left">
+                          <th className="py-2 px-3">State Node</th>
+                          <th className="py-2 px-3 text-right">Registered</th>
+                          <th className="py-2 px-3 text-right">Approved</th>
+                          <th className="py-2 px-3 text-right">Completion %</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {statePerformanceData.length === 0 ? (
+                          <tr>
+                            <td colSpan={4} className="py-8 text-center text-slate-400 font-medium">No region datasets returned.</td>
+                          </tr>
+                        ) : (
+                          statePerformanceData.map((item, idx) => {
+                            const rate = item.total > 0 ? Math.round((item.admitted / item.total) * 100) : 0;
+                            return (
+                              <tr key={idx} className="hover:bg-slate-50/40">
+                                <td className="py-2.5 px-3 font-semibold text-slate-800">{item.state} State</td>
+                                <td className="py-2.5 px-3 text-right font-medium">{item.total}</td>
+                                <td className="py-2.5 px-3 text-right text-emerald-600 font-bold">{item.admitted}</td>
+                                <td className="py-2.5 px-3 text-right font-mono font-bold text-indigo-950">{rate}%</td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Horizontal Bar Chart representation */}
+                  <div className="bg-slate-50 border border-slate-200/60 rounded-xl p-5 space-y-4">
+                    <span className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">Visual National Distribution</span>
+                    <div className="space-y-3.5">
+                      {statePerformanceData.slice(0, 6).map((item, idx) => {
+                        const totalMax = Math.max(...statePerformanceData.map(d => d.total), 1);
+                        const pctMax = Math.round((item.total / totalMax) * 100);
+                        return (
+                          <div key={idx} className="space-y-1">
+                            <div className="flex justify-between text-[11px] font-bold text-slate-700">
+                              <span>{item.state}</span>
+                              <span className="font-mono text-slate-500">{item.total} Candidates</span>
+                            </div>
+                            <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
+                              <div className="bg-indigo-500 h-full rounded-full" style={{ width: `${pctMax}%` }}></div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* D: DETAIL COHORT LISTS (Admitted, Rejected, or Acceptance review checklist) */}
+            {(selectedAdmissionsReport === "admitted" || 
+              selectedAdmissionsReport === "rejected" || 
+              selectedAdmissionsReport === "acceptance") && (
+              <div className="space-y-6 animate-in fade-in duration-200">
+                
+                {/* Advanced Filter Action Bar */}
+                <div className="grid grid-cols-1 md:grid-cols-5 gap-3 bg-slate-50 p-4 rounded-xl border border-slate-200/60">
+                  
+                  {/* Search Query */}
+                  <div className="relative">
+                    <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                      <Search className="h-3.5 w-3.5 text-slate-400" />
+                    </span>
+                    <input
+                      type="text"
+                      placeholder="Search ID, Ref or Name..."
+                      value={reportSearch}
+                      onChange={(e) => handleFilterChange(setReportSearch, e.target.value)}
+                      className="block w-full pl-9 pr-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg text-slate-700 placeholder-slate-400 focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
+
+                  {/* State Select */}
+                  <div>
+                    <select
+                      value={reportState}
+                      onChange={(e) => handleFilterChange(setReportState, e.target.value)}
+                      className="block w-full px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg text-slate-600 focus:outline-none focus:border-indigo-500"
+                    >
+                      <option value="all">All States</option>
+                      <option value="Edo">Edo State</option>
+                      <option value="Kano">Kano State</option>
+                      <option value="Lagos">Lagos State</option>
+                      <option value="Kaduna">Kaduna State</option>
+                      <option value="Imo">Imo State</option>
+                      <option value="Plateau">Plateau State</option>
+                      <option value="Abia">Abia State</option>
+                      <option value="Oyo">Oyo State</option>
+                    </select>
+                  </div>
+
+                  {/* TSP Select */}
+                  <div>
+                    <select
+                      value={reportTsp}
+                      onChange={(e) => handleFilterChange(setReportTsp, e.target.value)}
+                      className="block w-full px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg text-slate-600 truncate focus:outline-none focus:border-indigo-500"
+                    >
+                      <option value="all">All training centers (TSPs)</option>
+                      <option value="Government Technical College, Benin">Government Technical College, Benin</option>
+                      <option value="Yaba College of Technology">Yaba College of Technology</option>
+                      <option value="Ramat Polytechnic">Ramat Polytechnic</option>
+                      <option value="Kano State polytechnic">Kano State polytechnic</option>
+                      <option value="Kaduna Business School">Kaduna Business School</option>
+                    </select>
+                  </div>
+
+                  {/* Sector Select */}
+                  <div>
+                    <select
+                      value={reportSector}
+                      onChange={(e) => handleFilterChange(setReportSector, e.target.value)}
+                      className="block w-full px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg text-slate-600 focus:outline-none focus:border-indigo-500"
+                    >
+                      <option value="all">All Skill Tracks</option>
+                      <option value="ICT">Information Communication Tech (ICT)</option>
+                      <option value="Construction">Construction Sciences</option>
+                      <option value="Agriculture">Agriculture & Agro-tech</option>
+                      <option value="Automotive">Automotive Engineering</option>
+                      <option value="Garmenting">Garmenting & Fashion Tech</option>
+                    </select>
+                  </div>
+
+                  {/* Acceptance Status checklist (for acceptance tab only) */}
+                  <div>
+                    <select
+                      value={reportAcceptanceStatus}
+                      onChange={(e) => handleFilterChange(setReportAcceptanceStatus, e.target.value)}
+                      disabled={selectedAdmissionsReport !== "acceptance"}
+                      className="block w-full px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg text-slate-600 disabled:opacity-50 disabled:bg-slate-100 focus:outline-none focus:border-indigo-500"
+                    >
+                      <option value="all">All Acceptance Checks</option>
+                      <option value="ACCEPTED">ACCEPTED (Verified Complete)</option>
+                      <option value="REJECTED">REJECTED / INCOMPLETE</option>
+                      <option value="SUBMITTED">SUBMITTED (Pending Review)</option>
+                      <option value="NOT_SUBMITTED">NOT_SUBMITTED (Acceptance Pending)</option>
+                    </select>
+                  </div>
+
+                </div>
+
+                {/* Sub-label indicators */}
+                <div className="flex justify-between items-center text-[10px] text-slate-400">
+                  <div className="flex items-center gap-1">
+                    <Info className="w-3.5 h-3.5 text-indigo-500" />
+                    <span>Showing matching records based on federal query structure.</span>
+                  </div>
+                  <span className="font-mono font-bold text-slate-600 bg-slate-100 px-2.5 py-0.5 rounded">
+                    Total: {reportTotalCount} Records Matched
+                  </span>
+                </div>
+
+                {/* Data Table */}
+                <div className="overflow-x-auto border border-slate-100 rounded-xl">
+                  <table className="w-full text-[11px] text-slate-600 border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-50 text-[10px] text-slate-400 font-bold uppercase text-left tracking-wider">
+                        <th className="py-2.5 px-3">Beneficiary ID</th>
+                        <th className="py-2.5 px-3">Unique Ref No.</th>
+                        <th className="py-2.5 px-3">Primary Candidate Name</th>
+                        <th className="py-2.5 px-3">Geographic Node</th>
+                        <th className="py-2.5 px-3">Assigned TSP Center</th>
+                        <th className="py-2.5 px-3">Skill Sector Track</th>
+                        <th className="py-2.5 px-3">Admission State</th>
+                        <th className="py-2.5 px-3">Offer Acceptance Checks</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {listData.length === 0 ? (
+                        <tr>
+                          <td colSpan={8} className="py-12 text-center text-slate-400 font-medium">
+                            No match results found. Try adjusting custom filters.
+                          </td>
+                        </tr>
+                      ) : (
+                        listData.map((row) => (
+                          <tr key={row.id} className="hover:bg-slate-50/50">
+                            <td className="py-2.5 px-3 text-slate-900 font-bold font-mono text-[10px]">{row.id}</td>
+                            <td className="py-2.5 px-3 font-mono text-[10px] text-slate-500">{row.referenceNumber}</td>
+                            <td className="py-2.5 px-3 font-bold text-slate-900">{row.name}</td>
+                            <td className="py-2.5 px-3">{row.state}</td>
+                            <td className="py-2.5 px-3 max-w-[150px] truncate" title={row.tsp}>{row.tsp}</td>
+                            <td className="py-2.5 px-3 text-slate-500">{row.sector}</td>
+                            <td className="py-2.5 px-3">
+                              <span className={`inline-block px-2 py-0.5 rounded-[4px] font-bold text-[9px] font-mono border uppercase tracking-wider ${
+                                row.admissionStatus === "Accepted"
+                                  ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+                                  : "bg-rose-50 border-rose-200 text-rose-700"
+                              }`}>
+                                {row.admissionStatus}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-3">
+                              <span className={`inline-block px-2 py-0.5 rounded-[4px] font-bold text-[9px] font-mono border uppercase tracking-wider ${
+                                row.acceptanceLetterStatus === "ACCEPTED"
+                                  ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+                                  : row.acceptanceLetterStatus === "REJECTED"
+                                  ? "bg-rose-50 border-rose-250 text-rose-700"
+                                  : "bg-amber-50 border-amber-200 text-amber-700"
+                              }`}>
+                                {row.acceptanceLetterStatus}
+                              </span>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Compact Pagination Block */}
+                {reportTotalPages > 1 && (
+                  <div className="flex items-center justify-between border-t border-slate-100 pt-4">
+                    <span className="text-[11px] text-slate-400">
+                      Page <span className="font-bold text-slate-600">{reportPage}</span> of <span className="font-bold text-slate-600">{reportTotalPages}</span>
+                    </span>
+                    
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => setReportPage((prev) => Math.max(prev - 1, 1))}
+                        disabled={reportPage === 1}
+                        className="px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-600 disabled:opacity-40 disabled:bg-slate-50 transition hover:bg-slate-50 cursor-pointer"
+                      >
+                        <ChevronLeft className="w-3.5 h-3.5" />
+                      </button>
+                      
+                      <button
+                        onClick={() => setReportPage((prev) => Math.min(prev + 1, reportTotalPages))}
+                        disabled={reportPage === reportTotalPages}
+                        className="px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-600 disabled:opacity-40 disabled:bg-slate-50 transition hover:bg-slate-50 cursor-pointer"
+                      >
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+              </div>
+            )}
+
           </div>
 
         </div>

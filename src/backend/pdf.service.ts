@@ -242,36 +242,39 @@ export class PdfService {
         <div class="border-frame">
           ${settings.watermarkEnabled ? `<div class="watermark">${settings.watermarkText || "SECURED REGISTRY DOCUMENT"}</div>` : ""}
           
-          ${settings.admissionLetterheadUrl ? `
+          ${(settings.admissionLetterheadUrl || settings.letterheadUrl) ? `
             <div style="text-align: center; margin-bottom: 20px; position: relative; z-index: 10; width: 100%;">
-              <img src="${settings.admissionLetterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
-            </div>
-          ` : settings.letterheadUrl ? `
-            <div style="text-align: center; margin-bottom: 20px; position: relative; z-index: 10; width: 100%;">
-              <img src="${settings.letterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
+              <img src="${settings.admissionLetterheadUrl || settings.letterheadUrl}" style="width: 100%; max-height: 90px; object-fit: contain; display: block;" referrerPolicy="no-referrer">
             </div>
           ` : `
-            <!-- THREE-LOGO GOVERNMENT HEADER FALLBACK -->
-            <table class="logo-header-table" style="position: relative; z-index: 10; width: 100%; border-collapse: collapse; margin-bottom: 10px;">
-              <tr>
-                <td style="width: 33%; text-align: left; vertical-align: middle;">
-                  ${this.renderLogo(settings.fmeLogoUrl, this.getFederalCrestSvg(), "70px", "70px")}
-                </td>
-                <td style="width: 34%; text-align: center; vertical-align: middle;">
-                  ${this.renderLogo(settings.ideasLogoUrl, this.getIdeasLogoSvg(), "80px", "70px")}
-                </td>
-                <td style="width: 33%; text-align: right; vertical-align: middle;">
-                  ${this.renderLogo(settings.worldBankLogoUrl, this.getWorldBankLogoSvg(), "70px", "70px")}
-                </td>
-              </tr>
-            </table>
-            <div class="divider-line" style="position: relative; z-index: 10;"></div>
+            <!-- DYNAMIC TSP TYPOGRAPHIC LETTERHEAD BRANDING -->
+            <div style="border-bottom: 3px solid #000000; padding-bottom: 10px; margin-bottom: 20px; position: relative; z-index: 10; font-family: Arial, sans-serif;">
+              <table style="width: 100%; border-collapse: collapse;">
+                <tr>
+                  <td style="vertical-align: top; text-align: left;">
+                    <div style="margin-bottom: 4px;">
+                      <span style="background-color: #000000; color: #ffffff; font-size: 8px; font-weight: bold; padding: 2px 5px; border-radius: 2px; text-transform: uppercase; letter-spacing: 1.5px;">TSP PARTNER</span>
+                      <span style="font-size: 9px; color: #64748b; font-weight: bold; margin-left: 5px; text-transform: uppercase; letter-spacing: 0.5px;">IDEAS Project TVET Program</span>
+                    </div>
+                    <h2 style="font-size: 16px; font-weight: 900; color: #0f172a; margin: 0; text-transform: uppercase; letter-spacing: -0.5px;">
+                      ${settings.organizationName || beneficiary.tsp || "State TVET Board, Kano"}
+                    </h2>
+                    <p style="font-size: 10px; color: #475569; margin: 4px 0 0 0; font-weight: 600;">
+                      ${settings.contactAddress || "No. 45 Gwarzo Road, Kano State, Nigeria"}
+                    </p>
+                  </td>
+                  <td style="vertical-align: bottom; text-align: right; font-size: 9px; color: #475569; font-family: monospace; white-space: nowrap; line-height: 1.4;">
+                    <div>Phone: ${settings.contactPhone || "+234 803 123 4567"}</div>
+                    <div>Email: ${settings.contactEmail || "kano-tvet@ideas-initiative.org"}</div>
+                  </td>
+                </tr>
+              </table>
+            </div>
           `}
 
           <table class="metadata-table" style="position: relative; z-index: 10;">
             <tr>
               <td><strong>Date:</strong> ${dateStr}</td>
-              <td style="text-align: right;"><strong>Ref:</strong> ${admissionRef}</td>
             </tr>
           </table>
 
@@ -300,32 +303,32 @@ export class PdfService {
             <p>Kindly confirm your acceptance of this admission with an acceptance letter to this effect.</p>
           </div>
 
-          <div class="signatures" style="position: relative; z-index: 10; margin-top: 35px;">
-            <div>
-              <p style="font-size: 13px; margin: 0 0 15px 0;">Kind regards</p>
-              
-              <div style="margin-top: 15px;">
-                ${settings.signatureUrl ? `
-                  <img src="${settings.signatureUrl}" style="max-height: 45px; display: block;" referrerPolicy="no-referrer">
-                ` : `
-                  <span style="font-family: 'Georgia', serif; font-style: italic; font-size: 14px; font-weight: bold; color: #1e3a8a;">${settings.tpmName}</span>
-                `}
-                <div style="width: 180px; border-bottom: 1px dashed #475569; margin: 4px 0 6px 0;"></div>
-                <strong style="font-size: 12px; text-transform: uppercase;">${settings.tpmName}</strong><br>
-                <span style="font-size: 10px; color: #64748b; font-family: Arial, sans-serif; text-transform: uppercase; letter-spacing: 0.5px;">TPM Signature</span>
-              </div>
-            </div>
-          </div>
+          <table style="width: 100%; margin-top: 35px; border-collapse: collapse; page-break-inside: avoid; position: relative; z-index: 10;">
+            <tr>
+              <td style="vertical-align: top; text-align: left;">
+                <p style="font-size: 13px; margin: 0 0 15px 0;">Kind regards</p>
+                
+                <div style="margin-top: 15px;">
+                  ${settings.signatureUrl ? `
+                    <img src="${settings.signatureUrl}" style="max-height: 45px; display: block;" referrerPolicy="no-referrer">
+                  ` : `
+                    <span style="font-family: 'Georgia', serif; font-style: italic; font-size: 14px; font-weight: bold; color: #1e3a8a;">${settings.tpmName}</span>
+                  `}
+                  <div style="width: 180px; border-bottom: 1px dashed #475569; margin: 4px 0 6px 0;"></div>
+                  <strong style="font-size: 12px; text-transform: uppercase;">${settings.tpmName}</strong><br>
+                  <span style="font-size: 10px; color: #64748b; font-family: Arial, sans-serif; text-transform: uppercase; letter-spacing: 0.5px;">TPM Signature</span>
+                </div>
+              </td>
               ${meta?.qrDataUrl ? `
-              <div style="display: table-cell; width: 33%; text-align: right; vertical-align: bottom;">
+              <td style="vertical-align: bottom; text-align: right; width: 120px;">
                 <div style="display: inline-block; text-align: center; border: 1px solid #cbd5e1; padding: 5px; border-radius: 6px; background-color: #f8fafc;">
                   <img src="${meta.qrDataUrl}" style="width: 54px; height: 54px; display: block; margin: 0 auto 3px auto;" />
                   <span style="font-family: monospace; font-size: 6.5px; color: #475569; text-transform: uppercase; font-weight: bold;">CODE: ${meta.verificationCode}</span>
                 </div>
-              </div>
+              </td>
               ` : ""}
-            </div>
-          </div>
+            </tr>
+          </table>
 
           <div class="footer-note">
             IDEAS-TVET PROGRAMME COHORT • UNIQUE TECHNOLOGY NIG LTD REGISTERED CENTER • SECURITY WATERMARKED A4 DOCUMENT

@@ -469,7 +469,716 @@ app.post("/api/email/production-test", requireAuth, requireRole(["SUPER_ADMIN", 
 app.get("/api/admissions/stats", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.getAdmissionsStats);
 app.get("/api/admissions/list", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.getAdmissionsList);
 app.post("/api/admissions/bulk-transition", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.bulkTransitionStatus);
+app.post("/api/admissions/acceptance/review", requireAuth, requireRole(["SUPER_ADMIN", "REVIEW_OFFICER", "ADMIN_OFFICER"]), AdmissionController.reviewAcceptanceLetter);
 app.get("/api/admissions/:id/letter", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", "TRAINEE"]), AdmissionController.getAdmissionLetterData);
+
+// ==========================================
+// ADMISSIONS REPORTING API ENDPOINTS
+// ==========================================
+app.get("/api/reports/admissions/funnel", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const data = await DbRepo.getAdmissionsFunnelReport();
+    res.json({
+      success: true,
+      data: data
+    });
+  } catch (e: any) {
+    res.status(500).json({
+      success: false,
+      error: e.message || "Failed to generate Conversion Funnel Report",
+      code: "FUNNEL_REPORT_ERROR"
+    });
+  }
+});
+
+app.get("/api/reports/admissions/tsp", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const data = await DbRepo.getTspPerformanceReport();
+    res.json({
+      success: true,
+      data: data
+    });
+  } catch (e: any) {
+    res.status(500).json({
+      success: false,
+      error: e.message || "Failed to generate TSP Performance Report",
+      code: "TSP_REPORT_ERROR"
+    });
+  }
+});
+
+app.get("/api/reports/admissions/state", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const data = await DbRepo.getStatePerformanceReport();
+    res.json({
+      success: true,
+      data: data
+    });
+  } catch (e: any) {
+    res.status(500).json({
+      success: false,
+      error: e.message || "Failed to generate State Performance Report",
+      code: "STATE_REPORT_ERROR"
+    });
+  }
+});
+
+app.get("/api/reports/admissions/list", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    // 1. Strict Query Parameters Validation
+    const pageStr = req.query.page as string || "1";
+    const pageSizeStr = req.query.pageSize as string || "10";
+    const page = parseInt(pageStr, 10);
+    const pageSize = parseInt(pageSizeStr, 10);
+
+    if (isNaN(page) || page < 1) {
+      return res.status(400).json({
+        success: false,
+        error: "Query parameter 'page' must be a valid positive integer",
+        code: "INVALID_PAGE_PARAMETER"
+      });
+    }
+
+    if (isNaN(pageSize) || pageSize < 1 || pageSize > 100) {
+      return res.status(400).json({
+        success: false,
+        error: "Query parameter 'pageSize' must be an integer between 1 and 100",
+        code: "INVALID_PAGESIZE_PARAMETER"
+      });
+    }
+
+    const reportType = req.query.reportType as string || "admitted";
+    if (!["admitted", "rejected", "acceptance_status"].includes(reportType)) {
+      return res.status(400).json({
+        success: false,
+        error: "Query parameter 'reportType' must be 'admitted', 'rejected', or 'acceptance_status'",
+        code: "INVALID_REPORT_TYPE"
+      });
+    }
+
+    // Sanitize search and text filters to prevent index bypass or buffer exploits
+    const search = ((req.query.search as string) || "").substring(0, 100);
+    const acceptanceLetterStatus = ((req.query.acceptanceLetterStatus as string) || "all").substring(0, 50);
+    const state = ((req.query.state as string) || "all").substring(0, 50);
+    const sector = ((req.query.sector as string) || "all").substring(0, 100);
+    const tsp = ((req.query.tsp as string) || "all").substring(0, 150);
+    const sortBy = ((req.query.sortBy as string) || "createdAt").substring(0, 50);
+    const sortOrder = req.query.sortOrder === "ASC" ? "ASC" : "DESC";
+
+    const data = await DbRepo.getAdmissionsReportPaged({
+      page,
+      pageSize,
+      search,
+      reportType: reportType as "admitted" | "rejected" | "acceptance_status",
+      acceptanceLetterStatus,
+      state,
+      sector,
+      tsp,
+      sortBy,
+      sortOrder
+    });
+
+    res.json({
+      success: true,
+      data: data
+    });
+  } catch (e: any) {
+    res.status(500).json({
+      success: false,
+      error: e.message || "An error occurred compiling paged admissions cohort",
+      code: "PAGED_COHORT_REPORT_ERROR"
+    });
+  }
+});
+
+// ==========================================
+// ADMISSIONS REPORTING EXPORTS COMPILATION
+// ==========================================
+app.get("/api/export/reports/excel", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const reportType = req.query.reportType as "admitted" | "rejected" | "acceptance_status" | "tsp_performance" | "state_performance";
+    const search = req.query.search as string || "";
+    const acceptanceLetterStatus = req.query.acceptanceLetterStatus as string || "all";
+    const state = req.query.state as string || "all";
+    const sector = req.query.sector as string || "all";
+    const tsp = req.query.tsp as string || "all";
+
+    await logAction(req.user!.email, "EXCEL_EXPORT", `Triggered Admission Report export in Excel for type: ${reportType}`);
+
+    let title = "Admissions Registry Report";
+    let headers: string[] = [];
+    let rowsHtml = "";
+
+    if (reportType === "tsp_performance") {
+      title = "TSP Admission Performance & Compliance Report";
+      headers = ["TSP Location Provider", "Total Enrolled Candidates", "Admitted (Accepted)", "Submitted Letters", "Under Review", "Verified Complete", "Verification Rate"];
+      const data = await DbRepo.getTspPerformanceReport();
+      data.forEach(item => {
+        const rate = item.total > 0 ? Math.round((item.verified / item.total) * 100) : 0;
+        rowsHtml += `
+          <tr>
+            <td style="border: 1px solid #cbd5e1; padding: 8px;">${item.tsp}</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right;">${item.total}</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right;">${item.admitted}</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right;">${item.submitted}</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right;">${item.underReview}</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right;">${item.verified}</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right; font-weight: bold; color: #312e81;">${rate}%</td>
+          </tr>
+        `;
+      });
+    } else if (reportType === "state_performance") {
+      title = "State-Based Admission Coverage Statistics";
+      headers = ["Geopolitical State", "Total Registered Candidates", "Admitted & Verified", "Admissions Pending", "Completion Rate"];
+      const data = await DbRepo.getStatePerformanceReport();
+      data.forEach(item => {
+        const rate = item.total > 0 ? Math.round((item.admitted / item.total) * 100) : 0;
+        rowsHtml += `
+          <tr>
+            <td style="border: 1px solid #cbd5e1; padding: 8px;">${item.state} State</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right;">${item.total}</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right;">${item.admitted}</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right;">${item.pending}</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right; font-weight: bold; color: #312e81;">${rate}%</td>
+          </tr>
+        `;
+      });
+    } else {
+      // List based reports (admitted / rejected / acceptance_status)
+      if (reportType === "admitted") title = "Admitted Beneficiaries Report";
+      else if (reportType === "rejected") title = "Rejected Admissions Report";
+      else title = "Acceptance Letter Review Worksheet";
+
+      headers = ["Admission ID", "Reference No.", "Candidate Name", "Registered State", "TSP Center Provider", "Skill Sector Track", "Admission Status", "Acceptance Status", "Admission Date"];
+      
+      const data = await DbRepo.getAdmissionsReportPaged({
+        page: 1,
+        pageSize: 100000, // pull all for export safely
+        search,
+        reportType,
+        acceptanceLetterStatus,
+        state,
+        sector,
+        tsp,
+        sortBy: "createdAt",
+        sortOrder: "DESC"
+      });
+
+      data.rows.forEach(b => {
+        rowsHtml += `
+          <tr>
+            <td style="border: 1px solid #cbd5e1; padding: 8px;">${b.id}</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; font-family: monospace;">${b.referenceNumber}</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; font-weight: bold;">${b.name}</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px;">${b.state}</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px;">${b.tsp}</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px;">${b.sector}</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px;">${b.admissionStatus}</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px; font-family: monospace;">${b.acceptanceLetterStatus}</td>
+            <td style="border: 1px solid #cbd5e1; padding: 8px;">${new Date(b.createdAt).toLocaleDateString("en-GB")}</td>
+          </tr>
+        `;
+      });
+    }
+
+    const headersHtml = headers.map(h => `<th style="background-color: #1e1b4b; color: #ffffff; padding: 10px; font-weight: bold; border: 1px solid #cbd5e1; font-size: 11px; text-transform: uppercase;">${h}</th>`).join("");
+
+    const html = `
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<style>
+  body { font-family: Arial, sans-serif; margin: 0; }
+  table { border-collapse: collapse; width: 100%; }
+  td { border: 1px solid #cbd5e1; padding: 10px; font-size: 11px; }
+  .title-cell { font-size: 16px; font-weight: bold; color: #1e1b4b; background-color: #f1f5f9; text-align: center; padding: 15px; }
+  .meta-cell { font-size: 11px; color: #64748b; background-color: #f1f5f9; text-align: center; padding: 5px; }
+</style>
+</head>
+<body>
+  <table>
+    <tr><td colspan="${headers.length}" class="title-cell">IDEAS-TVET PROGRAM ADMISSION HUB</td></tr>
+    <tr><td colspan="${headers.length}" class="title-cell" style="font-size:12px; font-weight:normal; color:#475569;">${title}</td></tr>
+    <tr><td colspan="${headers.length}" class="meta-cell">Report compiled on ${new Date().toLocaleString("en-GB")} | Federal Ministry of Education</td></tr>
+    <tr><td colspan="${headers.length}"></td></tr>
+    <thead>
+      <tr>${headersHtml}</tr>
+    </thead>
+    <tbody>
+      ${rowsHtml}
+    </tbody>
+  </table>
+</body>
+</html>
+    `;
+
+    res.setHeader("Content-Type", "application/vnd.ms-excel");
+    res.setHeader("Content-Disposition", `attachment; filename=ideas_admissions_${reportType}_export.xls`);
+    res.status(200).send(html);
+  } catch (e: any) {
+    res.status(500).send(e.message);
+  }
+});
+
+app.get("/api/export/reports/word", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const reportType = req.query.reportType as "admitted" | "rejected" | "acceptance_status" | "tsp_performance" | "state_performance";
+    const search = req.query.search as string || "";
+    const acceptanceLetterStatus = req.query.acceptanceLetterStatus as string || "all";
+    const state = req.query.state as string || "all";
+    const sector = req.query.sector as string || "all";
+    const tsp = req.query.tsp as string || "all";
+
+    await logAction(req.user!.email, "WORD_EXPORT", `Triggered Admission Report export in Word format for type: ${reportType}`);
+
+    let title = "Admissions Registry Report";
+    let headers: string[] = [];
+    let rowsHtml = "";
+
+    if (reportType === "tsp_performance") {
+      title = "TSP Admission Performance & Compliance Report";
+      headers = ["TSP Location Provider", "Total Enrolled", "Admitted", "Submitted Letters", "Under Review", "Verified Complete", "Verification Rate"];
+      const data = await DbRepo.getTspPerformanceReport();
+      data.forEach(item => {
+        const rate = item.total > 0 ? Math.round((item.verified / item.total) * 100) : 0;
+        rowsHtml += `
+          <tr>
+            <td style="border: 1px solid #e2e8f0; padding: 8px;">${item.tsp}</td>
+            <td style="border: 1px solid #e2e8f0; padding: 8px; text-align: right;">${item.total}</td>
+            <td style="border: 1px solid #e2e8f0; padding: 8px; text-align: right;">${item.admitted}</td>
+            <td style="border: 1px solid #e2e8f0; padding: 8px; text-align: right;">${item.submitted}</td>
+            <td style="border: 1px solid #e2e8f0; padding: 8px; text-align: right;">${item.underReview}</td>
+            <td style="border: 1px solid #e2e8f0; padding: 8px; text-align: right;">${item.verified}</td>
+            <td style="border: 1px solid #e2e8f0; padding: 8px; text-align: right; font-weight: bold; color: #1e1b4b;">${rate}%</td>
+          </tr>
+        `;
+      });
+    } else if (reportType === "state_performance") {
+      title = "State-Based Admission Coverage Statistics";
+      headers = ["Geopolitical State", "Total Registered Candidates", "Admitted & Verified", "Admissions Pending", "Completion Rate"];
+      const data = await DbRepo.getStatePerformanceReport();
+      data.forEach(item => {
+        const rate = item.total > 0 ? Math.round((item.admitted / item.total) * 100) : 0;
+        rowsHtml += `
+          <tr>
+            <td style="border: 1px solid #e2e8f0; padding: 8px;">${item.state} State</td>
+            <td style="border: 1px solid #e2e8f0; padding: 8px; text-align: right;">${item.total}</td>
+            <td style="border: 1px solid #e2e8f0; padding: 8px; text-align: right;">${item.admitted}</td>
+            <td style="border: 1px solid #e2e8f0; padding: 8px; text-align: right;">${item.pending}</td>
+            <td style="border: 1px solid #e2e8f0; padding: 8px; text-align: right; font-weight: bold; color: #1e1b4b;">${rate}%</td>
+          </tr>
+        `;
+      });
+    } else {
+      if (reportType === "admitted") title = "Admitted Beneficiaries Report";
+      else if (reportType === "rejected") title = "Rejected Admissions Report";
+      else title = "Acceptance Letter Review Worksheet";
+
+      headers = ["Admission ID", "Reference No.", "Candidate Name", "Registered State", "TSP Provider", "Skill Sector Track", "Admission Status", "Acceptance Status"];
+      
+      const data = await DbRepo.getAdmissionsReportPaged({
+        page: 1,
+        pageSize: 100000,
+        search,
+        reportType,
+        acceptanceLetterStatus,
+        state,
+        sector,
+        tsp,
+        sortBy: "createdAt",
+        sortOrder: "DESC"
+      });
+
+      data.rows.forEach(b => {
+        rowsHtml += `
+          <tr>
+            <td style="border: 1px solid #e2e8f0; padding: 8px;">${b.id}</td>
+            <td style="border: 1px solid #e2e8f0; padding: 8px;">${b.referenceNumber}</td>
+            <td style="border: 1px solid #e2e8f0; padding: 8px; font-weight: bold;">${b.name}</td>
+            <td style="border: 1px solid #e2e8f0; padding: 8px;">${b.state}</td>
+            <td style="border: 1px solid #e2e8f0; padding: 8px;">${b.tsp}</td>
+            <td style="border: 1px solid #e2e8f0; padding: 8px;">${b.sector}</td>
+            <td style="border: 1px solid #e2e8f0; padding: 8px;">${b.admissionStatus}</td>
+            <td style="border: 1px solid #e2e8f0; padding: 8px;">${b.acceptanceLetterStatus}</td>
+          </tr>
+        `;
+      });
+    }
+
+    const headersHtml = headers.map(h => `<th style="background-color: #f1f5f9; color: #0f172a; border: 1px solid #cbd5e1; padding: 10px; font-weight: bold; text-align: left; font-size: 11px;">${h}</th>`).join("");
+
+    const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <style>
+    body { font-family: "Calibri", "Arial", sans-serif; line-height: 1.4; color: #333333; margin: 40px; }
+    h1 { font-size: 20px; text-transform: uppercase; color: #1e1b4b; text-align: center; margin-bottom: 2px; }
+    h2 { font-size: 14px; text-align: center; color: #475569; margin-top: 0; margin-bottom: 25px; font-weight: normal; }
+    .meta { font-size: 11px; text-align: center; color: #64748b; margin-bottom: 30px; border-bottom: 1px dashed #cbd5e1; padding-bottom: 15px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <h1>IDEAS-TVET PROGRAM ADMISSION HUB</h1>
+  <h2>${title}</h2>
+  <div class="meta">Compiled on ${new Date().toLocaleString("en-GB")} | Official Audit Record Deliverable | Federal Ministry of Education</div>
+
+  <table>
+    <thead>
+      <tr>${headersHtml}</tr>
+    </thead>
+    <tbody>
+      ${rowsHtml}
+    </tbody>
+  </table>
+</body>
+</html>
+    `;
+
+    res.setHeader("Content-Type", "application/msword");
+    res.setHeader("Content-Disposition", `attachment; filename=ideas_admissions_${reportType}_export.doc`);
+    res.status(200).send(html);
+  } catch (e: any) {
+    res.status(500).send(e.message);
+  }
+});
+
+app.get("/api/export/reports/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const reportType = req.query.reportType as "admitted" | "rejected" | "acceptance_status" | "tsp_performance" | "state_performance";
+    const search = req.query.search as string || "";
+    const acceptanceLetterStatus = req.query.acceptanceLetterStatus as string || "all";
+    const state = req.query.state as string || "all";
+    const sector = req.query.sector as string || "all";
+    const tsp = req.query.tsp as string || "all";
+
+    await logAction(req.user!.email, "PDF_EXPORT", `Triggered Admission Report export in PDF layout for type: ${reportType}`);
+
+    let title = "Admissions Registry Report";
+    let headers: string[] = [];
+    let rowsHtml = "";
+
+    if (reportType === "tsp_performance") {
+      title = "TSP Admission Performance & Compliance Report";
+      headers = ["TSP Location Provider", "Total Enrolled", "Admitted", "Submitted Letters", "Under Review", "Verified Complete", "Verification Rate"];
+      const data = await DbRepo.getTspPerformanceReport();
+      data.forEach(item => {
+        const rate = item.total > 0 ? Math.round((item.verified / item.total) * 100) : 0;
+        rowsHtml += `
+          <tr>
+            <td>${item.tsp}</td>
+            <td class="text-right">${item.total}</td>
+            <td class="text-right">${item.admitted}</td>
+            <td class="text-right">${item.submitted}</td>
+            <td class="text-right">${item.underReview}</td>
+            <td class="text-right">${item.verified}</td>
+            <td class="text-right completion-rate">${rate}%</td>
+          </tr>
+        `;
+      });
+    } else if (reportType === "state_performance") {
+      title = "State-Based Admission Coverage Statistics";
+      headers = ["Geopolitical State", "Total Registered Candidates", "Admitted & Verified", "Admissions Pending", "Completion Rate"];
+      const data = await DbRepo.getStatePerformanceReport();
+      data.forEach(item => {
+        const rate = item.total > 0 ? Math.round((item.admitted / item.total) * 100) : 0;
+        rowsHtml += `
+          <tr>
+            <td>${item.state} State</td>
+            <td class="text-right">${item.total}</td>
+            <td class="text-right">${item.admitted}</td>
+            <td class="text-right">${item.pending}</td>
+            <td class="text-right completion-rate">${rate}%</td>
+          </tr>
+        `;
+      });
+    } else {
+      if (reportType === "admitted") title = "Admitted Beneficiaries Report";
+      else if (reportType === "rejected") title = "Rejected Admissions Report";
+      else title = "Acceptance Letter Review Worksheet";
+
+      headers = ["Admission ID", "Reference No.", "Candidate Name", "Registered State", "TSP Provider", "Skill Sector Track", "Admission Status", "Acceptance"];
+      
+      const data = await DbRepo.getAdmissionsReportPaged({
+        page: 1,
+        pageSize: 100000,
+        search,
+        reportType,
+        acceptanceLetterStatus,
+        state,
+        sector,
+        tsp,
+        sortBy: "createdAt",
+        sortOrder: "DESC"
+      });
+
+      data.rows.forEach(b => {
+        rowsHtml += `
+          <tr>
+            <td class="mono font-bold">${b.id}</td>
+            <td class="mono">${b.referenceNumber}</td>
+            <td class="font-bold text-slate-900">${b.name}</td>
+            <td>${b.state}</td>
+            <td class="small-text">${b.tsp}</td>
+            <td class="small-text">${b.sector}</td>
+            <td><span class="badge ${b.admissionStatus === 'Accepted' ? 'badge-complete' : 'badge-pending'}">${b.admissionStatus}</span></td>
+            <td><span class="badge ${b.acceptanceLetterStatus === 'ACCEPTED' ? 'badge-complete' : b.acceptanceLetterStatus === 'REJECTED' ? 'badge-rejected' : 'badge-pending'}">${b.acceptanceLetterStatus}</span></td>
+          </tr>
+        `;
+      });
+    }
+
+    const headersHtml = headers.map(h => `<th>${h}</th>`).join("");
+
+    const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>IDEAS-TVET Official Admission Report Preview PDF</title>
+  <style>
+    @page {
+      size: A4 portrait;
+      margin: 20mm 15mm 20mm 15mm;
+    }
+    @media print {
+      .print-button-container {
+        display: none !important;
+      }
+      body {
+        background: none;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      color: #1e293b;
+      line-height: 1.5;
+      margin: 0;
+      padding: 0;
+      background: #f8fafc;
+    }
+    .print-button-container {
+      background: #0f172a;
+      padding: 12px;
+      text-align: center;
+      position: sticky;
+      top: 0;
+      z-index: 999;
+      box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+    }
+    .print-button {
+      background: #4f46e5;
+      color: #ffffff;
+      font-weight: bold;
+      font-size: 13px;
+      border: none;
+      padding: 8px 18px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .print-button:hover {
+      background: #4338ca;
+    }
+    .document-page {
+      background: #ffffff;
+      width: 170mm;
+      min-height: 250mm;
+      margin: 20px auto;
+      padding: 10mm;
+      box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1);
+      border-radius: 8px;
+      border: 1px solid #e2e8f0;
+      box-sizing: border-box;
+    }
+    .head-section {
+      border-bottom: 2px solid #1e3a8a;
+      padding-bottom: 12px;
+      margin-bottom: 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .logo-block {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .logo-text {
+      font-weight: 800;
+      font-size: 15px;
+      color: #1e1b4b;
+      letter-spacing: -0.5px;
+      line-height: 1;
+    }
+    .logo-sub {
+      font-size: 9px;
+      color: #64748b;
+      font-family: monospace;
+      font-weight: bold;
+      display: block;
+      margin-top: 3px;
+    }
+    .audit-label {
+      font-size: 9px;
+      font-family: monospace;
+      background: #f1f5f9;
+      color: #475569;
+      padding: 4px 8px;
+      border-radius: 4px;
+      border: 1px solid #cbd5e1;
+      font-weight: bold;
+    }
+    .doc-title {
+      font-weight: 800;
+      font-size: 18px;
+      color: #0f172a;
+      text-transform: uppercase;
+      text-align: center;
+      margin: 10px 0 4px 0;
+      letter-spacing: -0.3px;
+    }
+    .doc-subtitle {
+      font-size: 10px;
+      color: #64748b;
+      text-align: center;
+      margin-top: 0;
+      margin-bottom: 25px;
+      font-family: monospace;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 10px;
+      margin-top: 15px;
+    }
+    th {
+      background: #1e1b4b;
+      color: #ffffff;
+      font-weight: bold;
+      text-align: left;
+      padding: 8px 10px;
+      border: 1px solid #e2e8f0;
+      text-transform: uppercase;
+      font-size: 9px;
+    }
+    td {
+      padding: 8px 10px;
+      border: 1px solid #e2e8f0;
+      color: #334155;
+    }
+    tr:nth-child(even) {
+      background-color: #f8fafc;
+    }
+    .font-bold {
+      font-weight: bold;
+    }
+    .text-slate-900 {
+      color: #0f172a;
+    }
+    .mono {
+      font-family: monospace;
+    }
+    .text-right {
+      text-align: right;
+    }
+    .completion-rate {
+      font-weight: bold;
+      color: #1e1b4b;
+    }
+    .small-text {
+      font-size: 9px;
+      color: #475569;
+    }
+    .badge {
+      font-weight: bold;
+      font-family: monospace;
+      font-size: 8px;
+      padding: 2px 5px;
+      border-radius: 3px;
+      text-transform: uppercase;
+      display: inline-block;
+    }
+    .badge-complete {
+      background-color: #ecfdf5;
+      color: #047857;
+      border: 1px solid #a7f3d0;
+    }
+    .badge-pending {
+      background-color: #fffbeb;
+      color: #b45309;
+      border: 1px solid #fde68a;
+    }
+    .badge-rejected {
+      background-color: #fff1f2;
+      color: #be123c;
+      border: 1px solid #fecdd3;
+    }
+    .footer-block {
+      margin-top: 40px;
+      border-top: 1px dashed #cbd5e1;
+      padding-top: 15px;
+      display: flex;
+      justify-content: space-between;
+      font-size: 8px;
+      font-family: monospace;
+      color: #94a3b8;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="print-button-container">
+    <button onclick="window.print()" class="print-button">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>
+      Compile Print / Save PDF
+    </button>
+  </div>
+
+  <div class="document-page">
+    <div class="head-section">
+      <div class="logo-block">
+        <div class="logo-text">
+          IDEAS-TVET Program Registry
+          <span class="logo-sub">FEDERAL COMPLIANCE SYSTEM</span>
+        </div>
+      </div>
+      <div class="audit-label">OFFICIAL AUDIT DELIVERABLE</div>
+    </div>
+
+    <div class="doc-title">${title}</div>
+    <div class="doc-subtitle">TIMELINE TIMESTAMP: ${new Date().toLocaleString("en-GB")} | REGION SECURE</div>
+
+    <table>
+      <thead>
+        <tr>${headersHtml}</tr>
+      </thead>
+      <tbody>
+        ${rowsHtml}
+      </tbody>
+    </table>
+
+    <div class="footer-block">
+      <span>SYSTEM COMPILER: CLOUD INGRESS SECURE PORT 3000</span>
+      <span>FEDERAL MINISTRY OF EDUCATION © ${new Date().getFullYear()}</span>
+    </div>
+  </div>
+
+</body>
+</html>
+    `;
+
+    res.setHeader("Content-Type", "text/html");
+    res.status(200).send(html);
+  } catch (e: any) {
+    res.status(500).send(e.message);
+  }
+});
 
 app.get("/api/admissions/email-health", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), AdmissionController.getEmailHealth);
 app.post("/api/admissions/send-offer", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), AdmissionController.sendOffer);
