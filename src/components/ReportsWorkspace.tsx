@@ -172,6 +172,9 @@ export function ReportsWorkspace({ beneficiaries }: ReportsWorkspaceProps) {
   const verifiedCount = beneficiaries.filter(b => b.status === ProgramStatus.VERIFIED).length;
   const compliancePercent = totalCount > 0 ? Math.round((verifiedCount / totalCount) * 100) : 100;
 
+  const eligibleOrOverriddenCount = beneficiaries.filter(b => b.eligibilityStatus === "ELIGIBLE" || b.eligibilityStatus === "OVERRIDDEN").length;
+  const ageCompliancePercent = totalCount > 0 ? Math.round((eligibleOrOverriddenCount / totalCount) * 100) : 100;
+
   const existingStates = Array.from(new Set(["Imo", ...beneficiaries.map(b => b.state).filter(Boolean)]));
 
   return (
@@ -246,7 +249,7 @@ export function ReportsWorkspace({ beneficiaries }: ReportsWorkspaceProps) {
         <div className="space-y-6">
           
           {/* Top Info metrics bento grids (2.png row) */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
             
             {/* Card 1: Data integrity */}
             <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs border-l-4 border-emerald-500 flex items-center justify-between">
@@ -260,19 +263,31 @@ export function ReportsWorkspace({ beneficiaries }: ReportsWorkspaceProps) {
               </div>
             </div>
 
-            {/* Card 2: Report Metadata */}
+            {/* Card 2: Age Compliance Rate */}
+            <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs border-l-4 border-violet-500 flex items-center justify-between">
+              <div className="space-y-0.5">
+                <span className="text-[9px] font-bold text-slate-400 block tracking-widest font-mono uppercase">AGE ELIGIBILITY SCORE</span>
+                <span className="text-xl font-bold text-slate-900 font-display font-mono">{ageCompliancePercent}% COMPLIANT</span>
+                <p className="text-[10px] text-indigo-600 font-semibold font-mono">● {eligibleOrOverriddenCount} / {totalCount} Trainees Fit</p>
+              </div>
+              <div className="h-10 w-10 bg-indigo-50 text-indigo-500 rounded-xl flex items-center justify-center">
+                <Award className="w-5 h-5" />
+              </div>
+            </div>
+
+            {/* Card 3: Report Metadata */}
             <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs border-l-4 border-indigo-500 flex items-center justify-between">
               <div className="space-y-0.5">
                 <span className="text-[9px] font-bold text-slate-400 block tracking-widest font-mono uppercase">REPORT METADATA</span>
                 <span className="text-xl font-bold text-slate-900 font-display font-mono">FED-COV-{new Date().getFullYear()}</span>
-                <p className="text-[10px] text-slate-400">Classified digital skills register</p>
+                <p className="text-[10px] text-slate-400 font-sans">Classified digital skills register</p>
               </div>
               <div className="h-10 w-10 bg-indigo-50 text-indigo-500 rounded-xl flex items-center justify-center">
                 <Compass className="w-5 h-5" />
               </div>
             </div>
 
-            {/* Card 3: Confidentiality level */}
+            {/* Card 4: Confidentiality level */}
             <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs border-l-4 border-rose-500 flex items-center justify-between">
               <div className="space-y-0.5">
                 <span className="text-[9px] font-bold text-slate-400 block tracking-widest font-mono uppercase">CONFIDENTIALITY</span>

@@ -20,6 +20,9 @@ export enum ProgramStatus {
   ENROLLED = "ENROLLED",
   IN_TRAINING = "IN_TRAINING",
   GRADUATED = "GRADUATED",
+  CERTIFICATION_PENDING = "CERTIFICATION_PENDING",
+  CERTIFIED = "CERTIFIED",
+  CERTIFICATE_ISSUED = "CERTIFICATE_ISSUED",
   ALUMNI = "ALUMNI",
   FLAGGED = "FLAGGED"
 }
@@ -170,6 +173,48 @@ export interface Beneficiary {
   bankAccountNumber?: string;
   educationQualification?: string;
   dateOfBirth?: string;
+  beneficiaryStatus?: string; // DEFAULT: 'ACTIVE'
+  statusReason?: string;
+  statusChangedAt?: string;
+  statusChangedBy?: string;
+  isArchived?: boolean; // DEFAULT: false
+  eligibilityOverride?: boolean;
+  eligibilityOverrideReason?: string;
+  eligibilityOverrideBy?: string;
+  eligibilityOverrideAt?: string;
+  age?: number | null;
+  eligibilityStatus?: "ELIGIBLE" | "OVER_AGE" | "UNKNOWN_DOB" | "OVERRIDDEN";
+
+  // Certification & Graduation Management System Fields
+  certificationStatus?: "NONE" | "CERTIFICATION_PENDING" | "CERTIFIED" | "CERTIFICATE_ISSUED";
+  certificateNumber?: string;
+  certificateIssuedAt?: string;
+  certificateIssuedBy?: string;
+  graduationBatch?: string;
+  alumniStatus?: boolean;
+  certificateReference?: string;
+  certificateVerificationCode?: string;
+  certificateDownloadCount?: number;
+  certificateLastDownloadedAt?: string;
+
+  // Alumni Directory Demographics
+  alumniEmploymentStatus?: string;
+  alumniEntrepreneurStatus?: string;
+  alumniBusinessName?: string;
+  alumniCurrentEmployer?: string;
+}
+
+export enum BeneficiaryStatus {
+  APPLIED = "APPLIED",
+  UNDER_REVIEW = "UNDER_REVIEW",
+  ADMITTED = "ADMITTED",
+  ACTIVE = "ACTIVE",
+  COMPLETED = "COMPLETED",
+  WITHDRAWN = "WITHDRAWN",
+  FAILED_VERIFICATION = "FAILED_VERIFICATION",
+  DISQUALIFIED = "DISQUALIFIED",
+  REMOVED = "REMOVED",
+  ARCHIVED = "ARCHIVED"
 }
 
 export interface OrganizationSettings {
@@ -282,6 +327,8 @@ export interface WorkflowHistory {
   changedBy: string;
   changedAt: string;
   remarks?: string;
+  reason?: string;
+  ipAddress?: string;
 }
 
 export interface InstitutionLetterhead {

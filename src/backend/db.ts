@@ -12,6 +12,80 @@ import { Beneficiary, ProgramStatus, AuditLog, CustomField, OrganizationSettings
 const { Pool } = pg;
 const DB_FILE = path.join(process.cwd(), "database_ideas_tvet.json");
 
+export function calculateAge(dob: string | undefined | null): number | null {
+  if (!dob) return null;
+  const cleanDob = dob.trim();
+  if (!cleanDob) return null;
+  
+  const parsed = Date.parse(cleanDob);
+  let date: Date;
+  if (!isNaN(parsed)) {
+    date = new Date(parsed);
+  } else {
+    // If Date.parse fails, try splitting by common formats
+    const parts = cleanDob.split(/[-/]/);
+    if (parts.length === 3) {
+      if (parts[0].length === 4) {
+        // YYYY-MM-DD
+        date = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+      } else if (parts[2].length === 4) {
+        // DD-MM-YYYY or MM-DD-YYYY or DD/MM/YYYY
+        date = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+      } else {
+        return null;
+      }
+    } else {
+      return null;
+    }
+  }
+
+  if (isNaN(date.getTime())) {
+    return null;
+  }
+
+  const today = new Date();
+  let age = today.getFullYear() - date.getFullYear();
+  const m = today.getMonth() - date.getMonth();
+  if (m < 0 || (m === 0 && today.getDate() < date.getDate())) {
+    age--;
+  }
+  return age;
+}
+
+export function getDynamicEligibility(b: any): { age: number | null; eligibilityStatus: "ELIGIBLE" | "OVER_AGE" | "UNKNOWN_DOB" | "OVERRIDDEN" } {
+  if (b.eligibilityOverride || b.eligibility_override) {
+    return {
+      age: calculateAge(b.dateOfBirth || b.date_of_birth),
+      eligibilityStatus: "OVERRIDDEN"
+    };
+  }
+  const dob = b.dateOfBirth || b.date_of_birth;
+  if (!dob) {
+    return {
+      age: null,
+      eligibilityStatus: "UNKNOWN_DOB"
+    };
+  }
+  const age = calculateAge(dob);
+  if (age === null) {
+    return {
+      age: null,
+      eligibilityStatus: "UNKNOWN_DOB"
+    };
+  }
+  if (age <= 35) {
+    return {
+      age,
+      eligibilityStatus: "ELIGIBLE"
+    };
+  } else {
+    return {
+      age,
+      eligibilityStatus: "OVER_AGE"
+    };
+  }
+}
+
 // Pool instance. Created lazily to avoid immediate connection errors if CONFIG is not yet specified.
 let pgPool: pg.Pool | null = null;
 let isPgActive = false;
@@ -187,6 +261,29 @@ const SCHEMA_DDL = `
     bank_account_number VARCHAR(50),
     education_qualification VARCHAR(255),
     date_of_birth VARCHAR(100),
+    beneficiary_status VARCHAR(50) DEFAULT 'ACTIVE',
+    status_reason TEXT,
+    status_changed_at TIMESTAMP WITH TIME ZONE,
+    status_changed_by VARCHAR(100),
+    is_archived BOOLEAN DEFAULT FALSE,
+    eligibility_override BOOLEAN DEFAULT FALSE,
+    eligibility_override_reason TEXT,
+    eligibility_override_by VARCHAR(255),
+    eligibility_override_at TIMESTAMP WITH TIME ZONE,
+    certification_status VARCHAR(50) DEFAULT 'NONE',
+    certificate_number VARCHAR(100),
+    certificate_issued_at TIMESTAMP WITH TIME ZONE,
+    certificate_issued_by VARCHAR(255),
+    graduation_batch VARCHAR(100),
+    alumni_status BOOLEAN DEFAULT FALSE,
+    certificate_reference VARCHAR(255),
+    certificate_verification_code VARCHAR(255),
+    certificate_download_count INTEGER DEFAULT 0,
+    certificate_last_downloaded_at TIMESTAMP WITH TIME ZONE,
+    alumni_employment_status VARCHAR(100),
+    alumni_entrepreneur_status VARCHAR(100),
+    alumni_business_name VARCHAR(255),
+    alumni_current_employer VARCHAR(255),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP WITH TIME ZONE
@@ -446,7 +543,9 @@ const SCHEMA_DDL = `
     new_status VARCHAR(50),
     changed_by VARCHAR(255),
     changed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    remarks TEXT
+    remarks TEXT,
+    reason TEXT,
+    ip_address VARCHAR(100)
   );
   CREATE INDEX IF NOT EXISTS idx_workflow_history_beneficiary_id ON workflow_history(beneficiary_id);
 
@@ -610,6 +709,29 @@ export async function initDb(): Promise<void> {
       ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS bank_account_number VARCHAR(50);
       ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS education_qualification VARCHAR(255);
       ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS date_of_birth VARCHAR(100);
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS beneficiary_status VARCHAR(50) DEFAULT 'ACTIVE';
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS status_reason TEXT;
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS status_changed_at TIMESTAMP WITH TIME ZONE;
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS status_changed_by VARCHAR(100);
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT FALSE;
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS eligibility_override BOOLEAN DEFAULT FALSE;
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS eligibility_override_reason TEXT;
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS eligibility_override_by VARCHAR(255);
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS eligibility_override_at TIMESTAMP WITH TIME ZONE;
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS certification_status VARCHAR(50) DEFAULT 'NONE';
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS certificate_number VARCHAR(100);
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS certificate_issued_at TIMESTAMP WITH TIME ZONE;
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS certificate_issued_by VARCHAR(255);
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS graduation_batch VARCHAR(100);
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS alumni_status BOOLEAN DEFAULT FALSE;
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS certificate_reference VARCHAR(255);
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS certificate_verification_code VARCHAR(255);
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS certificate_download_count INTEGER DEFAULT 0;
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS certificate_last_downloaded_at TIMESTAMP WITH TIME ZONE;
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS alumni_employment_status VARCHAR(100);
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS alumni_entrepreneur_status VARCHAR(100);
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS alumni_business_name VARCHAR(255);
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS alumni_current_employer VARCHAR(255);
       
       ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS watermark_text VARCHAR(255) DEFAULT 'SECURED REGISTRY DOCUMENT';
       ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS watermark_enabled BOOLEAN DEFAULT TRUE;
@@ -708,9 +830,14 @@ export async function initDb(): Promise<void> {
         new_status VARCHAR(50),
         changed_by VARCHAR(255),
         changed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-        remarks TEXT
+        remarks TEXT,
+        reason TEXT,
+        ip_address VARCHAR(100)
       );
       CREATE INDEX IF NOT EXISTS idx_workflow_history_beneficiary_id ON workflow_history(beneficiary_id);
+      
+      ALTER TABLE workflow_history ADD COLUMN IF NOT EXISTS reason TEXT;
+      ALTER TABLE workflow_history ADD COLUMN IF NOT EXISTS ip_address VARCHAR(100);
     `);
 
     // Bootstrap default system settings
@@ -1197,11 +1324,16 @@ export class DbRepo {
     const pool = getPgPool();
     if (!pool || !isPgActive) {
       const state = loadJsonState().beneficiaries as Beneficiary[];
-      return state.map(b => ({
-        ...b,
-        photo: includePhoto ? (b.photo || "") : "",
-        hasPhoto: !!b.photo
-      }));
+      return state.map(b => {
+        const dynamic = getDynamicEligibility(b);
+        return {
+          ...b,
+          photo: includePhoto ? (b.photo || "") : "",
+          hasPhoto: !!b.photo,
+          age: dynamic.age,
+          eligibilityStatus: dynamic.eligibilityStatus
+        };
+      });
     }
 
     try {
@@ -1213,6 +1345,9 @@ export class DbRepo {
                b.admission_letter_url, b.acceptance_letter_url, b.enrollment_letter_url, b.certificate_url,
                b.guardian_name, b.guardian_address, b.guardian_phone, b.physical_challenge,
                b.bank_account_holder, b.bank_name, b.bank_sort_code, b.bank_account_number, b.education_qualification, b.date_of_birth,
+               b.beneficiary_status, b.status_reason, b.status_changed_at, b.status_changed_by, b.is_archived,
+               b.eligibility_override, b.eligibility_override_reason, b.eligibility_override_by, b.eligibility_override_at,
+               b.certification_status, b.certificate_number, b.certificate_issued_at, b.certificate_issued_by, b.graduation_batch, b.alumni_status, b.certificate_reference, b.certificate_verification_code, b.certificate_download_count, b.certificate_last_downloaded_at, b.alumni_employment_status, b.alumni_entrepreneur_status, b.alumni_business_name, b.alumni_current_employer,
                b.created_at, b.updated_at,
                adm.admission_status, adm.admission_ref, adm.admission_form_ref, adm.admission_letter_generated_at, 
                adm.admission_letter_sent_at, adm.admission_form_completed, adm.admission_form_status, 
@@ -1313,6 +1448,15 @@ export class DbRepo {
           certificateUrl: row.certificate_url || "",
           createdAt: row.created_at.toISOString(),
           updatedAt: row.updated_at.toISOString(),
+          beneficiaryStatus: row.beneficiary_status || "ACTIVE",
+          statusReason: row.status_reason || "",
+          statusChangedAt: row.status_changed_at ? row.status_changed_at.toISOString() : undefined,
+          statusChangedBy: row.status_changed_by || "",
+          isArchived: !!row.is_archived,
+          eligibilityOverride: !!row.eligibility_override,
+          eligibilityOverrideReason: row.eligibility_override_reason || "",
+          eligibilityOverrideBy: row.eligibility_override_by || "",
+          eligibilityOverrideAt: row.eligibility_override_at ? row.eligibility_override_at.toISOString() : undefined,
 
           admissionStatus: row.admission_status || "Draft",
           admissionRef: row.admission_ref || "",
@@ -1349,8 +1493,26 @@ export class DbRepo {
           bankSortCode: row.bank_sort_code || "",
           bankAccountNumber: row.bank_account_number || "",
           educationQualification: row.education_qualification || "",
-          dateOfBirth: row.date_of_birth ? (row.date_of_birth instanceof Date ? row.date_of_birth.toISOString().split("T")[0] : row.date_of_birth) : ""
+          dateOfBirth: row.date_of_birth ? (row.date_of_birth instanceof Date ? row.date_of_birth.toISOString().split("T")[0] : row.date_of_birth) : "",
+          certificationStatus: row.certification_status || "NONE",
+          certificateNumber: row.certificate_number || "",
+          certificateIssuedAt: row.certificate_issued_at ? (row.certificate_issued_at instanceof Date ? row.certificate_issued_at.toISOString() : row.certificate_issued_at) : undefined,
+          certificateIssuedBy: row.certificate_issued_by || "",
+          graduationBatch: row.graduation_batch || "",
+          alumniStatus: !!row.alumni_status,
+          certificateReference: row.certificate_reference || "",
+          certificateVerificationCode: row.certificate_verification_code || "",
+          certificateDownloadCount: parseInt(row.certificate_download_count, 10) || 0,
+          certificateLastDownloadedAt: row.certificate_last_downloaded_at ? (row.certificate_last_downloaded_at instanceof Date ? row.certificate_last_downloaded_at.toISOString() : row.certificate_last_downloaded_at) : undefined,
+          alumniEmploymentStatus: row.alumni_employment_status || "",
+          alumniEntrepreneurStatus: row.alumni_entrepreneur_status || "",
+          alumniBusinessName: row.alumni_business_name || "",
+          alumniCurrentEmployer: row.alumni_current_employer || ""
         };
+
+        const bDynamic = getDynamicEligibility(beneficiary);
+        beneficiary.age = bDynamic.age;
+        beneficiary.eligibilityStatus = bDynamic.eligibilityStatus;
 
         payloadList.push(beneficiary);
       }
@@ -1373,7 +1535,13 @@ export class DbRepo {
     const pool = getPgPool();
     if (!pool || !isPgActive) {
       const state = loadJsonState();
-      return state.beneficiaries.find(b => b.id === id) || null;
+      const b = state.beneficiaries.find(b => b.id === id) || null;
+      if (b) {
+        const dynamic = getDynamicEligibility(b);
+        b.age = dynamic.age;
+        b.eligibilityStatus = dynamic.eligibilityStatus;
+      }
+      return b;
     }
 
     try {
@@ -1384,6 +1552,9 @@ export class DbRepo {
                 admission_letter_url, acceptance_letter_url, enrollment_letter_url, certificate_url,
                 guardian_name, guardian_address, guardian_phone, physical_challenge,
                 bank_account_holder, bank_name, bank_sort_code, bank_account_number, education_qualification, date_of_birth,
+                beneficiary_status, status_reason, status_changed_at, status_changed_by, is_archived,
+                eligibility_override, eligibility_override_reason, eligibility_override_by, eligibility_override_at,
+                certification_status, certificate_number, certificate_issued_at, certificate_issued_by, graduation_batch, alumni_status, certificate_reference, certificate_verification_code, certificate_download_count, certificate_last_downloaded_at, alumni_employment_status, alumni_entrepreneur_status, alumni_business_name, alumni_current_employer,
                 created_at, updated_at
          FROM beneficiaries
          WHERE id = $1 AND deleted_at IS NULL`,
@@ -1481,6 +1652,15 @@ export class DbRepo {
         certificateUrl: row.certificate_url || "",
         createdAt: row.created_at.toISOString(),
         updatedAt: row.updated_at.toISOString(),
+        beneficiaryStatus: row.beneficiary_status || "ACTIVE",
+        statusReason: row.status_reason || "",
+        statusChangedAt: row.status_changed_at ? row.status_changed_at.toISOString() : undefined,
+        statusChangedBy: row.status_changed_by || "",
+        isArchived: !!row.is_archived,
+        eligibilityOverride: !!row.eligibility_override,
+        eligibilityOverrideReason: row.eligibility_override_reason || "",
+        eligibilityOverrideBy: row.eligibility_override_by || "",
+        eligibilityOverrideAt: row.eligibility_override_at ? row.eligibility_override_at.toISOString() : undefined,
 
         admissionStatus: adm.admission_status || "Draft",
         admissionRef: adm.admission_ref || "",
@@ -1524,8 +1704,26 @@ export class DbRepo {
         bankSortCode: row.bank_sort_code || "",
         bankAccountNumber: row.bank_account_number || "",
         educationQualification: row.education_qualification || "",
-        dateOfBirth: row.date_of_birth ? (row.date_of_birth instanceof Date ? row.date_of_birth.toISOString().split("T")[0] : row.date_of_birth) : ""
+        dateOfBirth: row.date_of_birth ? (row.date_of_birth instanceof Date ? row.date_of_birth.toISOString().split("T")[0] : row.date_of_birth) : "",
+        certificationStatus: row.certification_status || "NONE",
+        certificateNumber: row.certificate_number || "",
+        certificateIssuedAt: row.certificate_issued_at ? (row.certificate_issued_at instanceof Date ? row.certificate_issued_at.toISOString() : row.certificate_issued_at) : undefined,
+        certificateIssuedBy: row.certificate_issued_by || "",
+        graduationBatch: row.graduation_batch || "",
+        alumniStatus: !!row.alumni_status,
+        certificateReference: row.certificate_reference || "",
+        certificateVerificationCode: row.certificate_verification_code || "",
+        certificateDownloadCount: parseInt(row.certificate_download_count, 10) || 0,
+        certificateLastDownloadedAt: row.certificate_last_downloaded_at ? (row.certificate_last_downloaded_at instanceof Date ? row.certificate_last_downloaded_at.toISOString() : row.certificate_last_downloaded_at) : undefined,
+        alumniEmploymentStatus: row.alumni_employment_status || "",
+        alumniEntrepreneurStatus: row.alumni_entrepreneur_status || "",
+        alumniBusinessName: row.alumni_business_name || "",
+        alumniCurrentEmployer: row.alumni_current_employer || ""
       };
+
+      const bDynamic = getDynamicEligibility(beneficiary);
+      beneficiary.age = bDynamic.age;
+      beneficiary.eligibilityStatus = bDynamic.eligibilityStatus;
 
       return beneficiary;
     } catch (e) {
@@ -1593,6 +1791,69 @@ export class DbRepo {
       // Safe fallback counter
       const year = new Date().getFullYear();
       return `IDEAS-AF-${year}-000099`;
+    }
+  }
+
+  /**
+   * Generates or retrieves a unique sequential Certificate Number: IDEAS-CERT-YYYY-000001
+   * Sequential, Unique, Immutable.
+   */
+  static async getOrGenerateCertificateNumber(id: string): Promise<{ certNumber: string; reference: string; verificationCode: string }> {
+    const pool = getPgPool();
+    const year = new Date().getFullYear();
+    const reference = "REF-" + Date.now().toString(36).toUpperCase() + "-" + Math.random().toString(36).substring(2, 6).toUpperCase();
+    const verificationCode = "VER-SEC-" + Math.random().toString(36).substring(2, 8).toUpperCase() + "-" + year;
+
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      const bIdx = state.beneficiaries.findIndex(b => b.id === id);
+      if (bIdx === -1) {
+        return { certNumber: `IDEAS-CERT-${year}-000001`, reference, verificationCode };
+      }
+      const b = state.beneficiaries[bIdx];
+      if (b.certificateNumber) {
+        return {
+          certNumber: b.certificateNumber,
+          reference: b.certificateReference || reference,
+          verificationCode: b.certificateVerificationCode || verificationCode
+        };
+      }
+      const withCert = state.beneficiaries.filter(x => x.certificateNumber && x.certificateNumber.startsWith("IDEAS-CERT-"));
+      const nextSeq = withCert.length + 1;
+      const certNumber = `IDEAS-CERT-${year}-${String(nextSeq).padStart(6, "0")}`;
+      
+      b.certificateNumber = certNumber;
+      b.certificateReference = reference;
+      b.certificateVerificationCode = verificationCode;
+      saveJsonState(state);
+      return { certNumber, reference, verificationCode };
+    }
+
+    try {
+      // Check if already has one
+      const existRes = await pool.query(
+        "SELECT certificate_number, certificate_reference, certificate_verification_code FROM beneficiaries WHERE id = $1",
+        [id]
+      );
+      if (existRes.rows.length > 0 && existRes.rows[0].certificate_number) {
+        return {
+          certNumber: existRes.rows[0].certificate_number,
+          reference: existRes.rows[0].certificate_reference || reference,
+          verificationCode: existRes.rows[0].certificate_verification_code || verificationCode
+        };
+      }
+
+      // Sequential generation
+      const countRes = await pool.query(
+        "SELECT count(*) as total FROM beneficiaries WHERE certificate_number IS NOT NULL AND certificate_number LIKE 'IDEAS-CERT-%'"
+      );
+      const nextSeq = Number(countRes.rows[0]?.total || 0) + 1;
+      const certNumber = `IDEAS-CERT-${year}-${String(nextSeq).padStart(6, "0")}`;
+
+      return { certNumber, reference, verificationCode };
+    } catch (e) {
+      console.error("[DB Repo] Failed to generate certificate details:", e);
+      return { certNumber: `IDEAS-CERT-${year}-000099`, reference, verificationCode };
     }
   }
 
@@ -1715,8 +1976,13 @@ export class DbRepo {
            admission_letter_url, acceptance_letter_url, enrollment_letter_url, certificate_url,
            guardian_name, guardian_address, guardian_phone, physical_challenge,
            bank_account_holder, bank_name, bank_sort_code, bank_account_number, education_qualification, date_of_birth,
+           beneficiary_status, status_reason, status_changed_at, status_changed_by, is_archived,
+           eligibility_override, eligibility_override_reason, eligibility_override_by, eligibility_override_at,
+           certification_status, certificate_number, certificate_issued_at, certificate_issued_by, graduation_batch,
+           alumni_status, certificate_reference, certificate_verification_code, certificate_download_count, certificate_last_downloaded_at,
+           alumni_employment_status, alumni_entrepreneur_status, alumni_business_name, alumni_current_employer,
            created_at, updated_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35)
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58)
          ON CONFLICT (id) DO UPDATE SET 
            photo = EXCLUDED.photo,
            first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name, other_name = EXCLUDED.other_name,
@@ -1738,6 +2004,29 @@ export class DbRepo {
            bank_account_number = EXCLUDED.bank_account_number,
            education_qualification = EXCLUDED.education_qualification,
            date_of_birth = EXCLUDED.date_of_birth,
+           beneficiary_status = EXCLUDED.beneficiary_status,
+           status_reason = EXCLUDED.status_reason,
+           status_changed_at = EXCLUDED.status_changed_at,
+           status_changed_by = EXCLUDED.status_changed_by,
+           is_archived = EXCLUDED.is_archived,
+           eligibility_override = EXCLUDED.eligibility_override,
+           eligibility_override_reason = EXCLUDED.eligibility_override_reason,
+           eligibility_override_by = EXCLUDED.eligibility_override_by,
+           eligibility_override_at = EXCLUDED.eligibility_override_at,
+           certification_status = EXCLUDED.certification_status,
+           certificate_number = EXCLUDED.certificate_number,
+           certificate_issued_at = EXCLUDED.certificate_issued_at,
+           certificate_issued_by = EXCLUDED.certificate_issued_by,
+           graduation_batch = EXCLUDED.graduation_batch,
+           alumni_status = EXCLUDED.alumni_status,
+           certificate_reference = EXCLUDED.certificate_reference,
+           certificate_verification_code = EXCLUDED.certificate_verification_code,
+           certificate_download_count = EXCLUDED.certificate_download_count,
+           certificate_last_downloaded_at = EXCLUDED.certificate_last_downloaded_at,
+           alumni_employment_status = EXCLUDED.alumni_employment_status,
+           alumni_entrepreneur_status = EXCLUDED.alumni_entrepreneur_status,
+           alumni_business_name = EXCLUDED.alumni_business_name,
+           alumni_current_employer = EXCLUDED.alumni_current_employer,
            updated_at = NOW()`,
         [
           b.id, b.photo || "", b.firstName, b.lastName, b.otherName || "", b.gender, b.bvn, b.nin,
@@ -1748,6 +2037,11 @@ export class DbRepo {
           b.admissionLetterUrl || "", b.acceptanceLetterUrl || "", b.enrollmentLetterUrl || "", b.certificateUrl || "",
           b.guardianName || "", b.guardianAddress || "", b.guardianPhone || "", b.physicalChallenge || "",
           b.bankAccountHolder || "", b.bankName || "", b.bankSortCode || "", b.bankAccountNumber || "", b.educationQualification || "", b.dateOfBirth || "",
+          b.beneficiaryStatus || "ACTIVE", b.statusReason || "", b.statusChangedAt ? new Date(b.statusChangedAt) : null, b.statusChangedBy || "", !!b.isArchived,
+          !!b.eligibilityOverride, b.eligibilityOverrideReason || "", b.eligibilityOverrideBy || "", b.eligibilityOverrideAt ? new Date(b.eligibilityOverrideAt) : null,
+          b.certificationStatus || "NONE", b.certificateNumber || "", b.certificateIssuedAt ? new Date(b.certificateIssuedAt) : null, b.certificateIssuedBy || "", b.graduationBatch || "",
+          !!b.alumniStatus, b.certificateReference || "", b.certificateVerificationCode || "", b.certificateDownloadCount || 0, b.certificateLastDownloadedAt ? new Date(b.certificateLastDownloadedAt) : null,
+          b.alumniEmploymentStatus || "", b.alumniEntrepreneurStatus || "", b.alumniBusinessName || "", b.alumniCurrentEmployer || "",
           new Date(b.createdAt || Date.now()), new Date()
         ]
       );
@@ -1909,19 +2203,56 @@ export class DbRepo {
       const idx = state.beneficiaries.findIndex(x => x.id === id);
       if (idx !== -1) {
         const target = state.beneficiaries[idx];
-        state.beneficiaries.splice(idx, 1);
+        const oldStatus = target.beneficiaryStatus || "ACTIVE";
+        target.beneficiaryStatus = "REMOVED";
+        target.isArchived = true;
+        target.statusReason = "Requested profile removal";
+        target.statusChangedBy = "SUPER_ADMIN";
+        target.statusChangedAt = new Date().toISOString();
         saveJsonState(state);
+
+        await DbRepo.saveWorkflowHistory({
+          beneficiaryId: id,
+          oldStatus: oldStatus,
+          newStatus: "REMOVED",
+          changedBy: "SUPER_ADMIN",
+          changedAt: new Date().toISOString(),
+          remarks: "Requested profile removal (Soft Delete)",
+          reason: "Soft Deleted",
+          ipAddress: "127.0.0.1"
+        });
         return true;
       }
       return false;
     }
 
     try {
-      const res = await pool.query("UPDATE beneficiaries SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL", [id]);
-      await pool.query("UPDATE admissions SET deleted_at = NOW() WHERE beneficiary_id = $1 AND deleted_at IS NULL", [id]);
-      await pool.query("UPDATE documents SET deleted_at = NOW() WHERE beneficiary_id = $1 AND deleted_at IS NULL", [id]);
-      await pool.query("UPDATE attendance_logs SET deleted_at = NOW() WHERE beneficiary_id = $1 AND deleted_at IS NULL", [id]);
-      await pool.query("UPDATE email_logs SET deleted_at = NOW() WHERE beneficiary_id = $1 AND deleted_at IS NULL", [id]);
+      const curRes = await pool.query("SELECT beneficiary_status FROM beneficiaries WHERE id = $1 AND deleted_at IS NULL", [id]);
+      const oldStatus = curRes.rows[0]?.beneficiary_status || "ACTIVE";
+
+      const res = await pool.query(
+        `UPDATE beneficiaries SET 
+           beneficiary_status = 'REMOVED', 
+           is_archived = TRUE, 
+           status_reason = 'Requested profile removal',
+           status_changed_by = 'SUPER_ADMIN',
+           status_changed_at = NOW(),
+           updated_at = NOW()
+         WHERE id = $1 AND deleted_at IS NULL`,
+        [id]
+      );
+
+      await DbRepo.saveWorkflowHistory({
+        beneficiaryId: id,
+        oldStatus: oldStatus,
+        newStatus: "REMOVED",
+        changedBy: "SUPER_ADMIN",
+        changedAt: new Date().toISOString(),
+        remarks: "Requested profile removal (Soft-Delete Policy)",
+        reason: "Soft Deleted",
+        ipAddress: "127.0.0.1"
+      });
+
       return (res.rowCount ?? 0) > 0;
     } catch (e) {
       console.error("[DB Repo] Failed to soft-delete beneficiary in PG:", e);
@@ -2501,15 +2832,17 @@ export class DbRepo {
     try {
       await pool.query(
         `INSERT INTO workflow_history (
-          beneficiary_id, old_status, new_status, changed_by, changed_at, remarks
-        ) VALUES ($1, $2, $3, $4, $5, $6)`,
+          beneficiary_id, old_status, new_status, changed_by, changed_at, remarks, reason, ip_address
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
           h.beneficiaryId,
           h.oldStatus,
           h.newStatus,
           h.changedBy,
           h.changedAt ? new Date(h.changedAt) : new Date(),
-          h.remarks || ""
+          h.remarks || "",
+          h.reason || "",
+          h.ipAddress || ""
         ]
       );
       return true;
@@ -2532,7 +2865,7 @@ export class DbRepo {
     }
     try {
       const res = await pool.query(
-        "SELECT id, beneficiary_id, old_status, new_status, changed_by, changed_at, remarks FROM workflow_history WHERE beneficiary_id = $1 ORDER BY id ASC, changed_at ASC",
+        "SELECT id, beneficiary_id, old_status, new_status, changed_by, changed_at, remarks, reason, ip_address FROM workflow_history WHERE beneficiary_id = $1 ORDER BY id ASC, changed_at ASC",
         [beneficiaryId]
       );
       return res.rows.map(row => ({
@@ -2542,7 +2875,9 @@ export class DbRepo {
         newStatus: row.new_status,
         changedBy: row.changed_by,
         changedAt: row.changed_at ? row.changed_at.toISOString() : new Date().toISOString(),
-        remarks: row.remarks || ""
+        remarks: row.remarks || "",
+        reason: row.reason || "",
+        ipAddress: row.ip_address || ""
       }));
     } catch (e) {
       console.error("[DB Repo] Failed to get workflow history:", e);
@@ -3114,7 +3449,7 @@ export class DbRepo {
 
       const rows = sliced.map(b => ({
         id: b.id,
-        referenceNumber: b.admissionRef || "DRAFT",
+        referenceNumber: b.admissionFormRef || b.admissionRef || "DRAFT",
         name: `${b.lastName}, ${b.firstName}`,
         sector: b.skillSector,
         tsp: b.tsp,
@@ -3127,7 +3462,17 @@ export class DbRepo {
         admissionFormStatus: b.admissionFormStatus || "NOT_GENERATED",
         admissionFormGeneratedAt: b.admissionFormGeneratedAt || null,
         admissionFormViewedAt: b.admissionFormViewedAt || null,
-        admissionFormConfirmedAt: b.admissionFormConfirmedAt || null
+        admissionFormConfirmedAt: b.admissionFormConfirmedAt || null,
+        gender: b.gender || "Male",
+        bvn: b.bvn || "",
+        guardianName: b.guardianName || "",
+        guardianPhone: b.guardianPhone || "",
+        address: b.residentialAddress || "",
+        bankName: b.bankName || "",
+        accountNumber: b.bankAccountNumber || "",
+        nin: b.nin || "",
+        dateOfBirth: b.dateOfBirth || "",
+        photo: b.photo || ""
       }));
 
       return { rows, totalCount, page, pageSize, totalPages };
@@ -3151,7 +3496,17 @@ export class DbRepo {
         "adm.admission_form_ref",
         "adm.admission_form_generated_at",
         "adm.admission_form_viewed_at",
-        "adm.admission_form_confirmed_at"
+        "adm.admission_form_confirmed_at",
+        "b.gender",
+        "b.bvn",
+        "b.guardian_name",
+        "b.guardian_phone",
+        "b.address",
+        "b.bank_name",
+        "b.account_number",
+        "b.nin",
+        "b.date_of_birth",
+        "b.photo"
       ];
 
       let queryWhere = "WHERE b.deleted_at IS NULL ";
@@ -3256,7 +3611,22 @@ export class DbRepo {
         hasPhoto: !!r.has_photo,
         state: r.state,
         batch: r.batch,
-        createdAt: r.created_at.toISOString()
+        createdAt: r.created_at.toISOString(),
+        admissionFormRef: r.admission_form_ref || r.reference_number || "",
+        admissionFormStatus: r.admission_form_status || "NOT_GENERATED",
+        admissionFormGeneratedAt: r.admission_form_generated_at ? r.admission_form_generated_at.toISOString() : null,
+        admissionFormViewedAt: r.admission_form_viewed_at ? r.admission_form_viewed_at.toISOString() : null,
+        admissionFormConfirmedAt: r.admission_form_confirmed_at ? r.admission_form_confirmed_at.toISOString() : null,
+        gender: r.gender || "Male",
+        bvn: r.bvn || "",
+        guardianName: r.guardian_name || "",
+        guardianPhone: r.guardian_phone || "",
+        address: r.address || "",
+        bankName: r.bank_name || "",
+        accountNumber: r.account_number || "",
+        nin: r.nin || "",
+        dateOfBirth: r.date_of_birth || "",
+        photo: r.photo || ""
       }));
 
       return { rows, totalCount, page, pageSize, totalPages };

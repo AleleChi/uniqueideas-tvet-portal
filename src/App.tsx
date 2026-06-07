@@ -6,7 +6,7 @@
 import React, { useState, useEffect } from "react";
 import { 
   Users, Image as ImageIcon, Sliders, ShieldCheck, LogOut, 
-  Settings, FolderLock, Landmark, Cpu, Smartphone, LayoutDashboard, History, Check, Menu, X, FileCheck
+  Settings, FolderLock, Landmark, Cpu, Smartphone, LayoutDashboard, History, Check, Menu, X, FileCheck, UserCheck, Award, FileText
 } from "lucide-react";
 import { AdminLogin } from "./components/AdminLogin";
 import { TraineePortal } from "./components/TraineePortal";
@@ -21,6 +21,9 @@ import { PublicResponsePortal } from "./components/PublicResponsePortal";
 import { SettingsWorkspace } from "./components/SettingsWorkspace";
 import { DocumentVerification } from "./components/DocumentVerification";
 import { SecureDocumentPortal } from "./components/SecureDocumentPortal";
+import { EligibilityCenter } from "./components/EligibilityCenter";
+import { CertificationCenter } from "./components/CertificationCenter";
+import { CertificateVerification } from "./components/CertificateVerification";
 import { Beneficiary, CustomField, AuditLog, UserSession } from "./types";
 import { authFetch, downloadWithAuth } from "./utils/authFetch";
 import { useNotification } from "./components/NotificationContext";
@@ -35,7 +38,8 @@ export default function App() {
       return null;
     }
   });
-  const [activeTab, setActiveTab] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility">("dashboard");
+  const [admissionsSubTab, setAdmissionsSubTab] = useState<"dashboard" | "letters" | "forms" | "acceptance" | "dispatches">("dashboard");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [registryViewMode, setRegistryViewMode] = useState<"list" | "details" | "create">("list");
   const [subTabMode, setSubTabMode] = useState<"beneficiaries" | "admissions" | "documents">("beneficiaries");
@@ -367,6 +371,10 @@ export default function App() {
   const isAuthenticated = !!session?.isAuthenticated;
 
   // Determine core route template to render
+  if (normalizedHash.startsWith("#/verify/certificate") || normalizedHash.includes("verify/certificate") || normalizedHash.includes("verify-certificate")) {
+    return <CertificateVerification />;
+  }
+
   if (normalizedHash === "#/verify-document" || normalizedHash === "#verify-document" || normalizedHash.startsWith("#/verify-document") || normalizedHash.startsWith("#verify-document") || normalizedHash.includes("verify-document")) {
     return <DocumentVerification />;
   }
@@ -508,40 +516,116 @@ export default function App() {
               <span>Detail Dashboard</span>
             </button>
 
-            <button 
-              onClick={() => {
-                setActiveTab("registry");
-                setRegistryViewMode("list");
-                setSubTabMode("beneficiaries");
-                setSelectedBeneficiary(null);
-                setIsSidebarOpen(false);
-              }}
-              className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-                activeTab === "registry" && subTabMode === "beneficiaries"
-                  ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
-                  : "text-slate-400 hover:text-white hover:bg-slate-800/40"
-              }`}
-            >
-              <Users className="w-4 h-4 text-inherit" />
-              <span>Beneficiaries</span>
-            </button>
+            <div className="pt-2 pb-1 border-t border-slate-800/60 mt-2">
+              <span className="text-[9px] font-bold font-mono tracking-wider text-slate-500 uppercase px-3 text-left block mb-2">
+                Admissions Ecosystem
+              </span>
+              <div className="space-y-1">
+                <button 
+                  onClick={() => {
+                    setActiveTab("registry");
+                    setRegistryViewMode("list");
+                    setSubTabMode("beneficiaries");
+                    setSelectedBeneficiary(null);
+                    setIsSidebarOpen(false);
+                  }}
+                  className={`w-full py-2 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+                    activeTab === "registry" && subTabMode === "beneficiaries"
+                      ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                      : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+                  }`}
+                >
+                  <Users className="w-3.5 h-3.5 text-inherit" />
+                  <span>Beneficiaries</span>
+                </button>
+
+                <button 
+                  onClick={() => {
+                    setActiveTab("registry");
+                    setRegistryViewMode("list");
+                    setSubTabMode("admissions");
+                    setAdmissionsSubTab("forms");
+                    setSelectedBeneficiary(null);
+                    setIsSidebarOpen(false);
+                  }}
+                  className={`w-full py-2 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+                    activeTab === "registry" && subTabMode === "admissions" && admissionsSubTab === "forms"
+                      ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                      : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+                  }`}
+                >
+                  <FileText className="w-3.5 h-3.5 text-inherit" />
+                  <span>Admission Forms Registry</span>
+                </button>
+
+                <button 
+                  onClick={() => {
+                    setActiveTab("registry");
+                    setRegistryViewMode("list");
+                    setSubTabMode("admissions");
+                    setAdmissionsSubTab("letters");
+                    setSelectedBeneficiary(null);
+                    setIsSidebarOpen(false);
+                  }}
+                  className={`w-full py-2 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+                    activeTab === "registry" && subTabMode === "admissions" && admissionsSubTab === "letters"
+                      ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                      : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+                  }`}
+                >
+                  <UserCheck className="w-3.5 h-3.5 text-inherit" />
+                  <span>Admission Offers</span>
+                </button>
+
+                <button 
+                  onClick={() => {
+                    setActiveTab("registry");
+                    setRegistryViewMode("list");
+                    setSubTabMode("admissions");
+                    setAdmissionsSubTab("acceptance");
+                    setSelectedBeneficiary(null);
+                    setIsSidebarOpen(false);
+                  }}
+                  className={`w-full py-2 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+                    activeTab === "registry" && subTabMode === "admissions" && admissionsSubTab === "acceptance"
+                      ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                      : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+                  }`}
+                >
+                  <ShieldCheck className="w-3.5 h-3.5 text-inherit" />
+                  <span>Acceptance Desk</span>
+                </button>
+              </div>
+            </div>
 
             <button 
               onClick={() => {
-                setActiveTab("registry");
-                setRegistryViewMode("list");
-                setSubTabMode("admissions");
-                setSelectedBeneficiary(null);
+                setActiveTab("eligibility");
                 setIsSidebarOpen(false);
               }}
               className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-                activeTab === "registry" && subTabMode === "admissions"
+                activeTab === "eligibility"
                   ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
                   : "text-slate-400 hover:text-white hover:bg-slate-800/40"
               }`}
             >
               <ShieldCheck className="w-4 h-4 text-inherit" />
-              <span>Admissions Office</span>
+              <span>Eligibility & Compliance</span>
+            </button>
+
+            <button 
+              onClick={() => {
+                setActiveTab("certification");
+                setIsSidebarOpen(false);
+              }}
+              className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+                activeTab === "certification"
+                  ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                  : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+              }`}
+            >
+              <Award className="w-4 h-4 text-inherit" />
+              <span>🏆 Certification Center</span>
             </button>
 
             <button 
@@ -747,6 +831,7 @@ export default function App() {
               onDeleteBeneficiary={handleDeleteBeneficiary}
               session={session}
               subTabMode={subTabMode}
+              admissionsSubTab={admissionsSubTab}
               initialDetailsTab={
                 subTabMode === "admissions" 
                   ? "admission" 
@@ -758,6 +843,21 @@ export default function App() {
           )}
 
           {activeTab === "album" && <ReportsWorkspace beneficiaries={beneficiaries} />}
+
+          {activeTab === "eligibility" && (
+            <EligibilityCenter 
+              beneficiaries={beneficiaries} 
+              session={session} 
+              onRefresh={fetchBeneficiaries} 
+            />
+          )}
+
+          {activeTab === "certification" && (
+            <CertificationCenter
+              session={session}
+              onRefreshRoot={fetchBeneficiaries}
+            />
+          )}
 
           {activeTab === "custom" && (
             <CustomSchemaBuilder 

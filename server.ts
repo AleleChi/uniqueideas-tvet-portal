@@ -14,9 +14,10 @@ import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
 import { Gender, ProgramStatus, Beneficiary, CustomField, AuditLog, DocumentType, WorkflowHistory } from "./src/types";
 import { AdmissionController } from "./src/backend/admission.controller";
+import { CertificationController } from "./src/backend/certification.controller";
 import { AdmissionService } from "./src/backend/admission.service";
 import { EmailService } from "./src/backend/email.service";
-import { initDb, DbRepo } from "./src/backend/db";
+import { initDb, DbRepo, getDynamicEligibility, calculateAge, getPgPool } from "./src/backend/db";
 import { DocumentDeliveryService, EmailDispatchService } from "./src/backend/documentDelivery.service";
 import { requireAuth, requireRole, JWT_SECRET, AuthenticatedRequest } from "./src/backend/auth.middleware";
 import { PdfService } from "./src/backend/pdf.service";
@@ -479,15 +480,35 @@ app.post("/api/admissions/export-jobs", requireAuth, requireRole(["SUPER_ADMIN",
 app.get("/api/admissions/export-jobs/:jobId", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.getExportJobStatus);
 app.get("/api/admissions/export-jobs/download/:jobId", AdmissionController.downloadExportJob);
 
-app.post("/api/admissions/:id/generate-form", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "TRAINEE"]), AdmissionController.generateForm);
+const protectInactiveBeneficiary = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  try {
+    const beneficiaryId = req.params.id;
+    if (!beneficiaryId) return next();
+
+    const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
+    if (!beneficiary) return next();
+
+    const bStatus = beneficiary.beneficiaryStatus || "ACTIVE";
+    if (!["ACTIVE", "COMPLETED"].includes(bStatus)) {
+      return res.status(400).json({
+        error: "This action is disabled because the beneficiary is inactive or has a locked/restricted lifecycle status."
+      });
+    }
+    next();
+  } catch (err) {
+    next();
+  }
+};
+
+app.post("/api/admissions/:id/generate-form", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "TRAINEE"]), protectInactiveBeneficiary, AdmissionController.generateForm);
 app.get("/api/admissions/:id/form", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", "TRAINEE"]), AdmissionController.getForm);
-app.post("/api/admissions/:id/save-form", requireAuth, requireRole(["SUPER_ADMIN", "TRAINEE"]), AdmissionController.saveForm);
+app.post("/api/admissions/:id/save-form", requireAuth, requireRole(["SUPER_ADMIN", "TRAINEE"]), protectInactiveBeneficiary, AdmissionController.saveForm);
 app.get("/api/admissions/:id/form/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", "TRAINEE"]), AdmissionController.getFormPdf);
 app.get("/api/admissions/:id/form/docx", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", "TRAINEE"]), AdmissionController.getFormDocx);
 app.post("/api/admissions/bulk-export", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.bulkExportAdmissionForms);
-app.post("/api/admissions/:id/confirm-form", requireAuth, requireRole(["SUPER_ADMIN", "TRAINEE"]), AdmissionController.confirmForm);
+app.post("/api/admissions/:id/confirm-form", requireAuth, requireRole(["SUPER_ADMIN", "TRAINEE"]), protectInactiveBeneficiary, AdmissionController.confirmForm);
 app.post("/api/admissions/:id/unlock-form", requireAuth, requireRole(["SUPER_ADMIN"]), AdmissionController.unlockForm);
-app.post("/api/admissions/:id/regenerate-reference", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), AdmissionController.regenerateReference);
+app.post("/api/admissions/:id/regenerate-reference", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), protectInactiveBeneficiary, AdmissionController.regenerateReference);
 
 // ==========================================
 // ADMISSIONS REPORTING API ENDPOINTS
@@ -1410,6 +1431,63 @@ app.get("/api/documents/download/:id/:type", async (req, res) => {
   }
 });
 
+// Certification & Alumni Ecosystem Endpoints
+app.get("/api/certification/stats", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), CertificationController.getCertificationStats);
+app.get("/api/certification/list", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), CertificationController.getCertificationList);
+app.post("/api/certification/transition", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), CertificationController.transitionStatus);
+app.post("/api/certification/bulk-transition", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), CertificationController.bulkTransition);
+app.post("/api/certification/alumni-update", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), CertificationController.updateAlumniProfile);
+
+// Public Certification Verification Search Hub
+app.get("/api/public/certificate/verify/:reference", async (req, res) => {
+  try {
+    const { reference } = req.params;
+    if (!reference || reference.trim() === "") {
+      return res.status(400).json({ error: "Certificate reference parameter is empty." });
+    }
+
+    const pool = getPgPool(); // Ensures pg pool is initialized if hot-starting
+    let beneficiary: any = null;
+
+    if (pool) {
+      const dbRes = await pool.query(
+        `SELECT id, first_name as "firstName", last_name as "lastName", other_name as "otherName", 
+                state, tsp, skill_sector as "skillSector", certificate_number as "certificateNumber", 
+                certificate_url as "certificateUrl", certificate_issued_at as "certificateIssuedAt", 
+                certificate_verification_code as "certificateVerificationCode", 
+                certificate_reference as "certificateReference", graduation_batch as "graduationBatch"
+         FROM beneficiaries 
+         WHERE (certificate_reference = $1 OR certificate_number = $1 OR certificate_verification_code = $1) 
+               AND deleted_at IS NULL AND is_archived = false`,
+        [reference.trim()]
+      );
+
+      if (dbRes.rows.length > 0) {
+        beneficiary = dbRes.rows[0];
+      }
+    } else {
+      const state = (require("./src/backend/db").loadJsonState)();
+      const b = (state.beneficiaries || []).find((x: any) => 
+        (x.certificateReference === reference.trim() || 
+         x.certificateNumber === reference.trim() || 
+         x.certificateVerificationCode === reference.trim()) && !x.isArchived
+      );
+      if (b) {
+        beneficiary = b;
+      }
+    }
+
+    if (!beneficiary) {
+      return res.status(404).json({ error: "Certificate registry contains no match for this signature ID." });
+    }
+
+    return res.status(200).json(beneficiary);
+  } catch (err: any) {
+    console.error("[Public Verify Endpoint Failed]:", err);
+    return res.status(500).json({ error: err.message || "Failed sweeping verify registry indexes." });
+  }
+});
+
 // Custom Field Builder API
 app.get("/api/custom-fields", requireAuth, async (req, res) => {
   try {
@@ -1985,6 +2063,283 @@ app.delete("/api/beneficiaries/:id", requireAuth, requireRole(["SUPER_ADMIN"]), 
   }
 });
 
+app.post("/api/eligibility/override", requireAuth, requireRole(["SUPER_ADMIN"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { beneficiaryId, reason } = req.body;
+    if (!beneficiaryId) {
+      return res.status(400).json({ error: "Missing required parameter: beneficiaryId" });
+    }
+    if (!reason || !reason.trim()) {
+      return res.status(400).json({ error: "Reason is required for eligibility override." });
+    }
+
+    const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
+    if (!beneficiary) {
+      return res.status(404).json({ error: "Beneficiary not found" });
+    }
+
+    const oldStatus = beneficiary.eligibilityOverride ? "OVERRIDDEN" : (getDynamicEligibility(beneficiary).eligibilityStatus);
+
+    beneficiary.eligibilityOverride = true;
+    beneficiary.eligibilityOverrideReason = reason;
+    beneficiary.eligibilityOverrideBy = req.user!.email;
+    beneficiary.eligibilityOverrideAt = new Date().toISOString();
+
+    await DbRepo.upsertBeneficiary(beneficiary);
+
+    // Save workflow history
+    await DbRepo.saveWorkflowHistory({
+      beneficiaryId,
+      oldStatus: oldStatus,
+      newStatus: "OVERRIDDEN",
+      changedBy: req.user!.email,
+      changedAt: new Date().toISOString(),
+      remarks: "Academic / age requirement override by administrative system Super Administrator",
+      reason: reason,
+      ipAddress: req.ip || ""
+    });
+
+    // Save audit log
+    await DbRepo.saveAuditLog({
+      id: "audit_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+      username: req.user!.email,
+      role: req.user!.role,
+      action: "ELIGIBILITY_OVERRIDDEN",
+      details: `Overrode age eligibility requirements for trainee profile ID ${beneficiary.id} (${beneficiary.firstName} ${beneficiary.lastName}). Reason: ${reason}`,
+      timestamp: new Date().toISOString()
+    });
+
+    res.json({ success: true, beneficiary });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to override eligibility." });
+  }
+});
+
+app.post("/api/eligibility/remove-override", requireAuth, requireRole(["SUPER_ADMIN"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { beneficiaryId, reason } = req.body;
+    if (!beneficiaryId) {
+      return res.status(400).json({ error: "Missing required parameter: beneficiaryId" });
+    }
+
+    const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
+    if (!beneficiary) {
+      return res.status(404).json({ error: "Beneficiary not found" });
+    }
+
+    beneficiary.eligibilityOverride = false;
+    beneficiary.eligibilityOverrideReason = undefined;
+    beneficiary.eligibilityOverrideBy = undefined;
+    beneficiary.eligibilityOverrideAt = undefined;
+
+    await DbRepo.upsertBeneficiary(beneficiary);
+
+    const newStatus = getDynamicEligibility(beneficiary).eligibilityStatus;
+
+    // Save workflow history
+    await DbRepo.saveWorkflowHistory({
+      beneficiaryId,
+      oldStatus: "OVERRIDDEN",
+      newStatus: newStatus,
+      changedBy: req.user!.email,
+      changedAt: new Date().toISOString(),
+      remarks: "Academic / age requirement override revoked",
+      reason: reason || "Revocation of override",
+      ipAddress: req.ip || ""
+    });
+
+    // Save audit log
+    await DbRepo.saveAuditLog({
+      id: "audit_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+      username: req.user!.email,
+      role: req.user!.role,
+      action: "ELIGIBILITY_OVERRIDE_REMOVED",
+      details: `Revoked eligibility override requirements for trainee profile ID ${beneficiary.id} (${beneficiary.firstName} ${beneficiary.lastName}).`,
+      timestamp: new Date().toISOString()
+    });
+
+    res.json({ success: true, beneficiary });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to remove override." });
+  }
+});
+
+app.post("/api/beneficiaries/:id/lifecycle-status", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    const { newStatus, reason } = req.body;
+
+    if (!newStatus) {
+      return res.status(400).json({ error: "Missing required parameter: newStatus" });
+    }
+
+    if (!reason || reason.trim() === "") {
+      return res.status(400).json({ error: "A status change reason is required." });
+    }
+
+    const beneficiary = await DbRepo.getBeneficiaryById(id);
+    if (!beneficiary) {
+      return res.status(404).json({ error: "Beneficiary not found" });
+    }
+
+    const userRole = req.user!.role;
+    const oldStatus = beneficiary.beneficiaryStatus || "ACTIVE";
+
+    if (userRole === "TRAINEE") {
+      return res.status(403).json({ error: "Trainees are not authorized to modify beneficiary status." });
+    }
+
+    if (["REMOVED", "ARCHIVED", "DISQUALIFIED", "FAILED_VERIFICATION", "ACTIVE"].includes(newStatus)) {
+      if (userRole !== "SUPER_ADMIN") {
+        return res.status(403).json({ error: `Only a SUPER_ADMIN can perform the status change to '${newStatus}'.` });
+      }
+    } else if (["WITHDRAWN", "COMPLETED"].includes(newStatus)) {
+      if (userRole !== "SUPER_ADMIN" && userRole !== "ADMIN_OFFICER") {
+        return res.status(403).json({ error: `You do not have permission to change status to '${newStatus}'.` });
+      }
+    } else {
+      if (userRole !== "SUPER_ADMIN" && userRole !== "ADMIN_OFFICER") {
+        return res.status(403).json({ error: `Permission denied to transition to '${newStatus}'.` });
+      }
+    }
+
+    beneficiary.beneficiaryStatus = newStatus;
+    beneficiary.statusReason = reason;
+    beneficiary.statusChangedBy = req.user!.email;
+    beneficiary.statusChangedAt = new Date().toISOString();
+
+    if (newStatus === "ARCHIVED" || newStatus === "REMOVED") {
+      beneficiary.isArchived = true;
+    } else if (newStatus === "ACTIVE") {
+      beneficiary.isArchived = false;
+    }
+
+    await DbRepo.upsertBeneficiary(beneficiary);
+
+    const ipAddress = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1";
+    const ipStr = Array.isArray(ipAddress) ? ipAddress[0] : ipAddress;
+
+    const eventRemarks = `Status changed from ${oldStatus} to ${newStatus}.`;
+    await DbRepo.saveWorkflowHistory({
+      beneficiaryId: id,
+      oldStatus,
+      newStatus,
+      changedBy: req.user!.email,
+      changedAt: new Date().toISOString(),
+      remarks: eventRemarks,
+      reason: reason,
+      ipAddress: ipStr
+    });
+
+    const auditAction = `BENEFICIARY_${newStatus}`;
+    const newLog: AuditLog = {
+      id: "log_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+      timestamp: new Date().toISOString(),
+      username: req.user!.email,
+      role: req.user!.role,
+      action: auditAction,
+      details: `Operator changed beneficiary '${beneficiary.firstName} ${beneficiary.lastName}' (ID: ${id}) status from '${oldStatus}' to '${newStatus}'. Reason: ${reason}`
+    };
+    await DbRepo.saveAuditLog(newLog);
+
+    return res.status(200).json({ success: true, beneficiary });
+  } catch (err: any) {
+    console.error("[Lifecycle status transition failed]:", err);
+    return res.status(500).json({ error: err.message || "Failed to update lifecycle status." });
+  }
+});
+
+app.post("/api/admissions/bulk-lifecycle-status", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { beneficiaryIds, action, reason } = req.body;
+    if (!beneficiaryIds || !Array.isArray(beneficiaryIds) || beneficiaryIds.length === 0) {
+      return res.status(400).json({ error: "Missing required parameter: beneficiaryIds" });
+    }
+    if (!action) {
+      return res.status(400).json({ error: "Missing required parameter: action" });
+    }
+    if (!reason || reason.trim() === "") {
+      return res.status(400).json({ error: "Reason is required for bulk actions." });
+    }
+
+    const userRole = req.user!.role;
+    let targetStatus = "";
+    if (action === "WITHDRAWN") {
+      targetStatus = "WITHDRAWN";
+    } else if (action === "FAILED_VERIFICATION") {
+      targetStatus = "FAILED_VERIFICATION";
+    } else if (action === "DISQUALIFIED") {
+      targetStatus = "DISQUALIFIED";
+    } else if (action === "ARCHIVED") {
+      targetStatus = "ARCHIVED";
+    } else if (action === "RESTORE") {
+      targetStatus = "ACTIVE";
+    } else if (action === "REMOVED") {
+      targetStatus = "REMOVED";
+    } else {
+      return res.status(400).json({ error: `Unsupported bulk action: ${action}` });
+    }
+
+    if (userRole === "TRAINEE") {
+      return res.status(403).json({ error: "Not authorized." });
+    }
+
+    const superAdminOnlyActions = ["FAILED_VERIFICATION", "DISQUALIFIED", "ARCHIVED", "ACTIVE", "REMOVED"];
+    if (superAdminOnlyActions.includes(targetStatus) && userRole !== "SUPER_ADMIN") {
+      return res.status(403).json({ error: `Only a SUPER_ADMIN can bulk perform the action: '${action}'.` });
+    }
+
+    const ipAddress = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1";
+    const ipStr = Array.isArray(ipAddress) ? ipAddress[0] : ipAddress;
+
+    const succeeded: string[] = [];
+    for (const bId of beneficiaryIds) {
+      const b = await DbRepo.getBeneficiaryById(bId);
+      if (b) {
+        const oldStatus = b.beneficiaryStatus || "ACTIVE";
+        b.beneficiaryStatus = targetStatus;
+        b.statusReason = reason;
+        b.statusChangedBy = req.user!.email;
+        b.statusChangedAt = new Date().toISOString();
+        if (targetStatus === "ARCHIVED" || targetStatus === "REMOVED") {
+          b.isArchived = true;
+        } else if (targetStatus === "ACTIVE") {
+          b.isArchived = false;
+        }
+        await DbRepo.upsertBeneficiary(b);
+
+        await DbRepo.saveWorkflowHistory({
+          beneficiaryId: b.id,
+          oldStatus,
+          newStatus: targetStatus,
+          changedBy: req.user!.email,
+          changedAt: new Date().toISOString(),
+          remarks: `Bulk Action: ${action}`,
+          reason: reason,
+          ipAddress: ipStr
+        });
+
+        succeeded.push(bId);
+      }
+    }
+
+    const auditLog: AuditLog = {
+      id: "log_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+      timestamp: new Date().toISOString(),
+      username: req.user!.email,
+      role: req.user!.role,
+      action: `BULK_LIFECYCLE_${action}`,
+      details: `Bulk converted status to '${targetStatus}' for ${succeeded.length} beneficiaries. Reason: ${reason}`
+    };
+    await DbRepo.saveAuditLog(auditLog);
+
+    return res.status(200).json({ success: true, processedCount: succeeded.length });
+  } catch (err: any) {
+    console.error("[Bulk lifecycle API failed]:", err);
+    return res.status(500).json({ error: err.message || "Failed bulk update." });
+  }
+});
+
 // --- DOCUMENT AUTOMATION API ENDPOINTS ---
 
 // Fetch generated document history for a beneficiary
@@ -2013,6 +2368,16 @@ app.post("/api/documents/generate", requireAuth, requireRole(["SUPER_ADMIN", "AD
     const { beneficiaryId, documentType, regenerate } = req.body;
     if (!beneficiaryId || !documentType) {
       return res.status(400).json({ error: "beneficiaryId and documentType are required fields." });
+    }
+
+    const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
+    if (!beneficiary) {
+      return res.status(404).json({ error: "Beneficiary not found" });
+    }
+
+    const bStatus = beneficiary.beneficiaryStatus || "ACTIVE";
+    if (bStatus !== "ACTIVE" && bStatus !== "COMPLETED") {
+      return res.status(400).json({ error: "This beneficiary is not eligible for document generation due to current lifecycle status." });
     }
 
     const generatedBy = req.user?.email || "SYSTEM";
@@ -2406,6 +2771,12 @@ app.post("/api/dispatches/send", requireAuth, async (req, res) => {
         continue;
       }
 
+      const bStatus = beneficiary.beneficiaryStatus || "ACTIVE";
+      if (!["ACTIVE", "COMPLETED"].includes(bStatus)) {
+        resultLogs.push({ beneficiaryId: bId, success: false, error: "This beneficiary is not eligible for dispatch operations due to current inactive lifecycle status." });
+        continue;
+      }
+
       const emailAddress = beneficiary.email;
       if (!emailAddress) {
         resultLogs.push({ beneficiaryId: bId, success: false, error: "email_address not declared in trainee profile." });
@@ -2641,6 +3012,29 @@ app.get("/api/audit-logs", requireAuth, requireRole(["SUPER_ADMIN"]), async (req
     res.json(auditLogs);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Post Audit Trace log
+app.post("/api/audit-logs/log", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { action, beneficiaryId, remarks } = req.body;
+    if (!action) {
+      return res.status(400).json({ error: "Missing required parameter: action" });
+    }
+    
+    await DbRepo.saveAuditLog({
+      id: "audit_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+      username: req.user!.email,
+      role: req.user!.role,
+      action: action,
+      details: `${remarks || ""} (Beneficiary ID: ${beneficiaryId || "N/A"})`,
+      timestamp: new Date().toISOString()
+    });
+    
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 

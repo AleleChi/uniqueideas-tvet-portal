@@ -284,6 +284,14 @@ export class DocumentService {
       throw new Error(`Beneficiary for document ${documentId} cannot be verified.`);
     }
 
+    const bStatus = beneficiary.beneficiaryStatus || "ACTIVE";
+    if (bStatus !== "ACTIVE" && bStatus !== "COMPLETED") {
+      try {
+        await DbRepo.updateGeneratedDocumentEmailStatus(documentId, "Failed");
+      } catch (dbErr) {}
+      throw new Error(`Email dispatch barred: Candidate lifecycle status is '${bStatus}'. Only ACTIVE or COMPLETED profiles are eligible for document delivery.`);
+    }
+
     const emailToDeliver = recipientEmail || beneficiary.email;
     if (!emailToDeliver) {
       try {

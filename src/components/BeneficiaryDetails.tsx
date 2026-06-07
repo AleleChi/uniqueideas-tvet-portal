@@ -16,6 +16,30 @@ import { authFetch, downloadWithAuth } from "../utils/authFetch";
 import { useNotification } from "./NotificationContext";
 import { API_BASE_URL } from "../config/api";
 
+export function getLifecycleStatusBadge(status?: string) {
+  const s = (status || "ACTIVE").toUpperCase();
+  switch (s) {
+    case "ACTIVE":
+      return { bg: "bg-emerald-50 text-emerald-700 border-emerald-200", label: "Active" };
+    case "COMPLETED":
+      return { bg: "bg-blue-50 text-blue-700 border-blue-200", label: "Completed" };
+    case "UNDER_REVIEW":
+      return { bg: "bg-amber-50 text-amber-700 border-amber-200", label: "Under Review" };
+    case "WITHDRAWN":
+      return { bg: "bg-orange-50 text-orange-700 border-orange-200", label: "Withdrawn" };
+    case "FAILED_VERIFICATION":
+      return { bg: "bg-red-50 text-red-700 border-red-200", label: "Failed Verification" };
+    case "DISQUALIFIED":
+      return { bg: "bg-red-100 text-red-800 border-red-300", label: "Disqualified" };
+    case "REMOVED":
+      return { bg: "bg-rose-100 text-rose-800 border-rose-300", label: "Removed" };
+    case "ARCHIVED":
+      return { bg: "bg-slate-50 text-slate-700 border-slate-200", label: "Archived" };
+    default:
+      return { bg: "bg-slate-50 text-slate-700 border-slate-200", label: status || "Active" };
+  }
+}
+
 interface BeneficiaryDetailsProps {
   beneficiary: Beneficiary;
   onBack: () => void;
@@ -182,6 +206,67 @@ export function BeneficiaryDetails({
     timestamp: number;
   } | null>(null);
   const [undoCountdown, setUndoCountdown] = useState(10);
+
+  // Beneficiary Lifecycle Governance Custom States
+  const [lifecycleModal, setLifecycleModal] = useState<{
+    isOpen: boolean;
+    targetStatus: string;
+    title: string;
+    description: string;
+  } | null>(null);
+  const [lifecycleReason, setLifecycleReason] = useState("");
+  const [lifecycleLoading, setLifecycleLoading] = useState(false);
+
+  const handleTriggerLifecycle = (status: string, title: string, description: string) => {
+    setLifecycleReason("");
+    setLifecycleModal({
+      isOpen: true,
+      targetStatus: status,
+      title,
+      description
+    });
+  };
+
+  const handleConfirmLifecycleChange = async () => {
+    if (!lifecycleModal) return;
+    if (!lifecycleReason || lifecycleReason.trim() === "") {
+      globalShowToast("A reason is required to perform status audits.", "error");
+      return;
+    }
+
+    setLifecycleLoading(true);
+    try {
+      const response = await authFetch(`${API_BASE_URL}/api/beneficiaries/${beneficiary.id}/lifecycle-status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          newStatus: lifecycleModal.targetStatus,
+          reason: lifecycleReason
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || "Unable to update lifecycle status");
+      }
+
+      globalShowToast(`Lifecycle state successfully transitioned to: ${lifecycleModal.targetStatus}`, "success");
+      
+      await onUpdate({
+        beneficiaryStatus: lifecycleModal.targetStatus,
+        statusReason: lifecycleReason,
+        statusChangedBy: session?.email || "anonymous",
+        statusChangedAt: new Date().toISOString()
+      });
+
+      await fetchWorkflowHistory();
+      setLifecycleModal(null);
+    } catch (e: any) {
+      globalShowToast(e.message || "Failed to update lifecycle status.", "error");
+    } finally {
+      setLifecycleLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (!undoState) return;
@@ -1188,6 +1273,110 @@ export function BeneficiaryDetails({
           </div>
         </div>
       )}
+
+      {/* Lifecycle Status Change Audit Modal */}
+      {lifecycleModal && lifecycleModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-[9999] flex items-center justify-center p-4 pointer-events-auto">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-lg w-full flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-indigo-50/50">
+              <div className="flex items-center gap-2 text-indigo-950">
+                <ShieldCheck className="w-5 h-5 text-indigo-600 animate-pulse" />
+                <h4 className="text-xs font-bold uppercase tracking-tight font-mono text-slate-800">
+                  {lifecycleModal.title}
+                </h4>
+              </div>
+              <button
+                onClick={() => setLifecycleModal(null)}
+                className="p-1.5 hover:bg-slate-100 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer transition border-0 bg-transparent flex items-center justify-center"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Content Body */}
+            <div className="p-5 space-y-4 text-left">
+              <p className="text-xs text-slate-700 leading-relaxed font-sans">
+                {lifecycleModal.description}
+              </p>
+
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3 font-mono text-xs">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] text-slate-400 uppercase font-bold">Trainee Name:</span>
+                  <span className="font-sans font-bold text-slate-800">{beneficiary.firstName} {beneficiary.lastName}</span>
+                </div>
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-[10px] text-slate-400 uppercase font-bold">Current State:</span>
+                  <span className={`px-2 py-0.5 rounded font-bold border font-sans uppercase text-[10px] ${
+                    getLifecycleStatusBadge(beneficiary.beneficiaryStatus).bg
+                  }`}>
+                    {getLifecycleStatusBadge(beneficiary.beneficiaryStatus).label}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-[10px] text-slate-400 uppercase font-bold text-indigo-600">Proposed State:</span>
+                  <span className={`px-2 py-0.5 rounded font-bold border font-sans uppercase text-[10px] ${
+                    getLifecycleStatusBadge(lifecycleModal.targetStatus).bg
+                  }`}>
+                    {getLifecycleStatusBadge(lifecycleModal.targetStatus).label}
+                  </span>
+                </div>
+              </div>
+
+              {/* Status Reason Audit Input */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-mono font-bold text-slate-500 uppercase tracking-widest block">
+                  Status Transition Reason (MANDATORY AUDIT PARAMETER)
+                </label>
+                <textarea
+                  value={lifecycleReason}
+                  onChange={(e) => setLifecycleReason(e.target.value)}
+                  placeholder="Provide detailed, professional feedback on why this programmatic status update is being made for central auditing..."
+                  rows={4}
+                  className="w-full text-xs font-sans rounded-xl border border-slate-200 p-3 bg-slate-50/50 outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 transition leading-relaxed text-slate-800"
+                />
+              </div>
+
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 flex gap-2.5">
+                <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <span className="text-[10px] text-amber-800 font-bold block uppercase tracking-wider">Governance Notice</span>
+                  <p className="text-[10px] text-amber-700 leading-relaxed font-sans">
+                    This transition will make permanent state changes. Your biometric/operator credentials, IP coordinate, and audit trace details will be stored securely in the Immutable Central Ledger.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-150 flex justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setLifecycleModal(null)}
+                disabled={lifecycleLoading}
+                className="bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs uppercase tracking-wider font-bold px-4 py-2 rounded-xl transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmLifecycleChange}
+                disabled={lifecycleLoading}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs uppercase tracking-wider px-5 py-2 rounded-xl transition cursor-pointer shadow-xs flex items-center gap-1.5"
+              >
+                {lifecycleLoading ? (
+                  <>
+                    <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                    Auditing...
+                  </>
+                ) : (
+                  "Confirm Transition"
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       
       {/* Top Header & Navigation Strip */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-3 border-b border-slate-200">
@@ -1275,6 +1464,13 @@ export function BeneficiaryDetails({
           <div className="font-semibold px-2.5 py-1.5 rounded-lg text-xs flex items-center gap-1.5 border bg-indigo-50 text-indigo-750 border-indigo-200">
             <span className="font-mono text-[9px] uppercase text-indigo-400 font-bold">LIFECYCLE:</span>
             <span className="font-bold">{beneficiary.admissionStatus || "Draft"}</span>
+          </div>
+
+          <div className={`font-semibold px-2.5 py-1.5 rounded-lg text-xs flex items-center gap-1.5 border ${
+            getLifecycleStatusBadge(beneficiary.beneficiaryStatus).bg
+          }`}>
+            <span className="font-mono text-[9px] uppercase opacity-75 font-bold">GOVERNANCE:</span>
+            <span className="font-bold">{getLifecycleStatusBadge(beneficiary.beneficiaryStatus).label}</span>
           </div>
 
           <button 
@@ -1407,6 +1603,139 @@ export function BeneficiaryDetails({
             <div className="pt-2 border-t border-indigo-900 text-[9px] w-full flex items-center gap-1.5 text-indigo-300">
               <Award className="w-3.5 h-3.5 text-yellow-400" />
               <span className="font-mono tracking-tight font-bold uppercase">ACCREDITED IDEAS TVET PARTNER</span>
+            </div>
+          </div>
+
+          {/* SECURE LIFECYCLE MANAGEMENT & GOVERNANCE COMPONENT */}
+          <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs text-left space-y-4">
+            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+              <h4 className="font-display font-bold text-slate-900 text-xs uppercase flex items-center gap-1.5">
+                <ShieldCheck className="w-4 h-4 text-indigo-600" />
+                Lifecycle & Governance
+              </h4>
+              <span className={`text-[9px] uppercase font-mono px-2 py-0.5 rounded font-bold border ${
+                getLifecycleStatusBadge(beneficiary.beneficiaryStatus).bg
+              }`}>
+                {getLifecycleStatusBadge(beneficiary.beneficiaryStatus).label}
+              </span>
+            </div>
+
+            <div className="text-xs font-mono space-y-2">
+              {beneficiary.statusReason && (
+                <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-150">
+                  <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider mb-1">Status Reason</span>
+                  <p className="text-slate-700 font-sans text-xs italic leading-relaxed">
+                    "{beneficiary.statusReason}"
+                  </p>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-2 text-[10px]">
+                <div>
+                  <span className="text-slate-400 font-bold block uppercase">Last Updated</span>
+                  <span className="text-slate-700 block font-sans">
+                    {beneficiary.statusChangedAt ? new Date(beneficiary.statusChangedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "N/A"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-400 font-bold block uppercase">Updated By</span>
+                  <span className="text-slate-700 block font-sans font-medium truncate" title={beneficiary.statusChangedBy}>
+                    {beneficiary.statusChangedBy || "System Core"}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* ACTION TRIGGERS */}
+            <div className="space-y-2 pt-2 border-t border-slate-100">
+              <span className="text-[9px] font-mono font-bold text-slate-400 uppercase tracking-widest block mb-1">
+                AVAILABLE GOVERNANCE ACTIONS (Role: {session?.role || "GUEST"})
+              </span>
+
+              {/* SUPER_ADMIN Actions */}
+              {session?.role === "SUPER_ADMIN" && (
+                <div className="grid grid-cols-1 gap-2">
+                  {/* Restore: available if status is WITHDRAWN, FAILED_VERIFICATION, DISQUALIFIED, REMOVED, ARCHIVED */}
+                  {["WITHDRAWN", "FAILED_VERIFICATION", "DISQUALIFIED", "REMOVED", "ARCHIVED"].includes(beneficiary.beneficiaryStatus || "ACTIVE") ? (
+                    <button
+                      type="button"
+                      onClick={() => handleTriggerLifecycle("ACTIVE", "Restore Trainee Record", "Restore the beneficiary profile to ACTIVE status. Trainee will be allowed to participate in training and receive official dispatches again.")}
+                      className="w-full text-center bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-1.5 px-3 rounded-lg text-xs cursor-pointer transition shadow-xs flex items-center justify-center gap-1.5"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      Restore Trainee Profile
+                    </button>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleTriggerLifecycle("FAILED_VERIFICATION", "Fail Verification Check", "Mark this trainee profile as having FAILED biometric verification parameters.")}
+                          className="text-center bg-red-50 hover:bg-red-100 text-red-750 border border-red-205 border-red-200 font-bold py-1.5 px-2 rounded-lg text-[11px] cursor-pointer transition"
+                        >
+                          Fail Verification
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleTriggerLifecycle("DISQUALIFIED", "Disqualify Trainee Record", "Disqualify this trainee record immediately due to breach of programmatic compliance or guidelines.")}
+                          className="text-center bg-red-100 hover:bg-red-200 text-red-800 border border-red-350 font-bold py-1.5 px-2 rounded-lg text-[11px] cursor-pointer transition"
+                        >
+                          Disqualify Trainee
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleTriggerLifecycle("ARCHIVED", "Archive Trainee File", "Archive the trainee file in state. This locks active form/document generation operations and dispatches.")}
+                          className="text-center bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-350 font-bold py-1.5 px-2 rounded-lg text-[11px] cursor-pointer transition"
+                        >
+                          Archive Record
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleTriggerLifecycle("REMOVED", "Remove Trainee (Soft Delete)", "Soft delete the trainee profile. Trainee will be placed in the REMOVED state and archived.")}
+                          className="text-center bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-350 font-bold py-1.5 px-2 rounded-lg text-[11px] cursor-pointer transition"
+                        >
+                          Soft Remove
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* ADMIN_OFFICER Actions */}
+              {session?.role === "ADMIN_OFFICER" && (
+                <div className="grid grid-cols-1 gap-2">
+                  {["ACTIVE", "UNDER_REVIEW"].includes(beneficiary.beneficiaryStatus || "ACTIVE") && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleTriggerLifecycle("WITHDRAWN", "Withdraw Trainee Enrollment", "Mark the student as WITHDRAWN from classroom repairs training.")}
+                        className="w-full text-center bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 font-bold py-1.5 px-3 rounded-lg text-xs cursor-pointer transition"
+                      >
+                        Withdraw Trainee
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleTriggerLifecycle("COMPLETED", "Mark Program Completed", "Mark the student as having successfully COMPLETED Repairs cohort operations.")}
+                        className="w-full text-center bg-blue-600 hover:bg-blue-700 text-white font-bold py-1.5 px-3 rounded-lg text-xs cursor-pointer transition shadow-xs"
+                      >
+                        Mark Program Completed
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* Readonly disclaimer for others */}
+              {session?.role !== "SUPER_ADMIN" && session?.role !== "ADMIN_OFFICER" && (
+                <p className="text-[10px] text-slate-400 italic font-medium leading-normal mt-1">
+                  You are viewing this record with read-only governance permissions. Trainees or guests are barred from state updates.
+                </p>
+              )}
             </div>
           </div>
 

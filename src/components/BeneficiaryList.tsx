@@ -33,6 +33,7 @@ interface BeneficiaryListProps {
   session?: { username?: string; role?: string; email?: string } | null;
   initialDetailsTab?: "overview" | "admission" | "acceptance" | "forms" | "documents" | "training" | "audits";
   subTabMode?: "beneficiaries" | "admissions" | "documents";
+  admissionsSubTab?: "dashboard" | "letters" | "forms" | "acceptance" | "dispatches";
 }
 
 export function BeneficiaryList({
@@ -51,7 +52,8 @@ export function BeneficiaryList({
   onDeleteBeneficiary,
   session,
   initialDetailsTab,
-  subTabMode = "beneficiaries"
+  subTabMode = "beneficiaries",
+  admissionsSubTab
 }: BeneficiaryListProps) {
   
   // View mode switcher: "list" | "details" | "create"
@@ -93,6 +95,7 @@ export function BeneficiaryList({
   const [batchFilter, setBatchFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [lifecycleFilter, setLifecycleFilter] = useState("all");
+  const [governanceFilter, setGovernanceFilter] = useState("all");
 
   // SMART FILTER EXPERIENCES (Phase 4)
   const [savedPresets, setSavedPresets] = useState<Array<{
@@ -193,6 +196,7 @@ export function BeneficiaryList({
     setBatchFilter("all");
     setStatusFilter("all");
     setLifecycleFilter("all");
+    setGovernanceFilter("all");
     setCurrentPage(1);
   };
 
@@ -205,6 +209,7 @@ export function BeneficiaryList({
       if (batchFilter !== "all") params.append("batch", batchFilter);
       if (statusFilter !== "all") params.append("status", statusFilter);
       if (lifecycleFilter !== "all") params.append("lifecycle", lifecycleFilter);
+      if (governanceFilter !== "all") params.append("governance", governanceFilter);
 
       const queryStr = params.toString();
       const shareableLink = `${parentUrl}${window.location.hash.split("?")[0]}${queryStr ? "?" + queryStr : ""}`;
@@ -254,6 +259,46 @@ export function BeneficiaryList({
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([]);
   const [bulkProcessing, setBulkProcessing] = useState(false);
   const [bulkProgress, setBulkProgress] = useState("");
+
+  const [bulkGAction, setBulkGAction] = useState("");
+  const [bulkGReason, setBulkGReason] = useState("");
+
+  const handleApplyBulkGovernance = async () => {
+    if (!bulkGAction) return;
+    if (!bulkGReason || bulkGReason.trim() === "") {
+      alert("A status change reason is required.");
+      return;
+    }
+
+    setBulkProcessing(true);
+    setBulkProgress(`Applying bulk governance state '${bulkGAction}' to ${selectedCandidateIds.length} candidate(s)...`);
+    try {
+      const response = await authFetch("/api/admissions/bulk-lifecycle-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          beneficiaryIds: selectedCandidateIds,
+          action: bulkGAction,
+          reason: bulkGReason
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || "Bulk action could not be performed due to security limits.");
+      }
+
+      const resData = await response.json();
+      alert(`Success: Successfully updated program states for ${resData.processedCount || selectedCandidateIds.length} candidate profiles!`);
+      window.location.reload();
+    } catch (e: any) {
+      alert(e.message || "Failed bulk update query.");
+    } finally {
+      setBulkProcessing(false);
+      setBulkGAction("");
+      setBulkGReason("");
+    }
+  };
 
   const handleBulkGenerateDocuments = async (docType: string) => {
     if (selectedCandidateIds.length === 0) return;
@@ -385,7 +430,10 @@ export function BeneficiaryList({
       (lifecycleFilter === "Draft" && (bLife === "Draft" || bLife === "Pending")) ||
       bLife.toLowerCase() === lifecycleFilter.toLowerCase();
 
-    return matchesSearch && matchesGender && matchesStatus && matchesBatch && matchesLifecycle;
+    const bGovStatus = b.beneficiaryStatus || "ACTIVE";
+    const matchesGovernance = governanceFilter === "all" || bGovStatus.toUpperCase() === governanceFilter.toUpperCase();
+
+    return matchesSearch && matchesGender && matchesStatus && matchesBatch && matchesLifecycle && matchesGovernance;
   });
 
   // Calculate paginated index subset
@@ -480,6 +528,7 @@ export function BeneficiaryList({
           const fullObj = beneficiaries.find(b => b.id === c.id) || c;
           handleLaunchDetails(fullObj);
         }} 
+        activeSubTab={admissionsSubTab}
       />
     );
   }
@@ -704,6 +753,23 @@ export function BeneficiaryList({
               <option value="Alumni">Alumni</option>
             </select>
 
+            {/* Governance status dropdown filter */}
+            <select
+              value={governanceFilter}
+              onChange={(e) => { setGovernanceFilter(e.target.value); setCurrentPage(1); }}
+              className="bg-indigo-50 hover:bg-indigo-100 border-indigo-150 border border-slate-200 text-indigo-750 font-bold py-1.5 px-3 rounded-lg text-xs font-semibold cursor-pointer focus:outline-none"
+            >
+              <option value="all">All Governance Statuses</option>
+              <option value="ACTIVE">ACTIVE Status</option>
+              <option value="COMPLETED">COMPLETED Status</option>
+              <option value="UNDER_REVIEW">UNDER_REVIEW Status</option>
+              <option value="WITHDRAWN">WITHDRAWN Status</option>
+              <option value="FAILED_VERIFICATION">FAILED_VERIFICATION Status</option>
+              <option value="DISQUALIFIED">DISQUALIFIED Status</option>
+              <option value="REMOVED">REMOVED (Soft Delete) Status</option>
+              <option value="ARCHIVED">ARCHIVED Status</option>
+            </select>
+
           </div>
 
           <div className="flex items-center gap-2 self-end lg:self-auto shrink-0">
@@ -728,7 +794,7 @@ export function BeneficiaryList({
         </div>
 
         {/* ACTIVE CHIPS VIEW & CLEAR CONTROLS */}
-        {(search || genderFilter !== "all" || batchFilter !== "all" || statusFilter !== "all" || lifecycleFilter !== "all") && (
+        {(search || genderFilter !== "all" || batchFilter !== "all" || statusFilter !== "all" || lifecycleFilter !== "all" || governanceFilter !== "all") && (
           <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-slate-50/70 border border-dashed rounded-xl text-left animate-in fade-in duration-200">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-[10px] font-mono font-bold text-slate-450 uppercase tracking-tight block">
@@ -769,6 +835,13 @@ export function BeneficiaryList({
                   <X className="h-2.5 w-2.5 hover:text-rose-600 cursor-pointer shrink-0" onClick={() => setLifecycleFilter("all")} />
                 </span>
               )}
+
+              {governanceFilter !== "all" && (
+                <span className="inline-flex items-center gap-1 p-1 px-2.5 bg-indigo-900 border text-white border-indigo-950 rounded-full text-[10px] font-mono tracking-tight font-bold uppercase leading-none">
+                  Gov Status: {governanceFilter}
+                  <X className="h-2.5 w-2.5 text-indigo-300 hover:text-rose-400 cursor-pointer shrink-0" onClick={() => setGovernanceFilter("all")} />
+                </span>
+              )}
             </div>
 
             <div className="flex items-center gap-2">
@@ -804,73 +877,137 @@ export function BeneficiaryList({
 
         {/* FEATURE 3: BULK OPERATIONS PANEL */}
         {selectedCandidateIds.length > 0 && (
-          <div id="bulk-operations-panel" className="bg-indigo-950 text-white rounded-xl p-4 flex flex-col md:flex-row items-center justify-between gap-4 animate-in slide-in-from-top duration-200">
-            <div className="flex items-center gap-3">
-              <span className="p-2 bg-indigo-900 rounded-lg text-indigo-200 text-xs font-bold leading-none animate-pulse">
-                {selectedCandidateIds.length} Chosen
-              </span>
-              <div className="text-left">
-                <h4 className="text-xs font-bold font-sans tracking-tight">Bulk Document Operations Panel</h4>
-                <p className="text-[10px] text-indigo-300 font-mono">Run sequential tasks for chosen candidate cohort</p>
+          <div id="bulk-operations-panel" className="bg-indigo-950 text-white rounded-xl p-4 space-y-4 animate-in slide-in-from-top duration-200 text-left">
+            <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <span className="p-2 bg-indigo-900 rounded-lg text-indigo-200 text-xs font-bold leading-none animate-pulse">
+                  {selectedCandidateIds.length} Chosen
+                </span>
+                <div className="text-left">
+                  <h4 className="text-sm font-bold font-sans tracking-tight text-white">Bulk Operations Center</h4>
+                  <p className="text-[10px] text-indigo-300 font-mono">Select multiple candidates and execute bulk workflows</p>
+                </div>
+              </div>
+
+              {bulkProcessing && (
+                <div className="text-[10px] text-amber-300 font-mono animate-pulse bg-indigo-900 px-3 py-1.5 rounded-lg border border-indigo-800 w-full lg:w-auto text-center lg:text-left">
+                  {bulkProgress}
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto lg:justify-end">
+                {/* Document Type Selector for Bulk Compile */}
+                <select
+                  id="bulk-doc-type-selector"
+                  disabled={bulkProcessing}
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      handleBulkGenerateDocuments(e.target.value);
+                      e.target.value = "";
+                    }
+                  }}
+                  className="bg-indigo-900 hover:bg-indigo-850 text-white border border-indigo-800 rounded-lg py-1.5 px-3 text-xs font-bold outline-none cursor-pointer"
+                >
+                  <option value="">-- Compile Documents --</option>
+                  <option value="ADMISSION_LETTER">Admission Intent Letter</option>
+                  <option value="ACCEPTANCE_LETTER">Acceptance Slip Confirmation</option>
+                  <option value="ADMISSION_FORM">Admission Form Dossier</option>
+                  <option value="PHOTO_ALBUM">Photo Album Badge</option>
+                  <option value="ENROLLMENT_CONFIRMATION">Enrollment Confirmation</option>
+                  <option value="COMPLETION_CERTIFICATE">Graduation Certificate</option>
+                </select>
+
+                <button
+                  type="button"
+                  id="bulk-send-emails-btn"
+                  disabled={bulkProcessing}
+                  onClick={handleBulkSendEmails}
+                  className="bg-white text-indigo-950 hover:bg-slate-50 font-extrabold text-xs py-1.5 px-3 rounded-lg flex items-center gap-1.5 transition disabled:opacity-40 cursor-pointer min-h-[32px]"
+                >
+                  Dispatch Emails
+                </button>
+
+                <button
+                  type="button"
+                  id="bulk-export-data-btn"
+                  disabled={bulkProcessing}
+                  onClick={handleBulkExportCSV}
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-700 font-extrabold text-xs py-1.5 px-3 rounded-lg flex items-center gap-1.5 transition disabled:opacity-40 cursor-pointer min-h-[32px]"
+                >
+                  Export Selected
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedCandidateIds([])}
+                  disabled={bulkProcessing}
+                  className="bg-transparent hover:bg-indigo-900/50 text-slate-300 hover:text-white font-bold text-xs py-1.5 px-3 rounded-lg transition min-h-[32px] cursor-pointer"
+                >
+                  Deselect
+                </button>
               </div>
             </div>
 
-            {bulkProcessing && (
-              <div className="text-[10px] text-amber-300 font-mono animate-pulse bg-indigo-900 px-3 py-1.5 rounded-lg border border-indigo-800">
-                {bulkProgress}
+            {/* NESTED LAYER: BULK LIFECYCLE GOVERNANCE STATUS UPDATES */}
+            <div className="pt-3 border-t border-indigo-900/80 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 bg-indigo-900/10 p-3 rounded-lg">
+              <div className="flex items-center gap-2 shrink-0">
+                <ShieldAlert className="w-5 h-5 text-amber-400 shrink-0" />
+                <div>
+                  <span className="font-mono text-[10px] font-bold text-indigo-200 uppercase tracking-widest block leading-none">
+                    Bulk Gov Control (Role: {session?.role || "GUEST"})
+                  </span>
+                  <p className="text-[9px] text-slate-400 font-sans mt-0.5">Change programmatic states simultaneously with mandatory audit log</p>
+                </div>
               </div>
-            )}
 
-            <div className="flex flex-wrap items-center gap-2">
-              {/* Document Type Selector for Bulk Compile */}
-              <select
-                id="bulk-doc-type-selector"
-                disabled={bulkProcessing}
-                onChange={(e) => {
-                  if (e.target.value) {
-                    handleBulkGenerateDocuments(e.target.value);
-                    e.target.value = "";
-                  }
-                }}
-                className="bg-indigo-900 hover:bg-indigo-850 text-white border border-indigo-805 rounded-lg py-1.5 px-3 text-xs font-bold outline-none cursor-pointer"
-              >
-                <option value="">-- Compile Documents --</option>
-                <option value="ADMISSION_LETTER">Admission Intent Letter</option>
-                <option value="ACCEPTANCE_LETTER">Acceptance Slip Confirmation</option>
-                <option value="ADMISSION_FORM">Admission Form Dossier</option>
-                <option value="PHOTO_ALBUM">Photo Album Badge</option>
-                <option value="ENROLLMENT_CONFIRMATION">Enrollment Confirmation</option>
-                <option value="COMPLETION_CERTIFICATE">Graduation Certificate</option>
-              </select>
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 w-full md:w-auto md:flex-1 md:justify-end">
+                <select
+                  id="bulk-governance-action"
+                  disabled={bulkProcessing}
+                  onChange={(e) => {
+                    setBulkGAction(e.target.value);
+                  }}
+                  value={bulkGAction}
+                  className="bg-indigo-900 text-white border border-indigo-750 rounded-lg py-1.5 px-3 text-xs font-bold outline-none cursor-pointer"
+                >
+                  <option value="">-- Choose Governance State --</option>
+                  {session?.role === "SUPER_ADMIN" && (
+                    <>
+                      <option value="FAILED_VERIFICATION">FAILED_VERIFICATION</option>
+                      <option value="DISQUALIFIED">DISQUALIFIED</option>
+                      <option value="ARCHIVED">ARCHIVED File</option>
+                      <option value="RESTORE">RESTORE ACTIVE (Active status)</option>
+                      <option value="REMOVED">REMOVE Trainees (Soft Delete)</option>
+                    </>
+                  )}
+                  {session?.role === "ADMIN_OFFICER" && (
+                    <>
+                      <option value="WITHDRAWN">WITHDRAWN</option>
+                    </>
+                  )}
+                  {session?.role !== "SUPER_ADMIN" && session?.role !== "ADMIN_OFFICER" && (
+                    <option value="" disabled>No update rights for your role</option>
+                  )}
+                </select>
 
-              <button
-                type="button"
-                id="bulk-send-emails-btn"
-                disabled={bulkProcessing}
-                onClick={handleBulkSendEmails}
-                className="bg-white text-indigo-950 hover:bg-slate-50 font-extrabold text-xs py-1.5 px-3 rounded-lg flex items-center gap-1.5 transition disabled:opacity-40 cursor-pointer min-h-[32px]"
-              >
-                Dispatch Emails
-              </button>
+                <input
+                  type="text"
+                  placeholder="Mandatory central audit change reason..."
+                  value={bulkGReason}
+                  onChange={(e) => setBulkGReason(e.target.value)}
+                  disabled={bulkProcessing || !bulkGAction}
+                  className="bg-indigo-900 text-white border border-indigo-750 placeholder-indigo-400 rounded-lg py-1.5 px-3 text-xs outline-none flex-1 max-w-sm"
+                />
 
-              <button
-                type="button"
-                id="bulk-export-data-btn"
-                disabled={bulkProcessing}
-                onClick={handleBulkExportCSV}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-700 font-extrabold text-xs py-1.5 px-3 rounded-lg flex items-center gap-1.5 transition disabled:opacity-40 cursor-pointer min-h-[32px]"
-              >
-                Export Selected
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setSelectedCandidateIds([])}
-                disabled={bulkProcessing}
-                className="bg-transparent hover:bg-indigo-900/50 text-slate-300 hover:text-white font-bold text-xs py-1.5 px-3 rounded-lg transition min-h-[32px] cursor-pointer"
-              >
-                Deselect
-              </button>
+                <button
+                  type="button"
+                  disabled={bulkProcessing || !bulkGAction || !bulkGReason.trim()}
+                  onClick={handleApplyBulkGovernance}
+                  className="bg-amber-500 hover:bg-amber-400 disabled:bg-indigo-900 disabled:text-indigo-400 text-slate-950 font-extrabold text-xs py-1.5 px-4 rounded-lg transition cursor-pointer shrink-0 shadow-xs uppercase font-mono tracking-wider"
+                >
+                  Apply State
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -976,9 +1113,22 @@ export function BeneficiaryList({
                       <p className="font-sans font-bold text-slate-900 text-sm leading-normal">
                         {b.lastName}, {b.firstName}
                       </p>
-                      <p className="text-[10px] text-slate-400 font-mono tracking-wide">
-                        {b.id}
-                      </p>
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <span className="text-[10px] text-slate-400 font-mono tracking-wide">
+                          {b.id}
+                        </span>
+                        <span className={`px-1.5 py-0.5 rounded-sm font-sans font-semibold uppercase text-[9px] border ${
+                          b.beneficiaryStatus === "COMPLETED" ? "bg-blue-50 text-blue-700 border-blue-200" :
+                          b.beneficiaryStatus === "WITHDRAWN" ? "bg-orange-50 text-orange-700 border-orange-200" :
+                          b.beneficiaryStatus === "FAILED_VERIFICATION" ? "bg-red-50 text-red-700 border-red-200" :
+                          b.beneficiaryStatus === "DISQUALIFIED" ? "bg-red-100 text-red-800 border-red-300" :
+                          b.beneficiaryStatus === "REMOVED" ? "bg-rose-100 text-rose-800 border-rose-300" :
+                          b.beneficiaryStatus === "ARCHIVED" ? "bg-slate-50 text-slate-700 border-slate-200" :
+                          "bg-emerald-50 text-emerald-700 border-emerald-200"
+                        }`}>
+                          {b.beneficiaryStatus || "ACTIVE"}
+                        </span>
+                      </div>
                     </td>
 
                     {subTabMode === "admissions" ? (
