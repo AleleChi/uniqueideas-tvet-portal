@@ -1,4 +1,4 @@
-import { API_BASE_URL } from "../config/api";
+import { API_BASE_URL, isVercelMissingApi } from "../config/api";
 
 /**
  * Reusable authenticated fetch helper for secure API requests.
@@ -54,6 +54,10 @@ export async function authFetch(
   url: string,
   options: RequestInit = {}
 ): Promise<Response> {
+  if (isVercelMissingApi) {
+    console.error(`[CATASTROPHIC] Blocked relative API request to ${url} on vercel.app due to missing VITE_API_BASE_URL config.`);
+    throw new Error("Backend configuration missing. Contact administrator.");
+  }
   const method = (options.method || "GET").toUpperCase();
   let bodyStr = "";
   if (options.body) {

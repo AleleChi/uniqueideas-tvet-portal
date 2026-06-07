@@ -29,7 +29,7 @@ const CertificationCenter = React.lazy(() => import("./components/CertificationC
 import { Beneficiary, CustomField, AuditLog, UserSession } from "./types";
 import { authFetch, downloadWithAuth } from "./utils/authFetch";
 import { useNotification } from "./components/NotificationContext";
-import { API_BASE_URL } from "./config/api";
+import { API_BASE_URL, isVercelMissingApi, getEnvironmentType } from "./config/api";
 import { Sidebar } from "./components/Sidebar";
 
 const CACHE_VERSION = "ideas-cache-v3";
@@ -139,12 +139,14 @@ export default function App() {
 
   // Startup diagnostics once on application boot (STEP 5 & 6) and Cache Versioning (Phase 7)
   useEffect(() => {
-    const buildMode = "production";
     const env = "production";
-    console.log(`[SYS] Initializing IDEAS-TVET Platform Front-End Diagnostics Run...`);
-    console.log(`[SYS] API Base: ${API_BASE_URL || "(relative)"}`);
-    console.log(`[SYS] Environment: ${env}`);
-    console.log(`[SYS] Build Mode: ${buildMode}`);
+    const envType = getEnvironmentType();
+    
+    console.log(`[SYS] IDEAS-TVET Startup Diagnostics\n\nEnvironment:\n${env}\n\nEnvironment Type:\n${envType}\n\nAPI Base:\n${API_BASE_URL || "(relative)"}`);
+
+    if (isVercelMissingApi) {
+      console.error(`[SYS] ERROR:\nMissing VITE_API_BASE_URL`);
+    }
 
     try {
       // Clean up stale caches from previous versions or unversioned caches
@@ -178,10 +180,11 @@ export default function App() {
         return res.json();
       })
       .then(data => {
-        console.log(`[SYS] Backend API health check response:`, data);
-        console.log(`[SYS] Backend Reachability: ONLINE (Database: ${data.database})`);
+        console.log(`\nBackend Reachability:\nONLINE`);
+        console.log(`[SYS] Backend API database status:`, data.database);
       })
       .catch(err => {
+        console.log(`\nBackend Reachability:\nOFFLINE`);
         console.error(`[SYS] Backend Reachability Check FAILED: Unreachable at ${healthUrl}:`, err.message || err);
       });
   }, []);
@@ -505,6 +508,29 @@ export default function App() {
       setCaptureTarget(null);
     }
   };
+
+  // Block rendering on Vercel if VITE_API_BASE_URL is missing to prevent sending logic/API calls to itself
+  if (isVercelMissingApi) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 antialiased font-sans flex-col text-center">
+        <div className="bg-slate-900 border border-rose-950/80 max-w-md w-full p-8 rounded-xl shadow-2xl space-y-6 relative overflow-hidden">
+          <div className="absolute top-0 inset-x-0 h-[2px] bg-red-500" />
+          <div className="mx-auto h-16 w-16 bg-red-650/10 text-red-500 rounded-full flex items-center justify-center shadow-lg border border-red-500/20">
+            <X className="w-8 h-8" />
+          </div>
+          <div className="space-y-3 text-center">
+            <h1 className="text-xl font-bold font-display text-slate-100 tracking-tight">Configuration Error</h1>
+            <p className="text-slate-400 text-sm leading-relaxed">
+              Backend configuration missing. Contact administrator.
+            </p>
+          </div>
+          <div className="border-t border-slate-950/60 pt-4 font-mono text-[9px] text-slate-500 select-all">
+            Missing environment variable: VITE_API_BASE_URL
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Render Public Response Portal if a secure token is supplied, bypassing logins
   if (portalToken) {
