@@ -9,6 +9,7 @@ import { Beneficiary, ProgramStatus } from "../types";
 import { downloadWithAuth } from "../utils/authFetch";
 import { AlbumGenerator } from "./AlbumGenerator";
 import { SecureBeneficiaryImage } from "./SecureBeneficiaryImage";
+import { PaginationControl } from "./PaginationControl";
 
 interface ReportsWorkspaceProps {
   beneficiaries: Beneficiary[];
@@ -35,6 +36,7 @@ export function ReportsWorkspace({ beneficiaries }: ReportsWorkspaceProps) {
 
   // Pagination support
   const [reportPage, setReportPage] = useState(1);
+  const [reportPageSize, setReportPageSize] = useState(10);
   const [reportTotalPages, setReportTotalPages] = useState(1);
   const [reportTotalCount, setReportTotalCount] = useState(0);
 
@@ -89,7 +91,7 @@ export function ReportsWorkspace({ beneficiaries }: ReportsWorkspaceProps) {
 
           const query = new URLSearchParams({
             page: String(reportPage),
-            pageSize: "10",
+            pageSize: String(reportPageSize),
             search: reportSearch,
             reportType,
             acceptanceLetterStatus: reportAcceptanceStatus,
@@ -117,6 +119,7 @@ export function ReportsWorkspace({ beneficiaries }: ReportsWorkspaceProps) {
     activeReportTab,
     selectedAdmissionsReport,
     reportPage,
+    reportPageSize,
     reportSearch,
     reportAcceptanceStatus,
     reportState,
@@ -1101,31 +1104,16 @@ export function ReportsWorkspace({ beneficiaries }: ReportsWorkspaceProps) {
                 </div>
 
                 {/* Compact Pagination Block */}
-                {reportTotalPages > 1 && (
-                  <div className="flex items-center justify-between border-t border-slate-100 pt-4">
-                    <span className="text-[11px] text-slate-400">
-                      Page <span className="font-bold text-slate-600">{reportPage}</span> of <span className="font-bold text-slate-600">{reportTotalPages}</span>
-                    </span>
-                    
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => setReportPage((prev) => Math.max(prev - 1, 1))}
-                        disabled={reportPage === 1}
-                        className="px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-600 disabled:opacity-40 disabled:bg-slate-50 transition hover:bg-slate-50 cursor-pointer"
-                      >
-                        <ChevronLeft className="w-3.5 h-3.5" />
-                      </button>
-                      
-                      <button
-                        onClick={() => setReportPage((prev) => Math.min(prev + 1, reportTotalPages))}
-                        disabled={reportPage === reportTotalPages}
-                        className="px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-600 disabled:opacity-40 disabled:bg-slate-50 transition hover:bg-slate-50 cursor-pointer"
-                      >
-                        <ChevronRight className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                )}
+                <div className="pt-4 border-t border-slate-100">
+                  <PaginationControl
+                    currentPage={reportPage}
+                    totalCount={reportTotalCount}
+                    pageSize={reportPageSize}
+                    onPageChange={setReportPage}
+                    onPageSizeChange={setReportPageSize}
+                    idPrefix="reports"
+                  />
+                </div>
 
               </div>
             )}

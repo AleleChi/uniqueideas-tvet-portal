@@ -22,6 +22,7 @@ import {
 import { Beneficiary, UserSession } from "../types";
 import { authFetch } from "../utils/authFetch";
 import { useNotification } from "./NotificationContext";
+import { PaginationControl } from "./PaginationControl";
 
 interface EligibilityCenterProps {
   beneficiaries: Beneficiary[];
@@ -82,7 +83,7 @@ export function EligibilityCenter({ beneficiaries, session, onRefresh }: Eligibi
 
   // Pagination States
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 8;
+  const [itemsPerPage, setItemsPerPage] = useState(10);
 
   // Compute beneficiary compliance scoring and details check
   const getBeneficiaryCompliance = (b: Beneficiary) => {
@@ -1355,33 +1356,16 @@ export function EligibilityCenter({ beneficiaries, session, onRefresh }: Eligibi
             </AnimatePresence>
 
             {/* Pagination Controls */}
-            {totalPages > 1 && (
-              <div className="flex items-center justify-between pt-4 border-t border-slate-200 text-xs no-print">
-                <button
-                  type="button"
-                  disabled={currentPage === 1}
-                  onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-                  className="px-3.5 py-1.5 bg-white border border-slate-200 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-bold disabled:opacity-40 select-none cursor-pointer flex items-center gap-1 h-9 transition shadow-xs"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                  Prev
-                </button>
-                
-                <span className="font-mono text-slate-500">
-                  Page <strong className="text-slate-800">{currentPage}</strong> of {totalPages}
-                </span>
-
-                <button
-                  type="button"
-                  disabled={currentPage === totalPages}
-                  onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-                  className="px-3.5 py-1.5 bg-white border border-slate-200 rounded-xl text-slate-600 hover:text-slate-905 hover:bg-slate-50 font-bold disabled:opacity-40 select-none cursor-pointer flex items-center gap-1 h-9 transition shadow-xs"
-                >
-                  Next
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
-            )}
+            <div className="pt-4 border-t border-slate-200">
+              <PaginationControl
+                currentPage={currentPage}
+                totalCount={filteredBeneficiaries.length}
+                pageSize={itemsPerPage}
+                onPageChange={setCurrentPage}
+                onPageSizeChange={setItemsPerPage}
+                idPrefix="eligibility"
+              />
+            </div>
 
           </div>
 

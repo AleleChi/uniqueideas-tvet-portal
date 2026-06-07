@@ -17,11 +17,15 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
   try {
     let token = "";
 
-    // 1. Check cookies first
-    if (req.cookies && req.cookies.token) {
+    // 1. Check query parameters first (vital for window.open / iframe files if cookies are blocked)
+    if (req.query && req.query.token) {
+      token = req.query.token as string;
+    }
+    // 2. Check cookies
+    else if (req.cookies && req.cookies.token) {
       token = req.cookies.token;
     } 
-    // 2. Check Authorization Header as fallback
+    // 3. Check Authorization Header as fallback
     else if (req.headers.authorization && req.headers.authorization.startsWith("Bearer ")) {
       token = req.headers.authorization.split(" ")[1];
     }

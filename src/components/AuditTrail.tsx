@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { ShieldCheck, Search, Filter, History, Trash2, Calendar } from "lucide-react";
 import { AuditLog } from "../types";
+import { PaginationControl } from "./PaginationControl";
 
 interface AuditTrailProps {
   logs: AuditLog[];
@@ -14,6 +15,13 @@ interface AuditTrailProps {
 export function AuditTrail({ logs }: AuditTrailProps) {
   const [search, setSearch] = useState("");
   const [actionFilter, setActionFilter] = useState("all");
+
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, actionFilter]);
 
   const filteredLogs = logs.filter(log => {
     const q = search.toLowerCase();
@@ -26,6 +34,8 @@ export function AuditTrail({ logs }: AuditTrailProps) {
 
     return matchesSearch && matchesAction;
   });
+
+  const paginatedLogs = filteredLogs.slice((page - 1) * pageSize, page * pageSize);
 
   return (
     <div className="space-y-6">

@@ -217,6 +217,73 @@ export function BeneficiaryDetails({
   const [lifecycleReason, setLifecycleReason] = useState("");
   const [lifecycleLoading, setLifecycleLoading] = useState(false);
 
+  // Super Admin Workflow Rollback States
+  const [rollbackTarget, setRollbackTarget] = useState<string>("");
+  const [rollbackReason, setRollbackReason] = useState<string>("");
+  const [rollbackLoading, setRollbackLoading] = useState<boolean>(false);
+
+  const handleExecuteRollback = async () => {
+    if (!rollbackTarget) return;
+    if (!rollbackReason || rollbackReason.trim() === "") {
+      globalShowToast("A reason is required to execute a secure workflow rollback.", "error");
+      return;
+    }
+
+    const hasConfirmed = window.confirm(
+      `WARNING: You are about to execute a SUPER_ADMIN Emergency Rollback.\n\n` +
+      `This resets the candidate status and stages backwards to: [${rollbackTarget}].\n` +
+      `This action is audited and logged in the system records.\n\n` +
+      `Are you sure you want to proceed?`
+    );
+    if (!hasConfirmed) return;
+
+    setRollbackLoading(true);
+    try {
+      const res = await authFetch(`${API_BASE_URL}/api/superadmin/beneficiaries/${beneficiary.id}/workflow-rollback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          targetState: rollbackTarget,
+          reason: rollbackReason
+        })
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.error || "Rollback failed");
+      }
+
+      const result = await res.json();
+      globalShowToast(`Successfully rolled back candidate to targeted stage: ${rollbackTarget}`, "success");
+
+      // Update local beneficiary object fields across parent state automatically
+      await onUpdate({
+        status: result.beneficiary.status,
+        admissionStatus: result.beneficiary.admissionStatus,
+        admissionFormStatus: result.beneficiary.admissionFormStatus,
+        admissionFormCompleted: result.beneficiary.admissionFormCompleted,
+        beneficiaryStatus: result.beneficiary.beneficiaryStatus,
+        certificationStatus: result.beneficiary.certificationStatus,
+        alumniStatus: result.beneficiary.alumniStatus,
+        statusReason: rollbackReason,
+        statusChangedBy: session?.email || "anonymous",
+        statusChangedAt: new Date().toISOString()
+      });
+
+      // Refetch history data
+      await fetchWorkflowHistory();
+      
+      // Reset inputs
+      setRollbackTarget("");
+      setRollbackReason("");
+    } catch (e: any) {
+      console.error("[Rollback Action] Failed:", e);
+      globalShowToast(e.message || "Failed to execute workflow rollback.", "error");
+    } finally {
+      setRollbackLoading(false);
+    }
+  };
+
   const handleTriggerLifecycle = (status: string, title: string, description: string) => {
     setLifecycleReason("");
     setLifecycleModal({
@@ -1702,6 +1769,52 @@ export function BeneficiaryDetails({
                       </div>
                     </>
                   )}
+
+                  {/* EMERGENCY WORKFLOW RESET HUB (SUPER_ADMIN ONLY) */}
+                  <div className="mt-4 pt-4 border-t border-dashed border-slate-200">
+                    <span className="text-[10px] font-mono font-bold text-amber-600 uppercase tracking-widest block mb-1 flex items-center gap-1">
+                      <AlertTriangle className="w-3.5 h-3.5 animate-pulse" /> EMERGENCY WORKFLOW ROLLBACK
+                    </span>
+                    <p className="text-[10px] text-slate-400 mb-2 leading-tight font-sans">
+                      Forcefully move student backward in lifecycle. Every modification is strictly logged and audited.
+                    </p>
+                    <div className="space-y-2">
+                      <div>
+                        <select
+                          value={rollbackTarget}
+                          onChange={(e) => setRollbackTarget(e.target.value)}
+                          className="w-full bg-white border border-slate-200 rounded-lg p-1.5 text-xs text-slate-700 focus:ring-1 focus:ring-amber-500 cursor-pointer"
+                        >
+                          <option value="">-- Select Target Stage --</option>
+                          <option value="ADMISSION_FORM_DRAFT">1. ADMISSION FORM DRAFT (Restart / Unlock)</option>
+                          <option value="ACTIVE">2. ACTIVE (In-Training / Enrolled)</option>
+                          <option value="CERTIFIED">3. CERTIFIED (Graduated / Approved)</option>
+                          <option value="CERTIFICATE_ISSUED">4. CERTIFICATE ISSUED</option>
+                          <option value="ALUMNI">5. ALUMNI TRACKING</option>
+                        </select>
+                      </div>
+                      {rollbackTarget && (
+                        <div className="space-y-2">
+                          <input
+                            type="text"
+                            placeholder="Enter mandatory audit reason..."
+                            value={rollbackReason}
+                            onChange={(e) => setRollbackReason(e.target.value)}
+                            className="w-full bg-white border border-slate-200 rounded-lg p-1.5 text-xs focus:ring-1 focus:ring-amber-500 placeholder-slate-400 font-sans"
+                          />
+                          <button
+                            type="button"
+                            disabled={rollbackLoading || !rollbackReason.trim()}
+                            onClick={handleExecuteRollback}
+                            className="w-full bg-amber-500 hover:bg-amber-600 border border-amber-600 disabled:opacity-50 text-white font-bold py-1.5 px-3 rounded-lg text-xs cursor-pointer transition shadow-xs flex items-center justify-center gap-1 select-none"
+                          >
+                            {rollbackLoading ? "Processing Rollback..." : "Authorize Rollback Change"}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
                 </div>
               )}
 
@@ -2907,7 +3020,7 @@ export function BeneficiaryDetails({
                   </button>
 
                   <a
-                    href={`${API_BASE_URL}/api/admissions/${beneficiary.id}/form/pdf`}
+                    href={`${API_BASE_URL}/api/admissions/${beneficiary.id}/form/pdf${(session as any)?.token ? `?token=${(session as any).token}` : ""}`}
                     target="_blank"
                     rel="noreferrer"
                     className="flex-1 sm:flex-initial bg-slate-900 border border-transparent hover:bg-black text-white font-bold py-2 px-3 rounded-lg flex items-center justify-center gap-1 cursor-pointer text-[11px] transition whitespace-nowrap shadow-xs"
@@ -2918,7 +3031,7 @@ export function BeneficiaryDetails({
                   </a>
 
                   <a
-                    href={`${API_BASE_URL}/api/admissions/${beneficiary.id}/form/docx`}
+                    href={`${API_BASE_URL}/api/admissions/${beneficiary.id}/form/docx${(session as any)?.token ? `?token=${(session as any).token}` : ""}`}
                     className="flex-1 sm:flex-initial bg-white border border-slate-200 hover:bg-slate-50 text-indigo-600 font-bold py-2 px-3 rounded-lg flex items-center justify-center gap-1 cursor-pointer text-[11px] transition whitespace-nowrap"
                     title="Export styled Word Document"
                   >

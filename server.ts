@@ -1385,7 +1385,36 @@ app.get("/api/documents/download/:id/:type", async (req, res) => {
     const format = req.query.format || "pdf"; // "pdf" or "word"
     const inline = req.query.inline === "true";
 
-    const beneficiary = await DbRepo.getBeneficiaryById(id);
+    let beneficiary = await DbRepo.getBeneficiaryById(id);
+    if (!beneficiary && id === "SAMPLE-0001") {
+      // High-fidelity fallback sample Trainee for test rendering
+      beneficiary = {
+        id: "SAMPLE-0001",
+        firstName: "Jibril",
+        lastName: "Olawale",
+        otherName: "Chinedu",
+        email: "sample.trainee@ideas-tvet.ng",
+        phoneNumber: "+234 803 123 4567",
+        gender: "Male",
+        dateOfBirth: "2000-05-15",
+        nin: "12345678901",
+        bvn: "22334455667",
+        state: "Lagos",
+        city: "Ikeja",
+        residentialAddress: "15, Herbert Macaulay Way, Yaba",
+        batch: "Batch A",
+        tsp: "Mainland repairs Hub",
+        program: "Phone Repairs Specialist",
+        skillSector: "Computer Hardware and Cell Phone Repairs",
+        admissionRef: "IDEAS-ADM-2026-0001",
+        admissionStatus: "Accepted",
+        admissionFormCompleted: true,
+        admissionFormStatus: "CONFIRMED",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      } as any;
+    }
+
     if (!beneficiary) {
       return res.status(404).send("Beneficiary candidate not found");
     }
@@ -2246,6 +2275,115 @@ app.post("/api/beneficiaries/:id/lifecycle-status", requireAuth, async (req: Aut
   } catch (err: any) {
     console.error("[Lifecycle status transition failed]:", err);
     return res.status(500).json({ error: err.message || "Failed to update lifecycle status." });
+  }
+});
+
+app.post("/api/superadmin/beneficiaries/:id/workflow-rollback", requireAuth, requireRole(["SUPER_ADMIN"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    const { targetState, reason } = req.body;
+
+    if (!targetState) {
+      return res.status(400).json({ error: "Missing required parameter: targetState" });
+    }
+
+    if (!reason || reason.trim() === "") {
+      return res.status(400).json({ error: "A rollback reason is required for auditing." });
+    }
+
+    const beneficiary = await DbRepo.getBeneficiaryById(id);
+    if (!beneficiary) {
+      return res.status(404).json({ error: "Beneficiary not found for rollback process" });
+    }
+
+    const oldStatus = beneficiary.status;
+    const oldAdmissionStatus = beneficiary.admissionStatus || "Unknown";
+    const oldFormStatus = beneficiary.admissionFormStatus || "Unknown";
+    const oldCertStatus = beneficiary.certificationStatus || "NONE";
+
+    const operator = req.user!.email;
+
+    // Transition state variables based on targeted rollback state
+    if (targetState === "ALUMNI") {
+      beneficiary.status = ProgramStatus.ALUMNI;
+      beneficiary.admissionStatus = "Alumni";
+      beneficiary.alumniStatus = true;
+      beneficiary.beneficiaryStatus = "COMPLETED";
+      beneficiary.certificationStatus = "CERTIFICATE_ISSUED";
+    }
+    else if (targetState === "CERTIFICATE_ISSUED") {
+      beneficiary.status = ProgramStatus.CERTIFICATE_ISSUED;
+      beneficiary.admissionStatus = "Certified";
+      beneficiary.certificationStatus = "CERTIFICATE_ISSUED";
+      beneficiary.alumniStatus = false;
+      beneficiary.beneficiaryStatus = "ACTIVE";
+    }
+    else if (targetState === "CERTIFIED") {
+      beneficiary.status = ProgramStatus.CERTIFIED;
+      beneficiary.admissionStatus = "Certified";
+      beneficiary.certificationStatus = "CERTIFIED";
+      beneficiary.alumniStatus = false;
+      beneficiary.beneficiaryStatus = "ACTIVE";
+    }
+    else if (targetState === "ACTIVE") {
+      beneficiary.status = ProgramStatus.IN_TRAINING;
+      beneficiary.admissionStatus = "Enrolled";
+      beneficiary.certificationStatus = "NONE";
+      beneficiary.alumniStatus = false;
+      beneficiary.beneficiaryStatus = "ACTIVE";
+    }
+    else if (targetState === "ADMISSION_FORM_DRAFT") {
+      beneficiary.status = ProgramStatus.DRAFT;
+      beneficiary.admissionStatus = "Draft";
+      beneficiary.admissionFormStatus = "Draft";
+      beneficiary.admissionFormCompleted = false;
+      beneficiary.beneficiaryStatus = "ACTIVE";
+      beneficiary.certificationStatus = "NONE";
+      beneficiary.alumniStatus = false;
+      beneficiary.acceptanceLetterUploaded = false;
+      beneficiary.acceptanceLetterStatus = "PENDING";
+    }
+    else {
+      return res.status(400).json({ error: "Invalid targetState rollback value." });
+    }
+
+    beneficiary.statusReason = reason;
+    beneficiary.statusChangedBy = operator;
+    beneficiary.statusChangedAt = new Date().toISOString();
+
+    await DbRepo.upsertBeneficiary(beneficiary);
+
+    const remarks = `ADMIN ROLLBACK: Workflow rolled back from [Status: ${oldStatus}, Admission: ${oldAdmissionStatus}, Cert: ${oldCertStatus}] to targeted state: ${targetState}.`;
+    
+    // Save to workflow history
+    const ipAddress = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1";
+    const ipStr = Array.isArray(ipAddress) ? ipAddress[0] : ipAddress;
+    await DbRepo.saveWorkflowHistory({
+      beneficiaryId: id,
+      oldStatus: `${oldStatus} (Admission: ${oldAdmissionStatus})`,
+      newStatus: `${beneficiary.status} (Target: ${targetState})`,
+      changedBy: operator,
+      changedAt: new Date().toISOString(),
+      remarks,
+      reason,
+      ipAddress: ipStr
+    });
+
+    // Save to System Audit Log
+    const newLog: AuditLog = {
+      id: "log_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+      timestamp: new Date().toISOString(),
+      username: operator,
+      role: req.user!.role,
+      action: "WORKFLOW_ROLLBACK",
+      details: `Super Admin manually rolled back candidate '${beneficiary.firstName} ${beneficiary.lastName}' (ID: ${id}) to targeted state: '${targetState}'. Reason: ${reason}`
+    };
+    await DbRepo.saveAuditLog(newLog);
+
+    return res.json({ success: true, beneficiary });
+  } catch (err: any) {
+    console.error("[POST /api/superadmin/beneficiaries/:id/workflow-rollback] Error:", err);
+    res.status(500).json({ error: err.message || "Failed to execute superadmin workflow rollback." });
   }
 });
 

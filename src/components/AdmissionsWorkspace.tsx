@@ -7,12 +7,13 @@ import React, { useState, useEffect } from "react";
 import { 
   Search, ShieldAlert, X, Check, Eye, Printer, Users, CheckCircle2, 
   XCircle, AlertCircle, Loader2, ChevronLeft, ChevronRight, Building, 
-  MapPin, Sliders, Sparkles, Download, ArrowUpDown, Lock, Unlock, History, FileText, Play,
+  MapPin, Sliders, Sparkles, Download, ArrowUpDown, Lock, Unlock, History, FileText, Play, Info,
   LayoutDashboard, ChevronUp, ChevronDown, BarChart3, Wrench, Send
 } from "lucide-react";
 import { authFetch } from "../utils/authFetch";
 import { API_BASE_URL } from "../config/api";
 import { DispatchCenter } from "./DispatchCenter";
+import { PaginationControl } from "./PaginationControl";
 
 interface AdmissionsWorkspaceProps {
   session?: { username?: string; role?: string; email?: string } | null;
@@ -74,6 +75,7 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
   const [loadingLetter, setLoadingLetter] = useState(false);
   const [orgSettings, setOrgSettings] = useState<any | null>(null);
   const [activeLetterhead, setActiveLetterhead] = useState<any | null>(null);
+  const [previewLetterheadUrl, setPreviewLetterheadUrl] = useState<string | null>(null);
 
   // Form Preview Center and Active Export Job States
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
@@ -1363,30 +1365,15 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
         </div>
 
         {/* Paginated Grid segment stats */}
-        <div className="bg-slate-55 bg-slate-50 border-t border-slate-100 p-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-left">
-          <div className="text-[11px] font-bold text-slate-500 font-mono">
-            Showing <span className="text-slate-800">{(page - 1) * pageSize + 1}</span> to <span className="text-slate-800">{Math.min(page * pageSize, totalCount)}</span> of <span className="text-slate-800">{totalCount}</span> Applicants
-          </div>
-
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <button
-              onClick={() => setPage(p => Math.max(1, p - 1))}
-              disabled={page === 1}
-              className="p-1.5 bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 rounded disabled:opacity-40 transition cursor-pointer"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <span className="font-mono text-xs font-bold text-slate-700 px-2 leading-none">
-              Pg {page} of {totalPages}
-            </span>
-            <button
-              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-              disabled={page === totalPages}
-              className="p-1.5 bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 rounded disabled:opacity-40 transition cursor-pointer"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
+        <div className="p-4 bg-slate-55 bg-slate-50 border-t border-slate-100">
+          <PaginationControl
+            currentPage={page}
+            totalCount={totalCount}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+            idPrefix="admissions-applicants"
+          />
         </div>
 
       </div>
@@ -1945,11 +1932,10 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
                 <button
                   type="button"
                   onClick={() => {
-                    if (!activeLetterhead) {
-                      alert("No active letterhead override is configured. Standard Federal arrangement will be previewed.");
-                      window.open("/assets/fme_crest.png", "_blank");
+                    if (!activeLetterhead || !activeLetterhead.fileUrl) {
+                      setPreviewLetterheadUrl("/assets/fme_crest.png");
                     } else {
-                      window.open(activeLetterhead.fileUrl, "_blank");
+                      setPreviewLetterheadUrl(activeLetterhead.fileUrl);
                     }
                   }}
                   className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-1.5 px-3 rounded-lg flex items-center gap-1.5 transition text-[10px] uppercase tracking-wider cursor-pointer border border-slate-250 shrink-0"
@@ -2468,30 +2454,15 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
             </div>
 
             {/* Pagination Footer */}
-            <div className="bg-slate-50 border-t border-slate-100 p-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-left font-sans">
-              <div className="text-[11px] font-bold text-slate-500 font-mono">
-                Showing <span className="text-slate-800">{(page - 1) * pageSize + 1}</span> to <span className="text-slate-800">{Math.min(page * pageSize, totalCount)}</span> of <span className="text-slate-800">{totalCount}</span> Trainees
-              </div>
-
-              <div className="flex items-center gap-2 flex-shrink-0">
-                <button
-                  onClick={() => setPage(p => Math.max(1, p - 1))}
-                  disabled={page === 1}
-                  className="p-1.5 bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 rounded disabled:opacity-40 transition cursor-pointer"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-                <span className="font-mono text-xs font-bold text-slate-705 px-2 leading-none whitespace-nowrap">
-                  Page {page} of {totalPages}
-                </span>
-                <button
-                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-                  disabled={page === totalPages}
-                  className="p-1.5 bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 rounded disabled:opacity-40 transition cursor-pointer"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
+            <div className="p-4 bg-slate-50 border-t border-slate-100">
+              <PaginationControl
+                currentPage={page}
+                totalCount={totalCount}
+                pageSize={pageSize}
+                onPageChange={setPage}
+                onPageSizeChange={setPageSize}
+                idPrefix="admissions-trainees"
+              />
             </div>
 
           </div>
@@ -3109,6 +3080,66 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
               </div>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* LIGHTBOX FOR LETTERHEAD OVERRIDE PREVIEW */}
+      {previewLetterheadUrl && (
+        <div className="fixed inset-0 z-[9999] bg-slate-900/80 flex items-center justify-center p-4 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-3xl w-full p-6 relative flex flex-col max-h-[90vh] shadow-2xl border border-slate-100">
+            <button
+              type="button"
+              onClick={() => setPreviewLetterheadUrl(null)}
+              className="absolute top-4 right-4 bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800 p-2 rounded-full cursor-pointer transition flex items-center justify-center"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <h4 className="font-extrabold text-slate-900 border-b pb-3 mb-4 font-display text-sm uppercase tracking-wider flex items-center gap-2">
+              <Eye className="w-5 h-5 text-indigo-650 text-indigo-600" /> Document Letterhead Override Preview
+            </h4>
+            <div className="flex-1 overflow-auto flex items-center justify-center bg-slate-50 rounded-xl border border-slate-200 p-4">
+              {previewLetterheadUrl.startsWith("data:application/pdf") ? (
+                <iframe
+                  src={previewLetterheadUrl}
+                  title="PDF Template Document"
+                  className="w-full h-[60vh] rounded-lg border shadow-xs"
+                />
+              ) : previewLetterheadUrl === "/assets/fme_crest.png" ? (
+                <div className="text-center py-12 max-w-md">
+                  <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <Check className="w-8 h-8 text-slate-650" />
+                  </div>
+                  <h5 className="font-bold text-slate-800 text-sm mb-1">Standard Federal Crest</h5>
+                  <p className="text-xs text-slate-500 leading-relaxed">
+                    No template override configured. The standard Federal Ministry of Education crest layout will be rendered as default.
+                  </p>
+                </div>
+              ) : previewLetterheadUrl.includes("res.cloudinary.com/ideas-tvet") ? (
+                <div className="text-center py-12 max-w-md">
+                  <div className="w-16 h-16 bg-amber-50 border border-amber-200 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <Info className="w-8 h-8 text-amber-600 animate-pulse" />
+                  </div>
+                  <h5 className="font-bold text-slate-800 text-sm mb-1">Offline Cloudinary Simulation</h5>
+                  <p className="text-xs text-slate-500 leading-relaxed rounded-lg border bg-amber-50/50 p-3 text-left">
+                    <strong>Notice:</strong> This is a secure fallback simulated Cloudinary URL. No real cloud storage asset file is present locally.
+                  </p>
+                  <code className="text-[10px] bg-slate-100 text-indigo-600 block p-2 rounded-lg font-mono my-3 border text-left overflow-x-auto whitespace-pre">
+                    {previewLetterheadUrl}
+                  </code>
+                  <p className="text-[11px] text-slate-400">
+                    To upload and render real Vector template overlays, add valid Cloudinary environment secrets to your live cluster.
+                  </p>
+                </div>
+              ) : (
+                <img
+                  src={previewLetterheadUrl}
+                  alt="Letterhead Template"
+                  referrerPolicy="no-referrer"
+                  className="max-h-[60vh] max-w-full rounded-lg border object-contain shadow-xs bg-white"
+                />
+              )}
+            </div>
           </div>
         </div>
       )}

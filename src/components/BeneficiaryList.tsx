@@ -15,6 +15,7 @@ import { NewEnrollmentForm } from "./NewEnrollmentForm";
 import { authFetch } from "../utils/authFetch";
 import { SecureBeneficiaryImage } from "./SecureBeneficiaryImage";
 import { AdmissionsWorkspace } from "./AdmissionsWorkspace";
+import { PaginationControl } from "./PaginationControl";
 
 interface BeneficiaryListProps {
   beneficiaries: Beneficiary[];
@@ -253,7 +254,7 @@ export function BeneficiaryList({
 
   // Pagination page selection state
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 6;
+  const [itemsPerPage, setItemsPerPage] = useState(10);
 
   // FEATURE 3: BULK SELECTION & OPERATIONS STATE
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([]);
@@ -1394,45 +1395,16 @@ export function BeneficiaryList({
           </table>
         </div>
 
-        {/* 4. TABLE PAGINATION CONTROL BAR (4.png matching totals indicator) */}
-        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 text-xs font-mono text-slate-400 pt-3">
-          <span className="text-center sm:text-left">
-            Showing {startIndex + 1} to {Math.min(startIndex + itemsPerPage, filteredList.length)} of {filteredList.length} registered records.
-          </span>
-
-          <div className="flex flex-wrap items-center justify-center gap-1.5">
-            <button 
-              onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-              disabled={currentPage === 1}
-              className="px-3 py-1 bg-white border border-slate-205 border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 transition cursor-pointer select-none"
-            >
-              Previous
-            </button>
-            
-            <div className="flex items-center gap-1">
-              {Array.from({ length: totalPages }).map((_, i) => (
-                <button
-                  key={i}
-                  onClick={() => setCurrentPage(i + 1)}
-                  className={`h-6.5 w-6.5 rounded-lg flex items-center justify-center font-bold transition text-[11px] cursor-pointer ${
-                    currentPage === i + 1 
-                      ? "bg-indigo-950 text-white shadow-xs" 
-                      : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
-                  }`}
-                >
-                  {i + 1}
-                </button>
-              ))}
-            </div>
-
-            <button 
-              onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-              disabled={currentPage === totalPages}
-              className="px-3 py-1 bg-white border border-slate-205 border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 transition cursor-pointer select-none"
-            >
-              Next
-            </button>
-          </div>
+        {/* 4. TABLE PAGINATION CONTROL BAR */}
+        <div className="pt-3">
+          <PaginationControl
+            currentPage={currentPage}
+            totalCount={filteredList.length}
+            pageSize={itemsPerPage}
+            onPageChange={setCurrentPage}
+            onPageSizeChange={setItemsPerPage}
+            idPrefix="beneficiary"
+          />
         </div>
 
       </div>
