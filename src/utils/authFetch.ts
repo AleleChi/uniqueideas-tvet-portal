@@ -35,10 +35,49 @@ export async function authFetch(
 
   const targetUrl = url.startsWith("/api/") ? `${API_BASE_URL}${url}` : url;
 
-  const response = await fetch(targetUrl, {
-    ...options,
-    headers,
-  });
+  let attempts = 0;
+  const maxAttempts = 4; // 1 original + 3 retries
+  let lastError: any = null;
+  let response: Response | null = null;
+
+  while (attempts < maxAttempts) {
+    attempts++;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 90000); // 90 seconds timeout
+
+    try {
+      response = await fetch(targetUrl, {
+        ...options,
+        headers,
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+
+      // If the response is successful (2xx) or client error (4xx) that shouldn't change, we break
+      if (response.ok || (response.status >= 400 && response.status < 500)) {
+        break;
+      }
+      
+      console.warn(`authFetch: Received status ${response.status} on attempt ${attempts}/${maxAttempts} for ${url}. Retrying...`);
+      if (attempts < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 3000)); // 3s delay
+      }
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      lastError = err;
+      const isTimeout = err.name === "AbortError";
+      console.warn(`authFetch: Error on attempt ${attempts}/${maxAttempts} for ${url}:`, err.message || err);
+      
+      if (attempts < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 3000)); // 3s delay
+      }
+    }
+  }
+
+  if (!response) {
+    throw lastError || new Error(`Network failure: Failed to fetch ${url} after ${maxAttempts} attempts.`);
+  }
 
   // Intercept the .json() resolution to adapt normalized API responses back to direct shapes
   const originalJson = response.json.bind(response);

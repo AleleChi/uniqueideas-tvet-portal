@@ -43,9 +43,30 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [registryViewMode, setRegistryViewMode] = useState<"list" | "details" | "create">("list");
   const [subTabMode, setSubTabMode] = useState<"beneficiaries" | "admissions" | "documents">("beneficiaries");
-  const [beneficiaries, setBeneficiaries] = useState<Beneficiary[]>([]);
-  const [customFields, setCustomFields] = useState<CustomField[]>([]);
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [beneficiaries, setBeneficiaries] = useState<Beneficiary[]>(() => {
+    try {
+      const cached = localStorage.getItem("ideas-cached-beneficiaries");
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [customFields, setCustomFields] = useState<CustomField[]>(() => {
+    try {
+      const cached = localStorage.getItem("ideas-cached-custom-fields");
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>(() => {
+    try {
+      const cached = localStorage.getItem("ideas-cached-audit-logs");
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
   const [captureTarget, setCaptureTarget] = useState<Beneficiary | null>(null);
   const [tempCreatedPhoto, setTempCreatedPhoto] = useState<string | null>(null);
   const [selectedBeneficiary, setSelectedBeneficiary] = useState<Beneficiary | null>(null);
@@ -113,14 +134,33 @@ export default function App() {
     }
   }, []);
 
-  // Fetch dynamic variables on API once authenticated
+  // Fetch dynamic variables on API once authenticated & handle continuous polling if cache is empty
   useEffect(() => {
+    let intervalId: any = null;
+
     if (session?.isAuthenticated) {
       fetchBeneficiaries();
       fetchCustomFields();
       fetchAuditLogs();
+
+      // If cache is empty, we continue polling live API every 10 seconds
+      intervalId = setInterval(() => {
+        const cachedStr = localStorage.getItem("ideas-cached-beneficiaries");
+        const cachedData = cachedStr ? JSON.parse(cachedStr) : [];
+        
+        if (beneficiaries.length === 0 && cachedData.length === 0) {
+          console.log("Cache/state empty on poll, continuous live fetch retry in progress...");
+          fetchBeneficiaries();
+          fetchCustomFields();
+          fetchAuditLogs();
+        }
+      }, 10000);
     }
-  }, [session]);
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [session, beneficiaries.length]);
 
   const fetchBeneficiaries = async () => {
     try {
@@ -129,8 +169,11 @@ export default function App() {
         const data = await res.json();
         if (Array.isArray(data) && data.length > 0) {
           setBeneficiaries(data);
+          localStorage.setItem("ideas-cached-beneficiaries", JSON.stringify(data));
         } else if (Array.isArray(data)) {
+          // Never replace live data with empty cache
           setBeneficiaries(prev => prev.length > 0 ? prev : data);
+          localStorage.setItem("ideas-cached-beneficiaries", JSON.stringify(data));
         }
       } else {
         console.error("Failed to load beneficiaries list: Status", res.status);
@@ -165,7 +208,12 @@ export default function App() {
       const res = await authFetch("/api/custom-fields");
       if (res.ok) {
         const data = await res.json();
-        setCustomFields(data);
+        if (Array.isArray(data) && data.length > 0) {
+          setCustomFields(data);
+          localStorage.setItem("ideas-cached-custom-fields", JSON.stringify(data));
+        } else if (Array.isArray(data)) {
+          setCustomFields(prev => prev.length > 0 ? prev : data);
+        }
       }
     } catch (e) {
       console.error(e);
@@ -177,7 +225,12 @@ export default function App() {
       const res = await authFetch("/api/audit-logs");
       if (res.ok) {
         const data = await res.json();
-        setAuditLogs(data);
+        if (Array.isArray(data) && data.length > 0) {
+          setAuditLogs(data);
+          localStorage.setItem("ideas-cached-audit-logs", JSON.stringify(data));
+        } else if (Array.isArray(data)) {
+          setAuditLogs(prev => prev.length > 0 ? prev : data);
+        }
       }
     } catch (e) {
       console.error(e);

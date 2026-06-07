@@ -48,72 +48,45 @@
             isStatus: 'connected',
             isConnected: function() { return true; },
             enable: function() {
-              if (_realEthereum && typeof _realEthereum.enable === 'function') {
-                try {
-                  var p = _realEthereum.enable();
-                  if (p && typeof p.catch === 'function') {
-                    return p.catch(function() {
-                      return Promise.resolve(['0x5a0b54d5dc17e0aadc383d2db43b0a0d3e029c4c']);
-                    });
-                  }
-                  return Promise.resolve(p || ['0x5a0b54d5dc17e0aadc383d2db43b0a0d3e029c4c']);
-                } catch(e) {
-                  return Promise.resolve(['0x5a0b54d5dc17e0aadc383d2db43b0a0d3e029c4c']);
-                }
-              }
               return Promise.resolve(['0x5a0b54d5dc17e0aadc383d2db43b0a0d3e029c4c']);
             },
             request: function(args) {
-              if (_realEthereum && typeof _realEthereum.request === 'function') {
-                try {
-                  var p = _realEthereum.request(args);
-                  if (p && typeof p.catch === 'function') {
-                    return p.catch(function() {
-                      return handleMockRequest(args);
-                    });
-                  }
-                  return Promise.resolve(p);
-                } catch(e) {
-                  return handleMockRequest(args);
-                }
-              }
               return handleMockRequest(args);
             },
-            send: function(payload, callback) {
-              if (_realEthereum && typeof _realEthereum.send === 'function') {
-                try {
-                  return _realEthereum.send(payload, callback);
-                } catch(e) {}
+            send: function(method, paramsOrCb) {
+              var self = this;
+              if (typeof method === 'string') {
+                return self.request({ method: method, params: paramsOrCb });
               }
+              var payload = method;
+              var callback = paramsOrCb;
               if (callback) {
-                callback(null, { jsonrpc: '2.0', id: payload.id, result: [] });
+                self.request(payload).then(function(result) {
+                  callback(null, { jsonrpc: '2.0', id: payload ? payload.id : undefined, result: result });
+                }).catch(function(err) {
+                  callback(err);
+                });
+                return;
               }
-              return Promise.resolve([]);
+              var mockRes = handleMockRequest(payload);
+              return mockRes && typeof mockRes.then === 'function' ? mockRes : Promise.resolve(mockRes);
             },
             sendAsync: function(payload, callback) {
-              if (_realEthereum && typeof _realEthereum.sendAsync === 'function') {
-                try {
-                  return _realEthereum.sendAsync(payload, callback);
-                } catch(e) {}
-              }
-              if (callback) {
-                callback(null, { jsonrpc: '2.0', id: payload.id, result: [] });
-              }
+              var self = this;
+              self.request(payload).then(function(result) {
+                if (callback) {
+                  callback(null, { jsonrpc: '2.0', id: payload ? payload.id : undefined, result: result });
+                }
+              }).catch(function(err) {
+                if (callback) {
+                  callback(err);
+                }
+              });
             },
             on: function(event, callback) {
-              if (_realEthereum && typeof _realEthereum.on === 'function') {
-                try {
-                  _realEthereum.on(event, callback);
-                } catch(e) {}
-              }
               return this;
             },
             removeListener: function(event, callback) {
-              if (_realEthereum && typeof _realEthereum.removeListener === 'function') {
-                try {
-                  _realEthereum.removeListener(event, callback);
-                } catch(e) {}
-              }
               return this;
             },
             autoRefreshOnNetworkChange: false,
