@@ -10,6 +10,7 @@ const isLocalOrPreview = typeof window !== "undefined" && (
   window.location.hostname.includes("aistudio")
 );
 
-export const API_BASE_URL =
-  isLocalOrPreview ? "" : (((import.meta as any).env?.VITE_API_BASE_URL as string) || "");
+const envApiUrl = (import.meta as any).env?.VITE_API_BASE_URL as string | undefined;
+
+export const API_BASE_URL = envApiUrl ? envApiUrl.replace(/\/$/, "") : "";
 

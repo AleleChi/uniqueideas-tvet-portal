@@ -36,3 +36,10 @@
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(156, 163, 175, 0.5);
 }
+
+/* Sidebar dynamic scrolling controls (Phase 9) */
+.sidebar-scroll {
+  scrollbar-width: thin;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+}

@@ -1948,8 +1948,8 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
                   type="button"
                   onClick={() => {
                     const sampleId = candidates[0]?.id || "SAMPLE-0001";
-                    alert(`Compiling temporary Test Render for template verification.\nSample Candidate ID: ${sampleId}.\nThis sandbox rendering performs no database edits and triggers zero workflow state side-effects.`);
-                    window.open(`/api/documents/download/${sampleId}/admission?format=pdf&inline=true`, "_blank");
+                    console.log(`Compiling temporary Test Render for template verification. Sample ID: ${sampleId}`);
+                    window.open(`${API_BASE_URL}/api/documents/download/${sampleId}/admission?format=pdf&inline=true`, "_blank");
                   }}
                   className="bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold py-1.5 px-3 rounded-lg flex items-center gap-1.5 transition text-[10px] uppercase tracking-wider cursor-pointer shadow-xs shrink-0"
                 >
@@ -2391,7 +2391,7 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    window.open(`/api/admissions/${c.id}/form/pdf`, "_blank");
+                                    window.open(`${API_BASE_URL}/api/admissions/${c.id}/form/pdf`, "_blank");
                                   }}
                                   title="Download signed PDF form"
                                   className="p-1 text-slate-700 bg-slate-50 hover:bg-slate-200 border border-slate-200 rounded flex items-center justify-center transition min-w-[24px] h-[24px] cursor-pointer"
@@ -2403,7 +2403,7 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    window.open(`/api/admissions/${c.id}/form/docx`, "_blank");
+                                    window.open(`${API_BASE_URL}/api/admissions/${c.id}/form/docx`, "_blank");
                                   }}
                                   title="Download Microsoft Word form doc"
                                   className="p-1 text-sky-600 bg-sky-50 hover:bg-sky-100 border border-sky-100 rounded flex items-center justify-center transition min-w-[24px] h-[24px] cursor-pointer"
@@ -2766,7 +2766,7 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
                 <button
                   type="button"
                   onClick={() => {
-                    window.open(`/api/admissions/${previewFormCandidate.id}/form/pdf`, "_blank");
+                    window.open(`${API_BASE_URL}/api/admissions/${previewFormCandidate.id}/form/pdf`, "_blank");
                   }}
                   className="px-4.5 py-2 bg-slate-800 hover:bg-slate-750 text-white border border-slate-700 font-bold rounded-lg text-xs flex items-center gap-1.5 transition cursor-pointer shadow-xs"
                 >
@@ -2778,7 +2778,7 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
                 <button
                   type="button"
                   onClick={() => {
-                    window.open(`/api/admissions/${previewFormCandidate.id}/form/docx`, "_blank");
+                    window.open(`${API_BASE_URL}/api/admissions/${previewFormCandidate.id}/form/docx`, "_blank");
                   }}
                   className="px-4.5 py-2 bg-slate-800 hover:bg-slate-750 text-sky-400 border border-slate-700 font-bold rounded-lg text-xs flex items-center gap-1.5 transition cursor-pointer shadow-xs"
                 >

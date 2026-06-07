@@ -146,6 +146,24 @@ async function logAction(username: string, action: string, details: string) {
 
 // REST API Endpoints
 
+app.get("/api/health", async (req, res) => {
+  let dbStatus = "disconnected";
+  try {
+    const pool = getPgPool();
+    if (pool) {
+      await pool.query("SELECT 1");
+      dbStatus = "connected";
+    }
+  } catch (err) {
+    console.error("[Health] Database health check query failed:", err);
+  }
+  res.json({
+    status: "ok",
+    database: dbStatus,
+    timestamp: Date.now()
+  });
+});
+
 // Authentication API
 app.post("/api/auth/login", async (req, res) => {
   try {
@@ -4932,6 +4950,24 @@ async function startServer() {
   // Gracefully initialize PostgreSQL schema and run migrations
   try {
     await initDb();
+    
+    // Add temporary backend diagnostics to match requirements
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const bRes = await pool.query("SELECT COUNT(*)::int as count FROM beneficiaries WHERE deleted_at IS NULL");
+        const aRes = await pool.query("SELECT COUNT(*)::int as count FROM admissions WHERE deleted_at IS NULL");
+        const cRes = await pool.query("SELECT COUNT(*)::int as count FROM beneficiaries WHERE deleted_at IS NULL AND certification_status = 'CERTIFIED'");
+        const rRes = await pool.query("SELECT COUNT(*)::int as count FROM audit_logs");
+        
+        console.log(`[BENEFICIARY COUNT] Live Database active record count: ${bRes.rows[0]?.count || 0}`);
+        console.log(`[ADMISSION COUNT] Live Database active record count: ${aRes.rows[0]?.count || 0}`);
+        console.log(`[CERTIFICATION COUNT] Live Database certified record count: ${cRes.rows[0]?.count || 0}`);
+        console.log(`[REPORT COUNT] Live Database audit logs tracked count: ${rRes.rows[0]?.count || 0}`);
+      } catch (dbErr: any) {
+        console.warn("[SYS] Failed to retrieve row counts directly from PG pool:", dbErr.message || dbErr);
+      }
+    }
   } catch (err) {
     console.error("[SYS] Database setup failure during bootstrap lifecycle:", err);
   }

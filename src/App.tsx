@@ -13,20 +13,26 @@ import { TraineePortal } from "./components/TraineePortal";
 import { LandingPage } from "./components/LandingPage";
 import { Dashboard } from "./components/Dashboard";
 import { BeneficiaryList } from "./components/BeneficiaryList";
-import { ReportsWorkspace } from "./components/ReportsWorkspace";
 import { CustomSchemaBuilder } from "./components/CustomSchemaBuilder";
-import { AuditTrail } from "./components/AuditTrail";
 import { BiometricCapture } from "./components/BiometricCapture";
 import { PublicResponsePortal } from "./components/PublicResponsePortal";
-import { SettingsWorkspace } from "./components/SettingsWorkspace";
 import { DocumentVerification } from "./components/DocumentVerification";
 import { SecureDocumentPortal } from "./components/SecureDocumentPortal";
-import { EligibilityCenter } from "./components/EligibilityCenter";
-import { CertificationCenter } from "./components/CertificationCenter";
 import { CertificateVerification } from "./components/CertificateVerification";
+import { SkeletonLoader } from "./components/SkeletonLoader";
+
+const ReportsWorkspace = React.lazy(() => import("./components/ReportsWorkspace").then(module => ({ default: module.ReportsWorkspace })));
+const AuditTrail = React.lazy(() => import("./components/AuditTrail").then(module => ({ default: module.AuditTrail })));
+const SettingsWorkspace = React.lazy(() => import("./components/SettingsWorkspace").then(module => ({ default: module.SettingsWorkspace })));
+const EligibilityCenter = React.lazy(() => import("./components/EligibilityCenter").then(module => ({ default: module.EligibilityCenter })));
+const CertificationCenter = React.lazy(() => import("./components/CertificationCenter").then(module => ({ default: module.CertificationCenter })));
 import { Beneficiary, CustomField, AuditLog, UserSession } from "./types";
 import { authFetch, downloadWithAuth } from "./utils/authFetch";
 import { useNotification } from "./components/NotificationContext";
+import { API_BASE_URL } from "./config/api";
+import { Sidebar } from "./components/Sidebar";
+
+const CACHE_VERSION = "ideas-cache-v3";
 
 export default function App() {
   const { showToast } = useNotification();
@@ -45,7 +51,7 @@ export default function App() {
   const [subTabMode, setSubTabMode] = useState<"beneficiaries" | "admissions" | "documents">("beneficiaries");
   const [beneficiaries, setBeneficiaries] = useState<Beneficiary[]>(() => {
     try {
-      const cached = localStorage.getItem("ideas-cached-beneficiaries");
+      const cached = localStorage.getItem(`${CACHE_VERSION}-beneficiaries`);
       return cached ? JSON.parse(cached) : [];
     } catch {
       return [];
@@ -53,7 +59,7 @@ export default function App() {
   });
   const [customFields, setCustomFields] = useState<CustomField[]>(() => {
     try {
-      const cached = localStorage.getItem("ideas-cached-custom-fields");
+      const cached = localStorage.getItem(`${CACHE_VERSION}-custom-fields`);
       return cached ? JSON.parse(cached) : [];
     } catch {
       return [];
@@ -61,12 +67,13 @@ export default function App() {
   });
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>(() => {
     try {
-      const cached = localStorage.getItem("ideas-cached-audit-logs");
+      const cached = localStorage.getItem(`${CACHE_VERSION}-audit-logs`);
       return cached ? JSON.parse(cached) : [];
     } catch {
       return [];
     }
   });
+  const [isLiveSynced, setIsLiveSynced] = useState(false);
   const [captureTarget, setCaptureTarget] = useState<Beneficiary | null>(null);
   const [tempCreatedPhoto, setTempCreatedPhoto] = useState<string | null>(null);
   const [selectedBeneficiary, setSelectedBeneficiary] = useState<Beneficiary | null>(null);
@@ -125,6 +132,60 @@ export default function App() {
     }
   }, [currentHash, session]);
 
+  // Log every completed render cycle for forensics
+  useEffect(() => {
+    console.log("[RENDER COMPLETED] Dashboard viewport successfully mounted and redrawn.");
+  });
+
+  // Startup diagnostics once on application boot (STEP 5 & 6) and Cache Versioning (Phase 7)
+  useEffect(() => {
+    const buildMode = "production";
+    const env = "production";
+    console.log(`[SYS] Initializing IDEAS-TVET Platform Front-End Diagnostics Run...`);
+    console.log(`[SYS] API Base: ${API_BASE_URL || "(relative)"}`);
+    console.log(`[SYS] Environment: ${env}`);
+    console.log(`[SYS] Build Mode: ${buildMode}`);
+
+    try {
+      // Clean up stale caches from previous versions or unversioned caches
+      const keysToClear: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (
+          key &&
+          (key.startsWith("ideas-") || key.includes("cached")) &&
+          !key.startsWith(CACHE_VERSION) &&
+          key !== "ideas-session"
+        ) {
+          keysToClear.push(key);
+        }
+      }
+      keysToClear.forEach(key => {
+        console.log(`[CACHE CLEANUP] Evicting stale cache structure: "${key}"`);
+        localStorage.removeItem(key);
+      });
+    } catch (e) {
+      console.error("[CACHE CLEANUP] Failed to evict stale cache structures:", e);
+    }
+
+    // Verify backend reachability on boot
+    const healthUrl = `${API_BASE_URL}/api/health`;
+    fetch(healthUrl)
+      .then(res => {
+        if (!res.ok) {
+          throw new Error(`HTTP status ${res.status}`);
+        }
+        return res.json();
+      })
+      .then(data => {
+        console.log(`[SYS] Backend API health check response:`, data);
+        console.log(`[SYS] Backend Reachability: ONLINE (Database: ${data.database})`);
+      })
+      .catch(err => {
+        console.error(`[SYS] Backend Reachability Check FAILED: Unreachable at ${healthUrl}:`, err.message || err);
+      });
+  }, []);
+
   // Load active memory caches from browser on launch
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -134,7 +195,31 @@ export default function App() {
     }
   }, []);
 
-  // Fetch dynamic variables on API once authenticated & handle continuous polling if cache is empty
+  // Listen to 401 / 403 security context events to prevent silent failures
+  useEffect(() => {
+    const handleUnauthorized = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      console.warn("[SECURITY REJECTION] Unauthorized event received:", detail);
+      showToast("Your session has expired. Please log in again.", "error");
+      handleLogout();
+    };
+
+    const handleForbidden = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      console.warn("[SECURITY REJECTION] Forbidden event received:", detail);
+      showToast("Access denied. You do not have permission to view this resource.", "error");
+    };
+
+    window.addEventListener("ideas-auth-unauthorized", handleUnauthorized);
+    window.addEventListener("ideas-auth-forbidden", handleForbidden);
+
+    return () => {
+      window.removeEventListener("ideas-auth-unauthorized", handleUnauthorized);
+      window.removeEventListener("ideas-auth-forbidden", handleForbidden);
+    };
+  }, []);
+
+  // Fetch dynamic variables on API once authenticated & handle continuous polling if not live-synced
   useEffect(() => {
     let intervalId: any = null;
 
@@ -143,45 +228,61 @@ export default function App() {
       fetchCustomFields();
       fetchAuditLogs();
 
-      // If cache is empty, we continue polling live API every 10 seconds
-      intervalId = setInterval(() => {
-        const cachedStr = localStorage.getItem("ideas-cached-beneficiaries");
-        const cachedData = cachedStr ? JSON.parse(cachedStr) : [];
-        
-        if (beneficiaries.length === 0 && cachedData.length === 0) {
-          console.log("Cache/state empty on poll, continuous live fetch retry in progress...");
+      // If we are NOT live-synced, keep polling every 10 seconds to retry
+      if (!isLiveSynced) {
+        console.log("No live sync yet. Establishing background poll to sync local states...");
+        intervalId = setInterval(() => {
+          if (isLiveSynced) {
+            console.log("Live sync detected. Cleaning up active polling interval immediately.");
+            clearInterval(intervalId);
+            return;
+          }
+          console.log("Polling gateway for live active synchronization check...");
           fetchBeneficiaries();
           fetchCustomFields();
           fetchAuditLogs();
-        }
-      }, 10000);
+        }, 10000);
+      }
     }
 
     return () => {
       if (intervalId) clearInterval(intervalId);
     };
-  }, [session, beneficiaries.length]);
+  }, [session, isLiveSynced]);
 
   const fetchBeneficiaries = async () => {
     try {
       const res = await authFetch("/api/beneficiaries");
       if (res.ok) {
         const data = await res.json();
+        // Set live sync immediately! Disables future polling cycles.
+        setIsLiveSynced(true);
+        console.log(`[STATE UPDATED] endpoint: "/api/beneficiaries", record count: ${Array.isArray(data) ? data.length : 0}`);
         if (Array.isArray(data) && data.length > 0) {
           setBeneficiaries(data);
-          localStorage.setItem("ideas-cached-beneficiaries", JSON.stringify(data));
+          localStorage.setItem(`${CACHE_VERSION}-beneficiaries`, JSON.stringify(data));
         } else if (Array.isArray(data)) {
           // Never replace live data with empty cache
           setBeneficiaries(prev => prev.length > 0 ? prev : data);
-          localStorage.setItem("ideas-cached-beneficiaries", JSON.stringify(data));
+          localStorage.setItem(`${CACHE_VERSION}-beneficiaries`, JSON.stringify(data));
         }
       } else {
         console.error("Failed to load beneficiaries list: Status", res.status);
-        showToast("System is currently experiencing heavy load. Displaying cached session records.", "warning");
+        if (!isLiveSynced) {
+          const cachedStr = localStorage.getItem(`${CACHE_VERSION}-beneficiaries`);
+          const cachedData = cachedStr ? JSON.parse(cachedStr) : [];
+          console.warn(`[CACHE FALLBACK] endpoint: "/api/beneficiaries", cache count: ${cachedData.length}`);
+          showToast("System is currently experiencing heavy load. Displaying cached session records.", "warning");
+        }
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error("Failed to load beneficiaries due to network error:", e);
-      showToast("System error: Failed to connect to secure gateway. Relying on active local data session.", "warning");
+      if (!isLiveSynced) {
+        const cachedStr = localStorage.getItem(`${CACHE_VERSION}-beneficiaries`);
+        const cachedData = cachedStr ? JSON.parse(cachedStr) : [];
+        console.warn(`[CACHE FALLBACK] endpoint: "/api/beneficiaries", cache count: ${cachedData.length}`);
+        showToast("System error: Failed to connect to secure gateway. Relying on active local data session.", "warning");
+      }
     }
   };
 
@@ -208,15 +309,19 @@ export default function App() {
       const res = await authFetch("/api/custom-fields");
       if (res.ok) {
         const data = await res.json();
+        console.log(`[STATE UPDATED] endpoint: "/api/custom-fields", record count: ${Array.isArray(data) ? data.length : 0}`);
         if (Array.isArray(data) && data.length > 0) {
           setCustomFields(data);
-          localStorage.setItem("ideas-cached-custom-fields", JSON.stringify(data));
+          localStorage.setItem(`${CACHE_VERSION}-custom-fields`, JSON.stringify(data));
         } else if (Array.isArray(data)) {
           setCustomFields(prev => prev.length > 0 ? prev : data);
         }
       }
     } catch (e) {
       console.error(e);
+      const cachedStr = localStorage.getItem(`${CACHE_VERSION}-custom-fields`);
+      const cachedData = cachedStr ? JSON.parse(cachedStr) : [];
+      console.warn(`[CACHE FALLBACK] endpoint: "/api/custom-fields", cache count: ${cachedData.length}`);
     }
   };
 
@@ -225,15 +330,19 @@ export default function App() {
       const res = await authFetch("/api/audit-logs");
       if (res.ok) {
         const data = await res.json();
+        console.log(`[STATE UPDATED] endpoint: "/api/audit-logs", record count: ${Array.isArray(data) ? data.length : 0}`);
         if (Array.isArray(data) && data.length > 0) {
           setAuditLogs(data);
-          localStorage.setItem("ideas-cached-audit-logs", JSON.stringify(data));
+          localStorage.setItem(`${CACHE_VERSION}-audit-logs`, JSON.stringify(data));
         } else if (Array.isArray(data)) {
           setAuditLogs(prev => prev.length > 0 ? prev : data);
         }
       }
     } catch (e) {
       console.error(e);
+      const cachedStr = localStorage.getItem(`${CACHE_VERSION}-audit-logs`);
+      const cachedData = cachedStr ? JSON.parse(cachedStr) : [];
+      console.warn(`[CACHE FALLBACK] endpoint: "/api/audit-logs", cache count: ${cachedData.length}`);
     }
   };
 
@@ -503,328 +612,21 @@ export default function App() {
       </header>
 
       {/* 1. LEFT SIDEBAR - FULL VIEWPORT HEIGHT */}
-      <aside className={`no-print w-64 bg-slate-900 text-white flex flex-col justify-between border-r border-indigo-950 h-full flex-shrink-0 z-40 fixed inset-y-0 left-0 lg:static transform lg:translate-x-0 transition-transform duration-300 ease-in-out ${
-        isSidebarOpen ? "translate-x-0" : "-translate-x-full"
-      }`}>
-        
-        {/* Top: Branding Section */}
-        <div>
-          <div className="p-6 border-b border-indigo-950/80 space-y-4">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="p-2 bg-indigo-600 rounded-lg text-white flex-shrink-0">
-                  <Cpu className="w-5 h-5 flex-shrink-0" />
-                </div>
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-1">
-                    <span className="text-[8px] font-bold tracking-widest text-indigo-400 font-mono uppercase bg-indigo-950 px-1 py-0.5 rounded leading-none">
-                      SKILLS SECTOR
-                    </span>
-                    <span className="text-[8px] font-bold tracking-widest text-emerald-400 font-mono uppercase bg-slate-950 px-1 py-0.5 rounded leading-none">
-                      TVET
-                    </span>
-                  </div>
-                </div>
-              </div>
-              
-              {/* Mobile Close Button for Sidebar */}
-              <button 
-                type="button"
-                onClick={() => setIsSidebarOpen(false)}
-                className="lg:hidden p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white cursor-pointer min-h-[44px] min-w-[44px] flex items-center justify-center"
-                aria-label="Close menu"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            
-            <h1 className="font-display font-bold text-slate-100 text-[10px] md:text-xs tracking-tight leading-tight font-sans text-left">
-              Computer Hardware and Cell Phone Repairs
-            </h1>
-
-            <div className="bg-slate-950/40 p-2.5 rounded-lg border border-slate-800/40">
-              <p className="text-[9px] font-mono uppercase text-slate-500 font-bold tracking-wider text-left">
-                Accredited TSP Provider:
-              </p>
-              <p className="text-[10px] text-indigo-300 font-semibold font-mono mt-0.5 text-left" title="Unique Technology Nig. Ltd">
-                Unique Technology Nig. Ltd
-              </p>
-            </div>
-          </div>
-
-          {/* Navigation Items List */}
-          <nav className="px-3 py-5 space-y-1">
-            <button 
-              onClick={() => {
-                setActiveTab("dashboard");
-                setIsSidebarOpen(false);
-              }}
-              className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-                activeTab === "dashboard" 
-                  ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
-                  : "text-slate-400 hover:text-white hover:bg-slate-800/40"
-              }`}
-            >
-              <LayoutDashboard className="w-4 h-4 text-inherit" />
-              <span>Detail Dashboard</span>
-            </button>
-
-            <div className="pt-2 pb-1 border-t border-slate-800/60 mt-2">
-              <span className="text-[9px] font-bold font-mono tracking-wider text-slate-500 uppercase px-3 text-left block mb-2">
-                Admissions Ecosystem
-              </span>
-              <div className="space-y-1">
-                <button 
-                  onClick={() => {
-                    setActiveTab("registry");
-                    setRegistryViewMode("list");
-                    setSubTabMode("beneficiaries");
-                    setSelectedBeneficiary(null);
-                    setIsSidebarOpen(false);
-                  }}
-                  className={`w-full py-2 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-                    activeTab === "registry" && subTabMode === "beneficiaries"
-                      ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
-                      : "text-slate-400 hover:text-white hover:bg-slate-800/40"
-                  }`}
-                >
-                  <Users className="w-3.5 h-3.5 text-inherit" />
-                  <span>Beneficiaries</span>
-                </button>
-
-                <button 
-                  onClick={() => {
-                    setActiveTab("registry");
-                    setRegistryViewMode("list");
-                    setSubTabMode("admissions");
-                    setAdmissionsSubTab("forms");
-                    setSelectedBeneficiary(null);
-                    setIsSidebarOpen(false);
-                  }}
-                  className={`w-full py-2 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-                    activeTab === "registry" && subTabMode === "admissions" && admissionsSubTab === "forms"
-                      ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
-                      : "text-slate-400 hover:text-white hover:bg-slate-800/40"
-                  }`}
-                >
-                  <FileText className="w-3.5 h-3.5 text-inherit" />
-                  <span>Admission Forms Registry</span>
-                </button>
-
-                <button 
-                  onClick={() => {
-                    setActiveTab("registry");
-                    setRegistryViewMode("list");
-                    setSubTabMode("admissions");
-                    setAdmissionsSubTab("letters");
-                    setSelectedBeneficiary(null);
-                    setIsSidebarOpen(false);
-                  }}
-                  className={`w-full py-2 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-                    activeTab === "registry" && subTabMode === "admissions" && admissionsSubTab === "letters"
-                      ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
-                      : "text-slate-400 hover:text-white hover:bg-slate-800/40"
-                  }`}
-                >
-                  <UserCheck className="w-3.5 h-3.5 text-inherit" />
-                  <span>Admission Offers</span>
-                </button>
-
-                <button 
-                  onClick={() => {
-                    setActiveTab("registry");
-                    setRegistryViewMode("list");
-                    setSubTabMode("admissions");
-                    setAdmissionsSubTab("acceptance");
-                    setSelectedBeneficiary(null);
-                    setIsSidebarOpen(false);
-                  }}
-                  className={`w-full py-2 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-                    activeTab === "registry" && subTabMode === "admissions" && admissionsSubTab === "acceptance"
-                      ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
-                      : "text-slate-400 hover:text-white hover:bg-slate-800/40"
-                  }`}
-                >
-                  <ShieldCheck className="w-3.5 h-3.5 text-inherit" />
-                  <span>Acceptance Desk</span>
-                </button>
-              </div>
-            </div>
-
-            <button 
-              onClick={() => {
-                setActiveTab("eligibility");
-                setIsSidebarOpen(false);
-              }}
-              className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-                activeTab === "eligibility"
-                  ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
-                  : "text-slate-400 hover:text-white hover:bg-slate-800/40"
-              }`}
-            >
-              <ShieldCheck className="w-4 h-4 text-inherit" />
-              <span>Eligibility & Compliance</span>
-            </button>
-
-            <button 
-              onClick={() => {
-                setActiveTab("certification");
-                setIsSidebarOpen(false);
-              }}
-              className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-                activeTab === "certification"
-                  ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
-                  : "text-slate-400 hover:text-white hover:bg-slate-800/40"
-              }`}
-            >
-              <Award className="w-4 h-4 text-inherit" />
-              <span>🏆 Certification Center</span>
-            </button>
-
-            <button 
-              onClick={() => {
-                setActiveTab("registry");
-                setRegistryViewMode("list");
-                setSubTabMode("documents");
-                setSelectedBeneficiary(null);
-                setIsSidebarOpen(false);
-              }}
-              className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-                activeTab === "registry" && subTabMode === "documents"
-                  ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
-                  : "text-slate-400 hover:text-white hover:bg-slate-800/40"
-              }`}
-            >
-              <FileCheck className="w-4 h-4 text-inherit" />
-              <span>Generated Documents</span>
-            </button>
-
-            <button 
-              onClick={() => {
-                setActiveTab("album");
-                setIsSidebarOpen(false);
-              }}
-              className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-                activeTab === "album" 
-                  ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
-                  : "text-slate-400 hover:text-white hover:bg-slate-800/40"
-              }`}
-            >
-              <ImageIcon className="w-4 h-4 text-inherit" />
-              <span>Reports</span>
-            </button>
-
-            {["SUPER_ADMIN", "ADMIN_OFFICER"].includes(session?.role || "") && (
-              <button 
-                onClick={() => {
-                  setActiveTab("settings");
-                  setIsSidebarOpen(false);
-                }}
-                className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-                  activeTab === "settings" 
-                    ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
-                    : "text-slate-400 hover:text-white hover:bg-slate-800/40"
-                }`}
-              >
-                <Settings className="w-4 h-4 text-inherit" />
-                <span>Settings</span>
-              </button>
-            )}
-
-            {session?.role === "SUPER_ADMIN" && (
-              <button 
-                onClick={() => {
-                  setActiveTab("audits");
-                  setIsSidebarOpen(false);
-                }}
-                className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-                  activeTab === "audits" 
-                    ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
-                    : "text-slate-400 hover:text-white hover:bg-slate-800/40"
-                }`}
-              >
-                <History className="w-4 h-4 text-inherit" />
-                <span>Audit Logs</span>
-              </button>
-            )}
-
-            {["SUPER_ADMIN", "ADMIN_OFFICER"].includes(session?.role || "") && (
-              <button 
-                onClick={() => {
-                  setActiveTab("custom");
-                  setIsSidebarOpen(false);
-                }}
-                className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-                  activeTab === "custom" 
-                    ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
-                    : "text-slate-400 hover:text-white hover:bg-slate-800/40"
-                }`}
-              >
-                <Sliders className="w-4 h-4 text-inherit" />
-                <span>Dynamic field Schemas</span>
-              </button>
-            )}
-          </nav>
-        </div>
-
-        {/* Bottom Segment */}
-        <div className="space-y-4">
-          
-          {/* Action CTA: Add New Beneficiary */}
-          {["SUPER_ADMIN", "ADMIN_OFFICER"].includes(session?.role || "") && (
-            (() => {
-              console.log("SIDEBAR BUTTON RENDERED");
-              return (
-                <div className="px-4">
-                  <button 
-                    onClick={() => {
-                      setActiveTab("registry");
-                      setRegistryViewMode("create");
-                      setSubTabMode("beneficiaries");
-                      setSelectedBeneficiary(null);
-                      setTempCreatedPhoto(null);
-                      setIsSidebarOpen(false);
-                    }}
-                    className="w-full bg-yellow-500 hover:bg-yellow-400 text-slate-950 font-bold py-2.5 px-4 rounded-lg flex items-center justify-center gap-2 shadow-md transition active:scale-[97%] cursor-pointer text-xs uppercase tracking-wider font-sans group animate-pulse"
-                    id="sidebar-register-cta"
-                  >
-                    <Users className="w-4 h-4 text-slate-950 group-hover:scale-110 transition" />
-                    <span>Add Beneficiary</span>
-                  </button>
-                </div>
-              );
-            })()
-          )}
-
-          {/* Operator session and bottom action buttons */}
-          <div className="p-4 border-t border-indigo-950/80 bg-slate-950/30 space-y-4">
-            <div className="flex items-center gap-3 px-1">
-              <div className="h-8.5 w-8.5 rounded-full bg-indigo-950/80 border border-indigo-700/50 flex items-center justify-center text-indigo-300 font-bold text-xs uppercase font-mono flex-shrink-0">
-                {session?.username?.substring(0, 2) || "AD"}
-              </div>
-              <div className="min-w-0 overflow-hidden text-left">
-                <p className="text-[10px] font-bold text-slate-350 tracking-wide block leading-none">SYSTEM OPERATOR</p>
-                <p className="text-[9px] text-slate-500 truncate font-mono mt-1" title={session?.email}>
-                  {session?.email}
-                </p>
-              </div>
-            </div>
-
-            <div className="pb-1">
-              <button 
-                type="button"
-                onClick={handleLogout}
-                className="w-full bg-rose-950/25 hover:bg-rose-900/40 text-rose-300 hover:text-rose-100 border border-rose-800/30 py-2 px-3 rounded-lg flex items-center justify-center gap-2 transition text-xs font-semibold cursor-pointer"
-              >
-                <LogOut className="w-4 h-4 flex-shrink-0" />
-                <span>Sign Out of Portal</span>
-              </button>
-            </div>
-          </div>
-
-        </div>
-
-      </aside>
+      <Sidebar
+        activeTab={activeTab}
+        subTabMode={subTabMode}
+        admissionsSubTab={admissionsSubTab}
+        isSidebarOpen={isSidebarOpen}
+        setIsSidebarOpen={setIsSidebarOpen}
+        setActiveTab={setActiveTab}
+        setRegistryViewMode={setRegistryViewMode}
+        setSubTabMode={setSubTabMode}
+        setAdmissionsSubTab={setAdmissionsSubTab}
+        setSelectedBeneficiary={setSelectedBeneficiary}
+        setTempCreatedPhoto={setTempCreatedPhoto}
+        session={session}
+        handleLogout={handleLogout}
+      />
 
       {/* 2. MAIN WORKSPACE CONTENT AREA - RIGHT ALIGNED */}
       <div className="flex-grow flex-1 flex flex-col h-full overflow-y-auto">
@@ -895,21 +697,29 @@ export default function App() {
             />
           )}
 
-          {activeTab === "album" && <ReportsWorkspace beneficiaries={beneficiaries} />}
+          {activeTab === "album" && (
+            <React.Suspense fallback={<SkeletonLoader label="Loading Reports..." />}>
+              <ReportsWorkspace beneficiaries={beneficiaries} />
+            </React.Suspense>
+          )}
 
           {activeTab === "eligibility" && (
-            <EligibilityCenter 
-              beneficiaries={beneficiaries} 
-              session={session} 
-              onRefresh={fetchBeneficiaries} 
-            />
+            <React.Suspense fallback={<SkeletonLoader label="Loading Eligibility & Compliance Center..." />}>
+              <EligibilityCenter 
+                beneficiaries={beneficiaries} 
+                session={session} 
+                onRefresh={fetchBeneficiaries} 
+              />
+            </React.Suspense>
           )}
 
           {activeTab === "certification" && (
-            <CertificationCenter
-              session={session}
-              onRefreshRoot={fetchBeneficiaries}
-            />
+            <React.Suspense fallback={<SkeletonLoader label="Loading Certification Center..." />}>
+              <CertificationCenter
+                session={session}
+                onRefreshRoot={fetchBeneficiaries}
+              />
+            </React.Suspense>
           )}
 
           {activeTab === "custom" && (
@@ -920,9 +730,17 @@ export default function App() {
             />
           )}
 
-          {activeTab === "audits" && <AuditTrail logs={auditLogs} />}
+          {activeTab === "audits" && (
+            <React.Suspense fallback={<SkeletonLoader label="Loading Audit Logs..." />}>
+              <AuditTrail logs={auditLogs} />
+            </React.Suspense>
+          )}
 
-          {activeTab === "settings" && <SettingsWorkspace session={session} />}
+          {activeTab === "settings" && (
+            <React.Suspense fallback={<SkeletonLoader label="Loading Settings & Configurations..." />}>
+              <SettingsWorkspace session={session} />
+            </React.Suspense>
+          )}
 
         </main>
       </div>

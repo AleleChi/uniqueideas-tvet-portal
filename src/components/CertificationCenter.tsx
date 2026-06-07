@@ -11,6 +11,7 @@ import {
   MapPin, HelpCircle, CheckSquare, Square, RefreshCcw
 } from "lucide-react";
 import { API_BASE_URL } from "../config/api";
+import { PaginationControl } from "./PaginationControl";
 
 interface Trainee {
   id: string;
@@ -75,6 +76,14 @@ export function CertificationCenter({ session, onRefreshRoot }: CertificationCen
   const [entrepreneurStatus, setEntrepreneurStatus] = useState("None");
   const [businessName, setBusinessName] = useState("");
   const [currentEmployer, setCurrentEmployer] = useState("");
+
+  // Pagination states
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(10);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search, statusFilter, tspFilter]);
 
   useEffect(() => {
     fetchData();
@@ -241,6 +250,11 @@ export function CertificationCenter({ session, onRefreshRoot }: CertificationCen
 
     return matchesSearch && matchesStatus && matchesTsp;
   });
+
+  const paginatedTrainees = filteredTrainees.slice(
+    (currentPage - 1) * itemsPerPage,
+    currentPage * itemsPerPage
+  );
 
   // Extract unique TSPs for filter dropdown lists
   const tsps = Array.from(new Set(trainees.map(t => t.tsp)));
@@ -439,7 +453,7 @@ export function CertificationCenter({ session, onRefreshRoot }: CertificationCen
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-xs text-slate-700">
-                    {filteredTrainees.map(t => {
+                    {paginatedTrainees.map(t => {
                       const isSelected = selectedIds.includes(t.id);
                       
                       return (
@@ -633,6 +647,19 @@ export function CertificationCenter({ session, onRefreshRoot }: CertificationCen
                     })}
                   </tbody>
                 </table>
+              </div>
+            )}
+
+            {filteredTrainees.length > 0 && (
+              <div className="mt-4 border-t border-slate-100 pt-4 px-4 pb-2">
+                <PaginationControl
+                  totalCount={filteredTrainees.length}
+                  currentPage={currentPage}
+                  pageSize={itemsPerPage}
+                  onPageChange={setCurrentPage}
+                  onPageSizeChange={setItemsPerPage}
+                  idPrefix="cert-registry"
+                />
               </div>
             )}
 

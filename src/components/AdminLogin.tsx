@@ -35,6 +35,18 @@ export function AdminLogin({ onLoginSuccess, onBackToHome }: AdminLoginProps) {
     e.preventDefault();
     setError(null);
     setSuccessMsg(null);
+
+    const isLocal = typeof window !== "undefined" && (
+      window.location.hostname.includes("localhost") ||
+      window.location.hostname.includes("127.0.0.1") ||
+      window.location.hostname.includes("run.app") ||
+      window.location.hostname.includes("aistudio")
+    );
+    if (!API_BASE_URL && !isLocal) {
+      setError("Backend configuration missing.");
+      return;
+    }
+
     setIsLoading(true);
 
     try {
