@@ -567,7 +567,7 @@ export class PdfService {
    */
   static async generateAdmissionFormPdf(beneficiary: Beneficiary, meta?: any, returnHtml: boolean = false): Promise<Buffer | string> {
     const settings = await this.getSettings();
-    const activeLetterhead = await DbRepo.getActiveLetterhead();
+    const activeTemplate = await DbRepo.getActiveAdmissionFormTemplate();
     const dateStr = beneficiary.admissionFormData?.submissionDate
       ? new Date(beneficiary.admissionFormData.submissionDate).toLocaleDateString("en-GB")
       : new Date().toLocaleDateString("en-GB");
@@ -626,7 +626,7 @@ export class PdfService {
         <meta charset="UTF-8">
         <title>Admission Registration Form - Candidate ID: ${beneficiary.id}</title>
         <style>
-          ${activeLetterhead ? `
+          ${activeTemplate ? `
           @page {
             size: A4 portrait;
             margin: 0 !important;
@@ -847,16 +847,11 @@ export class PdfService {
         <div class="border-frame" style="position: relative; z-index: 2; box-sizing: border-box;">
           ${meta?.watermarkEnabled ? `<div class="watermark" style="z-index: 0;">${meta.watermarkText || "SECURED REGISTRY DOCUMENT"}</div>` : ""}
           
-          ${activeLetterhead ? `
+          ${activeTemplate ? `
             <div class="letterhead-background" style="position: absolute; top: 0; left: 0; width: 210mm; height: 297mm; z-index: -1; pointer-events: none;">
-              <img src="${PdfService.getLetterheadBgUrl(activeLetterhead)}" style="width: 100%; height: 100%; object-fit: fill; opacity: 1.0;" referrerPolicy="no-referrer" />
+              <img src="${PdfService.getLetterheadBgUrl(activeTemplate)}" style="width: 100%; height: 100%; object-fit: fill; opacity: 1.0;" referrerPolicy="no-referrer" />
             </div>
           ` : `
-            ${settings.letterheadUrl ? `
-              <div style="text-align: center; margin-bottom: 20px; position: relative; z-index: 10; width: 100%;">
-                <img src="${settings.letterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
-              </div>
-            ` : `
               <!-- HORIZONTAL LOGO BAR -->
               <table class="logo-header-table" style="position: relative; z-index: 10; width: 100%; border-collapse: collapse; margin-bottom: 10px;">
                 <tr>
@@ -873,7 +868,6 @@ export class PdfService {
               </table>
               <!-- SEPARATOR SYSTEM -->
               <div class="divider-line" style="position: relative; z-index: 10;"></div>
-            `}
           `}
 
           <!-- DOCUMENT TITLE -->
@@ -1594,7 +1588,7 @@ export class PdfService {
    */
   static async generateAdmissionFormDocx(beneficiary: Beneficiary, meta?: any): Promise<Buffer> {
     const settings = await this.getSettings();
-    const activeLetterhead = await DbRepo.getActiveLetterhead();
+    const activeTemplate = await DbRepo.getActiveAdmissionFormTemplate();
     const dateStr = beneficiary.admissionFormData?.submissionDate
       ? new Date(beneficiary.admissionFormData.submissionDate).toLocaleDateString("en-GB")
       : new Date().toLocaleDateString("en-GB");
@@ -1733,11 +1727,11 @@ export class PdfService {
       <body>
         <div>
           <!-- OFFICIAL LETTERHEAD OVERLAY -->
-          ${activeLetterhead ? `
+          ${activeTemplate ? `
           <div style="text-align: center; margin-bottom: 20px;">
-            <img src="${activeLetterhead.fileUrl}" style="width: 100%; max-height: 120px; object-fit: contain;" />
+            <img src="${activeTemplate.fileUrl}" style="width: 100%; max-height: 120px; object-fit: contain;" />
             <div style="font-size: 8pt; color: #666666; margin-top: 5px; font-weight: bold; text-transform: uppercase;">
-              OFFICIAL TEMPLATE: ${activeLetterhead.name.toUpperCase()}
+              OFFICIAL TEMPLATE: ${activeTemplate.name.toUpperCase()}
             </div>
           </div>
           <hr style="border: 1px solid #000000; margin-bottom: 20px;" />

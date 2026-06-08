@@ -345,6 +345,19 @@ export interface InstitutionLetterhead {
   updatedAt: string;
 }
 
+export interface AdmissionFormTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  fileUrl: string;
+  fileType: "PDF" | "PNG" | "JPG" | "JPEG";
+  isDefault: boolean;
+  isActive: boolean;
+  uploadedBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface EmailTemplate {
   id: string;
   name: string;

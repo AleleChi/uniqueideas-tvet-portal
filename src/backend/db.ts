@@ -7,7 +7,7 @@ import pg from "pg";
 import fs from "fs";
 import path from "path";
 import bcrypt from "bcryptjs";
-import { Beneficiary, ProgramStatus, AuditLog, CustomField, OrganizationSettings, TrainingProgram, WorkflowHistory, InstitutionLetterhead } from "../types";
+import { Beneficiary, ProgramStatus, AuditLog, CustomField, OrganizationSettings, TrainingProgram, WorkflowHistory, InstitutionLetterhead, AdmissionFormTemplate } from "../types";
 
 const { Pool } = pg;
 const DB_FILE = path.join(process.cwd(), "database_ideas_tvet.json");
@@ -840,6 +840,23 @@ export async function initDb(): Promise<void> {
       ALTER TABLE workflow_history ADD COLUMN IF NOT EXISTS ip_address VARCHAR(100);
     `);
 
+    // Ensure admission_form_templates table is bootstrapped independently
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS admission_form_templates (
+        id VARCHAR(100) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        file_url TEXT NOT NULL,
+        file_type VARCHAR(20) NOT NULL,
+        is_default BOOLEAN DEFAULT FALSE,
+        is_active BOOLEAN DEFAULT TRUE,
+        uploaded_by VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_admission_form_templates_default ON admission_form_templates(is_default) WHERE is_default = TRUE;
+    `);
+
     // Bootstrap default system settings
     await pool.query(`
       INSERT INTO organization_settings (
@@ -889,6 +906,13 @@ export async function initDb(): Promise<void> {
     } else {
       console.log(`[DB] Database already initialized with ${count} records. Skipping CSV/JSON migration.`);
     }
+
+    // Automatically recover and check template URLs on server startup/bootstrap
+    try {
+      await DbRepo.recoverTemplateUrls();
+    } catch (recErr: any) {
+      console.error("[DB Init Cache] Silent block of automatic template validation on start up:", recErr.message || recErr);
+    }
   } catch (err) {
     console.error("[DB] Failed to initialize PostgreSQL tables/relations:", err);
   }
@@ -902,6 +926,7 @@ function loadJsonState(): {
   beneficiaries: Beneficiary[]; 
   auditLogs: AuditLog[]; 
   institutionLetterheads?: InstitutionLetterhead[];
+  admissionFormTemplates?: AdmissionFormTemplate[];
   documentDispatches?: any[];
   emailTemplates?: any[];
 } {
@@ -910,6 +935,9 @@ function loadJsonState(): {
       const data = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
       if (!data.institutionLetterheads) {
         data.institutionLetterheads = [];
+      }
+      if (!data.admissionFormTemplates) {
+        data.admissionFormTemplates = [];
       }
       if (!data.documentDispatches) {
         data.documentDispatches = [];
@@ -927,6 +955,7 @@ function loadJsonState(): {
     beneficiaries: [], 
     auditLogs: [], 
     institutionLetterheads: [],
+    admissionFormTemplates: [],
     documentDispatches: [],
     emailTemplates: []
   };
@@ -940,12 +969,16 @@ function saveJsonState(state: {
   beneficiaries: Beneficiary[]; 
   auditLogs: AuditLog[]; 
   institutionLetterheads?: InstitutionLetterhead[];
+  admissionFormTemplates?: AdmissionFormTemplate[];
   documentDispatches?: any[];
   emailTemplates?: any[];
 }) {
   try {
     if (!state.institutionLetterheads) {
       state.institutionLetterheads = [];
+    }
+    if (!state.admissionFormTemplates) {
+      state.admissionFormTemplates = [];
     }
     if (!state.documentDispatches) {
       state.documentDispatches = [];
@@ -4276,6 +4309,341 @@ export class DbRepo {
     } catch (e) {
       console.error("[DB Repo] Failed to delete letterhead from Postgres, committing fallback:", e);
       return fallbackDelete();
+    }
+  }
+
+  /**
+   * Retrieves all registered admission form templates in the workspace
+   */
+  static async getAdmissionFormTemplates(): Promise<AdmissionFormTemplate[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      // JSON File fallback
+      return loadJsonState().admissionFormTemplates || [];
+    }
+
+    try {
+      const res = await pool.query(
+        "SELECT id, name, description, file_url, file_type, is_default, is_active, uploaded_by, created_at, updated_at FROM admission_form_templates ORDER BY created_at DESC"
+      );
+      return res.rows.map(r => ({
+        id: r.id,
+        name: r.name,
+        description: r.description || undefined,
+        fileUrl: r.file_url,
+        fileType: r.file_type as "PDF" | "PNG" | "JPG" | "JPEG",
+        isDefault: !!r.is_default,
+        isActive: !!r.is_active,
+        uploadedBy: r.uploaded_by,
+        createdAt: r.created_at ? r.created_at.toISOString() : new Date().toISOString(),
+        updatedAt: r.updated_at ? r.updated_at.toISOString() : new Date().toISOString()
+      }));
+    } catch (e) {
+      console.error("[DB Repo] Failed to load admission form templates from PG, falling back to JSON:", e);
+      return loadJsonState().admissionFormTemplates || [];
+    }
+  }
+
+  /**
+   * Retrieves the current default, active admission form template
+   */
+  static async getActiveAdmissionFormTemplate(): Promise<AdmissionFormTemplate | null> {
+    const list = await this.getAdmissionFormTemplates();
+    const activeDefault = list.find(l => l.isActive && l.isDefault);
+    if (activeDefault) return activeDefault;
+    // Fallback to first active one if no default is selected
+    const activeFirst = list.find(l => l.isActive);
+    return activeFirst || null;
+  }
+
+  /**
+   * Saves or updates an admission form template. Ensures that if set as default,
+   * other defaults are cleared. In case of multiple active ones, only one default may exist.
+   */
+  static async saveAdmissionFormTemplate(t: AdmissionFormTemplate): Promise<AdmissionFormTemplate> {
+    const pool = getPgPool();
+    const saveFallback = async () => {
+      const state = loadJsonState();
+      if (!state.admissionFormTemplates) state.admissionFormTemplates = [];
+
+      // If setting this one to default, reset others in JSON state
+      if (t.isDefault && t.isActive) {
+        state.admissionFormTemplates.forEach(item => {
+          if (item.id !== t.id) {
+            item.isDefault = false;
+          }
+        });
+      }
+      const index = state.admissionFormTemplates.findIndex(item => item.id === t.id);
+      if (index >= 0) {
+        state.admissionFormTemplates[index] = t;
+      } else {
+        state.admissionFormTemplates.push(t);
+      }
+      saveJsonState(state);
+      return t;
+    };
+
+    if (!pool || !isPgActive) {
+      return await saveFallback();
+    }
+
+    try {
+      // If setting this one as default, run transactional reset of others
+      if (t.isDefault && t.isActive) {
+        await pool.query(
+          "UPDATE admission_form_templates SET is_default = FALSE WHERE id <> $1",
+          [t.id]
+        );
+      }
+
+      await pool.query(
+        `INSERT INTO admission_form_templates (
+          id, name, description, file_url, file_type, 
+          is_default, is_active, uploaded_by, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (id) DO UPDATE SET
+           name = EXCLUDED.name,
+           description = EXCLUDED.description,
+           file_url = EXCLUDED.file_url,
+           file_type = EXCLUDED.file_type,
+           is_default = EXCLUDED.is_default,
+           is_active = EXCLUDED.is_active,
+           uploaded_by = EXCLUDED.uploaded_by,
+           updated_at = NOW()`,
+        [
+          t.id, t.name, t.description || null, t.fileUrl, 
+          t.fileType, t.isDefault, t.isActive, t.uploadedBy, 
+          t.createdAt ? new Date(t.createdAt) : new Date(), 
+          t.updatedAt ? new Date(t.updatedAt) : new Date()
+        ]
+      );
+      return t;
+    } catch (e) {
+      console.error("[DB Repo] Failed to save admission form template to Postgres, committing fallback:", e);
+      return await saveFallback();
+    }
+  }
+
+  /**
+   * Deletes a registered admission form template from the database list.
+   */
+  static async deleteAdmissionFormTemplate(id: string): Promise<boolean> {
+    const pool = getPgPool();
+    const fallbackDelete = () => {
+      const state = loadJsonState();
+      if (!state.admissionFormTemplates) state.admissionFormTemplates = [];
+      const updated = state.admissionFormTemplates.filter(item => item.id !== id);
+      const isDeleted = updated.length < state.admissionFormTemplates.length;
+      state.admissionFormTemplates = updated;
+      saveJsonState(state);
+      return isDeleted;
+    };
+
+    if (!pool || !isPgActive) {
+      return fallbackDelete();
+    }
+
+    try {
+      const res = await pool.query(
+        "DELETE FROM admission_form_templates WHERE id = $1",
+        [id]
+      );
+      return (res.rowCount ?? 0) > 0;
+    } catch (e) {
+      console.error("[DB Repo] Failed to delete admission form template from Postgres, committing fallback:", e);
+      return fallbackDelete();
+    }
+  }
+
+  /**
+   * Parse a Cloudinary URL into its constituent parts for reconstruction or repair.
+   */
+  static parseCloudinaryUrl(url: string) {
+    if (!url) return null;
+    const match = url.match(/https:\/\/res\.cloudinary\.com\/([^/]+)\/([^/]+)\/upload\/(?:[^/]+\/)*(v\d+\/)?(.+?)(?:\.([^/.]+))?$/);
+    if (!match) return null;
+    return {
+      cloudName: match[1],
+      resourceType: match[2],
+      version: match[3] || "",
+      folderAndPublicId: match[4],
+      extension: match[5] || "pdf"
+    };
+  }
+
+  /**
+   * Automatically repair broken Cloudinary URLs for templates.
+   */
+  static async recoverTemplateUrls(): Promise<void> {
+    console.log("[Recovery] Running recoverTemplateUrls() audit...");
+    
+    // 1. Recover Institutional Letterheads
+    try {
+      const letterheads = await this.getLetterheads();
+      for (const lh of letterheads) {
+        const urlToTest = lh.fileUrl;
+        if (!urlToTest) continue;
+
+        const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+        const apiKey = process.env.CLOUDINARY_API_KEY;
+        const apiSecret = process.env.CLOUDINARY_API_SECRET;
+        const isCloudinaryConfigured = !!((process.env.CLOUDINARY_URL && process.env.CLOUDINARY_URL.startsWith("cloudinary://")) || (cloudName && apiKey && apiSecret));
+
+        if (!isCloudinaryConfigured && urlToTest.includes("res.cloudinary.com/ideas-tvet")) {
+          console.log(`[Recovery] Skipping simulation URL check in offline mode: ${lh.name}`);
+          continue;
+        }
+
+        let isReachable = false;
+        try {
+          const testRes = await fetch(urlToTest, { method: "HEAD" });
+          if (testRes.status === 200) {
+            isReachable = true;
+          }
+        } catch (err: any) {
+          console.warn(`[Recovery] HEAD check failed for letterhead ${lh.name}:`, err.message);
+        }
+
+        if (!isReachable) {
+          console.log(`[Recovery] Letterhead template '${lh.name}' (URL: ${urlToTest}) is broken. Attempting reconstruction...`);
+          const parsed = this.parseCloudinaryUrl(urlToTest);
+          if (parsed) {
+            const { cloudName, version, folderAndPublicId, extension } = parsed;
+            const prefix = `https://res.cloudinary.com/${cloudName}`;
+            const variations = [
+              `${prefix}/raw/upload/${version}${folderAndPublicId}.${extension}`,
+              `${prefix}/image/upload/${version}${folderAndPublicId}.${extension}`,
+              `${prefix}/raw/upload/${version}${folderAndPublicId}`,
+              `${prefix}/image/upload/${version}${folderAndPublicId}`,
+            ];
+
+            let foundUrl: string | null = null;
+            for (const variant of variations) {
+              if (variant === urlToTest) continue;
+              try {
+                const variantRes = await fetch(variant, { method: "HEAD" });
+                if (variantRes.status === 200) {
+                  foundUrl = variant;
+                  break;
+                }
+              } catch (e: any) {}
+            }
+
+            if (foundUrl) {
+              console.log(`[Recovery] Successfully repaired letterhead '${lh.name}'! New URL: ${foundUrl}`);
+              lh.fileUrl = foundUrl;
+              if (lh.name.includes("[BROKEN_TEMPLATE]")) {
+                lh.name = lh.name.replace(/\s*\[BROKEN_TEMPLATE\]/g, "").trim();
+              }
+              await this.saveLetterhead(lh);
+            } else {
+              console.error(`[Recovery] Repair failed for letterhead '${lh.name}'. Flagging as BROKEN_TEMPLATE.`);
+              if (!lh.name.includes("[BROKEN_TEMPLATE]")) {
+                lh.name = `${lh.name} [BROKEN_TEMPLATE]`;
+              }
+              await this.saveLetterhead(lh);
+            }
+          } else {
+            console.error(`[Recovery] Cannot parse non-Cloudinary template URL for letterhead '${lh.name}'. Flagging as BROKEN_TEMPLATE.`);
+            if (!lh.name.includes("[BROKEN_TEMPLATE]")) {
+              lh.name = `${lh.name} [BROKEN_TEMPLATE]`;
+            }
+            await this.saveLetterhead(lh);
+          }
+        } else {
+          if (lh.name.includes("[BROKEN_TEMPLATE]")) {
+            lh.name = lh.name.replace(/\s*\[BROKEN_TEMPLATE\]/g, "").trim();
+            await this.saveLetterhead(lh);
+          }
+        }
+      }
+    } catch (e: any) {
+      console.error("[Recovery] Failed letterheads recovery process:", e.message || e);
+    }
+
+    // 2. Recover Admission Form Templates
+    try {
+      const templates = await this.getAdmissionFormTemplates();
+      for (const t of templates) {
+        const urlToTest = t.fileUrl;
+        if (!urlToTest) continue;
+
+        const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+        const apiKey = process.env.CLOUDINARY_API_KEY;
+        const apiSecret = process.env.CLOUDINARY_API_SECRET;
+        const isCloudinaryConfigured = !!((process.env.CLOUDINARY_URL && process.env.CLOUDINARY_URL.startsWith("cloudinary://")) || (cloudName && apiKey && apiSecret));
+
+        if (!isCloudinaryConfigured && urlToTest.includes("res.cloudinary.com/ideas-tvet")) {
+          console.log(`[Recovery] Skipping simulation URL check in offline mode: ${t.name}`);
+          continue;
+        }
+
+        let isReachable = false;
+        try {
+          const testRes = await fetch(urlToTest, { method: "HEAD" });
+          if (testRes.status === 200) {
+            isReachable = true;
+          }
+        } catch (err: any) {
+          console.warn(`[Recovery] HEAD check failed for admission template ${t.name}:`, err.message);
+        }
+
+        if (!isReachable) {
+          console.log(`[Recovery] Admission template '${t.name}' (URL: ${urlToTest}) is broken. Attempting reconstruction...`);
+          const parsed = this.parseCloudinaryUrl(urlToTest);
+          if (parsed) {
+            const { cloudName, version, folderAndPublicId, extension } = parsed;
+            const prefix = `https://res.cloudinary.com/${cloudName}`;
+            const variations = [
+              `${prefix}/raw/upload/${version}${folderAndPublicId}.${extension}`,
+              `${prefix}/image/upload/${version}${folderAndPublicId}.${extension}`,
+              `${prefix}/raw/upload/${version}${folderAndPublicId}`,
+              `${prefix}/image/upload/${version}${folderAndPublicId}`,
+            ];
+
+            let foundUrl: string | null = null;
+            for (const variant of variations) {
+              if (variant === urlToTest) continue;
+              try {
+                const variantRes = await fetch(variant, { method: "HEAD" });
+                if (variantRes.status === 200) {
+                  foundUrl = variant;
+                  break;
+                }
+              } catch (e: any) {}
+            }
+
+            if (foundUrl) {
+              console.log(`[Recovery] Successfully repaired template '${t.name}'! New URL: ${foundUrl}`);
+              t.fileUrl = foundUrl;
+              if (t.name.includes("[BROKEN_TEMPLATE]")) {
+                t.name = t.name.replace(/\s*\[BROKEN_TEMPLATE\]/g, "").trim();
+              }
+              await this.saveAdmissionFormTemplate(t);
+            } else {
+              console.error(`[Recovery] Repair failed for template '${t.name}'. Flagging as BROKEN_TEMPLATE.`);
+              if (!t.name.includes("[BROKEN_TEMPLATE]")) {
+                t.name = `${t.name} [BROKEN_TEMPLATE]`;
+              }
+              await this.saveAdmissionFormTemplate(t);
+            }
+          } else {
+            console.error(`[Recovery] Cannot parse non-Cloudinary template URL for admission template '${t.name}'. Flagging as BROKEN_TEMPLATE.`);
+            if (!t.name.includes("[BROKEN_TEMPLATE]")) {
+              t.name = `${t.name} [BROKEN_TEMPLATE]`;
+            }
+            await this.saveAdmissionFormTemplate(t);
+          }
+        } else {
+          if (t.name.includes("[BROKEN_TEMPLATE]")) {
+            t.name = t.name.replace(/\s*\[BROKEN_TEMPLATE\]/g, "").trim();
+            await this.saveAdmissionFormTemplate(t);
+          }
+        }
+      }
+    } catch (e: any) {
+      console.error("[Recovery] Failed admission templates recovery process:", e.message || e);
     }
   }
 

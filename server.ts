@@ -1608,6 +1608,28 @@ app.put("/api/organization-settings", requireAuth, requireRole(["SUPER_ADMIN", "
   }
 });
 
+// Helper to verify a secure template URL using HEAD request
+async function verifyTemplateUrl(url: string): Promise<boolean> {
+  if (!url) return false;
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+  const apiKey = process.env.CLOUDINARY_API_KEY;
+  const apiSecret = process.env.CLOUDINARY_API_SECRET;
+  const isCloudinaryConfigured = !!((process.env.CLOUDINARY_URL && process.env.CLOUDINARY_URL.startsWith("cloudinary://")) || (cloudName && apiKey && apiSecret));
+
+  // If Cloudinary is simulation mode, we bypass validation to maintain perfect development stability.
+  if (!isCloudinaryConfigured && url.includes("res.cloudinary.com/ideas-tvet")) {
+    return true;
+  }
+
+  try {
+    const res = await fetch(url, { method: "HEAD" });
+    return res.status === 200;
+  } catch (err) {
+    console.error("[Template Verify] HEAD request failed for url:", url, err);
+    return false;
+  }
+}
+
 // Letterhead Library Management Endpoints
 app.get("/api/letterheads", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
   try {
@@ -1658,6 +1680,12 @@ app.post("/api/letterheads", requireAuth, requireRole(["SUPER_ADMIN"]), async (r
       updatedAt: new Date().toISOString()
     };
 
+    // Verify template URL via HEAD request before saving
+    const isUrlVerified = await verifyTemplateUrl(fileUrl);
+    if (!isUrlVerified) {
+      return res.status(400).json({ error: "Uploaded template could not be verified." });
+    }
+
     const saved = await DbRepo.saveLetterhead(newLh);
     await logAction(req.user!.email, "LETTERHEAD_CREATE", `Registered new document letterhead template: '${finalName}'`);
     res.status(201).json(saved);
@@ -1675,6 +1703,14 @@ app.put("/api/letterheads/:id", requireAuth, requireRole(["SUPER_ADMIN"]), async
     const existing = list.find(l => l.id === id);
     if (!existing) {
       return res.status(404).json({ error: "Letterhead template not found" });
+    }
+
+    // Verify template URL via HEAD request if setting or updating fileUrl
+    if (fileUrl !== undefined && fileUrl !== existing.fileUrl) {
+      const isUrlVerified = await verifyTemplateUrl(fileUrl);
+      if (!isUrlVerified) {
+        return res.status(400).json({ error: "Uploaded template could not be verified." });
+      }
     }
 
     const updatedLh = {
@@ -1714,6 +1750,295 @@ app.delete("/api/letterheads/:id", requireAuth, requireRole(["SUPER_ADMIN"]), as
     res.status(400).json({ error: "Failed to delete template" });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Admission Form Template Library Management Endpoints
+app.get("/api/admission-form-templates", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
+  try {
+    const list = await DbRepo.getAdmissionFormTemplates();
+    res.json(list);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/admission-form-templates/active", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
+  try {
+    const active = await DbRepo.getActiveAdmissionFormTemplate();
+    res.json(active);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/admission-form-templates", requireAuth, requireRole(["SUPER_ADMIN"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { name, description, fileUrl, fileType, isDefault, isActive } = req.body;
+    if (!name || !fileUrl || !fileType) {
+      return res.status(400).json({ error: "Name, file URL and file type are required" });
+    }
+
+    const list = await DbRepo.getAdmissionFormTemplates();
+    const baseName = name.replace(/\s+v\d+$/i, "").trim();
+    const countSameBase = list.filter(l => l.name.toLowerCase().startsWith(baseName.toLowerCase())).length;
+    let finalName = name;
+    if (countSameBase > 0) {
+      finalName = `${baseName} v${countSameBase + 1}`;
+    } else {
+      finalName = `${baseName} v1`;
+    }
+
+    const newTemplate = {
+      id: "aft_" + crypto.randomBytes(12).toString("hex"),
+      name: finalName,
+      description,
+      fileUrl,
+      fileType,
+      isDefault: !!isDefault,
+      isActive: isActive !== undefined ? !!isActive : true,
+      uploadedBy: req.user!.email,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    // Verify template URL via HEAD request before saving
+    const isUrlVerified = await verifyTemplateUrl(fileUrl);
+    if (!isUrlVerified) {
+      return res.status(400).json({ error: "Uploaded template could not be verified." });
+    }
+
+    const saved = await DbRepo.saveAdmissionFormTemplate(newTemplate);
+    await logAction(
+      req.user!.email,
+      "ADMISSION_TEMPLATE_UPLOADED",
+      `Uploaded new admission form template: '${finalName}'`
+    );
+    res.status(201).json(saved);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put("/api/admission-form-templates/:id", requireAuth, requireRole(["SUPER_ADMIN"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description, fileUrl, fileType, isDefault, isActive } = req.body;
+    
+    const list = await DbRepo.getAdmissionFormTemplates();
+    const existing = list.find(l => l.id === id);
+    if (!existing) {
+      return res.status(404).json({ error: "Admission form template not found" });
+    }
+
+    // Verify template URL via HEAD request if setting or updating fileUrl
+    if (fileUrl !== undefined && fileUrl !== existing.fileUrl) {
+      const isUrlVerified = await verifyTemplateUrl(fileUrl);
+      if (!isUrlVerified) {
+        return res.status(400).json({ error: "Uploaded template could not be verified." });
+      }
+    }
+
+    const wasActive = existing.isActive;
+    const wasDefault = existing.isDefault;
+
+    const updatedTemplate = {
+      ...existing,
+      name: name !== undefined ? name : existing.name,
+      description: description !== undefined ? description : existing.description,
+      fileUrl: fileUrl !== undefined ? fileUrl : existing.fileUrl,
+      fileType: fileType !== undefined ? fileType : existing.fileType,
+      isDefault: isDefault !== undefined ? !!isDefault : existing.isDefault,
+      isActive: isActive !== undefined ? !!isActive : existing.isActive,
+      updatedAt: new Date().toISOString()
+    };
+
+    const saved = await DbRepo.saveAdmissionFormTemplate(updatedTemplate);
+
+    let auditAction = "ADMISSION_TEMPLATE_REPLACED";
+    let auditLogMsg = `Replaced/updated admission form template: '${updatedTemplate.name}'`;
+
+    if (isActive !== undefined && isActive !== wasActive) {
+      auditAction = isActive ? "ADMISSION_TEMPLATE_ACTIVATED" : "ADMISSION_TEMPLATE_DEACTIVATED";
+      auditLogMsg = `${isActive ? "Activated" : "Deactivated"} admission form template: '${updatedTemplate.name}'`;
+    } else if (isDefault !== undefined && isDefault !== wasDefault && isDefault) {
+      auditAction = "ADMISSION_TEMPLATE_ACTIVATED";
+      auditLogMsg = `Set admission form template as default: '${updatedTemplate.name}'`;
+    }
+
+    await logAction(req.user!.email, auditAction, auditLogMsg);
+    res.json(saved);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/admission-form-templates/:id", requireAuth, requireRole(["SUPER_ADMIN"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    const list = await DbRepo.getAdmissionFormTemplates();
+    const existing = list.find(l => l.id === id);
+    if (!existing) {
+      return res.status(404).json({ error: "Admission form template not found" });
+    }
+
+    const success = await DbRepo.deleteAdmissionFormTemplate(id);
+    if (success) {
+      await logAction(req.user!.email, "ADMISSION_TEMPLATE_DELETED", `Deleted admission form template: '${existing.name}'`);
+      return res.json({ success: true });
+    }
+    res.status(400).json({ error: "Failed to delete template" });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// --- TEMPLATE DIAGNOSTICS & OPERATIONS PLATFORM ---
+app.get("/api/templates/diagnostics", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
+  try {
+    const letterheads = await DbRepo.getLetterheads();
+    const admissionTemplates = await DbRepo.getAdmissionFormTemplates();
+    
+    const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+    const apiKey = process.env.CLOUDINARY_API_KEY;
+    const apiSecret = process.env.CLOUDINARY_API_SECRET;
+    const isCloudinaryConfigured = !!((process.env.CLOUDINARY_URL && process.env.CLOUDINARY_URL.startsWith("cloudinary://")) || (cloudName && apiKey && apiSecret));
+
+    const verifyTemplate = async (item: any, type: "letterhead" | "admission-template") => {
+      const url = item.fileUrl;
+      let reachability: "REACHABLE" | "BROKEN" | "SIMULATION" = "REACHABLE";
+      
+      if (!isCloudinaryConfigured && url.includes("res.cloudinary.com/ideas-tvet")) {
+        reachability = "SIMULATION";
+      } else if (!url) {
+        reachability = "BROKEN";
+      } else {
+        try {
+          const response = await fetch(url, { method: "HEAD" });
+          if (response.status !== 200) {
+            reachability = "BROKEN";
+          }
+        } catch (err) {
+          reachability = "BROKEN";
+        }
+      }
+      
+      const isBrokenTag = item.name.includes("[BROKEN_TEMPLATE]");
+
+      return {
+        id: item.id,
+        name: item.name,
+        type,
+        fileUrl: url,
+        fileType: item.fileType,
+        cloudinaryStatus: reachability,
+        isBroken: reachability === "BROKEN" || isBrokenTag,
+        lastVerification: new Date().toISOString()
+      };
+    };
+
+    const letterheadTasks = letterheads.map(lh => verifyTemplate(lh, "letterhead"));
+    const admissionTasks = admissionTemplates.map(at => verifyTemplate(at, "admission-template"));
+    
+    const diagnostics = await Promise.all([...letterheadTasks, ...admissionTasks]);
+    res.json(diagnostics);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/templates/verify-all", requireAuth, requireRole(["SUPER_ADMIN"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    await DbRepo.recoverTemplateUrls();
+    res.json({ success: true, message: "Template URLs recovery completed." });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/templates/repair", requireAuth, requireRole(["SUPER_ADMIN"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id, type } = req.body;
+    if (!id || !type) {
+      return res.status(400).json({ error: "Missing required params: id, type" });
+    }
+    
+    let repaired = false;
+    let newUrl = "";
+    
+    if (type === "letterhead") {
+      const list = await DbRepo.getLetterheads();
+      const item = list.find(l => l.id === id);
+      if (item) {
+        const urlToTest = item.fileUrl;
+        const parsed = DbRepo.parseCloudinaryUrl(urlToTest);
+        if (parsed) {
+          const { cloudName, version, folderAndPublicId, extension } = parsed;
+          const prefix = `https://res.cloudinary.com/${cloudName}`;
+          const variations = [
+            `${prefix}/raw/upload/${version}${folderAndPublicId}.${extension}`,
+            `${prefix}/image/upload/${version}${folderAndPublicId}.${extension}`,
+            `${prefix}/raw/upload/${version}${folderAndPublicId}`,
+            `${prefix}/image/upload/${version}${folderAndPublicId}`,
+          ];
+
+          for (const variant of variations) {
+            if (variant === urlToTest) continue;
+            try {
+              const resHead = await fetch(variant, { method: "HEAD" });
+              if (resHead.status === 200) {
+                item.fileUrl = variant;
+                if (item.name.includes("[BROKEN_TEMPLATE]")) {
+                  item.name = item.name.replace(/\s*\[BROKEN_TEMPLATE\]/g, "").trim();
+                }
+                await DbRepo.saveLetterhead(item);
+                repaired = true;
+                newUrl = variant;
+                break;
+              }
+            } catch (e) {}
+          }
+        }
+      }
+    } else {
+      const list = await DbRepo.getAdmissionFormTemplates();
+      const item = list.find(a => a.id === id);
+      if (item) {
+        const urlToTest = item.fileUrl;
+        const parsed = DbRepo.parseCloudinaryUrl(urlToTest);
+        if (parsed) {
+          const { cloudName, version, folderAndPublicId, extension } = parsed;
+          const prefix = `https://res.cloudinary.com/${cloudName}`;
+          const variations = [
+            `${prefix}/raw/upload/${version}${folderAndPublicId}.${extension}`,
+            `${prefix}/image/upload/${version}${folderAndPublicId}.${extension}`,
+            `${prefix}/raw/upload/${version}${folderAndPublicId}`,
+            `${prefix}/image/upload/${version}${folderAndPublicId}`,
+          ];
+
+          for (const variant of variations) {
+            if (variant === urlToTest) continue;
+            try {
+              const resHead = await fetch(variant, { method: "HEAD" });
+              if (resHead.status === 200) {
+                item.fileUrl = variant;
+                if (item.name.includes("[BROKEN_TEMPLATE]")) {
+                  item.name = item.name.replace(/\s*\[BROKEN_TEMPLATE\]/g, "").trim();
+                }
+                await DbRepo.saveAdmissionFormTemplate(item);
+                repaired = true;
+                newUrl = variant;
+                break;
+              }
+            } catch (e) {}
+          }
+        }
+      }
+    }
+    
+    res.json({ success: repaired, newUrl });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 

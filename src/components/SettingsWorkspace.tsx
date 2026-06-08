@@ -7,9 +7,9 @@ import React, { useState, useEffect } from "react";
 import { 
   Building, UserCheck, MapPin, Mail, Phone, Upload, Trash2, Plus, 
   Save, CheckCircle, AlertCircle, Award, BookOpen, Clock, Tag, RefreshCw,
-  FileText, Sparkles, Loader2
+  FileText, Sparkles, Loader2, Activity, ShieldAlert, Check, AlertTriangle, ShieldCheck
 } from "lucide-react";
-import { OrganizationSettings, TrainingProgram } from "../types";
+import { OrganizationSettings, TrainingProgram, AdmissionFormTemplate } from "../types";
 import { authFetch } from "../utils/authFetch";
 import { useNotification } from "./NotificationContext";
 
@@ -82,7 +82,7 @@ export function SettingsWorkspace({ session }: { session?: { username?: string; 
     photoAlbumHeader: "idle"
   });
 
-  const [activeSubTab, setActiveSubTab] = useState<"general" | "letterheads">("general");
+  const [activeSubTab, setActiveSubTab] = useState<"general" | "letterheads" | "admission-templates" | "document-templates" | "diagnostics">("general");
   const [letterheads, setLetterheads] = useState<any[]>([]);
   const [activeLetterhead, setActiveLetterhead] = useState<any | null>(null);
   const [isLoadingLetterheads, setIsLoadingLetterheads] = useState(false);
@@ -91,11 +91,186 @@ export function SettingsWorkspace({ session }: { session?: { username?: string; 
   const [newLetterheadDescription, setNewLetterheadDescription] = useState("");
   const [letterheadIsDefault, setLetterheadIsDefault] = useState(false);
 
+  // Admission Form Templates States
+  const [admissionTemplates, setAdmissionTemplates] = useState<AdmissionFormTemplate[]>([]);
+  const [activeAdmissionTemplate, setActiveAdmissionTemplate] = useState<AdmissionFormTemplate | null>(null);
+  const [isLoadingAdmissionTemplates, setIsLoadingAdmissionTemplates] = useState(false);
+  const [uploadingAdmissionTemplate, setUploadingAdmissionTemplate] = useState(false);
+  const [newAdmissionTemplateName, setNewAdmissionTemplateName] = useState("");
+  const [newAdmissionTemplateDescription, setNewAdmissionTemplateDescription] = useState("");
+  const [admissionTemplateIsDefault, setAdmissionTemplateIsDefault] = useState(false);
+
   useEffect(() => {
     fetchSettings();
     fetchPrograms();
     fetchLetterheads();
+    fetchAdmissionTemplates();
   }, []);
+
+  const fetchAdmissionTemplates = async () => {
+    setIsLoadingAdmissionTemplates(true);
+    try {
+      const res = await authFetch("/api/admission-form-templates");
+      if (res.ok) {
+        const data = await res.json();
+        setAdmissionTemplates(data);
+        const active = data.find((l: any) => l.isDefault && l.isActive);
+        setActiveAdmissionTemplate(active || null);
+      }
+    } catch (e) {
+      console.error("Failed to fetch admission templates in client settings:", e);
+    } finally {
+      setIsLoadingAdmissionTemplates(false);
+    }
+  };
+
+  const handleSetDefaultAdmissionTemplate = async (id: string) => {
+    try {
+      const res = await authFetch(`/api/admission-form-templates/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isDefault: true, isActive: true })
+      });
+      if (res.ok) {
+        showToast("Admission Form Template updated as system default!", "success");
+        await fetchAdmissionTemplates();
+      } else {
+        const err = await res.json();
+        showToast(err.error || "Failed activating default template", "error");
+      }
+    } catch (e) {
+      console.error(e);
+      showToast("Network error updating default admission form template.", "error");
+    }
+  };
+
+  const handleToggleAdmissionTemplateActive = async (id: string, currentActive: boolean) => {
+    try {
+      const res = await authFetch(`/api/admission-form-templates/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isActive: !currentActive })
+      });
+      if (res.ok) {
+        showToast(`Template ${!currentActive ? "activated" : "deactivated"} successfully!`, "success");
+        await fetchAdmissionTemplates();
+      } else {
+        const err = await res.json();
+        showToast(err.error || "Failed toggling template status", "error");
+      }
+    } catch (e) {
+      console.error(e);
+      showToast("Network error toggling template status.", "error");
+    }
+  };
+
+  const handleDeleteAdmissionTemplate = async (id: string, name: string) => {
+    confirmDelete({
+      title: "Delete Admission Form Template",
+      message: `Are you sure you want to delete the admission form template '${name}'? This action is permanent and cannot be undone.`,
+      onConfirm: async () => {
+        try {
+          const res = await authFetch(`/api/admission-form-templates/${id}`, {
+            method: "DELETE"
+          });
+          if (res.ok) {
+            showToast("Admission form template deleted successfully", "success");
+            await fetchAdmissionTemplates();
+          } else {
+            showToast("Unauthorized. Only SUPER_ADMIN users can perform this action.", "error");
+          }
+        } catch (e) {
+          console.error(e);
+          showToast("Network error deleting admission form template.", "error");
+        }
+      }
+    });
+  };
+
+  const handleUploadAdmissionTemplate = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (session?.role !== "SUPER_ADMIN") {
+      showToast("Operation Restricted: Only SUPER_ADMIN is permitted to upload new templates.", "error");
+      e.target.value = "";
+      return;
+    }
+
+    const maxBytes = 10 * 1024 * 1024;
+    if (file.size > maxBytes) {
+      showToast("File size too large. Admission form templates must be under 10MB.", "error");
+      e.target.value = "";
+      return;
+    }
+
+    const finalName = newAdmissionTemplateName.trim() || file.name.split(".")[0];
+    const allowedExtensions = ["png", "jpg", "jpeg", "pdf"];
+    const extension = file.name.split(".").pop()?.toLowerCase() || "";
+    if (!allowedExtensions.includes(extension)) {
+      showToast("Invalid template format. Only PNG, JPG, JPEG, and PDF documents are supported.", "error");
+      e.target.value = "";
+      return;
+    }
+
+    setUploadingAdmissionTemplate(true);
+    showToast("Processing admission form template binary...", "info");
+
+    try {
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64Content = reader.result as string;
+        try {
+          const uploadRes = await authFetch("/api/upload-asset", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              fileContent: base64Content,
+              fileName: `admission_template_${finalName.toLowerCase().replace(/[^a-z0-9]/g, "_")}`,
+              folder: "ideas_admission_form_templates"
+            })
+          });
+
+          if (!uploadRes.ok) throw new Error("Upload to asset storage failed.");
+          const { secureUrl } = await uploadRes.json();
+
+          const saveRes = await authFetch("/api/admission-form-templates", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: finalName,
+              description: newAdmissionTemplateDescription || `Official admission background template in ${extension.toUpperCase()} style.`,
+              fileUrl: secureUrl,
+              fileType: extension.toUpperCase(),
+              isDefault: admissionTemplateIsDefault,
+              isActive: true
+            })
+          });
+
+          if (saveRes.ok) {
+            showToast("Success: Admission form template imported successfully!", "success");
+            setNewAdmissionTemplateName("");
+            setNewAdmissionTemplateDescription("");
+            setAdmissionTemplateIsDefault(false);
+            await fetchAdmissionTemplates();
+          } else {
+            const err = await saveRes.json();
+            throw new Error(err.error || "Failed saving template meta parameters.");
+          }
+        } catch (err: any) {
+          console.error(err);
+          showToast(err.message || "Failed uploading template.", "error");
+        } finally {
+          setUploadingAdmissionTemplate(false);
+        }
+      };
+
+      reader.readAsDataURL(file);
+    } catch (err) {
+      console.error(err);
+      showToast("Error processing file parameters locally.", "error");
+    }
+  };
 
   const fetchLetterheads = async () => {
     setIsLoadingLetterheads(true);
@@ -494,7 +669,7 @@ export function SettingsWorkspace({ session }: { session?: { username?: string; 
         </button>
       </div>
       {/* Dynamic Sub-tab Navigation */}
-      <div className="flex border-b border-slate-200 gap-6 mt-4 pb-0.5">
+      <div className="flex flex-wrap border-b border-slate-200 gap-4 sm:gap-6 mt-4 pb-0.5">
         <button
           onClick={() => setActiveSubTab("general")}
           className={`pb-3.5 px-2 font-bold text-xs tracking-wider uppercase border-b-2 transition inline-flex items-center gap-2 cursor-pointer ${
@@ -515,7 +690,29 @@ export function SettingsWorkspace({ session }: { session?: { username?: string; 
           }`}
         >
           <FileText className="w-4 h-4" />
-          Letterhead library ({letterheads.length})
+          Institutional Letterheads ({letterheads.length})
+        </button>
+        <button
+          onClick={() => setActiveSubTab("admission-templates")}
+          className={`pb-3.5 px-2 font-bold text-xs tracking-wider uppercase border-b-2 transition inline-flex items-center gap-2 cursor-pointer ${
+            activeSubTab === "admission-templates"
+              ? "border-indigo-600 text-indigo-600"
+              : "border-transparent text-slate-500 hover:text-slate-800"
+          }`}
+        >
+          <FileText className="w-4 h-4 text-emerald-600" />
+          Admission Form Templates ({admissionTemplates.length})
+        </button>
+        <button
+          onClick={() => setActiveSubTab("diagnostics")}
+          className={`pb-3.5 px-2 font-bold text-xs tracking-wider uppercase border-b-2 transition inline-flex items-center gap-2 cursor-pointer ${
+            activeSubTab === "diagnostics"
+              ? "border-rose-600 text-rose-650 text-rose-600"
+              : "border-transparent text-slate-500 hover:text-slate-800"
+          }`}
+        >
+          <Activity className="w-4 h-4 text-rose-600 animate-pulse" />
+          Template Diagnostics Health Panel
         </button>
       </div>
 
@@ -1689,7 +1886,7 @@ export function SettingsWorkspace({ session }: { session?: { username?: string; 
         </div>
 
       </div>
-      ) : (
+      ) : activeSubTab === "letterheads" ? (
         /* LETTERHEAD LIBRARY TAB VIEW CONTAINER */
         <div className="space-y-8 animate-in fade-in duration-300">
           
@@ -1797,12 +1994,20 @@ export function SettingsWorkspace({ session }: { session?: { username?: string; 
               <div className="bg-gradient-to-br from-indigo-950 to-slate-900 text-white rounded-2xl p-6 shadow-md border border-indigo-900 text-left flex flex-col sm:flex-row gap-5 items-center">
                 <div className="p-4 bg-indigo-905 bg-indigo-900/30 border border-indigo-700/40 rounded-xl flex items-center justify-center shrink-0 w-24 h-24 overflow-hidden relative shadow-inner">
                   {activeLetterhead ? (
-                    <img 
-                      src={activeLetterhead.fileUrl} 
-                      alt="Active Letterhead" 
-                      className="max-h-full max-w-full object-contain" 
-                      referrerPolicy="no-referrer"
-                    />
+                    activeLetterhead.fileUrl.toLowerCase().includes(".pdf") ? (
+                      <iframe 
+                        src={activeLetterhead.fileUrl} 
+                        title="Active Letterhead Preview"
+                        className="w-full h-full rounded border-0 scale-[1.3] transform origin-center"
+                      />
+                    ) : (
+                      <img 
+                        src={activeLetterhead.fileUrl} 
+                        alt="Active Letterhead" 
+                        className="max-h-full max-w-full object-contain" 
+                        referrerPolicy="no-referrer"
+                      />
+                    )
                   ) : (
                     <FileText className="w-10 h-10 text-indigo-400 opacity-60" />
                   )}
@@ -1903,15 +2108,14 @@ export function SettingsWorkspace({ session }: { session?: { username?: string; 
                             )}
 
                             {/* View Original File */}
-                            <a
-                              href={item.fileUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="p-1 px-2.5 bg-white border border-slate-200 hover:border-slate-300 text-slate-600 rounded-lg text-[10px] font-bold whitespace-nowrap text-center block"
+                            <button
+                              type="button"
+                              onClick={() => window.open(item.fileUrl, "_blank")}
+                              className="p-1 px-2.5 bg-white border border-slate-200 hover:border-slate-300 text-slate-600 rounded-lg text-[10px] font-bold whitespace-nowrap text-center cursor-pointer select-none transition"
                               title="Original Source Vector File link"
                             >
-                              View
-                            </a>
+                              Open Template
+                            </button>
 
                             {/* Delete Trigger */}
                             {(item.isDefault && item.isActive) ? null : (
@@ -1937,8 +2141,449 @@ export function SettingsWorkspace({ session }: { session?: { username?: string; 
           </div>
 
         </div>
-      )}
+      ) : activeSubTab === "admission-templates" ? (
+        /* ADMISSION FORM TEMPLATE LIBRARY TAB VIEW */
+        <div className="space-y-8 animate-in fade-in duration-300" id="admission-form-template-section">
+          
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+            
+            {/* LEFT COLUMN: UPLOAD / REPLACE ZONE */}
+            <div className="lg:col-span-12 xl:col-span-5 bg-white rounded-2xl border border-slate-200/85 p-6 shadow-sm space-y-6">
+              <div className="flex items-center gap-3 border-b border-slate-150 pb-4">
+                <div className="p-2 bg-emerald-50 text-emerald-600 rounded-lg">
+                  <Upload className="w-5 h-5 text-emerald-600" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-slate-900 text-left">Upload Admission Template</h3>
+                  <p className="text-[11px] text-slate-450 text-left mt-0.5">Import official background template files (max 10MB)</p>
+                </div>
+              </div>
 
+              {session?.role !== "SUPER_ADMIN" ? (
+                <div className="p-4 rounded-xl flex items-start gap-3 border bg-amber-50/70 border-amber-200 text-amber-800" id="read-only-alert">
+                  <AlertCircle className="w-5 h-5 flex-shrink-0 text-amber-600 mt-0.5" />
+                  <div className="text-left flex-1 border-0">
+                    <span className="font-bold text-xs text-amber-950 block uppercase tracking-wide">Read-Only Mode</span>
+                    <p className="text-xs text-amber-900 mt-1 leading-relaxed">
+                      Your current role does not have authorization rights to upload or modify admission templates. Only a <strong>SUPER_ADMIN</strong> can manage templates.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4" id="upload-form-controls">
+                  <div className="flex flex-col gap-1.5 text-left">
+                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                      Template Name / Title
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. IDEAS-TVET Official Admission Background"
+                      value={newAdmissionTemplateName}
+                      onChange={(e) => setNewAdmissionTemplateName(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-250 py-2 px-3 rounded-lg text-xs font-semibold focus:bg-white focus:border-indigo-500 transition outline-none"
+                    />
+                  </div>
+
+                  <div className="flex flex-col gap-1.5 text-left">
+                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                      Template Description
+                    </label>
+                    <textarea
+                      rows={3}
+                      placeholder="e.g. Official template holding standard three governmental logos layout..."
+                      value={newAdmissionTemplateDescription}
+                      onChange={(e) => setNewAdmissionTemplateDescription(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-250 py-2 px-3 rounded-lg text-xs font-semibold focus:bg-white focus:border-indigo-500 transition outline-none resize-none"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-3 py-1 text-left">
+                    <label className="relative inline-flex items-center cursor-pointer select-none">
+                      <input 
+                         type="checkbox" 
+                         className="sr-only peer"
+                         checked={admissionTemplateIsDefault}
+                         onChange={(e) => setAdmissionTemplateIsDefault(e.target.checked)}
+                      />
+                      <div className="w-10 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+                      <span className="ml-3 text-xs font-bold text-slate-705">Make Active Default Background</span>
+                    </label>
+                  </div>
+
+                  <div className="pt-4 border-t border-slate-150">
+                    <label className={`w-full min-h-[140px] px-6 py-8 bg-slate-50 hover:bg-slate-100/80 border border-dashed border-slate-300 rounded-2xl flex flex-col items-center justify-center gap-3 transition ${uploadingAdmissionTemplate ? "pointer-events-none opacity-60" : "cursor-pointer"}`}>
+                      {uploadingAdmissionTemplate ? (
+                        <>
+                          <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
+                          <span className="text-xs font-bold text-slate-700">Uploading template file...</span>
+                        </>
+                      ) : (
+                        <>
+                          <div className="p-3 bg-white border border-slate-150 rounded-xl shadow-xs text-slate-550 flex items-center justify-center">
+                            <Upload className="w-6 h-6 text-slate-400" />
+                          </div>
+                          <div className="text-center">
+                            <span className="text-xs font-bold text-indigo-600 block">Click to Browse File</span>
+                            <span className="text-[10px] text-slate-400 block mt-1 font-sans">Supports PDF, PNG, JPG, JPEG (Max 10MB)</span>
+                          </div>
+                        </>
+                      )}
+                      <input 
+                         type="file" 
+                         accept="image/*,application/pdf" 
+                         onChange={handleUploadAdmissionTemplate}
+                         disabled={uploadingAdmissionTemplate}
+                         className="hidden" 
+                      />
+                    </label>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* RIGHT COLUMN: ACTIVE DISPLAY & LIBRARY LIST */}
+            <div className="lg:col-span-12 xl:col-span-7 space-y-6">
+              
+              {/* Active display overlay */}
+              <div className="bg-gradient-to-br from-slate-900 to-indigo-950 text-white rounded-2xl p-6 shadow-md border border-indigo-900 text-left flex flex-col sm:flex-row gap-5 items-center" id="active-admission-template-card">
+                <div className="p-4 bg-slate-950/40 border border-slate-800 rounded-xl flex items-center justify-center shrink-0 w-24 h-24 overflow-hidden relative shadow-inner">
+                  {activeAdmissionTemplate ? (
+                    activeAdmissionTemplate.fileUrl.toLowerCase().includes(".pdf") ? (
+                      <iframe 
+                        src={activeAdmissionTemplate.fileUrl} 
+                        title="Active Template Preview"
+                        className="w-full h-full rounded border-0 scale-[1.3] transform origin-center"
+                      />
+                    ) : (
+                      <img 
+                        src={activeAdmissionTemplate.fileUrl} 
+                        alt="Active Template" 
+                        className="max-h-full max-w-full object-contain" 
+                        referrerPolicy="no-referrer"
+                      />
+                    )
+                  ) : (
+                    <FileText className="w-10 h-10 text-indigo-400 opacity-60" />
+                  )}
+                  {activeAdmissionTemplate && (
+                    <span className="absolute bottom-1 right-1 px-1 rounded font-mono text-[8px] bg-emerald-500 text-emerald-950 uppercase font-black tracking-tight leading-none">
+                      {activeAdmissionTemplate.fileType}
+                    </span>
+                  )}
+                </div>
+                <div className="flex-1 space-y-1.5 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] font-mono font-black text-indigo-400 bg-indigo-950/80 px-2 py-0.5 rounded-full border border-indigo-900/40 uppercase tracking-widest leading-none">
+                      Active Admission Overlay
+                    </span>
+                    <span className={`h-2 w-2 rounded-full ${activeAdmissionTemplate ? "bg-emerald-400 animate-pulse" : "bg-amber-400"}`}></span>
+                  </div>
+                  <h4 className="text-sm font-bold text-white truncate">
+                    {activeAdmissionTemplate ? activeAdmissionTemplate.name : "System Fallback Header Active"}
+                  </h4>
+                  <p className="text-slate-450 text-xs leading-relaxed">
+                    {activeAdmissionTemplate 
+                       ? activeAdmissionTemplate.description 
+                       : "If no custom Admission Form Template is selected, the system builds the template with default high-resolution logos (FME Crest, IDEAS Initiative, and World Bank) in live outputs."}
+                  </p>
+                  {activeAdmissionTemplate && (
+                    <div className="text-[10px] text-slate-400 font-mono flex flex-wrap gap-x-4 gap-y-1 pt-1.5 border-t border-slate-800/60 mt-2">
+                      <span>Format: <span className="text-white uppercase font-bold">{activeAdmissionTemplate.fileType}</span></span>
+                      <span>Uploaded By: <span className="text-white">{activeAdmissionTemplate.uploadedBy || "System Admin"}</span></span>
+                      <span>Created At: <span className="text-white">{new Date(activeAdmissionTemplate.createdAt).toLocaleDateString("en-GB")}</span></span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Template Library List Card */}
+              <div className="bg-white rounded-2xl border border-slate-200/85 p-6 shadow-sm space-y-4" id="admission-template-library">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <h3 className="font-bold text-xs text-slate-900 uppercase tracking-wider text-left">
+                    Admission Background Masters Library ({admissionTemplates.length})
+                  </h3>
+                  {isLoadingAdmissionTemplates && (
+                    <Loader2 className="w-4 h-4 text-indigo-600 animate-spin" />
+                  )}
+                </div>
+
+                {admissionTemplates.length === 0 ? (
+                  <div className="text-center py-16 text-slate-450 text-xs flex flex-col items-center gap-2 border border-dashed border-slate-200 rounded-2xl w-full">
+                    <FileText className="w-10 h-10 text-slate-300" />
+                    <span className="font-bold text-slate-850">No custom Admission templates registered.</span>
+                    <span className="text-[11px] text-slate-400 max-w-xs leading-normal">
+                      Use the upload console on the left to add a custom official state background template vector.
+                    </span>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {admissionTemplates.map((item) => (
+                      <div 
+                         key={item.id} 
+                         className={`p-4 bg-slate-50 border rounded-xl flex flex-col justify-between gap-4 text-left transition hover:border-slate-300 relative ${
+                           item.isDefault && item.isActive ? "border-indigo-500 ring-1 ring-indigo-500/25" : "border-slate-200"
+                         }`}
+                      >
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-750 border border-indigo-100 uppercase">
+                              {item.fileType}
+                            </span>
+                            {item.isDefault && item.isActive && (
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-850 text-[9px] font-black tracking-wide uppercase">
+                                DEFAULT ACTIVE
+                              </span>
+                            )}
+                          </div>
+                          <h4 className="text-xs font-bold text-slate-800 truncate" title={item.name}>
+                            {item.name}
+                          </h4>
+                          <p className="text-[10px] text-slate-500 font-medium leading-relaxed line-clamp-2" title={item.description}>
+                            {item.description}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-2 pt-3 border-t border-slate-150">
+                          <span className="text-[9px] text-slate-400 truncate max-w-[120px]" title={`Uploaded by ${item.uploadedBy}`}>
+                            By {item.uploadedBy?.split("@")[0] || "Admin"}
+                          </span>
+                          
+                          <div className="flex items-center gap-1.5">
+                            {/* Toggle active / activate triggers */}
+                            {(!item.isDefault || !item.isActive) && (
+                              <button
+                                 type="button"
+                                 onClick={() => handleSetDefaultAdmissionTemplate(item.id)}
+                                 disabled={session?.role !== "SUPER_ADMIN"}
+                                 className="px-2.5 py-1 bg-white hover:bg-slate-100 disabled:opacity-45 text-indigo-600 border border-slate-205 rounded-lg text-[10px] font-bold uppercase transition select-none cursor-pointer"
+                                 title="Activate default templates master"
+                              >
+                                Activate
+                              </button>
+                            )}
+
+                            {/* View File */}
+                            <a
+                               href={item.fileUrl}
+                               target="_blank"
+                               rel="noreferrer"
+                               className="p-1 px-2.5 bg-white border border-slate-200 hover:border-slate-300 text-slate-600 rounded-lg text-[10px] font-bold whitespace-nowrap text-center block"
+                               title="View template file" onClick={(e) => { e.preventDefault(); window.open(item.fileUrl, "_blank"); }}
+                            >
+                              View
+                            </a>
+
+                            {/* Delete Trigger */}
+                            {(item.isDefault && item.isActive) ? null : (
+                              <button
+                                 type="button"
+                                 onClick={() => handleDeleteAdmissionTemplate(item.id, item.name)}
+                                 disabled={session?.role !== "SUPER_ADMIN"}
+                                 className="p-1.5 bg-white border border-slate-200 hover:border-rose-300 text-slate-400 hover:text-rose-600 rounded-lg cursor-pointer transition disabled:opacity-40 hover:bg-rose-50"
+                                 title="Purge master template"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+            </div>
+          </div>
+
+        </div>
+      ) : activeSubTab === "diagnostics" ? (
+        <TemplateDiagnosticsView session={session} showToast={showToast} />
+      ) : null}
+
+    </div>
+  );
+}
+
+function TemplateDiagnosticsView({ session, showToast }: { session: any; showToast: any }) {
+  const [diagnostics, setDiagnostics] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [runningGlobalRepair, setRunningGlobalRepair] = useState(false);
+  const [repairingId, setRepairingId] = useState<string | null>(null);
+
+  const fetchDiagnostics = async () => {
+    setLoading(true);
+    try {
+      const res = await authFetch("/api/templates/diagnostics");
+      if (res.ok) {
+        const data = await res.json();
+        setDiagnostics(data);
+      } else {
+        showToast("Failed to fetch diagnostics details.", "error");
+      }
+    } catch (e: any) {
+      showToast(e.message || "Error reaching diagnostics API", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchDiagnostics();
+  }, []);
+
+  const handleVerifyAll = async () => {
+    setRunningGlobalRepair(true);
+    try {
+      const res = await authFetch("/api/templates/verify-all", { method: "POST" });
+      if (res.ok) {
+        showToast("All templates successfully audited & repaired where possible.", "success");
+        await fetchDiagnostics();
+      } else {
+        showToast("Auditing failed.", "error");
+      }
+    } catch (e: any) {
+      showToast(e.message, "error");
+    } finally {
+      setRunningGlobalRepair(false);
+    }
+  };
+
+  const handleRepairSingle = async (id: string, type: string) => {
+    setRepairingId(id);
+    try {
+      const res = await authFetch("/api/templates/repair", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, type })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast("Template resolved successfully!", "success");
+        await fetchDiagnostics();
+      } else {
+        showToast("Repair attempt completed, but no alternative secure path was reachable.", "error");
+      }
+    } catch (e: any) {
+      showToast(e.message, "error");
+    } finally {
+      setRepairingId(null);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-6 text-left animate-in fade-in duration-300">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+        <div>
+          <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+            <Activity className="w-5 h-5 text-rose-600 animate-pulse" />
+            Template Asset Health & Cloudinary Real-time Audit
+          </h3>
+          <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+            Validates active and legacy file URLs to make sure they are fully reachable on CDN networks without 404s.
+          </p>
+        </div>
+        <button
+          type="button"
+          disabled={loading || runningGlobalRepair || session?.role !== "SUPER_ADMIN"}
+          onClick={handleVerifyAll}
+          className="px-4 py-2 bg-indigo-650 hover:bg-indigo-700 bg-indigo-650 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-xs hover:shadow-md cursor-pointer transition flex items-center gap-1.5 self-start sm:self-auto select-none font-sans"
+        >
+          {runningGlobalRepair ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <RefreshCw className="w-4 h-4" />
+          )}
+          Run Multi-Repair Engine
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="py-20 text-center flex flex-col items-center justify-center gap-3">
+          <Loader2 className="w-8 h-8 text-indigo-650 text-indigo-600 animate-spin" />
+          <p className="text-xs font-bold text-slate-500">Querying Cloudinary CDN and testing routes...</p>
+        </div>
+      ) : diagnostics.length === 0 ? (
+        <div className="py-12 text-center bg-slate-50 rounded-xl border border-dashed">
+          <CheckCircle className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+          <p className="text-xs font-bold text-slate-500">No custom templates are currently registered in the system database.</p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse min-w-[700px]">
+            <thead>
+              <tr className="border-b border-slate-150 text-[10px] font-bold text-slate-500 uppercase tracking-wider bg-slate-50">
+                <th className="py-3 px-4">Template name / type</th>
+                <th className="py-3 px-4">Cloudinary Delivery URL</th>
+                <th className="py-3 px-4">CDN Reachability Status</th>
+                <th className="py-3 px-4">Last verified</th>
+                <th className="py-3 px-4 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {diagnostics.map((item) => (
+                <tr key={item.id} className="hover:bg-slate-50/70 transition-colors text-xs font-medium">
+                  <td className="py-3.5 px-4">
+                    <div className="font-bold text-slate-800">{item.name}</div>
+                    <div className="text-[10px] text-slate-400 capitalize mt-0.5">{item.type.replace("-", " ")}</div>
+                  </td>
+                  <td className="py-3.5 px-4 max-w-[280px]">
+                    <div className="font-mono text-[10px] truncate text-slate-500 select-all" title={item.fileUrl}>
+                      {item.fileUrl}
+                    </div>
+                  </td>
+                  <td className="py-3.5 px-4">
+                    {item.cloudinaryStatus === "REACHABLE" ? (
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        <ShieldCheck className="w-3.5 h-3.5" /> REACHABLE (200 OK)
+                      </span>
+                    ) : item.cloudinaryStatus === "SIMULATION" ? (
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                        <AlertTriangle className="w-3.5 h-3.5" /> OFFLINE SIMULATION
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-250 animate-pulse">
+                        <ShieldAlert className="w-3.5 h-3.5" /> CDN 404 NOT FOUND
+                      </span>
+                    )}
+                  </td>
+                  <td className="py-3.5 px-4 text-slate-400 text-[10px]">
+                    {new Date(item.lastVerification).toLocaleTimeString()}
+                  </td>
+                  <td className="py-3.5 px-4 text-right">
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => window.open(item.fileUrl, "_blank")}
+                        className="p-1 px-2.5 bg-slate-100 hover:bg-slate-205 text-slate-705 border rounded-lg text-[10px] font-bold cursor-pointer transition"
+                      >
+                        Preview URL
+                      </button>
+                      
+                      {item.isBroken && (
+                        <button
+                          type="button"
+                          disabled={repairingId === item.id || session?.role !== "SUPER_ADMIN"}
+                          onClick={() => handleRepairSingle(item.id, item.type)}
+                          className="p-1 px-2.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-lg text-[10px] font-bold cursor-pointer transition select-none flex items-center gap-1 font-sans"
+                        >
+                          {repairingId === item.id ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <RefreshCw className="w-3 h-3" />
+                          )}
+                          Repair Alternative
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

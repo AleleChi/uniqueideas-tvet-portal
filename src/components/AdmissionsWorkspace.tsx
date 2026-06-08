@@ -8,7 +8,7 @@ import {
   Search, ShieldAlert, X, Check, Eye, Printer, Users, CheckCircle2, 
   XCircle, AlertCircle, Loader2, ChevronLeft, ChevronRight, Building, 
   MapPin, Sliders, Sparkles, Download, ArrowUpDown, Lock, Unlock, History, FileText, Play, Info,
-  LayoutDashboard, ChevronUp, ChevronDown, BarChart3, Wrench, Send
+  LayoutDashboard, ChevronUp, ChevronDown, BarChart3, Wrench, Send, Share2
 } from "lucide-react";
 import { authFetch } from "../utils/authFetch";
 import { API_BASE_URL } from "../config/api";
@@ -75,6 +75,7 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
   const [loadingLetter, setLoadingLetter] = useState(false);
   const [orgSettings, setOrgSettings] = useState<any | null>(null);
   const [activeLetterhead, setActiveLetterhead] = useState<any | null>(null);
+  const [activeAdmissionTemplate, setActiveAdmissionTemplate] = useState<any | null>(null);
   const [previewLetterheadUrl, setPreviewLetterheadUrl] = useState<string | null>(null);
 
   // Form Preview Center and Active Export Job States
@@ -484,6 +485,12 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
       if (letterheadRes.ok) {
         const headData = await letterheadRes.json();
         setActiveLetterhead(headData || null);
+      }
+
+      const admissionRes = await authFetch("/api/admission-form-templates/active");
+      if (admissionRes.ok) {
+        const admissionData = await admissionRes.json();
+        setActiveAdmissionTemplate(admissionData || null);
       }
     } catch (e) {
       console.error("Failed to fetch organization settings & active template:", e);
@@ -1916,74 +1923,134 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
           </div>
 
           {/* CURRENT TEMPLATE OVERRIDE INDICATOR & OPERATIONS CENTER */}
-          <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs font-sans text-xs flex flex-col gap-4 text-left mb-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
-              <div>
-                <h5 className="font-extrabold text-slate-900 uppercase font-display text-[12px] tracking-wider flex items-center gap-1.5">
-                  <FileText className="w-4 h-4 text-indigo-600" />
-                  Official Template Operations Center
-                </h5>
-                <p className="text-slate-400 text-[10px] mt-0.5">
-                  Verify vector layer scale alignment, metadata consistency, and typography overlay positions before dispatching batch exports.
-                </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            
+            {/* CARD 1: INSTITUTIONAL LETTERHEADS (FAMILY A) */}
+            <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs font-sans text-xs flex flex-col justify-between gap-3 text-left">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-2.5">
+                <div>
+                  <h5 className="font-extrabold text-slate-900 uppercase font-display text-[10px] tracking-wider flex items-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5 text-indigo-600" />
+                    Institutional Letterhead (Family A)
+                  </h5>
+                  <p className="text-slate-400 text-[10px] mt-0.5">
+                    Used for formal acceptance and dispatch offers sheets.
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!activeLetterhead || !activeLetterhead.fileUrl) {
+                        setPreviewLetterheadUrl("/assets/fme_crest.png");
+                      } else {
+                        setPreviewLetterheadUrl(activeLetterhead.fileUrl);
+                      }
+                    }}
+                    className="bg-slate-100 hover:bg-slate-200 text-slate-750 font-bold py-1 px-2 rounded flex items-center gap-1 transition text-[9px] uppercase tracking-wider cursor-pointer border border-slate-250 shrink-0"
+                  >
+                    <Eye className="w-3 h-3" /> Preview
+                  </button>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                {/* PREVIEW BUTTON */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!activeLetterhead || !activeLetterhead.fileUrl) {
-                      setPreviewLetterheadUrl("/assets/fme_crest.png");
-                    } else {
-                      setPreviewLetterheadUrl(activeLetterhead.fileUrl);
-                    }
-                  }}
-                  className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-1.5 px-3 rounded-lg flex items-center gap-1.5 transition text-[10px] uppercase tracking-wider cursor-pointer border border-slate-250 shrink-0"
-                >
-                  <Eye className="w-3 h-3" /> Preview Vector
-                </button>
 
-                {/* TEST RENDER BUTTON */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    const sampleId = candidates[0]?.id || "SAMPLE-0001";
-                    console.log(`Compiling temporary Test Render for template verification. Sample ID: ${sampleId}`);
-                    window.open(`${API_BASE_URL}/api/documents/download/${sampleId}/admission?format=pdf&inline=true`, "_blank");
-                  }}
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold py-1.5 px-3 rounded-lg flex items-center gap-1.5 transition text-[10px] uppercase tracking-wider cursor-pointer shadow-xs shrink-0"
-                >
-                  <Play className="w-3 h-3 text-indigo-200 animate-pulse" /> Test Render
-                </button>
+              <div className="grid grid-cols-2 gap-2 bg-slate-50 p-2.5 rounded-lg border border-slate-150">
+                <div>
+                  <span className="text-[8px] text-slate-400 font-bold uppercase tracking-widest block mb-0.5">Template Master</span>
+                  <span className="font-bold text-slate-805 text-[11px] truncate block" title={activeLetterhead ? activeLetterhead.name : "System Traditional"}>
+                    {activeLetterhead ? activeLetterhead.name : "System Traditional"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[8px] text-slate-400 font-bold uppercase tracking-widest block mb-0.5">Format</span>
+                  <span className="font-bold text-slate-805 text-[11px] block">
+                    {activeLetterhead ? `${activeLetterhead.fileType}` : "SVG Default"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[8px] text-slate-400 font-bold uppercase tracking-widest block mb-0.5">Version</span>
+                  <span className="font-mono font-bold text-slate-805 text-[11px] block">
+                    {activeLetterhead ? (activeLetterhead.name.match(/v\d+$/i) ? activeLetterhead.name.match(/v\d+$/i)[0] : "v1.0") : "v1.0"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[8px] text-slate-400 font-bold uppercase tracking-widest block mb-0.5">Last Sync</span>
+                  <span className="font-mono font-bold text-slate-805 text-[10px] block">
+                    {activeLetterhead ? new Date(activeLetterhead.updatedAt).toLocaleDateString("en-GB") : "System Epoch"}
+                  </span>
+                </div>
               </div>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 bg-slate-50/70 p-3 rounded-xl border border-slate-150">
-              <div>
-                <span className="text-[9px] text-slate-400 font-bold uppercase tracking-widest block mb-0.5">Template Master</span>
-                <span className="font-bold text-slate-800 text-xs truncate block">
-                  {activeLetterhead ? activeLetterhead.name : "System Traditional"}
-                </span>
+            {/* CARD 2: ADMISSION FORM TEMPLATE (FAMILY B) */}
+            <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs font-sans text-xs flex flex-col justify-between gap-3 text-left" id="admission-template-info-card">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-2.5">
+                <div>
+                  <h5 className="font-extrabold text-slate-900 uppercase font-display text-[10px] tracking-wider flex items-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5 text-emerald-600" />
+                    Admission Form Template (Family B)
+                  </h5>
+                  <p className="text-slate-400 text-[10px] mt-0.5">
+                    Used exclusively for official printed admission logs.
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (activeAdmissionTemplate && activeAdmissionTemplate.fileUrl) {
+                        setPreviewLetterheadUrl(activeAdmissionTemplate.fileUrl);
+                      } else {
+                        setPreviewLetterheadUrl("/assets/fme_crest.png");
+                      }
+                    }}
+                    className="bg-slate-100 hover:bg-slate-200 text-slate-755 font-bold py-1 px-2 rounded flex items-center gap-1 transition text-[9px] uppercase tracking-wider cursor-pointer border border-slate-250 shrink-0"
+                  >
+                    <Eye className="w-3 h-3 text-emerald-600" /> Preview Template
+                  </button>
+                  {activeAdmissionTemplate && activeAdmissionTemplate.fileUrl && (
+                    <a
+                      href={activeAdmissionTemplate.fileUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="bg-slate-105 bg-slate-100 hover:bg-slate-200 text-slate-755 font-bold py-1 px-2 rounded flex items-center gap-1 transition text-[9px] uppercase tracking-wider cursor-pointer border border-slate-250 shrink-0"
+                    >
+                      <Share2 className="w-3 h-3 text-indigo-600" /> Open Template
+                    </a>
+                  )}
+                </div>
               </div>
-              <div>
-                <span className="text-[9px] text-slate-400 font-bold uppercase tracking-widest block mb-0.5">Raster Format / Extension</span>
-                <span className="font-bold text-slate-800 text-xs block">
-                  {activeLetterhead ? `${activeLetterhead.fileType} Page Vector` : "SVG Default Assets"}
-                </span>
-              </div>
-              <div>
-                <span className="text-[9px] text-slate-400 font-bold uppercase tracking-widest block mb-0.5">Template Version</span>
-                <span className="font-mono font-bold text-slate-800 text-xs block">
-                  {activeLetterhead ? (activeLetterhead.name.match(/v\d+$/i) ? activeLetterhead.name.match(/v\d+$/i)[0] : "v1") : "v1.0-standard"}
-                </span>
-              </div>
-              <div>
-                <span className="text-[9px] text-slate-400 font-bold uppercase tracking-widest block mb-0.5">Last Sync Updated</span>
-                <span className="font-mono font-bold text-slate-800 text-[10px] block">
-                  {activeLetterhead ? new Date(activeLetterhead.updatedAt).toLocaleDateString("en-GB") : "System Boot Epoch"}
-                </span>
+
+              <div className="grid grid-cols-2 gap-2 bg-slate-50 p-2.5 rounded-lg border border-slate-150">
+                <div>
+                  <span className="text-[8px] text-slate-400 font-bold uppercase tracking-widest block mb-0.5">Template Name</span>
+                  <span className="font-bold text-slate-805 text-[11px] truncate block" title={activeAdmissionTemplate ? activeAdmissionTemplate.name : "System Fallback Logo Bar"}>
+                    {activeAdmissionTemplate ? activeAdmissionTemplate.name : "System Fallback Logo Bar"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[8px] text-slate-400 font-bold uppercase tracking-widest block mb-0.5">Type</span>
+                  <span className="font-bold text-slate-805 text-[11px] block uppercase">
+                    {activeAdmissionTemplate ? activeAdmissionTemplate.fileType : "Built-In Fallback"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[8px] text-slate-400 font-bold uppercase tracking-widest block mb-0.5">Version</span>
+                  <span className="font-mono font-bold text-slate-805 text-[11px] block">
+                    {activeAdmissionTemplate ? "v1.0" : "v1.0-default"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[8px] text-slate-400 font-bold uppercase tracking-widest block mb-0.5">Status</span>
+                  <span className="block">
+                    <span className={`px-1 rounded text-[8px] font-black uppercase tracking-wider leading-none select-none inline-block ${activeAdmissionTemplate ? "bg-emerald-100 text-emerald-850" : "bg-amber-150 bg-amber-100 text-amber-850"}`}>
+                      {activeAdmissionTemplate ? "Active Master" : "Default Built-In"}
+                    </span>
+                  </span>
+                </div>
               </div>
             </div>
+
           </div>
 
           {/* UNIFIED BULK OPERATIONS COMMAND & EXPORTER DECK */}
@@ -2061,7 +2128,12 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
 
               {/* Right Column: ZIP Package Compilation */}
               <div className="bg-slate-50/70 border border-slate-150 rounded-xl p-4.5 space-y-3">
-                <span className="text-[9px] font-mono font-bold text-slate-455 uppercase block tracking-widest mb-1.5">Package compilation builder</span>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 border-b border-slate-200/60 pb-1.5">
+                  <span className="text-[9px] font-mono font-bold text-slate-500 uppercase block tracking-widest">Package compilation builder</span>
+                  <span className="text-[9px] font-semibold text-slate-600 bg-white border border-slate-200 px-1.5 py-0.5 rounded" id="export-template-indicator">
+                    Template In Use: <strong className="text-indigo-650 text-indigo-700 font-bold">{activeAdmissionTemplate ? activeAdmissionTemplate.name : "IDEAS-TVET Official Admission Form Template"}</strong>
+                  </span>
+                </div>
                 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   <div className="flex items-center justify-between bg-white border border-slate-200 p-1.5 rounded-lg text-[11px] min-h-[34px]">
@@ -2640,36 +2712,80 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
               </div>
 
               {/* Card 4: Document Template Details */}
-              <div className="space-y-2.5">
-                <span className="text-[9px] font-mono font-bold text-indigo-300 uppercase tracking-wider block">Document Template Details</span>
-                <div className="bg-slate-850 border border-slate-800 p-3 rounded-lg space-y-2 text-xs">
-                  {activeLetterhead ? (
-                    <>
-                      <div className="flex justify-between items-center text-[10px]">
-                        <span className="text-slate-400">Template Master:</span>
-                        <span className="font-bold text-slate-200 truncate max-w-[135px]" title={activeLetterhead.name}>
-                          {activeLetterhead.name}
-                        </span>
+              <div className="space-y-4">
+                
+                {/* Family A Details */}
+                <div className="space-y-2">
+                  <span className="text-[9px] font-mono font-bold text-indigo-300 uppercase tracking-wider block">Letterhead Details (Family A)</span>
+                  <div className="bg-slate-850 border border-slate-800 p-3 rounded-lg space-y-2 text-xs">
+                    {activeLetterhead ? (
+                      <>
+                        <div className="flex justify-between items-center text-[10px]/normal">
+                          <span className="text-slate-400">Template Master:</span>
+                          <span className="font-bold text-slate-200 truncate max-w-[135px]" title={activeLetterhead.name}>
+                            {activeLetterhead.name}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center text-[10px]/normal">
+                          <span className="text-slate-400 font-mono text-[9px]">Vector Format:</span>
+                          <span className="font-mono bg-indigo-950 text-indigo-300 px-1.5 py-0.2 rounded text-[8px] uppercase font-bold border border-indigo-900/60 font-medium">
+                            {activeLetterhead.fileType} Override
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center text-[10px]/normal pt-1.5 border-t border-slate-800">
+                          <span className="text-slate-405 text-slate-400">Status Check:</span>
+                          <span className="font-extrabold uppercase text-emerald-400 text-[9px] flex items-center gap-1 leading-none select-none">
+                            <Check className="w-2.5 h-2.5 text-emerald-400 shrink-0" /> DEFAULT ACTIVE
+                          </span>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-[10px] text-slate-500 leading-relaxed font-sans mt-0.5">
+                        No active letterhead override. Rendering default layout.
                       </div>
-                      <div className="flex justify-between items-center text-[10px]">
-                        <span className="text-slate-400 font-mono text-[9px]">Vector Format:</span>
-                        <span className="font-mono bg-indigo-950 text-indigo-300 px-1.5 py-0.2 rounded text-[8px] uppercase font-bold border border-indigo-900/60">
-                          {activeLetterhead.fileType} Override
-                        </span>
-                      </div>
-                      <div className="flex justify-between items-center text-[10px]/normal pt-1.5 border-t border-slate-800">
-                        <span className="text-slate-400">Status Check:</span>
-                        <span className="font-extrabold uppercase text-emerald-400 text-[9px] flex items-center gap-1">
-                          <Check className="w-3 h-3 text-emerald-400 shrink-0" /> DEFAULT ACTIVE
-                        </span>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="text-[10px] text-slate-500 leading-relaxed font-sans">
-                      No active layout override. Rendering custom multi-logo template head instead.
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
+
+                {/* Family B Panel: Template Metadata Panel */}
+                <div className="space-y-2" id="admission-template-metadata-panel">
+                  <span className="text-[9px] font-mono font-bold text-emerald-300 uppercase tracking-wider block">Admission Template Metadata (Family B)</span>
+                  <div className="bg-slate-850 border border-slate-800 p-3 rounded-lg space-y-2 text-xs">
+                    <div className="flex justify-between items-center text-[10px]/normal">
+                      <span className="text-slate-400">Template Name:</span>
+                      <span className="font-bold text-slate-200 truncate max-w-[135px]" title={activeAdmissionTemplate ? activeAdmissionTemplate.name : "IDEAS-TVET Logo Bar"}>
+                        {activeAdmissionTemplate ? activeAdmissionTemplate.name : "IDEAS-TVET Logo Bar"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center text-[10px]/normal">
+                      <span className="text-slate-400 font-mono text-[9px]">File Type:</span>
+                      <span className="font-mono bg-emerald-950 text-emerald-300 px-1.5 py-0.2 rounded text-[8px] uppercase font-semibold border border-emerald-900/60">
+                        {activeAdmissionTemplate ? activeAdmissionTemplate.fileType : "Built-In SVG"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center text-[10px]/normal">
+                      <span className="text-slate-400 font-mono text-[9px]">Version:</span>
+                      <span className="font-mono text-slate-200 font-semibold text-[10px]">
+                        {activeAdmissionTemplate ? "v1.0" : "v1.0-default"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center text-[10px]/normal">
+                      <span className="text-slate-400 font-mono text-[9px]">Default Badge:</span>
+                      <span className="font-mono pr-0.5">
+                        <span className={`px-1.5 py-0.2 rounded text-[8px] font-black uppercase text-left tracking-wider leading-none select-none inline-block ${activeAdmissionTemplate ? "bg-emerald-950 text-emerald-400 border border-emerald-900/40" : "bg-slate-900 text-slate-400 border border-slate-805 border-slate-800"}`}>
+                          {activeAdmissionTemplate ? "Yes" : "No"}
+                        </span>
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center text-[10px]/normal pt-1.5 border-t border-slate-800">
+                      <span className="text-slate-405 text-slate-400">Status Check:</span>
+                      <span className={`font-extrabold uppercase text-[9px] flex items-center gap-1 ${activeAdmissionTemplate ? "text-emerald-400" : "text-amber-400"}`}>
+                        <Check className="w-2.5 h-2.5 shrink-0" /> {activeAdmissionTemplate ? "ACTIVE OVERLAY" : "DEFAULT FALLBACK"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
               </div>
 
               {/* Status Indicator Panel */}
@@ -3099,7 +3215,7 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
               <Eye className="w-5 h-5 text-indigo-650 text-indigo-600" /> Document Letterhead Override Preview
             </h4>
             <div className="flex-1 overflow-auto flex items-center justify-center bg-slate-50 rounded-xl border border-slate-200 p-4">
-              {previewLetterheadUrl.startsWith("data:application/pdf") ? (
+              {previewLetterheadUrl.startsWith("data:application/pdf") || previewLetterheadUrl.toLowerCase().includes(".pdf") ? (
                 <iframe
                   src={previewLetterheadUrl}
                   title="PDF Template Document"
@@ -3113,22 +3229,6 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
                   <h5 className="font-bold text-slate-800 text-sm mb-1">Standard Federal Crest</h5>
                   <p className="text-xs text-slate-500 leading-relaxed">
                     No template override configured. The standard Federal Ministry of Education crest layout will be rendered as default.
-                  </p>
-                </div>
-              ) : previewLetterheadUrl.includes("res.cloudinary.com/ideas-tvet") ? (
-                <div className="text-center py-12 max-w-md">
-                  <div className="w-16 h-16 bg-amber-50 border border-amber-200 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <Info className="w-8 h-8 text-amber-600 animate-pulse" />
-                  </div>
-                  <h5 className="font-bold text-slate-800 text-sm mb-1">Offline Cloudinary Simulation</h5>
-                  <p className="text-xs text-slate-500 leading-relaxed rounded-lg border bg-amber-50/50 p-3 text-left">
-                    <strong>Notice:</strong> This is a secure fallback simulated Cloudinary URL. No real cloud storage asset file is present locally.
-                  </p>
-                  <code className="text-[10px] bg-slate-100 text-indigo-600 block p-2 rounded-lg font-mono my-3 border text-left overflow-x-auto whitespace-pre">
-                    {previewLetterheadUrl}
-                  </code>
-                  <p className="text-[11px] text-slate-400">
-                    To upload and render real Vector template overlays, add valid Cloudinary environment secrets to your live cluster.
                   </p>
                 </div>
               ) : (
