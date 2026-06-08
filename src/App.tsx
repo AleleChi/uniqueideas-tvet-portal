@@ -30,6 +30,7 @@ const TraineeOperationsView = React.lazy(() => import("./components/TraineeOpera
 const ToolkitsAssetsCenter = React.lazy(() => import("./components/ToolkitsAssetsCenter").then(module => ({ default: module.ToolkitsAssetsCenter })));
 import { TrainingOutcomes } from "./components/TrainingOutcomes";
 import ImpactEvidence from "./components/ImpactEvidence";
+import { ExecutiveMAndECenter } from "./components/ExecutiveMAndECenter";
 import { Beneficiary, CustomField, AuditLog, UserSession } from "./types";
 import { authFetch, downloadWithAuth } from "./utils/authFetch";
 import { useNotification } from "./components/NotificationContext";
@@ -48,7 +49,7 @@ export default function App() {
       return null;
     }
   });
-  const [activeTab, setActiveTab] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility" | "trainee-operations" | "certification" | "outcomes" | "evidence" | "toolkits">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility" | "trainee-operations" | "certification" | "outcomes" | "evidence" | "toolkits" | "executive-m-and-e">("dashboard");
   const [admissionsSubTab, setAdmissionsSubTab] = useState<"dashboard" | "letters" | "forms" | "acceptance" | "dispatches">("dashboard");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [registryViewMode, setRegistryViewMode] = useState<"list" | "details" | "create">("list");
@@ -754,6 +755,14 @@ export default function App() {
             <ImpactEvidence 
               session={session} 
               showToast={showToast} 
+            />
+          )}
+
+          {activeTab === "executive-m-and-e" && (
+            <ExecutiveMAndECenter
+              session={session}
+              showToast={showToast}
+              onRefreshRoot={fetchBeneficiaries}
             />
           )}
 

@@ -1110,6 +1110,19 @@ export async function initDb(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS idx_graduate_toolkits_beneficiary ON graduate_toolkits(beneficiary_id);
       CREATE INDEX IF NOT EXISTS idx_graduate_toolkits_asset ON graduate_toolkits(asset_id);
+
+      -- Perform manual table migrations for toolkits & assets (Phase 2)
+      ALTER TABLE graduate_toolkits ADD COLUMN IF NOT EXISTS latitude VARCHAR(100);
+      ALTER TABLE graduate_toolkits ADD COLUMN IF NOT EXISTS longitude VARCHAR(100);
+      ALTER TABLE graduate_toolkits ADD COLUMN IF NOT EXISTS location_accuracy VARCHAR(100);
+      ALTER TABLE graduate_toolkits ADD COLUMN IF NOT EXISTS business_name VARCHAR(100);
+      ALTER TABLE graduate_toolkits ADD COLUMN IF NOT EXISTS business_address TEXT;
+      ALTER TABLE graduate_toolkits ADD COLUMN IF NOT EXISTS workshop_type VARCHAR(100);
+      ALTER TABLE graduate_toolkits ADD COLUMN IF NOT EXISTS phone VARCHAR(50);
+      ALTER TABLE graduate_toolkits ADD COLUMN IF NOT EXISTS photo TEXT;
+      ALTER TABLE graduate_toolkits ADD COLUMN IF NOT EXISTS workshop_verification_status VARCHAR(50);
+      ALTER TABLE graduate_toolkits ADD COLUMN IF NOT EXISTS last_visit TIMESTAMP WITH TIME ZONE;
+      ALTER TABLE graduate_toolkits ADD COLUMN IF NOT EXISTS utilization_score INTEGER DEFAULT 0;
     `);
 
     console.log("[DB] PostgreSQL schema verified and migration performed.");
@@ -6046,6 +6059,17 @@ export class DbRepo {
           gt.last_verified_at AS "lastVerifiedAt",
           gt.created_at AS "createdAt",
           gt.updated_at AS "updatedAt",
+          gt.latitude,
+          gt.longitude,
+          gt.location_accuracy AS "locationAccuracy",
+          gt.business_name AS "businessName",
+          gt.business_address AS "businessAddress",
+          gt.workshop_type AS "workshopType",
+          gt.phone AS "phone",
+          gt.photo AS "photo",
+          gt.workshop_verification_status AS "workshopVerificationStatus",
+          gt.last_visit AS "lastVisit",
+          gt.utilization_score AS "utilizationScore",
           CONCAT(b.first_name, ' ', b.last_name) AS "beneficiaryName",
           b.skill_sector AS "trainingTrack",
           ta.asset_name AS "assetName",
