@@ -27,6 +27,9 @@ const SettingsWorkspace = React.lazy(() => import("./components/SettingsWorkspac
 const EligibilityCenter = React.lazy(() => import("./components/EligibilityCenter").then(module => ({ default: module.EligibilityCenter })));
 const CertificationCenter = React.lazy(() => import("./components/CertificationCenter").then(module => ({ default: module.CertificationCenter })));
 const TraineeOperationsView = React.lazy(() => import("./components/TraineeOperations").then(module => ({ default: module.TraineeOperationsView })));
+const ToolkitsAssetsCenter = React.lazy(() => import("./components/ToolkitsAssetsCenter").then(module => ({ default: module.ToolkitsAssetsCenter })));
+import { TrainingOutcomes } from "./components/TrainingOutcomes";
+import ImpactEvidence from "./components/ImpactEvidence";
 import { Beneficiary, CustomField, AuditLog, UserSession } from "./types";
 import { authFetch, downloadWithAuth } from "./utils/authFetch";
 import { useNotification } from "./components/NotificationContext";
@@ -45,7 +48,7 @@ export default function App() {
       return null;
     }
   });
-  const [activeTab, setActiveTab] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility" | "trainee-operations" | "certification">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility" | "trainee-operations" | "certification" | "outcomes" | "evidence" | "toolkits">("dashboard");
   const [admissionsSubTab, setAdmissionsSubTab] = useState<"dashboard" | "letters" | "forms" | "acceptance" | "dispatches">("dashboard");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [registryViewMode, setRegistryViewMode] = useState<"list" | "details" | "create">("list");
@@ -736,6 +739,29 @@ export default function App() {
                 beneficiaries={beneficiaries} 
                 session={session} 
                 onRefresh={fetchBeneficiaries} 
+              />
+            </React.Suspense>
+          )}
+
+          {activeTab === "outcomes" && (
+            <TrainingOutcomes 
+              session={session} 
+              toast={showToast} 
+            />
+          )}
+
+          {activeTab === "evidence" && (
+            <ImpactEvidence 
+              session={session} 
+              showToast={showToast} 
+            />
+          )}
+
+          {activeTab === "toolkits" && (
+            <React.Suspense fallback={<SkeletonLoader label="Loading Toolkits & Assets Management..." />}>
+              <ToolkitsAssetsCenter
+                session={session}
+                showToast={showToast}
               />
             </React.Suspense>
           )}

@@ -994,9 +994,165 @@ export async function initDb(): Promise<void> {
         ('ZKAccess 3.5 Terminal A', 'SN-ZKT-90821-X', 'Main Lab Computer Lab 1', 'ONLINE', NOW() - INTERVAL '2 hours'),
         ('ZKAccess 3.5 Terminal B', 'SN-ZKT-90822-Y', 'Workshop Repairs Annex B', 'OFFLINE', NOW() - INTERVAL '1 day')
       ON CONFLICT (serial_number) DO NOTHING;
+
+      -- 7. Create training_outcomes table
+      CREATE TABLE IF NOT EXISTS training_outcomes (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        beneficiary_id VARCHAR(50) NOT NULL UNIQUE REFERENCES beneficiaries(id) ON DELETE CASCADE,
+        outcome_status VARCHAR(50) NOT NULL,
+        employment_type VARCHAR(50),
+        employer_name TEXT,
+        job_title TEXT,
+        business_name TEXT,
+        business_type TEXT,
+        employment_date DATE,
+        monthly_income NUMERIC(12, 2) DEFAULT 0.00,
+        business_revenue NUMERIC(12, 2) DEFAULT 0.00,
+        location TEXT,
+        verified BOOLEAN DEFAULT FALSE,
+        verified_by TEXT,
+        verified_at TIMESTAMP WITH TIME ZONE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_training_outcomes_beneficiary ON training_outcomes(beneficiary_id);
+      CREATE INDEX IF NOT EXISTS idx_training_outcomes_status ON training_outcomes(outcome_status);
+
+      -- 8. Create tracer_studies table
+      CREATE TABLE IF NOT EXISTS tracer_studies (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        beneficiary_id VARCHAR(50) NOT NULL REFERENCES beneficiaries(id) ON DELETE CASCADE,
+        follow_up_period VARCHAR(20) NOT NULL,
+        is_employed BOOLEAN DEFAULT FALSE,
+        is_self_employed BOOLEAN DEFAULT FALSE,
+        owns_business BOOLEAN DEFAULT FALSE,
+        is_business_active BOOLEAN DEFAULT FALSE,
+        income_improved BOOLEAN DEFAULT FALSE,
+        needs_support TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (beneficiary_id, follow_up_period)
+      );
+      CREATE INDEX IF NOT EXISTS idx_tracer_studies_beneficiary ON tracer_studies(beneficiary_id);
+
+      -- 9. Create impact_evidence table
+      CREATE TABLE IF NOT EXISTS impact_evidence (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        beneficiary_id VARCHAR(50) NOT NULL REFERENCES beneficiaries(id) ON DELETE CASCADE,
+        evidence_type VARCHAR(100) NOT NULL,
+        outcome_type VARCHAR(100) NOT NULL,
+        file_url TEXT NOT NULL,
+        file_name TEXT,
+        file_size BIGINT,
+        file_type VARCHAR(50),
+        description TEXT,
+        verification_status VARCHAR(50) DEFAULT 'PENDING',
+        verified_by VARCHAR(255),
+        verified_at TIMESTAMP WITH TIME ZONE,
+        rejection_reason TEXT,
+        uploaded_by VARCHAR(255),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_impact_evidence_beneficiary ON impact_evidence(beneficiary_id);
+      CREATE INDEX IF NOT EXISTS idx_impact_evidence_ver_status ON impact_evidence(verification_status);
+
+      -- 10. Create field_verifications table
+      CREATE TABLE IF NOT EXISTS field_verifications (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        beneficiary_id VARCHAR(50) NOT NULL UNIQUE REFERENCES beneficiaries(id) ON DELETE CASCADE,
+        visited BOOLEAN DEFAULT FALSE,
+        visit_date DATE,
+        officer_name VARCHAR(255),
+        gps_coordinates VARCHAR(100),
+        remarks TEXT,
+        photos TEXT,
+        verification_result VARCHAR(100),
+        status VARCHAR(50) DEFAULT 'PENDING',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_field_verifications_beneficiary ON field_verifications(beneficiary_id);
+
+      -- 11. Create toolkit_assets table
+      CREATE TABLE IF NOT EXISTS toolkit_assets (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        asset_code VARCHAR(100) NOT NULL UNIQUE,
+        asset_name VARCHAR(255) NOT NULL,
+        asset_category VARCHAR(100) NOT NULL,
+        training_track VARCHAR(100) NOT NULL,
+        description TEXT,
+        unit_cost NUMERIC(12,2) DEFAULT 0.00,
+        quantity INTEGER DEFAULT 0,
+        status VARCHAR(50) DEFAULT 'ACTIVE',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_toolkit_assets_track ON toolkit_assets(training_track);
+      CREATE INDEX IF NOT EXISTS idx_toolkit_assets_status ON toolkit_assets(status);
+
+      -- 12. Create graduate_toolkits table
+      CREATE TABLE IF NOT EXISTS graduate_toolkits (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        beneficiary_id VARCHAR(50) NOT NULL REFERENCES beneficiaries(id) ON DELETE CASCADE,
+        asset_id UUID NOT NULL REFERENCES toolkit_assets(id) ON DELETE CASCADE,
+        issue_date TIMESTAMP WITH TIME ZONE,
+        issued_by VARCHAR(255),
+        verification_status VARCHAR(50) DEFAULT 'ALLOCATED',
+        utilization_status VARCHAR(50) DEFAULT 'NOT_IN_USE',
+        condition_status VARCHAR(50) DEFAULT 'NEW',
+        replacement_requested BOOLEAN DEFAULT FALSE,
+        replacement_reason TEXT,
+        last_verified_at TIMESTAMP WITH TIME ZONE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (beneficiary_id, asset_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_graduate_toolkits_beneficiary ON graduate_toolkits(beneficiary_id);
+      CREATE INDEX IF NOT EXISTS idx_graduate_toolkits_asset ON graduate_toolkits(asset_id);
     `);
 
     console.log("[DB] PostgreSQL schema verified and migration performed.");
+
+    // Seed default toolkits and assets if empty
+    try {
+      const taCheck = await pool.query("SELECT COUNT(*)::int as count FROM toolkit_assets");
+      if (taCheck.rows[0].count === 0) {
+        console.log("[DB] Seeding default toolkit assets for Computer and Mobile Repairs...");
+        const defaultAssets = [
+          // Computer Hardware Repairs
+          { code: "NWA-COMP-HW-01", name: "Laptop Repair Toolkit", cat: "Laptop Repair Toolkit", track: "Computer Hardware Repairs", cost: 15400.00, qty: 50 },
+          { code: "NWA-COMP-HW-02", name: "Digital Multimeter (Pro)", cat: "Digital Multimeter", track: "Computer Hardware Repairs", cost: 8500.00, qty: 50 },
+          { code: "NWA-COMP-HW-03", name: "Soldering Station (Adjustable)", cat: "Soldering Station", track: "Computer Hardware Repairs", cost: 18000.00, qty: 50 },
+          { code: "NWA-COMP-HW-04", name: "Precision Screwdriver Set", cat: "Screwdriver Set", track: "Computer Hardware Repairs", cost: 4500.00, qty: 50 },
+          { code: "NWA-COMP-HW-05", name: "ATX Power Supply Tester", cat: "Power Supply Tester", track: "Computer Hardware Repairs", cost: 6200.00, qty: 50 },
+          { code: "NWA-COMP-HW-06", name: "Anti-Static ESD Wrist Strap & Mat", cat: "ESD Kit", track: "Computer Hardware Repairs", cost: 3500.00, qty: 50 },
+          { code: "NWA-COMP-HW-07", name: "POST Diagnostic Card Tester", cat: "Diagnostic Tools", track: "Computer Hardware Repairs", cost: 7800.00, qty: 50 },
+          { code: "NWA-COMP-HW-08", name: "Integrated Motherboard Reflow Kit", cat: "Motherboard Toolkit", track: "Computer Hardware Repairs", cost: 24500.00, qty: 50 },
+
+          // Mobile Phone Repairs
+          { code: "NWA-MOBL-PH-01", name: "Advanced Mobile Repair Toolkit", cat: "Mobile Repair Toolkit", track: "Mobile Phone Repairs", cost: 12500.00, qty: 50 },
+          { code: "NWA-MOBL-PH-02", name: "SMD Rework Station (Heat Gun)", cat: "Heat Gun", track: "Mobile Phone Repairs", cost: 21000.00, qty: 50 },
+          { code: "NWA-MOBL-PH-03", name: "Stereo Zoom Repair Microscope", cat: "Microscope", track: "Mobile Phone Repairs", cost: 35000.00, qty: 50 },
+          { code: "NWA-MOBL-PH-04", name: "Fine Tip Soldering Iron", cat: "Soldering Iron", track: "Mobile Phone Repairs", cost: 5800.00, qty: 50 },
+          { code: "NWA-MOBL-PH-05", name: "S2 Steel Precision Screwdriver Set", cat: "Precision Screwdriver Set", track: "Mobile Phone Repairs", cost: 4800.00, qty: 50 },
+          { code: "NWA-MOBL-PH-06", name: "Plastic & Metal Opening Tool Kit", cat: "Opening Tool Kit", track: "Mobile Phone Repairs", cost: 2200.00, qty: 50 },
+          { code: "NWA-MOBL-PH-07", name: "Regulated DC Power Supply Unit", cat: "Power Supply Unit", track: "Mobile Phone Repairs", cost: 16500.00, qty: 50 },
+          { code: "NWA-MOBL-PH-08", name: "Automatic LCD Screen Separator", cat: "Screen Separation Tools", track: "Mobile Phone Repairs", cost: 28000.00, qty: 50 }
+        ];
+
+        for (const asset of defaultAssets) {
+          await pool.query(`
+            INSERT INTO toolkit_assets (asset_code, asset_name, asset_category, training_track, unit_cost, quantity, status)
+            VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE')
+            ON CONFLICT (asset_code) DO NOTHING
+          `, [asset.code, asset.name, asset.cat, asset.track, asset.cost, asset.qty]);
+        }
+        console.log("[DB] Seeding default toolkit assets completed.");
+      }
+    } catch (taErr: any) {
+      console.error("[DB Error] Failed to seed default toolkit assets:", taErr.message);
+    }
 
     // Check if dynamic seed or JSON migration is required
     const checkResult = await pool.query("SELECT COUNT(*) as count FROM beneficiaries");
@@ -1096,6 +1252,8 @@ function loadJsonState(): {
   admissionFormTemplates?: AdmissionFormTemplate[];
   documentDispatches?: any[];
   emailTemplates?: any[];
+  toolkitAssets?: any[];
+  graduateToolkits?: any[];
 } {
   try {
     if (fs.existsSync(DB_FILE)) {
@@ -1112,6 +1270,31 @@ function loadJsonState(): {
       if (!data.emailTemplates) {
         data.emailTemplates = [];
       }
+      if (!data.toolkitAssets || data.toolkitAssets.length === 0) {
+        const defaultAssets = [
+          { id: "ta_1", assetCode: "NWA-COMP-HW-01", assetName: "Laptop Repair Toolkit", assetCategory: "Laptop Repair Toolkit", trainingTrack: "Computer Hardware Repairs", unitCost: 15400.00, quantity: 50, status: "ACTIVE" },
+          { id: "ta_2", assetCode: "NWA-COMP-HW-02", assetName: "Digital Multimeter (Pro)", assetCategory: "Digital Multimeter", trainingTrack: "Computer Hardware Repairs", unitCost: 8500.00, quantity: 50, status: "ACTIVE" },
+          { id: "ta_3", assetCode: "NWA-COMP-HW-03", assetName: "Soldering Station (Adjustable)", assetCategory: "Soldering Station", trainingTrack: "Computer Hardware Repairs", unitCost: 18000.00, quantity: 50, status: "ACTIVE" },
+          { id: "ta_4", assetCode: "NWA-COMP-HW-04", assetName: "Precision Screwdriver Set", assetCategory: "Screwdriver Set", trainingTrack: "Computer Hardware Repairs", unitCost: 4500.00, quantity: 50, status: "ACTIVE" },
+          { id: "ta_5", assetCode: "NWA-COMP-HW-05", assetName: "ATX Power Supply Tester", assetCategory: "Power Supply Tester", trainingTrack: "Computer Hardware Repairs", unitCost: 6200.00, quantity: 50, status: "ACTIVE" },
+          { id: "ta_6", assetCode: "NWA-COMP-HW-06", assetName: "Anti-Static ESD Wrist Strap & Mat", assetCategory: "ESD Kit", trainingTrack: "Computer Hardware Repairs", unitCost: 3500.00, quantity: 50, status: "ACTIVE" },
+          { id: "ta_7", assetCode: "NWA-COMP-HW-07", assetName: "POST Diagnostic Card Tester", assetCategory: "Diagnostic Tools", trainingTrack: "Computer Hardware Repairs", unitCost: 7800.00, quantity: 50, status: "ACTIVE" },
+          { id: "ta_8", assetCode: "NWA-COMP-HW-08", assetName: "Integrated Motherboard Reflow Kit", assetCategory: "Motherboard Toolkit", trainingTrack: "Computer Hardware Repairs", unitCost: 24500.00, quantity: 50, status: "ACTIVE" },
+
+          { id: "ta_9", assetCode: "NWA-MOBL-PH-01", assetName: "Advanced Mobile Repair Toolkit", assetCategory: "Mobile Repair Toolkit", trainingTrack: "Mobile Phone Repairs", unitCost: 12500.00, quantity: 50, status: "ACTIVE" },
+          { id: "ta_10", assetCode: "NWA-MOBL-PH-02", assetName: "SMD Rework Station (Heat Gun)", assetCategory: "Heat Gun", trainingTrack: "Mobile Phone Repairs", unitCost: 21000.00, quantity: 50, status: "ACTIVE" },
+          { id: "ta_11", assetCode: "NWA-MOBL-PH-03", assetName: "Stereo Zoom Repair Microscope", assetCategory: "Microscope", trainingTrack: "Mobile Phone Repairs", unitCost: 35000.00, quantity: 50, status: "ACTIVE" },
+          { id: "ta_12", assetCode: "NWA-MOBL-PH-04", assetName: "Fine Tip Soldering Iron", assetCategory: "Soldering Iron", trainingTrack: "Mobile Phone Repairs", unitCost: 5800.00, quantity: 50, status: "ACTIVE" },
+          { id: "ta_13", assetCode: "NWA-MOBL-PH-05", assetName: "S2 Steel Precision Screwdriver Set", assetCategory: "Precision Screwdriver Set", trainingTrack: "Mobile Phone Repairs", unitCost: 4800.00, quantity: 50, status: "ACTIVE" },
+          { id: "ta_14", assetCode: "NWA-MOBL-PH-06", assetName: "Plastic & Metal Opening Tool Kit", assetCategory: "Opening Tool Kit", trainingTrack: "Mobile Phone Repairs", unitCost: 2200.00, quantity: 50, status: "ACTIVE" },
+          { id: "ta_15", assetCode: "NWA-MOBL-PH-07", assetName: "Regulated DC Power Supply Unit", assetCategory: "Power Supply Unit", trainingTrack: "Mobile Phone Repairs", unitCost: 16500.00, quantity: 50, status: "ACTIVE" },
+          { id: "ta_16", assetCode: "NWA-MOBL-PH-08", assetName: "Automatic LCD Screen Separator", assetCategory: "Screen Separation Tools", trainingTrack: "Mobile Phone Repairs", unitCost: 28000.00, quantity: 50, status: "ACTIVE" }
+        ];
+        data.toolkitAssets = defaultAssets;
+      }
+      if (!data.graduateToolkits) {
+        data.graduateToolkits = [];
+      }
       return data;
     }
   } catch (e) {
@@ -1124,7 +1307,9 @@ function loadJsonState(): {
     institutionLetterheads: [],
     admissionFormTemplates: [],
     documentDispatches: [],
-    emailTemplates: []
+    emailTemplates: [],
+    toolkitAssets: [],
+    graduateToolkits: []
   };
 }
 
@@ -1139,6 +1324,8 @@ function saveJsonState(state: {
   admissionFormTemplates?: AdmissionFormTemplate[];
   documentDispatches?: any[];
   emailTemplates?: any[];
+  toolkitAssets?: any[];
+  graduateToolkits?: any[];
 }) {
   try {
     if (!state.institutionLetterheads) {
@@ -1152,6 +1339,12 @@ function saveJsonState(state: {
     }
     if (!state.emailTemplates) {
       state.emailTemplates = [];
+    }
+    if (!state.toolkitAssets) {
+      state.toolkitAssets = [];
+    }
+    if (!state.graduateToolkits) {
+      state.graduateToolkits = [];
     }
     fs.writeFileSync(DB_FILE, JSON.stringify(state, null, 2), "utf-8");
   } catch (e) {
@@ -5695,6 +5888,285 @@ export class DbRepo {
     } catch (e) {
       console.error("[DB Repo] Failed to delete email template from PG, falling back to JSON:", e);
       return fallbackDelete();
+    }
+  }
+
+  // --- TOOLKITS & ASSET MANAGEMENT DB REPO METHODS (ADDITIVE) ---
+
+  static async getToolkitAssets(): Promise<any[]> {
+    const pool = getPgPool();
+    const fallbackGet = () => {
+      const state = loadJsonState();
+      return state.toolkitAssets || [];
+    };
+
+    if (!pool || !isPgActive) {
+      return fallbackGet();
+    }
+
+    try {
+      const res = await pool.query(
+        `SELECT id, asset_code AS "assetCode", asset_name AS "assetName", 
+                asset_category AS "assetCategory", training_track AS "trainingTrack", 
+                description, unit_cost::float AS "unitCost", quantity, status, 
+                created_at AS "createdAt", updated_at AS "updatedAt" 
+         FROM toolkit_assets 
+         ORDER BY created_at DESC`
+      );
+      return res.rows;
+    } catch (e) {
+      console.error("[DB Repo] Failed to get toolkit assets from PG, falling back:", e);
+      return fallbackGet();
+    }
+  }
+
+  static async saveToolkitAsset(asset: any): Promise<any> {
+    const pool = getPgPool();
+    const fallbackSave = () => {
+      const state = loadJsonState();
+      if (!state.toolkitAssets) state.toolkitAssets = [];
+      const id = asset.id || "ta_" + Date.now().toString(36) + Math.random().toString(36).substring(2, 5);
+      const toSave = {
+        ...asset,
+        id,
+        createdAt: asset.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      const idx = state.toolkitAssets.findIndex((item: any) => item.id === id);
+      if (idx !== -1) {
+        state.toolkitAssets[idx] = toSave;
+      } else {
+        state.toolkitAssets.push(toSave);
+      }
+      saveJsonState(state);
+      return toSave;
+    };
+
+    if (!pool || !isPgActive) {
+      return fallbackSave();
+    }
+
+    try {
+      const id = asset.id || "ta_" + Date.now().toString(36) + Math.random().toString(36).substring(2, 5);
+      const res = await pool.query(
+        `INSERT INTO toolkit_assets (
+          id, asset_code, asset_name, asset_category, training_track, description, unit_cost, quantity, status, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, NOW()), NOW())
+        ON CONFLICT (id) DO UPDATE SET
+          asset_code = EXCLUDED.asset_code,
+          asset_name = EXCLUDED.asset_name,
+          asset_category = EXCLUDED.asset_category,
+          training_track = EXCLUDED.training_track,
+          description = EXCLUDED.description,
+          unit_cost = EXCLUDED.unit_cost,
+          quantity = EXCLUDED.quantity,
+          status = EXCLUDED.status,
+          updated_at = NOW()
+        RETURNING id, asset_code AS "assetCode", asset_name AS "assetName", 
+                  asset_category AS "assetCategory", training_track AS "trainingTrack", 
+                  description, unit_cost::float AS "unitCost", quantity, status, 
+                  created_at AS "createdAt", updated_at AS "updatedAt"`,
+        [
+          id, asset.assetCode, asset.assetName, asset.assetCategory, asset.trainingTrack, asset.description || null,
+          parseFloat(asset.unitCost) || 0, parseInt(asset.quantity) || 0, asset.status || "ACTIVE",
+          asset.createdAt ? new Date(asset.createdAt) : null
+        ]
+      );
+      return res.rows[0];
+    } catch (e: any) {
+      console.error("[DB Repo] Failed to save toolkit asset to PG, falling back:", e);
+      return fallbackSave();
+    }
+  }
+
+  static async deleteToolkitAsset(id: string): Promise<boolean> {
+    const pool = getPgPool();
+    const fallbackDelete = () => {
+      const state = loadJsonState();
+      if (!state.toolkitAssets) state.toolkitAssets = [];
+      const updated = state.toolkitAssets.filter((item: any) => item.id !== id);
+      const isDeleted = updated.length < state.toolkitAssets.length;
+      state.toolkitAssets = updated;
+      saveJsonState(state);
+      return isDeleted;
+    };
+
+    if (!pool || !isPgActive) {
+      return fallbackDelete();
+    }
+
+    try {
+      const res = await pool.query("UPDATE toolkit_assets SET status = 'ARCHIVED', updated_at = NOW() WHERE id = $1", [id]);
+      return (res.rowCount ?? 0) > 0;
+    } catch (e) {
+      console.error("[DB Repo] Failed to archive toolkit asset in PG:", e);
+      return fallbackDelete();
+    }
+  }
+
+  static async getGraduateToolkits(): Promise<any[]> {
+    const pool = getPgPool();
+    const fallbackGet = () => {
+      const state = loadJsonState();
+      const graduates = state.graduateToolkits || [];
+      const beneficiaries = state.beneficiaries || [];
+      const assets = state.toolkitAssets || [];
+
+      return graduates.map((g: any) => {
+        const b: any = beneficiaries.find((item: any) => item.id === g.beneficiaryId) || {};
+        const a: any = assets.find((item: any) => item.id === g.assetId) || {};
+        return {
+          ...g,
+          beneficiaryName: `${b.firstName || ""} ${b.lastName || ""}`.trim() || "Unknown Graduate",
+          trainingTrack: b.skillSector || a.trainingTrack || "Digital Skills",
+          assetName: a.assetName || "Unknown Asset",
+          assetCode: a.assetCode || "",
+          assetCategory: a.assetCategory || ""
+        };
+      });
+    };
+
+    if (!pool || !isPgActive) {
+      return fallbackGet();
+    }
+
+    try {
+      const res = await pool.query(`
+        SELECT 
+          gt.id,
+          gt.beneficiary_id AS "beneficiaryId",
+          gt.asset_id AS "assetId",
+          gt.issue_date AS "issueDate",
+          gt.issued_by AS "issuedBy",
+          gt.verification_status AS "verificationStatus",
+          gt.utilization_status AS "utilizationStatus",
+          gt.condition_status AS "conditionStatus",
+          gt.replacement_requested AS "replacementRequested",
+          gt.replacement_reason AS "replacementReason",
+          gt.last_verified_at AS "lastVerifiedAt",
+          gt.created_at AS "createdAt",
+          gt.updated_at AS "updatedAt",
+          CONCAT(b.first_name, ' ', b.last_name) AS "beneficiaryName",
+          b.skill_sector AS "trainingTrack",
+          ta.asset_name AS "assetName",
+          ta.asset_code AS "assetCode",
+          ta.asset_category AS "assetCategory"
+        FROM graduate_toolkits gt
+        JOIN beneficiaries b ON gt.beneficiary_id = b.id
+        JOIN toolkit_assets ta ON gt.asset_id = ta.id
+        ORDER BY gt.created_at DESC
+      `);
+      return res.rows;
+    } catch (e) {
+      console.error("[DB Repo] Failed to get graduate toolkits from PG:", e);
+      return fallbackGet();
+    }
+  }
+
+  static async assignToolkit(beneficiaryId: string, assetId: string, operator: string): Promise<any> {
+    const pool = getPgPool();
+    const id = "gt_" + Date.now().toString(36) + Math.random().toString(36).substring(2, 5);
+
+    const fallbackAssign = () => {
+      const state = loadJsonState();
+      if (!state.graduateToolkits) state.graduateToolkits = [];
+      const duplicate = state.graduateToolkits.find((g: any) => g.beneficiaryId === beneficiaryId && g.assetId === assetId);
+      if (duplicate) {
+        return duplicate;
+      }
+      const newAssign = {
+        id,
+        beneficiaryId,
+        assetId,
+        verificationStatus: "ALLOCATED",
+        utilizationStatus: "NOT_IN_USE",
+        conditionStatus: "NEW",
+        replacementRequested: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      state.graduateToolkits.push(newAssign);
+      saveJsonState(state);
+      return newAssign;
+    };
+
+    if (!pool || !isPgActive) {
+      return fallbackAssign();
+    }
+
+    try {
+      const checkRes = await pool.query(
+        "SELECT id, beneficiary_id AS \"beneficiaryId\", asset_id AS \"assetId\" FROM graduate_toolkits WHERE beneficiary_id = $1 AND asset_id = $2",
+        [beneficiaryId, assetId]
+      );
+      if (checkRes.rows.length > 0) {
+        return checkRes.rows[0];
+      }
+
+      const res = await pool.query(
+        `INSERT INTO graduate_toolkits (
+          id, beneficiary_id, asset_id, verification_status, utilization_status, condition_status, replacement_requested, created_at, updated_at
+        ) VALUES ($1, $2, $3, 'ALLOCATED', 'NOT_IN_USE', 'NEW', FALSE, NOW(), NOW())
+        RETURNING id, beneficiary_id AS "beneficiaryId", asset_id AS "assetId", 
+                  verification_status AS "verificationStatus", utilization_status AS "utilizationStatus"`,
+        [id, beneficiaryId, assetId]
+      );
+      return res.rows[0];
+    } catch (e) {
+      console.error("[DB Repo] Failed to assign toolkit to PG:", e);
+      return fallbackAssign();
+    }
+  }
+
+  static async updateToolkitStatus(id: string, fields: any, operator: string): Promise<any> {
+    const pool = getPgPool();
+    const fallbackUpdate = () => {
+      const state = loadJsonState();
+      if (!state.graduateToolkits) state.graduateToolkits = [];
+      const idx = state.graduateToolkits.findIndex((g: any) => g.id === id);
+      if (idx !== -1) {
+        const item = state.graduateToolkits[idx];
+        const updated = {
+          ...item,
+          ...fields,
+          updatedAt: new Date().toISOString()
+        };
+        state.graduateToolkits[idx] = updated;
+        saveJsonState(state);
+        return updated;
+      }
+      return null;
+    };
+
+    if (!pool || !isPgActive) {
+      return fallbackUpdate();
+    }
+
+    try {
+      const setClauses: string[] = [];
+      const values: any[] = [id];
+      let pIdx = 2;
+
+      for (const key of Object.keys(fields)) {
+        const snakeKey = key.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
+        setClauses.push(`${snakeKey} = ${pIdx}`);
+        values.push(fields[key]);
+        pIdx++;
+      }
+
+      if (setClauses.length === 0) return null;
+
+      const query = `
+        UPDATE graduate_toolkits
+        SET ${setClauses.join(", ")}, updated_at = NOW()
+        WHERE id = $1
+        RETURNING id, beneficiary_id AS "beneficiaryId", asset_id AS "assetId"
+      `;
+      const res = await pool.query(query, values);
+      return res.rows[0];
+    } catch (e) {
+      console.error("[DB Repo] Failed to update graduate toolkit status in PG:", e);
+      return fallbackUpdate();
     }
   }
 }

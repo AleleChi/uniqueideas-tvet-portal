@@ -1,8 +1,9 @@
 {
-  "name": "Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: IDEAS-TVET Governance System",
+  "name": "Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: Remix: IDEAS-TVET Governance System",
   "description": "Beneficiary Photo Album Management System for Unique Nigeria Technology Ltd under the IDEAS-TVET Program (Computer Hardware and Cell Phone Repairs).",
   "requestFramePermissions": [
-    "camera"
+    "camera",
+    "geolocation"
   ],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

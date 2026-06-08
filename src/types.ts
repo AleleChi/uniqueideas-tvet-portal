@@ -391,3 +391,102 @@ export interface DocumentDispatch {
   updatedAt: string;
 }
 
+export interface TrainingOutcome {
+  id: string;
+  beneficiaryId: string;
+  outcomeStatus: "EMPLOYED" | "SELF_EMPLOYED" | "ENTREPRENEUR" | "APPRENTICESHIP" | "FURTHER_EDUCATION" | "UNEMPLOYED" | "UNKNOWN";
+  employmentType?: string;
+  employerName?: string;
+  jobTitle?: string;
+  businessName?: string;
+  businessType?: string;
+  employmentDate?: string;
+  monthlyIncome?: number;
+  businessRevenue?: number;
+  location?: string;
+  verified: boolean;
+  verifiedBy?: string;
+  verifiedAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface TracerStudy {
+  id: string;
+  beneficiaryId: string;
+  followUpPeriod: "3 Months" | "6 Months" | "12 Months";
+  isEmployed: boolean;
+  isSelfEmployed: boolean;
+  ownsBusiness: boolean;
+  isBusinessActive: boolean;
+  incomeImproved: boolean;
+  needsSupport?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ImpactEvidence {
+  id: string;
+  beneficiaryId: string;
+  evidenceType: string;
+  outcomeType: string;
+  fileUrl: string;
+  fileName?: string;
+  fileSize?: number;
+  fileType?: string;
+  description?: string;
+  verificationStatus: "PENDING" | "UNDER_REVIEW" | "VERIFIED" | "REJECTED" | "RESUBMISSION_REQUIRED";
+  verifiedBy?: string;
+  verifiedAt?: string;
+  rejectionReason?: string;
+  uploadedBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface FieldVerification {
+  id: string;
+  beneficiaryId: string;
+  visited: boolean;
+  visitDate?: string;
+  officerName?: string;
+  gpsCoordinates?: string;
+  remarks?: string;
+  photos?: string; // comma-separated
+  verificationResult?: string;
+  status: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ToolkitAsset {
+  id: string;
+  assetCode: string;
+  assetName: string;
+  assetCategory: string;
+  trainingTrack: string;
+  description?: string;
+  unitCost: number;
+  quantity: number;
+  status: "ACTIVE" | "ARCHIVED" | "DEACTIVATED";
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface GraduateToolkit {
+  id: string;
+  beneficiaryId: string;
+  assetId: string;
+  issueDate?: string;
+  issuedBy?: string;
+  verificationStatus: "ALLOCATED" | "APPROVED" | "ISSUED" | "VERIFIED" | "DAMAGED" | "LOST" | "REPLACED";
+  utilizationStatus: "ACTIVE_USE" | "OCCASIONAL_USE" | "NOT_IN_USE" | "MISSING" | "REPORTED_LOST" | "REPORTED_DAMAGED";
+  conditionStatus: "NEW" | "GOOD" | "FAIR" | "POOR" | "DAMAGED";
+  replacementRequested: boolean;
+  replacementReason?: string;
+  lastVerifiedAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+
