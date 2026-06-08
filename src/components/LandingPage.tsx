@@ -16,7 +16,7 @@ import { API_BASE_URL } from "../config/api";
 
 interface LandingPageProps {
   onLoginShow: () => void;
-  onLoginSuccess: (email: string, pass: string) => Promise<boolean>;
+  onLoginSuccess: (email: string, pass: string) => Promise<boolean | { success: boolean; message?: string }>;
 }
 
 // Lightweight dynamic counter component for premium look
@@ -136,11 +136,15 @@ export function LandingPage({ onLoginShow, onLoginSuccess }: LandingPageProps) {
     setTrackLoading(true);
 
     try {
-      const ok = await onLoginSuccess(trackEmail, trackPassword);
-      if (ok) {
+      const result = await onLoginSuccess(trackEmail, trackPassword);
+      const isOk = typeof result === "boolean" ? result : result.success;
+      if (isOk) {
         setShowTrackerModal(false);
       } else {
-        setTrackError("Invalid Credentials. Please enter your registered email address and use your 11-digit NIN as password.");
+        const errorMsg = typeof result === "object" && result.message 
+          ? result.message 
+          : "Invalid Credentials. Please enter your registered email address and use your 11-digit NIN as password.";
+        setTrackError(errorMsg);
       }
     } catch (err: any) {
       setTrackError("Connection breakdown with authentication servers.");

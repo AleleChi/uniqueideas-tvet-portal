@@ -3,12 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from "react";
-import { Landmark, Mail, Lock, Eye, EyeOff, ShieldCheck, HelpCircle, ArrowRight, RefreshCw, KeyRound, CheckCircle2 } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Landmark, Mail, Lock, Eye, EyeOff, ShieldCheck, HelpCircle, ArrowRight, RefreshCw, KeyRound, CheckCircle2, AlertTriangle } from "lucide-react";
 import { API_BASE_URL } from "../config/api";
 
 interface AdminLoginProps {
-  onLoginSuccess: (email: string, pass: string) => Promise<boolean>;
+  onLoginSuccess: (email: string, pass: string) => Promise<boolean | { success: boolean; message?: string }>;
   onBackToHome?: () => void;
 }
 
@@ -31,6 +31,50 @@ export function AdminLogin({ onLoginSuccess, onBackToHome }: AdminLoginProps) {
 
   const [isLoading, setIsLoading] = useState(false);
 
+  // Health check and cold-start state indicators
+  const [healthStatus, setHealthStatus] = useState<"CHECKING" | "ONLINE" | "OFFLINE">("CHECKING");
+  const [isRetryingHealth, setIsRetryingHealth] = useState(false);
+
+  const checkBackendHealth = async (isManualRetry = false) => {
+    if (isManualRetry) {
+      setIsRetryingHealth(true);
+    }
+    setHealthStatus("CHECKING");
+    setError(null);
+
+    const healthUrl = `${API_BASE_URL}/api/health`;
+    let success = false;
+    let attempts = 0;
+    const maxAttempts = isManualRetry ? 3 : 2;
+
+    while (attempts < maxAttempts && !success) {
+      attempts++;
+      try {
+        const response = await fetch(healthUrl);
+        if (response.ok) {
+          success = true;
+          setHealthStatus("ONLINE");
+          break;
+        }
+      } catch (err) {
+        console.warn(`[HEALTH CHECK] Attempt ${attempts} unreachable:`, err);
+      }
+      if (!success && attempts < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      }
+    }
+
+    if (!success) {
+      setHealthStatus("OFFLINE");
+      setError("Backend unreachable. The system is attempting to connect to the backend server (Render Cold Start). Please wait or reload.");
+    }
+    setIsRetryingHealth(false);
+  };
+
+  useEffect(() => {
+    checkBackendHealth();
+  }, []);
+
   const handleSubmitLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -50,9 +94,15 @@ export function AdminLogin({ onLoginSuccess, onBackToHome }: AdminLoginProps) {
     setIsLoading(true);
 
     try {
-      const success = await onLoginSuccess(email, password);
-      if (!success) {
-        setError("System credentials validation failed. Please check your password or verification parameters.");
+      const result = await onLoginSuccess(email, password);
+      if (typeof result === "boolean") {
+        if (!result) {
+          setError("System credentials validation failed. Please check your password or verification parameters.");
+        }
+      } else {
+        if (!result.success) {
+          setError(result.message || "System credentials validation failed. Please check your password or verification parameters.");
+        }
       }
     } catch (err: any) {
       setError(err.message || "An authentication server transaction timeout occurred.");
@@ -122,6 +172,74 @@ export function AdminLogin({ onLoginSuccess, onBackToHome }: AdminLoginProps) {
       setIsLoading(false);
     }
   };
+
+  if (healthStatus === "CHECKING") {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col justify-between p-6 relative font-sans overflow-x-hidden select-none">
+        <div className="flex-grow flex items-center justify-center py-12">
+          <div id="login-container-card" className="w-full max-w-lg bg-white border border-slate-200/80 rounded-2xl shadow-xl p-5 sm:p-8 md:p-10 relative border-l-4 border-yellow-500 flex flex-col items-center space-y-6">
+            <div className="h-14 w-14 bg-indigo-50 border border-indigo-100 rounded-full flex items-center justify-center text-indigo-900 shadow-xs mb-1 animate-pulse">
+              <Landmark className="w-7 h-7" />
+            </div>
+            <div className="text-center space-y-2">
+              <span className="text-[10px] font-bold text-indigo-950 font-mono uppercase tracking-widest block leading-none">
+                IDEAS-TVET Program Portal
+              </span>
+              <h2 className="font-display text-slate-800 text-lg font-bold tracking-tight">Verifying Secure Network Connection</h2>
+              <div className="flex items-center justify-center gap-2 text-xs text-indigo-600 font-medium">
+                <RefreshCw className="w-4 h-4 animate-spin" />
+                <span>Checking server reachability and database status...</span>
+              </div>
+              <p className="text-[11px] text-slate-400 max-w-xs mt-1">If using Render or a server starting from a cold state, initialization might take up to a minute.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (healthStatus === "OFFLINE") {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col justify-between p-6 relative font-sans overflow-x-hidden select-none">
+        <div className="flex-grow flex items-center justify-center py-12">
+          <div id="login-container-card" className="w-full max-w-lg bg-white border border-slate-200/80 rounded-2xl shadow-xl p-5 sm:p-8 md:p-10 relative border-l-4 border-rose-500 flex flex-col items-center space-y-6">
+            <div className="h-14 w-14 bg-rose-50 border border-rose-100 rounded-full flex items-center justify-center text-rose-600 shadow-xs mb-1">
+              <AlertTriangle className="w-7 h-7" />
+            </div>
+            <div className="text-center space-y-2">
+              <span className="text-[10px] font-bold text-indigo-950 font-mono uppercase tracking-widest block leading-none">
+                IDEAS-TVET Program Portal
+              </span>
+              <h2 className="font-display text-slate-900 text-xl font-bold tracking-tight">Backend Unreachable</h2>
+              <p className="text-xs text-slate-500 max-w-sm">
+                The centralized server at <code className="bg-slate-100 text-slate-800 px-1 py-0.5 rounded font-mono text-[10px] break-all">{API_BASE_URL}</code> did not respond correctly or is initiating from a cold start.
+              </p>
+              <div className="text-xs text-rose-600 font-semibold bg-rose-50 border border-rose-100 p-3 rounded-lg max-w-sm leading-normal">
+                Error status: Backend Offline or Configuration Missing
+              </div>
+            </div>
+            <button
+              onClick={() => checkBackendHealth(true)}
+              disabled={isRetryingHealth}
+              className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg text-xs tracking-wide transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+            >
+              {isRetryingHealth ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Connecting...</span>
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="w-4 h-4" />
+                  <span>Retry Network Connection</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col justify-between p-6 relative font-sans overflow-x-hidden select-none">

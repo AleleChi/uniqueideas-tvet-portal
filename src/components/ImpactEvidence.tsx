@@ -4,6 +4,7 @@ import {
   Download, Search, Filter, Calendar, MapPin, User, Check, RotateCcw, 
   Upload, Eye, Camera, ClipboardCheck, Briefcase, ChevronRight, File, Shield
 } from "lucide-react";
+import { API_BASE } from "../config/api";
 
 interface ImpactEvidenceProps {
   session: any;
@@ -72,7 +73,7 @@ export default function ImpactEvidence({ session, showToast }: ImpactEvidencePro
   // Load basic dashboard stats
   const fetchStats = async () => {
     try {
-      const res = await fetch("/api/evidence/stats");
+      const res = await fetch(`${API_BASE}/api/evidence/stats`);
       const d = await res.json();
       if (d.success) {
         setStats(d.stats);
@@ -94,7 +95,7 @@ export default function ImpactEvidence({ session, showToast }: ImpactEvidencePro
         page: String(currentPage),
         limit: "10"
       });
-      const res = await fetch(`/api/evidence?${qs.toString()}`);
+      const res = await fetch(`${API_BASE}/api/evidence?${qs.toString()}`);
       const d = await res.json();
       if (d.success) {
         setEvidenceList(d.data);
@@ -110,7 +111,7 @@ export default function ImpactEvidence({ session, showToast }: ImpactEvidencePro
   // Fetch all graduates (to search for or select in Tab 2)
   const fetchGraduates = async () => {
     try {
-      const res = await fetch("/api/beneficiaries");
+      const res = await fetch(`${API_BASE}/api/beneficiaries`);
       const data = await res.json();
       if (Array.isArray(data)) {
         // Only include graduates
@@ -128,7 +129,7 @@ export default function ImpactEvidence({ session, showToast }: ImpactEvidencePro
   const fetchDetailedGradProfile = async (id: string) => {
     if (!id) return;
     try {
-      const res = await fetch(`/api/evidence/profile/${id}`);
+      const res = await fetch(`${API_BASE}/api/evidence/profile/${id}`);
       const d = await res.json();
       if (d.success) {
         setGradProfile(d);
@@ -162,7 +163,7 @@ export default function ImpactEvidence({ session, showToast }: ImpactEvidencePro
   // Fetch Reports summary
   const fetchReportsSummary = async () => {
     try {
-      const res = await fetch("/api/evidence/reports-summary");
+      const res = await fetch(`${API_BASE}/api/evidence/reports-summary`);
       const d = await res.json();
       if (d.success) {
         setReportsSummary(d.report);
@@ -199,7 +200,7 @@ export default function ImpactEvidence({ session, showToast }: ImpactEvidencePro
     }
 
     try {
-      const res = await fetch("/api/evidence/review", {
+      const res = await fetch(`${API_BASE}/api/evidence/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -236,7 +237,7 @@ export default function ImpactEvidence({ session, showToast }: ImpactEvidencePro
       reader.readAsDataURL(file);
       reader.onload = async () => {
         try {
-          const res = await fetch("/api/upload-asset", {
+          const res = await fetch(`${API_BASE}/api/upload-asset`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -277,7 +278,7 @@ export default function ImpactEvidence({ session, showToast }: ImpactEvidencePro
       const fileUrl = await uploadFileToCloudinary(fileToUpload);
       
       // 2. Submit record to database
-      const response = await fetch("/api/evidence/upload", {
+      const response = await fetch(`${API_BASE}/api/evidence/upload`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -349,7 +350,7 @@ export default function ImpactEvidence({ session, showToast }: ImpactEvidencePro
     if (!selectedGradId) return;
     setSavingFieldRecord(true);
     try {
-      const res = await fetch("/api/evidence/field-verify", {
+      const res = await fetch(`${API_BASE}/api/evidence/field-verify`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

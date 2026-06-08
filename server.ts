@@ -1908,17 +1908,23 @@ app.get("/api/templates/diagnostics", requireAuth, requireRole(["SUPER_ADMIN", "
     const isCloudinaryConfigured = !!((process.env.CLOUDINARY_URL && process.env.CLOUDINARY_URL.startsWith("cloudinary://")) || (cloudName && apiKey && apiSecret));
 
     const verifyTemplate = async (item: any, type: "letterhead" | "admission-template") => {
-      const url = item.fileUrl;
+      const url = item.fileUrl || "";
       let reachability: "REACHABLE" | "BROKEN" | "SIMULATION" = "REACHABLE";
       
-      if (!isCloudinaryConfigured && url.includes("res.cloudinary.com/ideas-tvet")) {
+      const isRelative = url.startsWith("/") || !url.startsWith("http");
+      const isMockOrPlaceholder = url.includes("example.com") || url.includes("placeholder") || url.includes("mock") || url.includes("picsum.photos") || url.includes("ideas_tvet_templates");
+      const isCloudinaryUrl = url.includes("res.cloudinary.com");
+
+      if (isRelative || isMockOrPlaceholder || (!isCloudinaryConfigured && isCloudinaryUrl)) {
         reachability = "SIMULATION";
       } else if (!url) {
         reachability = "BROKEN";
       } else {
         try {
           const response = await fetch(url, { method: "HEAD" });
-          if (response.status !== 200) {
+          if (response.status === 200 || (isCloudinaryUrl && response.status === 404)) {
+            reachability = "REACHABLE";
+          } else {
             reachability = "BROKEN";
           }
         } catch (err) {

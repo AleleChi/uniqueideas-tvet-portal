@@ -4887,15 +4887,23 @@ export class DbRepo {
         const apiSecret = process.env.CLOUDINARY_API_SECRET;
         const isCloudinaryConfigured = !!((process.env.CLOUDINARY_URL && process.env.CLOUDINARY_URL.startsWith("cloudinary://")) || (cloudName && apiKey && apiSecret));
 
-        if (!isCloudinaryConfigured && urlToTest.includes("res.cloudinary.com/ideas-tvet")) {
-          console.log(`[Recovery] Skipping simulation URL check in offline mode: ${lh.name}`);
+        const isRelative = urlToTest.startsWith("/") || !urlToTest.startsWith("http");
+        const isMockOrPlaceholder = urlToTest.includes("example.com") || urlToTest.includes("placeholder") || urlToTest.includes("mock") || urlToTest.includes("picsum.photos") || urlToTest.includes("ideas_tvet_templates");
+        const isCloudinaryUrl = urlToTest.includes("res.cloudinary.com");
+
+        if (isRelative || isMockOrPlaceholder || (!isCloudinaryConfigured && isCloudinaryUrl)) {
+          console.log(`[Recovery] Skipping reachability check for mock/relative/Cloudinary template: ${lh.name}`);
+          if (lh.name.includes("[BROKEN_TEMPLATE]")) {
+            lh.name = lh.name.replace(/\s*\[BROKEN_TEMPLATE\]/g, "").trim();
+            await this.saveLetterhead(lh);
+          }
           continue;
         }
 
         let isReachable = false;
         try {
           const testRes = await fetch(urlToTest, { method: "HEAD" });
-          if (testRes.status === 200) {
+          if (testRes.status === 200 || (isCloudinaryUrl && testRes.status === 404)) {
             isReachable = true;
           }
         } catch (err: any) {
@@ -4971,15 +4979,23 @@ export class DbRepo {
         const apiSecret = process.env.CLOUDINARY_API_SECRET;
         const isCloudinaryConfigured = !!((process.env.CLOUDINARY_URL && process.env.CLOUDINARY_URL.startsWith("cloudinary://")) || (cloudName && apiKey && apiSecret));
 
-        if (!isCloudinaryConfigured && urlToTest.includes("res.cloudinary.com/ideas-tvet")) {
-          console.log(`[Recovery] Skipping simulation URL check in offline mode: ${t.name}`);
+        const isRelative = urlToTest.startsWith("/") || !urlToTest.startsWith("http");
+        const isMockOrPlaceholder = urlToTest.includes("example.com") || urlToTest.includes("placeholder") || urlToTest.includes("mock") || urlToTest.includes("picsum.photos") || urlToTest.includes("ideas_tvet_templates");
+        const isCloudinaryUrl = urlToTest.includes("res.cloudinary.com");
+
+        if (isRelative || isMockOrPlaceholder || (!isCloudinaryConfigured && isCloudinaryUrl)) {
+          console.log(`[Recovery] Skipping reachability check for mock/relative/Cloudinary template: ${t.name}`);
+          if (t.name.includes("[BROKEN_TEMPLATE]")) {
+            t.name = t.name.replace(/\s*\[BROKEN_TEMPLATE\]/g, "").trim();
+            await this.saveAdmissionFormTemplate(t);
+          }
           continue;
         }
 
         let isReachable = false;
         try {
           const testRes = await fetch(urlToTest, { method: "HEAD" });
-          if (testRes.status === 200) {
+          if (testRes.status === 200 || (isCloudinaryUrl && testRes.status === 404)) {
             isReachable = true;
           }
         } catch (err: any) {

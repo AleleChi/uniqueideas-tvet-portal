@@ -10,6 +10,7 @@ import {
   Filter, Plus, RefreshCw, User, MapPin, Activity, ArrowRight,
   TrendingDown, Check, X, FileSpreadsheet, Star, FileText, ChevronLeft, ChevronRight
 } from "lucide-react";
+import { API_BASE } from "../config/api";
 
 interface TrainingOutcomesProps {
   session: any;
@@ -93,7 +94,7 @@ export const TrainingOutcomes = React.memo(function TrainingOutcomes({ session, 
     try {
       // Fetch registry list
       const outcomeRes = await fetch(
-        `/api/outcomes?search=${encodeURIComponent(searchQuery)}&status=${statusFilter}&track=${trackFilter}&page=${page}&limit=10`,
+        `${API_BASE}/api/outcomes?search=${encodeURIComponent(searchQuery)}&status=${statusFilter}&track=${trackFilter}&page=${page}&limit=10`,
         { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } }
       );
       if (!outcomeRes.ok) throw new Error("Failed to load outcomes");
@@ -106,7 +107,7 @@ export const TrainingOutcomes = React.memo(function TrainingOutcomes({ session, 
       }
 
       // Fetch executive stats
-      const statsRes = await fetch("/api/outcomes/stats", {
+      const statsRes = await fetch(`${API_BASE}/api/outcomes/stats`, {
         headers: { Authorization: `Bearer ${localStorage.getItem("token")}` }
       });
       if (statsRes.ok) {
@@ -117,7 +118,7 @@ export const TrainingOutcomes = React.memo(function TrainingOutcomes({ session, 
       }
 
       // Fetch cohorts list
-      const cohortRes = await fetch("/api/outcomes/cohort-impact", {
+      const cohortRes = await fetch(`${API_BASE}/api/outcomes/cohort-impact`, {
         headers: { Authorization: `Bearer ${localStorage.getItem("token")}` }
       });
       if (cohortRes.ok) {
@@ -141,7 +142,7 @@ export const TrainingOutcomes = React.memo(function TrainingOutcomes({ session, 
   const handleOpenDetail = async (beneficiaryId: string) => {
     try {
       setLoading(true);
-      const res = await fetch(`/api/outcomes/profile/${beneficiaryId}`, {
+      const res = await fetch(`${API_BASE}/api/outcomes/profile/${beneficiaryId}`, {
         headers: { Authorization: `Bearer ${localStorage.getItem("token")}` }
       });
       if (!res.ok) throw new Error("Failed to fetch beneficiary outcome profile");
@@ -183,7 +184,7 @@ export const TrainingOutcomes = React.memo(function TrainingOutcomes({ session, 
     e.preventDefault();
     setSubmitting(true);
     try {
-      const res = await fetch("/api/outcomes/upsert", {
+      const res = await fetch(`${API_BASE}/api/outcomes/upsert`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -215,7 +216,7 @@ export const TrainingOutcomes = React.memo(function TrainingOutcomes({ session, 
     if (!selectedBeneficiaryId) return;
     setSubmitting(true);
     try {
-      const res = await fetch("/api/outcomes/verify", {
+      const res = await fetch(`${API_BASE}/api/outcomes/verify`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -263,7 +264,7 @@ export const TrainingOutcomes = React.memo(function TrainingOutcomes({ session, 
     e.preventDefault();
     setSubmitting(true);
     try {
-      const res = await fetch("/api/outcomes/tracer/submit", {
+      const res = await fetch(`${API_BASE}/api/outcomes/tracer/submit`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

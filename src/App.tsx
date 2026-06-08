@@ -356,15 +356,52 @@ export default function App() {
     }
   };
 
-  const handleLogin = async (email: string, pass: string): Promise<boolean> => {
+  const handleLogin = async (email: string, pass: string): Promise<{ success: boolean; message?: string }> => {
     try {
-      const res = await authFetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password: pass })
-      });
+      // 1. Verify backend health first (gracefully handles cold starts on Render!)
+      const healthUrl = `${API_BASE_URL}/api/health`;
+      let healthOk = false;
+      let retries = 0;
+      
+      while (retries < 3 && !healthOk) {
+        try {
+          const hRes = await fetch(healthUrl);
+          if (hRes.ok) {
+            healthOk = true;
+            break;
+          }
+        } catch (hErr) {
+          console.warn(`[COLD START RETRY] Health check attempt ${retries + 1} failed:`, hErr);
+        }
+        retries++;
+        if (!healthOk && retries < 3) {
+          await new Promise(r => setTimeout(r, 1500)); // Sleep before retry
+        }
+      }
 
-      if (res.ok) {
+      if (!healthOk) {
+        return { success: false, message: "Backend unreachable. The server is offline or starting from a cold state. Please retry in a moment." };
+      }
+
+      // 2. Perform the actual auth request
+      let res;
+      try {
+        res = await authFetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password: pass })
+        });
+      } catch (err) {
+        console.warn("[LOGIN RETRY] Attempting single retry after potential network/cold state error...");
+        await new Promise(r => setTimeout(r, 1500));
+        res = await authFetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password: pass })
+        });
+      }
+
+      if (res && res.ok) {
         const sData: UserSession = await res.json();
         localStorage.setItem("ideas-session", JSON.stringify(sData));
         setSession(sData);
@@ -373,12 +410,16 @@ export default function App() {
         } else {
           window.location.hash = "#/dashboard";
         }
-        return true;
+        return { success: true };
+      } else {
+        const errorData = res ? await res.json().catch(() => ({})) : {};
+        const msg = errorData.error || "Invalid credentials. Please verify your username and password.";
+        return { success: false, message: msg };
       }
-    } catch (e) {
-      console.error(e);
+    } catch (e: any) {
+      console.error("[LOGIN CAUGHT EXCEPTION]", e);
+      return { success: false, message: "Backend unreachable. Network configuration is offline." };
     }
-    return false;
   };
 
   const handleLogout = async () => {
