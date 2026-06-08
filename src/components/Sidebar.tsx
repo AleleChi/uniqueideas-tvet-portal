@@ -193,6 +193,21 @@ export const Sidebar = React.memo(function Sidebar({
 
           <button 
             onClick={() => {
+              setActiveTab("trainee-operations");
+              setIsSidebarOpen(false);
+            }}
+            className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+              activeTab === "trainee-operations"
+                ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+            }`}
+          >
+            <Users className="w-4 h-4 text-inherit" />
+            <span>Trainee Operations</span>
+          </button>
+
+          <button 
+            onClick={() => {
               setActiveTab("eligibility");
               setIsSidebarOpen(false);
             }}

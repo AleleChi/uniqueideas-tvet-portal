@@ -26,6 +26,7 @@ const AuditTrail = React.lazy(() => import("./components/AuditTrail").then(modul
 const SettingsWorkspace = React.lazy(() => import("./components/SettingsWorkspace").then(module => ({ default: module.SettingsWorkspace })));
 const EligibilityCenter = React.lazy(() => import("./components/EligibilityCenter").then(module => ({ default: module.EligibilityCenter })));
 const CertificationCenter = React.lazy(() => import("./components/CertificationCenter").then(module => ({ default: module.CertificationCenter })));
+const TraineeOperationsView = React.lazy(() => import("./components/TraineeOperations").then(module => ({ default: module.TraineeOperationsView })));
 import { Beneficiary, CustomField, AuditLog, UserSession } from "./types";
 import { authFetch, downloadWithAuth } from "./utils/authFetch";
 import { useNotification } from "./components/NotificationContext";
@@ -44,7 +45,7 @@ export default function App() {
       return null;
     }
   });
-  const [activeTab, setActiveTab] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility" | "trainee-operations" | "certification">("dashboard");
   const [admissionsSubTab, setAdmissionsSubTab] = useState<"dashboard" | "letters" | "forms" | "acceptance" | "dispatches">("dashboard");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [registryViewMode, setRegistryViewMode] = useState<"list" | "details" | "create">("list");
@@ -744,6 +745,15 @@ export default function App() {
               <CertificationCenter
                 session={session}
                 onRefreshRoot={fetchBeneficiaries}
+              />
+            </React.Suspense>
+          )}
+
+          {activeTab === "trainee-operations" && (
+            <React.Suspense fallback={<SkeletonLoader label="Loading Trainee Operations Ecosystem..." />}>
+              <TraineeOperationsView 
+                session={session} 
+                showToast={showToast} 
               />
             </React.Suspense>
           )}
