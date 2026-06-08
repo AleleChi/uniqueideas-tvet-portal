@@ -7,7 +7,7 @@ import React from "react";
 import { 
   Users, Image as ImageIcon, Sliders, ShieldCheck, LogOut, 
   Settings, Landmark, Cpu, LayoutDashboard, History, Check, X, FileCheck, UserCheck, Award, FileText,
-  TrendingUp, ClipboardCheck, Briefcase, BarChart3
+  TrendingUp, ClipboardCheck, Briefcase, BarChart3, Wallet
 } from "lucide-react";
 
 interface SidebarProps {
@@ -280,6 +280,36 @@ export const Sidebar = React.memo(function Sidebar({
           >
             <BarChart3 className="w-4 h-4 text-inherit" />
             <span>Executive M&E</span>
+          </button>
+
+          <button 
+            onClick={() => {
+              setActiveTab("quality-accreditation");
+              setIsSidebarOpen(false);
+            }}
+            className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+              activeTab === "quality-accreditation"
+                ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+            }`}
+          >
+            <ShieldCheck className="w-4 h-4 text-inherit" />
+            <span>Quality & Accreditation</span>
+          </button>
+
+          <button 
+            onClick={() => {
+              setActiveTab("financials-roi");
+              setIsSidebarOpen(false);
+            }}
+            className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+              activeTab === "financials-roi"
+                ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+            }`}
+          >
+            <Wallet className="w-4 h-4 text-inherit" />
+            <span>Financials & ROI</span>
           </button>
 
           <button 

@@ -1123,6 +1123,21 @@ export async function initDb(): Promise<void> {
       ALTER TABLE graduate_toolkits ADD COLUMN IF NOT EXISTS workshop_verification_status VARCHAR(50);
       ALTER TABLE graduate_toolkits ADD COLUMN IF NOT EXISTS last_visit TIMESTAMP WITH TIME ZONE;
       ALTER TABLE graduate_toolkits ADD COLUMN IF NOT EXISTS utilization_score INTEGER DEFAULT 0;
+
+      -- 13. Create program_costs table
+      CREATE TABLE IF NOT EXISTS program_costs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        cost_category VARCHAR(100) NOT NULL,
+        amount NUMERIC(12,2) DEFAULT 0.00,
+        description TEXT,
+        training_track VARCHAR(255),
+        cohort VARCHAR(100),
+        batch VARCHAR(100),
+        recorded_by VARCHAR(255),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_program_costs_category ON program_costs(cost_category);
     `);
 
     console.log("[DB] PostgreSQL schema verified and migration performed.");
@@ -1267,6 +1282,7 @@ function loadJsonState(): {
   emailTemplates?: any[];
   toolkitAssets?: any[];
   graduateToolkits?: any[];
+  programCosts?: any[];
 } {
   try {
     if (fs.existsSync(DB_FILE)) {
@@ -1282,6 +1298,9 @@ function loadJsonState(): {
       }
       if (!data.emailTemplates) {
         data.emailTemplates = [];
+      }
+      if (!data.programCosts) {
+        data.programCosts = [];
       }
       if (!data.toolkitAssets || data.toolkitAssets.length === 0) {
         const defaultAssets = [
@@ -1322,7 +1341,8 @@ function loadJsonState(): {
     documentDispatches: [],
     emailTemplates: [],
     toolkitAssets: [],
-    graduateToolkits: []
+    graduateToolkits: [],
+    programCosts: []
   };
 }
 
@@ -1339,6 +1359,7 @@ function saveJsonState(state: {
   emailTemplates?: any[];
   toolkitAssets?: any[];
   graduateToolkits?: any[];
+  programCosts?: any[];
 }) {
   try {
     if (!state.institutionLetterheads) {
@@ -1358,6 +1379,9 @@ function saveJsonState(state: {
     }
     if (!state.graduateToolkits) {
       state.graduateToolkits = [];
+    }
+    if (!state.programCosts) {
+      state.programCosts = [];
     }
     fs.writeFileSync(DB_FILE, JSON.stringify(state, null, 2), "utf-8");
   } catch (e) {
@@ -6191,6 +6215,97 @@ export class DbRepo {
     } catch (e) {
       console.error("[DB Repo] Failed to update graduate toolkit status in PG:", e);
       return fallbackUpdate();
+    }
+  }
+
+  static async getProgramCosts(): Promise<any[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return loadJsonState().programCosts || [];
+    }
+    try {
+      const res = await pool.query(
+        `SELECT id, cost_category AS "costCategory", amount, description, 
+                training_track AS "trainingTrack", cohort, batch, recorded_by AS "recordedBy", 
+                created_at AS "createdAt", updated_at AS "updatedAt" 
+         FROM program_costs 
+         ORDER BY created_at DESC`
+      );
+      return res.rows.map(r => ({
+        ...r,
+        amount: parseFloat(r.amount || 0)
+      }));
+    } catch (e) {
+      console.error("[DB Repo] Failed to load program costs from PG:", e);
+      return loadJsonState().programCosts || [];
+    }
+  }
+
+  static async saveProgramCost(cost: any): Promise<any> {
+    const pool = getPgPool();
+    const fallbackSave = () => {
+      const state = loadJsonState();
+      if (!state.programCosts) state.programCosts = [];
+      const index = state.programCosts.findIndex((item: any) => item.id === cost.id);
+      const now = new Date().toISOString();
+      const newCost = {
+        ...cost,
+        amount: parseFloat(cost.amount || 0),
+        id: cost.id || `cost-${Math.random().toString(36).substr(2, 9)}`,
+        createdAt: cost.createdAt || now,
+        updatedAt: now
+      };
+      if (index !== -1) {
+        state.programCosts[index] = newCost;
+      } else {
+        state.programCosts.push(newCost);
+      }
+      saveJsonState(state);
+      return newCost;
+    };
+
+    if (!pool || !isPgActive) {
+      return fallbackSave();
+    }
+
+    try {
+      const id = cost.id || "gen_random_uuid()";
+      const isNew = !cost.id;
+      const { costCategory, amount, description, trainingTrack, cohort, batch, recordedBy } = cost;
+      
+      let res;
+      if (!isNew) {
+        const checkRes = await pool.query("SELECT id FROM program_costs WHERE id = $1", [id]);
+        if (checkRes.rows.length > 0) {
+          res = await pool.query(
+            `UPDATE program_costs 
+             SET cost_category = $2, amount = $3, description = $4, training_track = $5, cohort = $6, batch = $7, recorded_by = $8, updated_at = NOW() 
+             WHERE id = $1 
+             RETURNING id, cost_category AS "costCategory", amount, description, training_track AS "trainingTrack", cohort, batch, recorded_by AS "recordedBy", created_at AS "createdAt", updated_at AS "updatedAt"`,
+            [id, costCategory, amount, description, trainingTrack, cohort, batch, recordedBy]
+          );
+          return {
+            ...res.rows[0],
+            amount: parseFloat(res.rows[0].amount || 0)
+          };
+        }
+      }
+      
+      const insertId = isNew ? require("crypto").randomUUID() : id;
+      res = await pool.query(
+        `INSERT INTO program_costs (
+          id, cost_category, amount, description, training_track, cohort, batch, recorded_by, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+        RETURNING id, cost_category AS "costCategory", amount, description, training_track AS "trainingTrack", cohort, batch, recorded_by AS "recordedBy", created_at AS "createdAt", updated_at AS "updatedAt"`,
+        [insertId, costCategory, amount, description, trainingTrack, cohort, batch, recordedBy]
+      );
+      return {
+        ...res.rows[0],
+        amount: parseFloat(res.rows[0].amount || 0)
+      };
+    } catch (e) {
+      console.error("[DB Repo] Failed to save program cost to PG:", e);
+      return fallbackSave();
     }
   }
 }

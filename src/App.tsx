@@ -31,6 +31,8 @@ const ToolkitsAssetsCenter = React.lazy(() => import("./components/ToolkitsAsset
 import { TrainingOutcomes } from "./components/TrainingOutcomes";
 import ImpactEvidence from "./components/ImpactEvidence";
 import { ExecutiveMAndECenter } from "./components/ExecutiveMAndECenter";
+import { QualityAccreditationCenter } from "./components/QualityAccreditationCenter";
+import { FinancialsRoiCenter } from "./components/FinancialsRoiCenter";
 import { Beneficiary, CustomField, AuditLog, UserSession } from "./types";
 import { authFetch, downloadWithAuth } from "./utils/authFetch";
 import { useNotification } from "./components/NotificationContext";
@@ -49,7 +51,7 @@ export default function App() {
       return null;
     }
   });
-  const [activeTab, setActiveTab] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility" | "trainee-operations" | "certification" | "outcomes" | "evidence" | "toolkits" | "executive-m-and-e">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility" | "trainee-operations" | "certification" | "outcomes" | "evidence" | "toolkits" | "executive-m-and-e" | "quality-accreditation">("dashboard");
   const [admissionsSubTab, setAdmissionsSubTab] = useState<"dashboard" | "letters" | "forms" | "acceptance" | "dispatches">("dashboard");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [registryViewMode, setRegistryViewMode] = useState<"list" | "details" | "create">("list");
@@ -760,6 +762,22 @@ export default function App() {
 
           {activeTab === "executive-m-and-e" && (
             <ExecutiveMAndECenter
+              session={session}
+              showToast={showToast}
+              onRefreshRoot={fetchBeneficiaries}
+            />
+          )}
+
+          {activeTab === "quality-accreditation" && (
+            <QualityAccreditationCenter
+              session={session}
+              showToast={showToast}
+              onRefreshRoot={fetchBeneficiaries}
+            />
+          )}
+
+          {activeTab === "financials-roi" && (
+            <FinancialsRoiCenter
               session={session}
               showToast={showToast}
               onRefreshRoot={fetchBeneficiaries}
