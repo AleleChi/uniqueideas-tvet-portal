@@ -2336,23 +2336,229 @@ app.get("/api/biometric/devices", requireAuth, requireRole(["SUPER_ADMIN", "ADMI
   }
 });
 
+// POST register biometric device
+app.post("/api/biometric/devices", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { device_name, serial_number, location, status } = req.body;
+    if (!device_name || !serial_number) {
+      return res.status(400).json({ error: "Device name and Serial number are required." });
+    }
+    const pool = getPgPool();
+    if (!pool) return res.status(500).json({ error: "Postgres database offline" });
+
+    const result = await pool.query(`
+      INSERT INTO biometric_devices (device_name, serial_number, location, status, last_sync_at)
+      VALUES ($1, $2, $3, $4, NOW() - INTERVAL '5 minutes')
+      ON CONFLICT (serial_number) DO UPDATE SET
+        device_name = EXCLUDED.device_name,
+        location = EXCLUDED.location,
+        status = EXCLUDED.status,
+        updated_at = NOW()
+      RETURNING *
+    `, [device_name, serial_number, location || "Default Lab", status || "ONLINE"]);
+
+    await logAction(
+      req.user!.email,
+      "BIOMETRIC_DEVICE_REGISTERED",
+      `Registered/updated biometric device ${device_name} (SN: ${serial_number})`
+    );
+
+    res.json({ success: true, device: result.rows[0] });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE biometric device
+app.delete("/api/biometric/devices/:serial", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { serial } = req.params;
+    const pool = getPgPool();
+    if (!pool) return res.status(500).json({ error: "Postgres database offline" });
+
+    await pool.query("DELETE FROM biometric_devices WHERE serial_number = $1", [serial]);
+
+    await logAction(
+      req.user!.email,
+      "BIOMETRIC_DEVICE_DELETED",
+      `Deleted biometric device with serial ${serial}`
+    );
+
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET biometric sync logs
+app.get("/api/biometric/logs", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
+  try {
+    const pool = getPgPool();
+    if (!pool) return res.status(500).json({ error: "Postgres database offline" });
+
+    const result = await pool.query(`
+      SELECT l.*, d.device_name 
+      FROM biometric_import_logs l
+      LEFT JOIN biometric_devices d ON l.device_id = d.serial_number OR l.device_id = d.id::text
+      ORDER BY l.imported_at DESC
+      LIMIT 100
+    `);
+    res.json(result.rows);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST bulk import trainee profiles from excel/csv
+app.post("/api/trainees/import-csv", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { records } = req.body;
+    if (!records || !Array.isArray(records)) {
+      return res.status(400).json({ error: "Missing records array for import." });
+    }
+
+    const pool = getPgPool();
+    if (!pool) return res.status(500).json({ error: "Postgres database is offline" });
+
+    let count = 0;
+    for (const r of records) {
+      const { beneficiary_id, tvet_id, nin, bvn, bank_name, account_name, account_number, guardian_name, guardian_phone, education_level, employment_status, training_status, skill, state, tsp } = r;
+      if (!beneficiary_id) continue;
+
+      // Ensure beneficiary exists, otherwise insert a base beneficiary
+      const benCheck = await pool.query("SELECT id FROM beneficiaries WHERE id = $1", [beneficiary_id]);
+      if (benCheck.rows.length === 0) {
+        const firstName = r.first_name || r.name?.split(" ")[0] || "Imported";
+        const lastName = r.last_name || r.name?.split(" ").slice(1).join(" ") || "Trainee";
+        const email = r.email || `trainee_${beneficiary_id}@ideas-tvet.org`;
+        const phone = r.phone_number || "08000000000";
+        const gender = r.gender || "MALE";
+
+        await pool.query(`
+          INSERT INTO beneficiaries (id, first_name, last_name, email, phone_number, gender, state, tsp, status, created_at, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+        `, [
+          beneficiary_id, 
+          firstName, 
+          lastName, 
+          email, 
+          phone, 
+          gender, 
+          state || "Imo State", 
+          tsp || "New World Access", 
+          training_status?.toUpperCase() === "ACTIVE_TRAINING" ? "ACTIVE" : (training_status || "ACTIVE")
+        ]);
+      }
+
+      await pool.query(`
+        INSERT INTO trainee_profiles (
+          beneficiary_id, tvet_id, nin, bvn, bank_name, account_name, account_number, 
+          guardian_name, guardian_phone, education_level, employment_status, training_status, 
+          sector, skill, state, tsp, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW())
+        ON CONFLICT (beneficiary_id) DO UPDATE SET
+          tvet_id = COALESCE(EXCLUDED.tvet_id, trainee_profiles.tvet_id),
+          nin = COALESCE(EXCLUDED.nin, trainee_profiles.nin),
+          bvn = COALESCE(EXCLUDED.bvn, trainee_profiles.bvn),
+          bank_name = COALESCE(EXCLUDED.bank_name, trainee_profiles.bank_name),
+          account_name = COALESCE(EXCLUDED.account_name, trainee_profiles.account_name),
+          account_number = COALESCE(EXCLUDED.account_number, trainee_profiles.account_number),
+          guardian_name = COALESCE(EXCLUDED.guardian_name, trainee_profiles.guardian_name),
+          guardian_phone = COALESCE(EXCLUDED.guardian_phone, trainee_profiles.guardian_phone),
+          education_level = COALESCE(EXCLUDED.education_level, trainee_profiles.education_level),
+          employment_status = COALESCE(EXCLUDED.employment_status, trainee_profiles.employment_status),
+          training_status = COALESCE(EXCLUDED.training_status, trainee_profiles.training_status),
+          skill = COALESCE(EXCLUDED.skill, trainee_profiles.skill),
+          state = COALESCE(EXCLUDED.state, trainee_profiles.state),
+          tsp = COALESCE(EXCLUDED.tsp, trainee_profiles.tsp),
+          updated_at = NOW()
+      `, [
+        beneficiary_id, tvet_id, nin, bvn, bank_name, account_name, account_number,
+        guardian_name, guardian_phone, education_level, employment_status, training_status || "ACTIVE_TRAINING",
+        r.sector || "DIGITAL SKILLS", skill || "Mobile Phone Repairs", state || "Imo State", tsp || "New World Access"
+      ]);
+      count++;
+    }
+
+    await logAction(
+      req.user!.email,
+      "TRAINEE_PROFILES_IMPORTED",
+      `Imported/updated ${count} trainee profiles via excel import wizard`
+    );
+
+    res.json({ success: true, count });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST bulk import portal monitoring records from excel/csv
+app.post("/api/portal-monitoring/import-csv", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { records } = req.body;
+    if (!records || !Array.isArray(records)) {
+      return res.status(400).json({ error: "Missing records array for import." });
+    }
+
+    const pool = getPgPool();
+    if (!pool) return res.status(500).json({ error: "Postgres database offline" });
+
+    let count = 0;
+    for (const r of records) {
+      const { beneficiary_id, still_on_portal, still_attending, remarks } = r;
+      if (!beneficiary_id) continue;
+
+      const portalOn = still_on_portal === true || String(still_on_portal).toUpperCase() === "YES" || String(still_on_portal).toUpperCase() === "TRUE";
+      const attending = still_attending === true || String(still_attending).toUpperCase() === "YES" || String(still_attending).toUpperCase() === "TRUE";
+
+      await pool.query(`
+        INSERT INTO portal_monitoring (beneficiary_id, still_on_portal, still_attending, last_verified_at, remarks, verified_by)
+        VALUES ($1, $2, $3, NOW(), $4, $5)
+        ON CONFLICT (beneficiary_id) DO UPDATE SET
+          still_on_portal = EXCLUDED.still_on_portal,
+          still_attending = EXCLUDED.still_attending,
+          last_verified_at = NOW(),
+          remarks = COALESCE(EXCLUDED.remarks, portal_monitoring.remarks),
+          verified_by = EXCLUDED.verified_by
+      `, [beneficiary_id, portalOn, attending, remarks || "Excel Import Verification", req.user!.email]);
+      count++;
+    }
+
+    await logAction(
+      req.user!.email,
+      "PORTAL_MONITORING_IMPORTED",
+      `Imported/verified ${count} portal monitoring state logs via Excel wizard`
+    );
+
+    res.json({ success: true, count });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET computed student certification eligibility and save to metrics
 app.get("/api/annex9/readiness", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFF1CER", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
   try {
     const pool = getPgPool();
     if (!pool) return res.status(500).json({ error: "Postgres database offline" });
 
-    // Fetch active trainees
+    // Fetch active trainees with profile credentials
     const trainees = await pool.query(`
       SELECT 
         b.id as beneficiary_id,
-        b.beneficiary_status,
+        b.status as beneficiary_status,
         b.first_name,
         b.last_name,
         b.state,
         b.tsp,
         COALESCE(pm.still_on_portal, TRUE) as still_on_portal,
-        COALESCE(tp.tvet_id, 'ID-TVE-26-' || SUBSTRING(b.id, 1, 6)) as tvet_id
+        COALESCE(tp.tvet_id, 'ID-TVE-26-' || SUBSTRING(b.id, 1, 6)) as tvet_id,
+        tp.nin,
+        tp.bvn,
+        tp.bank_name,
+        tp.account_number,
+        tp.guardian_name,
+        tp.guardian_phone
       FROM beneficiaries b
       LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
       LEFT JOIN portal_monitoring pm ON b.id = pm.beneficiary_id
@@ -2379,9 +2585,32 @@ app.get("/api/annex9/readiness", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN
       const portalActive = t.still_on_portal ? "YES" : "NO";
       const trainingStatus = t.beneficiary_status || "ACTIVE";
 
-      // Criteria check: >= 70% attendance and active portal status and active training status
-      const isReadyValue = (attendancePercentage >= 70.00) && t.still_on_portal && (trainingStatus === "ACTIVE" || trainingStatus === "ADMITTED" || trainingStatus === "ELIGIBLE");
-      const readiness_status = isReadyValue ? "READY_FOR_CERTIFICATION" : "NOT_READY";
+      // Calculate profile completeness checking 5 key fields
+      let filledFields = 0;
+      if (t.nin && t.nin.trim().length === 11) filledFields++;
+      if (t.bvn && t.bvn.trim().length === 11) filledFields++;
+      if (t.bank_name && t.bank_name.trim().length > 0) filledFields++;
+      if (t.account_number && t.account_number.trim().length >= 10) filledFields++;
+      if (t.guardian_name && t.guardian_name.trim().length > 0) filledFields++;
+      const completenessPercentage = Math.round((filledFields / 5) * 100);
+
+      // Determine Eligibility status (READY, PENDING, AT RISK) following Phase 3 guidelines
+      let readiness_status = "PENDING";
+      let isReadyValue = false;
+      
+      const attendanceThreshold = 70.00;
+      const isAttendanceOk = attendancePercentage >= attendanceThreshold;
+      const isPortalOk = t.still_on_portal;
+      const isActiveStatus = (trainingStatus === "ACTIVE" || trainingStatus === "ADMITTED" || trainingStatus === "ELIGIBLE");
+
+      if (!isAttendanceOk || !isPortalOk || !isActiveStatus) {
+        readiness_status = "AT RISK";
+      } else if (completenessPercentage >= 80) {
+        readiness_status = "READY";
+        isReadyValue = true;
+      } else {
+        readiness_status = "PENDING";
+      }
 
       // Save/cache into database
       await pool.query(`
@@ -2417,6 +2646,14 @@ app.get("/api/annex9/readiness", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN
         attendance_percentage: attendancePercentage,
         portal_active: portalActive,
         training_status: trainingStatus,
+        profile_completeness: completenessPercentage,
+        missing_fields: {
+          nin: !t.nin,
+          bvn: !t.bvn,
+          bank_name: !t.bank_name,
+          account_number: !t.account_number,
+          guardian_name: !t.guardian_name
+        },
         readiness_status,
         is_ready: isReadyValue
       });
