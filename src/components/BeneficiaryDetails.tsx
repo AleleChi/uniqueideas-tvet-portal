@@ -1250,11 +1250,37 @@ export function BeneficiaryDetails({
 
             {/* Content Body */}
             <div className="flex-1 bg-slate-100 relative p-2 min-h-0">
-              <iframe
-                title="PDF Document Preview"
-                src={previewDoc.pdfUrl}
-                className="w-full h-full border-0 rounded-lg shadow-inner"
-              />
+              {(() => {
+                const getSafePdfUrl = (doc: any, isDownload: boolean = false) => {
+                  if (!doc || !doc.pdfUrl) return "";
+                  const url = doc.pdfUrl;
+                  if (url.includes("simulation") || url.includes("/ideas-tvet/raw/upload")) {
+                    const typeTag = doc.documentType === "ADMISSION_LETTER" ? "admission"
+                                  : doc.documentType === "ACCEPTANCE_LETTER" ? "acceptance"
+                                  : doc.documentType === "ENROLLMENT_CONFIRMATION" ? "enrollment"
+                                  : doc.documentType === "COMPLETION_CERTIFICATE" ? "certificate"
+                                  : doc.documentType === "ADMISSION_FORM" ? "form"
+                                  : "document";
+                    return `${API_BASE_URL}/api/documents/download/${beneficiary.id}/${typeTag}?format=pdf&inline=${!isDownload}`;
+                  }
+                  return isDownload ? url.replace("inline=true", "inline=false") : url;
+                };
+
+                const safePreviewUrl = getSafePdfUrl(previewDoc, false);
+                const safeDownloadUrl = getSafePdfUrl(previewDoc, true);
+
+                return (
+                  <>
+                    <iframe
+                      title="PDF Document Preview"
+                      src={safePreviewUrl}
+                      className="w-full h-full border-0 rounded-lg shadow-inner"
+                    />
+                    {/* Inject these URLs dynamically into the footer control block */}
+                    <span id="safe-preview-link-marker" data-preview={safePreviewUrl} data-download={safeDownloadUrl} className="hidden" />
+                  </>
+                );
+              })()}
             </div>
 
             {/* Footer Metadata & Actions */}
@@ -1266,7 +1292,10 @@ export function BeneficiaryDetails({
 
               <div className="flex items-center gap-2 w-full sm:w-auto">
                 <a
-                  href={previewDoc.pdfUrl}
+                  href={(() => {
+                    const el = document.getElementById("safe-preview-link-marker");
+                    return el ? el.getAttribute("data-preview") || previewDoc.pdfUrl : previewDoc.pdfUrl;
+                  })()}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex-1 sm:flex-none text-center bg-slate-150 hover:bg-slate-200 border border-slate-200 text-slate-700 font-bold px-3.5 py-2 rounded-lg cursor-pointer transition"
@@ -1274,8 +1303,11 @@ export function BeneficiaryDetails({
                   Open In New Tab
                 </a>
                 <a
-                  href={previewDoc.pdfUrl ? previewDoc.pdfUrl.replace("inline=true", "inline=false") : "#"}
-                  download={`document_${previewDoc.id}.pdf`}
+                  href={(() => {
+                    const el = document.getElementById("safe-preview-link-marker");
+                    return el ? el.getAttribute("data-download") || (previewDoc.pdfUrl ? previewDoc.pdfUrl.replace("inline=true", "inline=false") : "#") : (previewDoc.pdfUrl ? previewDoc.pdfUrl.replace("inline=true", "inline=false") : "#");
+                  })()}
+                  download={`${(beneficiary.firstName || "TRAINEE").toUpperCase()}_${(beneficiary.lastName || "").toUpperCase()}_${(previewDoc.documentType || "DOCUMENT").toUpperCase()}.pdf`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex-1 sm:flex-none text-center bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-3.5 py-2 rounded-lg cursor-pointer transition shadow-xs"

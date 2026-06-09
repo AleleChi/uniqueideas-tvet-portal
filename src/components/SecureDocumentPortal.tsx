@@ -68,16 +68,17 @@ export function SecureDocumentPortal({ token, onClose }: SecureDocumentPortalPro
 
       // Trigger document download
       let downloadUrl = "";
-      if (document && document.pdfUrl) {
+      const isSimulatedUrl = document && document.pdfUrl && (document.pdfUrl.includes("simulation") || document.pdfUrl.includes("/ideas-tvet/raw/upload"));
+
+      if (document && document.pdfUrl && !isSimulatedUrl) {
         downloadUrl = document.pdfUrl;
       } else {
-        // Fallback generator link matching admission controllers
-        if (dispatch.documentType === "ADMISSION_LETTER") {
-          downloadUrl = `${API_BASE_URL}/api/admissions/download-letter/${beneficiary.id}`;
-        } else {
-          // General document verification downloads
-          downloadUrl = `${API_BASE_URL}/api/admissions/download-form/${beneficiary.id}`;
-        }
+        const typeTag = dispatch.documentType === "ADMISSION_LETTER" ? "admission"
+                      : dispatch.documentType === "ACCEPTANCE_LETTER" ? "acceptance"
+                      : dispatch.documentType === "ENROLLMENT_CONFIRMATION" ? "enrollment"
+                      : dispatch.documentType === "COMPLETION_CERTIFICATE" ? "certificate"
+                      : "form";
+        downloadUrl = `${API_BASE_URL}/api/documents/download/${beneficiary.id}/${typeTag}?format=pdf&inline=false`;
       }
 
       window.open(downloadUrl, "_blank");

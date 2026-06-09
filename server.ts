@@ -45,30 +45,53 @@ export const buildSanitizedFilename = (beneficiary: any, docType: string, ext: s
  */
 export const sendDocumentResponse = (res: any, data: Buffer | string, beneficiary: any, type: string, inline: boolean) => {
   const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
-  const signature = buffer.toString("ascii", 0, 5);
-  const isRealPdf = buffer.length >= 5 && signature === "%PDF-";
+  const signatureAscii = buffer.toString("ascii", 0, 5);
+  
+  let isRealPdf = false;
+  let mime = "application/pdf";
+  let ext = "pdf";
 
-  const filename = buildSanitizedFilename(beneficiary, type || "document", "pdf");
-  const mime = "application/pdf";
+  // Check file signature (magic numbers) to determine MIME type dynamically!
+  if (buffer.length >= 4 && signatureAscii.startsWith("%PDF-")) {
+    isRealPdf = true;
+    mime = "application/pdf";
+    ext = "pdf";
+  } else if (buffer.length >= 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+    // PNG file
+    mime = "image/png";
+    ext = "png";
+  } else if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    // JPEG file
+    mime = "image/jpeg";
+    ext = "jpg";
+  } else if (buffer.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b && buffer[2] === 0x03 && buffer[3] === 0x04) {
+    // PKZip / Word Docx file
+    mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    ext = "docx";
+  }
+
+  const filename = buildSanitizedFilename(beneficiary, type || "document", ext);
 
   console.log({
     filename,
     mime,
     size: buffer.length,
-    header: buffer.slice(0, 50).toString()
+    header: buffer.slice(0, 50).toString("hex")
   });
 
-  if (!isRealPdf) {
-    console.error(`[PDF Audit REJECTED] File does not begin with %PDF- header. Signature was: '${signature}'. Rejecting transmission. Filename: ${filename}`);
+  const isAllowedFormat = isRealPdf || mime.startsWith("image/") || ext === "docx";
+
+  if (!isAllowedFormat) {
+    console.error(`[File Audit REJECTED] Unknown file type or corruption. Signature was: '${signatureAscii}'. Rejecting transmission. Filename: ${filename}`);
     res.status(500);
     res.setHeader("Content-Type", "application/json");
     return res.json({
-      error: "PDF_BINARY_CORRUPTION",
-      message: "INVALID PDF GENERATED: The requested PDF document failed binary integrity verification (missing standard %PDF- header)."
+      error: "BINARY_CORRUPTION_OR_UNSUPPORTED_FORMAT",
+      message: "The requested document failed binary integrity verification (unknown file signature or corrupted stream)."
     });
   }
 
-  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Type", mime);
   res.setHeader("Content-Length", buffer.length.toString());
   res.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename="${filename}"`);
   return res.status(200).send(buffer);
@@ -1495,19 +1518,50 @@ app.get("/api/documents/download/:id/:type", async (req, res) => {
 
     const returnHtml = format === "word";
     let data: any;
+    let servedFromUpload = false;
 
-    if (type === "admission") {
-      data = await PdfService.generateAdmissionLetterPdf(beneficiary, meta, returnHtml);
-    } else if (type === "acceptance") {
-      data = await PdfService.generateAcceptanceLetterPdf(beneficiary, meta, returnHtml);
-    } else if (type === "enrollment") {
-      data = await PdfService.generateEnrollmentConfirmationPdf(beneficiary, meta, returnHtml);
-    } else if (type === "certificate") {
-      data = await PdfService.generateCompletionCertificatePdf(beneficiary, meta, returnHtml);
-    } else if (type === "form") {
-      data = await PdfService.generateAdmissionFormPdf(beneficiary, meta, returnHtml);
-    } else {
-      return res.status(400).send("Invalid document type");
+    if (type === "acceptance" && beneficiary.acceptanceLetterUrl) {
+      const url = beneficiary.acceptanceLetterUrl;
+      console.log(`[GET /api/documents/download] Candidate has custom uploaded Acceptance letter in database: ${url}`);
+      
+      // 1. Check if it exists in simulated cache first
+      if ((global as any).simulatedCloudinaryFiles && (global as any).simulatedCloudinaryFiles.has(url)) {
+        console.log("[GET /api/documents/download] Serving custom Acceptance letter from local simulated cache.");
+        data = (global as any).simulatedCloudinaryFiles.get(url);
+        servedFromUpload = true;
+      } else if (!url.includes("cloudinary.com/simulation") && !url.includes("cloudinary.com/ideas-tvet/raw/upload")) {
+        // 2. It's a real Cloudinary URL, let's attempt to fetch it!
+        try {
+          console.log(`[GET /api/documents/download] Fetching custom upload from Cloudinary: ${url}`);
+          const fetchRes = await fetch(url);
+          if (fetchRes.ok) {
+            const arrBuf = await fetchRes.arrayBuffer();
+            data = Buffer.from(arrBuf);
+            servedFromUpload = true;
+            console.log(`[GET /api/documents/download] Fetch raw upload from Cloudinary successful (${data.length} bytes).`);
+          } else {
+            console.warn(`[GET /api/documents/download] Failed to fetch raw upload from Cloudinary, HTTP status ${fetchRes.status}`);
+          }
+        } catch (fetchErr: any) {
+          console.error(`[GET /api/documents/download] Error fetching from Cloudinary:`, fetchErr.message);
+        }
+      }
+    }
+
+    if (!servedFromUpload) {
+      if (type === "admission") {
+        data = await PdfService.generateAdmissionLetterPdf(beneficiary, meta, returnHtml);
+      } else if (type === "acceptance") {
+        data = await PdfService.generateAcceptanceLetterPdf(beneficiary, meta, returnHtml);
+      } else if (type === "enrollment") {
+        data = await PdfService.generateEnrollmentConfirmationPdf(beneficiary, meta, returnHtml);
+      } else if (type === "certificate") {
+        data = await PdfService.generateCompletionCertificatePdf(beneficiary, meta, returnHtml);
+      } else if (type === "form") {
+        data = await PdfService.generateAdmissionFormPdf(beneficiary, meta, returnHtml);
+      } else {
+        return res.status(400).send("Invalid document type");
+      }
     }
 
     const docNameTag = type === "admission" ? "ADMISSION_LETTER"

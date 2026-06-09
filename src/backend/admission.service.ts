@@ -74,13 +74,17 @@ export class AdmissionService {
     beneficiary.admissionLetterUrl = admissionPdfUrl;
     beneficiary.acceptanceLetterUrl = acceptancePdfUrl;
 
+    const fName = (beneficiary.firstName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const lName = (beneficiary.lastName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const namePart = fName && lName ? `${fName}_${lName}` : `${(beneficiary.id || "TRAINEE").replace(/[^A-Z0-9-]/g, "")}`;
+
     // 5. Document Versioning for Admission Letter
     const currentVersions = beneficiary.admissionLetterVersions || [];
     const nextVersionNum = admissionDoc.version;
     const newVersionItem = {
       version: nextVersionNum,
       url: admissionPdfUrl,
-      name: `Official_TVET_Admission_Letter_v${nextVersionNum}.pdf`,
+      name: `${namePart}_ADMISSION_LETTER_v${nextVersionNum}.pdf`,
       generatedAt: new Date().toISOString()
     };
     beneficiary.admissionLetterVersions = [...currentVersions, newVersionItem];
@@ -90,7 +94,7 @@ export class AdmissionService {
     const updatedDocs = [...currentDocs];
     updatedDocs.push({
       id: admissionDoc.id,
-      name: `Official TVET Admission Letter (v${nextVersionNum}).pdf`,
+      name: `${namePart}_ADMISSION_LETTER.pdf`,
       type: "admission",
       url: admissionPdfUrl,
       uploadedAt: new Date().toISOString(),
@@ -105,10 +109,6 @@ export class AdmissionService {
 
     const isAdmissionRealPdf = admissionPdfBuffer.length >= 4 && admissionPdfBuffer[0] === 0x25 && admissionPdfBuffer[1] === 0x50 && admissionPdfBuffer[2] === 0x44 && admissionPdfBuffer[3] === 0x46;
     const isAcceptanceRealPdf = acceptancePdfBuffer.length >= 4 && acceptancePdfBuffer[0] === 0x25 && acceptancePdfBuffer[1] === 0x50 && acceptancePdfBuffer[2] === 0x44 && acceptancePdfBuffer[3] === 0x46;
-
-    const fName = (beneficiary.firstName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-    const lName = (beneficiary.lastName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-    const namePart = fName && lName ? `${fName}_${lName}` : `${(beneficiary.id || "TRAINEE").replace(/[^A-Z0-9-]/g, "")}`;
 
     const mailResult = await EmailService.sendAdmissionEmail(
       toEmail, 
@@ -462,6 +462,10 @@ export class AdmissionService {
       nextAccLetterVer = acceptanceDoc.version;
     }
 
+    const fName = (beneficiary.firstName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const lName = (beneficiary.lastName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const namePart = fName && lName ? `${fName}_${lName}` : `${(beneficiary.id || "TRAINEE").replace(/[^A-Z0-9-]/g, "")}`;
+
     beneficiary.acceptanceLetterUploaded = true;
     beneficiary.acceptanceLetterUrl = signedAcceptanceUrl;
     beneficiary.acceptanceLetterUploadedAt = new Date().toISOString();
@@ -471,7 +475,7 @@ export class AdmissionService {
     const newAccLetterItem = {
       version: nextAccLetterVer,
       url: signedAcceptanceUrl,
-      name: `Signed_Acceptance_Declaration_v${nextAccLetterVer}.pdf`,
+      name: `${namePart}_ACCEPTANCE_LETTER_v${nextAccLetterVer}.pdf`,
       uploadedAt: new Date().toISOString()
     };
     beneficiary.acceptanceLetterVersions = [...currentAccLetters, newAccLetterItem];
@@ -481,7 +485,7 @@ export class AdmissionService {
     const updatedDocs = [...currentDocs];
     updatedDocs.push({
       id: registeredDocId,
-      name: `Signed Acceptance Declaration (v${nextAccLetterVer}).pdf`,
+      name: `${namePart}_ACCEPTANCE_LETTER.pdf`,
       type: "acceptance",
       url: signedAcceptanceUrl,
       uploadedAt: new Date().toISOString(),

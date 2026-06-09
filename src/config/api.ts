@@ -83,18 +83,6 @@ export const isVercelMissingApi = typeof window !== "undefined" &&
   !((import.meta as any).env?.VITE_API_URL || (import.meta as any).env?.VITE_API_BASE_URL);
 
 export const buildPublicUrl = (requestPath: string, req?: any): string => {
-  let base = "";
-  
-  // 1. Single Source of Truth - PUBLIC_APP_URL from environment
-  if (typeof process !== "undefined" && process.env) {
-    base = process.env.PUBLIC_APP_URL || process.env.VITE_PUBLIC_APP_URL || "";
-  }
-  
-  if (!base && typeof import.meta !== "undefined" && (import.meta as any).env) {
-    const metaEnv = (import.meta as any).env;
-    base = metaEnv.PUBLIC_APP_URL || metaEnv.VITE_PUBLIC_APP_URL || "";
-  }
-
   // Under NO circumstances should emails or admission links use preview URL patterns
   const isPreviewOrLocal = (url: string): boolean => {
     if (!url) return true;
@@ -111,6 +99,24 @@ export const buildPublicUrl = (requestPath: string, req?: any): string => {
       l.includes("my_app_url")
     );
   };
+
+  let base = "";
+  
+  // 1. Single Source of Truth - PUBLIC_APP_URL from environment
+  if (typeof process !== "undefined" && process.env) {
+    const rawProcessVal = process.env.PUBLIC_APP_URL || process.env.VITE_PUBLIC_APP_URL || "";
+    if (rawProcessVal && !isPreviewOrLocal(rawProcessVal)) {
+      base = rawProcessVal;
+    }
+  }
+  
+  if (!base && typeof import.meta !== "undefined" && (import.meta as any).env) {
+    const metaEnv = (import.meta as any).env;
+    const rawMetaVal = metaEnv.PUBLIC_APP_URL || metaEnv.VITE_PUBLIC_APP_URL || "";
+    if (rawMetaVal && !isPreviewOrLocal(rawMetaVal)) {
+      base = rawMetaVal;
+    }
+  }
 
   // If base was not set via PUBLIC_APP_URL, check other non-preview general environment variables
   if (!base) {
