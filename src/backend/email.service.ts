@@ -5,6 +5,7 @@
 
 import { Resend } from "resend";
 import { getPgPool } from "./db";
+import { logForensicPdfTrace } from "./pdfTraceAudit";
 
 const apiKey = process.env.RESEND_API_KEY;
 
@@ -303,10 +304,14 @@ export class EmailService {
         const formattedAttachments = attachmentsList.map(a => {
           const parts = a.content.split(",");
           const base64Content = parts[1] || parts[0];
+          const buffer = Buffer.from(base64Content, "base64");
+          
+          logForensicPdfTrace("Email Attachment", a.name, buffer);
+
           return {
             filename: a.name,
-            content: Buffer.from(base64Content, "base64"),
-            contentType: a.contentType
+            content: buffer,
+            contentType: "application/pdf"
           };
         });
 
@@ -335,6 +340,18 @@ export class EmailService {
     }
 
     // Gracefully disabled state or simulator mode fallback
+    try {
+      attachmentsList.forEach(a => {
+        const parts = a.content.split(",");
+        const base64Content = parts[1] || parts[0];
+        const buffer = Buffer.from(base64Content, "base64");
+        logForensicPdfTrace("Email Attachment (Simulated)", a.name, buffer);
+      });
+    } catch (err: any) {
+      console.error(`[Email Simulator] Email validation error:`, err.message);
+      return { success: false, status: "Failed", errorDetails: "Simulator pdf attachment check failed: " + err.message };
+    }
+
     console.log(`[Resend] [SIMULATOR SUCCESS] Dispatched Admission Alert Email to: ${to}`);
     console.log(`[Resend] [SIMULATOR SUCCESS] Attachments bundled: ${attachmentsList.map(a => `${a.name} (${a.contentType})`).join(", ")}`);
     return { success: true, status: "Delivered", errorDetails: "Sent via Simulator Connection (No Resend API Key configured)." };

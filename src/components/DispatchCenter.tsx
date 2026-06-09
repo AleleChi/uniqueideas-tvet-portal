@@ -6,6 +6,7 @@ import {
   TrendingUp, RefreshCw, Layers, FileCheck, Eye, EyeOff
 } from "lucide-react";
 import { authFetch } from "../utils/authFetch";
+import { buildPublicUrl } from "../config/api";
 
 interface DispatchCenterProps {
   candidates: any[];
@@ -32,7 +33,7 @@ export function DispatchCenter({ candidates }: DispatchCenterProps) {
     state: "Kano",
     skill: "Solar PV Installation",
     tsp: "Unique Solar Nig Ltd",
-    download_link: "http://localhost:3000/documents/verify/demo-hash-key",
+    download_link: buildPublicUrl("/documents/verify/demo-hash-key"),
     institution_name: "Unique Technology TVET Center",
     current_date: new Date().toLocaleDateString("en-GB")
   });
@@ -166,7 +167,7 @@ export function DispatchCenter({ candidates }: DispatchCenterProps) {
   };
 
   const handleCopyLink = (token: string) => {
-    const link = `${window.location.origin}/documents/verify/${token}`;
+    const link = buildPublicUrl(`/documents/verify/${token}`);
     navigator.clipboard.writeText(link);
     showToast("Copy verified link to dashboard clipboard!");
   };

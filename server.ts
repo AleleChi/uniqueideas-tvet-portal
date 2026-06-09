@@ -25,8 +25,54 @@ import { requireAuth, requireRole, JWT_SECRET, AuthenticatedRequest } from "./sr
 import { PdfService } from "./src/backend/pdf.service";
 import { CloudinaryService } from "./src/backend/cloudinary.service";
 import { DocumentService } from "./src/backend/document.service";
+import { buildPublicUrl } from "./src/config/api";
 import { Jimp } from "jimp";
 import ExcelJS from "exceljs";
+
+/**
+ * Utility to build proper, clean, and sanitized filename based on Trainee name and document type
+ */
+export const buildSanitizedFilename = (beneficiary: any, docType: string, ext: string = "pdf"): string => {
+  const fName = (beneficiary.firstName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const lName = (beneficiary.lastName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const namePart = fName && lName ? `${fName}_${lName}` : `${(beneficiary.id || "TRAINEE").replace(/[^A-Z0-9-]/g, "")}`;
+  const docPart = docType.toUpperCase().replace(/[^A-Z0-9_]/g, "");
+  return `${namePart}_${docPart}.${ext}`;
+};
+
+/**
+ * Sends compiled PDF or gracefully falls back to HTML container if Puppeteer fails
+ */
+export const sendDocumentResponse = (res: any, data: Buffer | string, beneficiary: any, type: string, inline: boolean) => {
+  const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
+  const signature = buffer.toString("ascii", 0, 5);
+  const isRealPdf = buffer.length >= 5 && signature === "%PDF-";
+
+  const filename = buildSanitizedFilename(beneficiary, type || "document", "pdf");
+  const mime = "application/pdf";
+
+  console.log({
+    filename,
+    mime,
+    size: buffer.length,
+    header: buffer.slice(0, 50).toString()
+  });
+
+  if (!isRealPdf) {
+    console.error(`[PDF Audit REJECTED] File does not begin with %PDF- header. Signature was: '${signature}'. Rejecting transmission. Filename: ${filename}`);
+    res.status(500);
+    res.setHeader("Content-Type", "application/json");
+    return res.json({
+      error: "PDF_BINARY_CORRUPTION",
+      message: "INVALID PDF GENERATED: The requested PDF document failed binary integrity verification (missing standard %PDF- header)."
+    });
+  }
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Length", buffer.length.toString());
+  res.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename="${filename}"`);
+  return res.status(200).send(buffer);
+};
 
 /**
  * Optimizes an embedded beneficiary photo specifically for Office Word/Excel/PDF exports.
@@ -321,7 +367,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
     await DbRepo.updateUser(user);
 
     // Dynamic reset links
-    const resetLink = `http://localhost:3000/reset-password?token=${resetToken}`;
+    const resetLink = buildPublicUrl(`/reset-password?token=${resetToken}`, req);
     console.log(`[SECURITY] Forgot password requested for ${normalizedEmail}. Code: ${resetToken}. Link: ${resetLink}`);
     
     // Attempt real notification dispatch
@@ -1390,9 +1436,7 @@ app.get("/api/admissions/download-letter/:id", async (req, res) => {
 
     const pdfBuffer = await PdfService.generateAdmissionLetterPdf(beneficiary);
 
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename=Admission_Letter_${beneficiary.id}.pdf`);
-    return res.status(200).send(pdfBuffer);
+    return sendDocumentResponse(res, pdfBuffer, beneficiary, "ADMISSION_LETTER", inline);
   } catch (e: any) {
     console.error("[GET /api/admissions/download-letter] Error compiling PDF document:", e);
     return res.status(500).send(e.message);
@@ -1466,14 +1510,20 @@ app.get("/api/documents/download/:id/:type", async (req, res) => {
       return res.status(400).send("Invalid document type");
     }
 
+    const docNameTag = type === "admission" ? "ADMISSION_LETTER"
+                    : type === "acceptance" ? "ACCEPTANCE_LETTER"
+                    : type === "enrollment" ? "ENROLLMENT_LETTER"
+                    : type === "certificate" ? "COMPLETION_CERTIFICATE"
+                    : type === "form" ? "ADMISSION_FORM"
+                    : "DOCUMENT";
+
     if (format === "word") {
+      const filename = buildSanitizedFilename(beneficiary, docNameTag, "doc");
       res.setHeader("Content-Type", "application/msword");
-      res.setHeader("Content-Disposition", `attachment; filename=${type}_${beneficiary.id}.doc`);
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
       return res.status(200).send(data);
     } else {
-      res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename=${type}_${beneficiary.id}.pdf`);
-      return res.status(200).send(data);
+      return sendDocumentResponse(res, data, beneficiary, docNameTag, inline);
     }
   } catch (e: any) {
     console.error(`[GET /api/documents/download] Error compiling document:`, e);
@@ -5852,7 +5902,7 @@ app.post("/api/dispatches/send", requireAuth, async (req, res) => {
     }
 
     const operator = (req as any).user?.email || "Admin Administrator";
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const baseUrl = buildPublicUrl("", req);
 
     console.log(`[Dispatch Manager] Bulk dispatch initialize: ${beneficiaryIds.length} beneficiaries, type=${documentType}`);
 
@@ -5931,7 +5981,7 @@ app.post("/api/dispatches/:id/resend", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "Dispatch record not found." });
     }
 
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const baseUrl = buildPublicUrl("", req);
     dispatch.status = "QUEUED";
     dispatch.failedAt = null;
     dispatch.failureReason = null;
@@ -7517,9 +7567,9 @@ app.get("/api/quality-accreditation/report", requireAuth, async (req: Authentica
             .header { border-bottom: 2px solid #4f46e5; padding-bottom: 16px; margin-bottom: 24px; }
             .title { font-size: 22px; font-weight: bold; color: #1e293b; text-transform: uppercase; margin: 0; }
             .meta { font-size: 11px; font-family: monospace; color: #64748b; margin-top: 8px; }
-            table { width: 100%; border-collapse: collapse; margin-top: 24px; font-size: 13px; }
-            th { background-color: #f1f5f9; text-align: left; padding: 10px; border: 1px solid #cbd5e1; font-weight: 600; color: #334155; }
-            td { padding: 10px; border: 1px solid #cbd5e1; color: #475569; }
+            table { width: 100%; border-collapse: collapse; margin-top: 24px; font-size: 11px; }
+            th { background-color: #f1f5f9; text-align: left; padding: 8px; border: 1px solid #cbd5e1; font-weight: 600; color: #334155; }
+            td { padding: 8px; border: 1px solid #cbd5e1; color: #475569; }
             tr:nth-child(even) td { background-color: #f8fafc; }
             .footer { margin-top: 40px; border-top: 1px solid #e2e8f0; padding-top: 16px; font-size: 11px; color: #94a3b8; text-align: center; }
           </style>
@@ -7545,9 +7595,16 @@ app.get("/api/quality-accreditation/report", requireAuth, async (req: Authentica
         </body>
         </html>
       `;
-      res.setHeader("Content-Type", "text/html");
-      res.setHeader("Content-Disposition", `attachment; filename=ideas_tvet_qa_${type}_report.html`);
-      res.send(html);
+      try {
+        const pdfBuffer = await PdfService.compileHtmlToPdfBuffer(html) as Buffer;
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Length", pdfBuffer.length.toString());
+        res.setHeader("Content-Disposition", `attachment; filename="ideas_tvet_qa_${type}_report.pdf"`);
+        res.status(200).send(pdfBuffer);
+      } catch (pdfErr: any) {
+        console.error("[QA Report PDF compilation failed]", pdfErr);
+        res.status(500).send("PDF compilation failed: " + pdfErr.message);
+      }
     } else {
       let csvContent = headers.join(",") + "\n";
       rows.forEach(r => {
@@ -7835,9 +7892,9 @@ app.get("/api/financials-roi/report", requireAuth, async (req: AuthenticatedRequ
             .header { border-bottom: 2px solid #059669; padding-bottom: 16px; margin-bottom: 24px; }
             .title { font-size: 20px; font-weight: bold; color: #065f46; text-transform: uppercase; margin: 0; }
             .meta { font-size: 11px; font-family: monospace; color: #64748b; margin-top: 8px; }
-            table { width: 100%; border-collapse: collapse; margin-top: 24px; font-size: 13px; }
-            th { background-color: #f0fdf4; text-align: left; padding: 10px; border: 1px solid #cbd5e1; font-weight: 600; color: #166534; }
-            td { padding: 10px; border: 1px solid #cbd5e1; color: #475569; }
+            table { width: 100%; border-collapse: collapse; margin-top: 24px; font-size: 11px; }
+            th { background-color: #f0fdf4; text-align: left; padding: 8px; border: 1px solid #cbd5e1; font-weight: 600; color: #166534; }
+            td { padding: 8px; border: 1px solid #cbd5e1; color: #475569; }
             tr:nth-child(even) td { background-color: #f8fafc; }
             .footer { margin-top: 40px; border-top: 1px solid #e2e8f0; padding-top: 16px; font-size: 11px; color: #94a3b8; text-align: center; }
           </style>
@@ -7863,9 +7920,16 @@ app.get("/api/financials-roi/report", requireAuth, async (req: AuthenticatedRequ
         </body>
         </html>
       `;
-      res.setHeader("Content-Type", "text/html");
-      res.setHeader("Content-Disposition", `attachment; filename=ideas_tvet_financials_${type}_report.html`);
-      res.send(html);
+      try {
+        const pdfBuffer = await PdfService.compileHtmlToPdfBuffer(html) as Buffer;
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Length", pdfBuffer.length.toString());
+        res.setHeader("Content-Disposition", `attachment; filename="ideas_tvet_financials_${type}_report.pdf"`);
+        res.status(200).send(pdfBuffer);
+      } catch (pdfErr: any) {
+        console.error("[Financials Report PDF compilation failed]", pdfErr);
+        res.status(500).send("PDF compilation failed: " + pdfErr.message);
+      }
     } else {
       let csvContent = headers.join(",") + "\n";
       rows.forEach(r => {
@@ -7933,6 +7997,76 @@ app.get("/api/executive-m-and-e/export-report", requireAuth, async (req, res) =>
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       res.setHeader("Content-Disposition", `attachment; filename=ideas_tvet_m_and_e_${type}_report.xlsx`);
       await workbook.xlsx.write(res);
+    } else if (format === "pdf") {
+      const titleStr = `${type.toString().toUpperCase()} M&E PROGRESS REPORT`;
+      const html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>${titleStr}</title>
+          <style>
+            body { font-family: 'Helvetica Neue', Arial, sans-serif; padding: 40px; color: #1e293b; background-color: #fff; }
+            .header { border-bottom: 2px solid #312e81; padding-bottom: 16px; margin-bottom: 24px; }
+            .title { font-size: 20px; font-weight: bold; color: #1e3a8a; text-transform: uppercase; margin: 0; }
+            .meta { font-size: 11px; font-family: monospace; color: #64748b; margin-top: 8px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 24px; font-size: 11px; }
+            th { background-color: #f1f5f9; text-align: left; padding: 8px; border: 1px solid #cbd5e1; font-weight: 600; color: #1e3a8a; }
+            td { padding: 8px; border: 1px solid #cbd5e1; color: #475569; }
+            tr:nth-child(even) td { background-color: #f8fafc; }
+            .footer { margin-top: 40px; border-top: 1px solid #e2e8f0; padding-top: 16px; font-size: 11px; color: #94a3b8; text-align: center; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1 class="title">${titleStr}</h1>
+            <div class="meta">IDEAS-TVET EXECUTIVE MONITORING & EVALUATION &bull; DATE GENERATED: ${new Date().toUTCString()}</div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                ${headers.map(h => `<th>${h}</th>`).join("")}
+              </tr>
+            </thead>
+            <tbody>
+              ${beneficiaries.map((b: any, idx: number) => {
+                const bId = b.id;
+                const fName = `${b.firstName || b.first_name || ""} ${b.lastName || b.last_name || ""}`.trim();
+                const repairsStatus = b.status || "ENROLLED";
+                const score = 75;
+                return `
+                  <tr>
+                    <td>${idx + 1}</td>
+                    <td>${bId}</td>
+                    <td>${fName}</td>
+                    <td>${b.gender || "MALE"}</td>
+                    <td>${b.state || "FCT"}</td>
+                    <td>${b.skillSector || b.skill_sector || "Repairs Domain"}</td>
+                    <td>${b.tsp || "Unique Technology Nig. Ltd"}</td>
+                    <td>${score}</td>
+                    <td>${repairsStatus}</td>
+                  </tr>
+                `;
+              }).join("")}
+            </tbody>
+          </table>
+          <div class="footer">
+            CONFIDENTIAL REGULATORY DOCUMENT - FOR INTRA-AGENCY INTERVENTION USE ONLY
+          </div>
+        </body>
+        </html>
+      `;
+
+      try {
+        const pdfBuffer = await PdfService.compileHtmlToPdfBuffer(html) as Buffer;
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Length", pdfBuffer.length.toString());
+        res.setHeader("Content-Disposition", `attachment; filename="ideas_tvet_m_and_e_${type}_report.pdf"`);
+        res.status(200).send(pdfBuffer);
+      } catch (pdfErr: any) {
+        console.error("[M&E Report PDF compilation failed]", pdfErr);
+        res.status(500).send("PDF compilation failed: " + pdfErr.message);
+      }
     } else {
       // Default plain CSV sheet download
       let csvContent = headers.join(",") + "\n";
@@ -7953,8 +8087,8 @@ app.get("/api/executive-m-and-e/export-report", requireAuth, async (req, res) =>
         csvContent += row.join(",") + "\n";
       });
 
-      res.setHeader("Content-Type", format === "pdf" ? "text/html" : "text/csv");
-      res.setHeader("Content-Disposition", `attachment; filename=ideas_tvet_m_and_e_${type}_report.${format === "pdf" ? "html" : "csv"}`);
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", `attachment; filename=ideas_tvet_m_and_e_${type}_report.csv`);
       res.send(csvContent);
     }
 
@@ -8015,9 +8149,7 @@ app.get("/api/export/excel", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFF
 
     await logAction(req.user!.email, "EXCEL_EXPORT", `Triggered bulk beneficiary spreadsheet export in Excel format for State: ${state}, Batch: ${batch}`);
 
-    const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
-    const host = req.headers["x-forwarded-host"] || req.headers.host;
-    const baseUrl = `${protocol}://${host}`;
+    const baseUrl = buildPublicUrl("", req);
 
     // Filter beneficiaries list matching the request
     const filtered = beneficiaries.filter(b => {
@@ -8125,9 +8257,7 @@ app.get("/api/export/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFIC
 
     await logAction(req.user!.email, "PDF_EXPORT", `Triggered official multi-page registry-style PDF generation for State: ${state}, Batch: ${batch}`);
 
-    const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
-    const host = req.headers["x-forwarded-host"] || req.headers.host;
-    const baseUrl = `${protocol}://${host}`;
+    const baseUrl = buildPublicUrl("", req);
 
     const filtered = beneficiaries.filter(b => {
       const sMatch = !state || state === "all" || b.state === state;
@@ -8629,9 +8759,7 @@ app.get("/api/export/word", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFI
 
     await logAction(req.user!.email, "WORD_EXPORT", `Triggered official registry-style MSG-Word generation for State: ${state}, Batch: ${batch}`);
 
-    const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
-    const host = req.headers["x-forwarded-host"] || req.headers.host;
-    const baseUrl = `${protocol}://${host}`;
+    const baseUrl = buildPublicUrl("", req);
 
     const filtered = beneficiaries.filter(b => {
       const sMatch = !state || state === "all" || b.state === state;
@@ -8959,9 +9087,7 @@ app.post("/api/export/album/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMI
 
     await logAction(req.user!.email, "PDF_RANGE_EXPORT", `Triggered range-based registry PDF generation (Type: ${rangeType}, range: ${startRecord}-${endRecord}, N: ${firstN})`);
 
-    const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
-    const host = req.headers["x-forwarded-host"] || req.headers.host;
-    const baseUrl = `${protocol}://${host}`;
+    const baseUrl = buildPublicUrl("", req);
 
     const filtered = beneficiaries.filter(b => {
       const sMatch = !state || state === "all" || b.state === state;
@@ -9396,9 +9522,7 @@ app.post("/api/export/album/word", requireAuth, requireRole(["SUPER_ADMIN", "ADM
 
     await logAction(req.user!.email, "WORD_RANGE_EXPORT", `Triggered range-based Word generation (Type: ${rangeType}, range: ${startRecord}-${endRecord}, N: ${firstN})`);
 
-    const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
-    const host = req.headers["x-forwarded-host"] || req.headers.host;
-    const baseUrl = `${protocol}://${host}`;
+    const baseUrl = buildPublicUrl("", req);
 
     const filtered = beneficiaries.filter(b => {
       const sMatch = !state || state === "all" || b.state === state;

@@ -9,6 +9,7 @@ import { CloudinaryService } from "./cloudinary.service";
 import { EmailService } from "./email.service";
 import { GeneratedDocument, DocumentType, Beneficiary } from "../types";
 import QRCode from "qrcode";
+import { buildPublicUrl } from "../config/api";
 
 export class DocumentService {
   /**
@@ -77,8 +78,7 @@ export class DocumentService {
     const hex = Math.floor(Math.random() * 16777215).toString(16).toUpperCase().padStart(6, "0");
     const verificationCode = `${prefix}-${hex}`;
 
-    const appUrl = process.env.APP_URL || process.env.VITE_APP_URL || "http://localhost:3000";
-    const verificationUrl = `${appUrl}/verify-document?code=${verificationCode}`;
+    const verificationUrl = buildPublicUrl(`/verify-document?code=${verificationCode}`);
     let qrDataUrl = "";
     try {
       qrDataUrl = await QRCode.toDataURL(verificationUrl);

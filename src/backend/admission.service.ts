@@ -103,13 +103,28 @@ export class AdmissionService {
     const admissionPdfBase64 = admissionPdfBuffer.toString("base64");
     const acceptancePdfBase64 = acceptancePdfBuffer.toString("base64");
 
+    const isAdmissionRealPdf = admissionPdfBuffer.length >= 4 && admissionPdfBuffer[0] === 0x25 && admissionPdfBuffer[1] === 0x50 && admissionPdfBuffer[2] === 0x44 && admissionPdfBuffer[3] === 0x46;
+    const isAcceptanceRealPdf = acceptancePdfBuffer.length >= 4 && acceptancePdfBuffer[0] === 0x25 && acceptancePdfBuffer[1] === 0x50 && acceptancePdfBuffer[2] === 0x44 && acceptancePdfBuffer[3] === 0x46;
+
+    const fName = (beneficiary.firstName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const lName = (beneficiary.lastName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const namePart = fName && lName ? `${fName}_${lName}` : `${(beneficiary.id || "TRAINEE").replace(/[^A-Z0-9-]/g, "")}`;
+
     const mailResult = await EmailService.sendAdmissionEmail(
       toEmail, 
       `${beneficiary.firstName} ${beneficiary.lastName}`, 
       secureLink,
       [
-        { name: `Admission_Letter_${beneficiary.id}.pdf`, content: admissionPdfBase64, contentType: "application/pdf" },
-        { name: `Acceptance_Letter_Template_${beneficiary.id}.pdf`, content: acceptancePdfBase64, contentType: "application/pdf" }
+        {
+          name: isAdmissionRealPdf ? `${namePart}_ADMISSION_LETTER.pdf` : `${namePart}_ADMISSION_LETTER.html`,
+          content: admissionPdfBase64,
+          contentType: isAdmissionRealPdf ? "application/pdf" : "text/html"
+        },
+        {
+          name: isAcceptanceRealPdf ? `${namePart}_ACCEPTANCE_FORM.pdf` : `${namePart}_ACCEPTANCE_FORM.html`,
+          content: acceptancePdfBase64,
+          contentType: isAcceptanceRealPdf ? "application/pdf" : "text/html"
+        }
       ]
     );
 

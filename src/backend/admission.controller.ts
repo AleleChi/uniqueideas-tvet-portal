@@ -12,6 +12,7 @@ import { DocumentService } from "./document.service";
 import { PdfService } from "./pdf.service";
 import { DocumentType, Beneficiary } from "../types";
 import JSZip from "jszip";
+import { buildPublicUrl } from "../config/api";
 
 
 export class AdmissionController {
@@ -40,8 +41,25 @@ export class AdmissionController {
         return res.status(400).json({ error: "Missing required parameter: beneficiaryId" });
       }
 
-      // Automatically construct origin domain if not provided
-      const customDomain = origin || `${req.protocol}://${req.get("host")}`;
+      // Automatically construct origin domain if not provided, sanitizing out any preview environments
+      const isPreviewOrLocal = (url: any): boolean => {
+        if (!url || typeof url !== "string") return true;
+        const l = url.toLowerCase();
+        return (
+          l.includes("aistudio") ||
+          l.includes("google") ||
+          l.includes("run.app") ||
+          l.includes("localhost") ||
+          l.includes("127.0.0.1") ||
+          l.includes("sandbox") ||
+          l.includes("ais-dev") ||
+          l.includes("ais-pre") ||
+          l.includes("my_app_url")
+        );
+      };
+
+      const safeOrigin = (origin && typeof origin === "string" && !isPreviewOrLocal(origin)) ? origin : undefined;
+      const customDomain = safeOrigin || buildPublicUrl("", req);
 
       const outcome = await AdmissionService.sendAdmissionOffer(beneficiaryId, customDomain);
       return res.status(200).json({ 
@@ -184,7 +202,25 @@ export class AdmissionController {
         return res.status(400).json({ error: "Missing required parameter: beneficiaryId" });
       }
 
-      const customDomain = (typeof origin === "string" && origin) || `${req.protocol}://${req.get("host")}`;
+      // Automatically construct origin domain if not provided, sanitizing out any preview environments
+      const isPreviewOrLocal = (url: any): boolean => {
+        if (!url || typeof url !== "string") return true;
+        const l = url.toLowerCase();
+        return (
+          l.includes("aistudio") ||
+          l.includes("google") ||
+          l.includes("run.app") ||
+          l.includes("localhost") ||
+          l.includes("127.0.0.1") ||
+          l.includes("sandbox") ||
+          l.includes("ais-dev") ||
+          l.includes("ais-pre") ||
+          l.includes("my_app_url")
+        );
+      };
+
+      const safeOrigin = (typeof origin === "string" && !isPreviewOrLocal(origin)) ? origin : undefined;
+      const customDomain = safeOrigin || buildPublicUrl("", req);
       const secureToken = TokenService.generateToken(beneficiaryId);
       const secureLink = `${customDomain}/?token=${secureToken}`;
 
@@ -823,9 +859,39 @@ export class AdmissionController {
 
       const inline = req.query.inline !== "false";
       const pdfBuffer = await PdfService.generateAdmissionFormPdf(candidate, null, false) as Buffer;
+
+      const buffer = Buffer.isBuffer(pdfBuffer) ? pdfBuffer : Buffer.from(pdfBuffer);
+      const signature = buffer.toString("ascii", 0, 5);
+      const isRealPdf = buffer.length >= 5 && signature === "%PDF-";
+
+      const fName = (candidate.firstName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const lName = (candidate.lastName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const namePart = fName && lName ? `${fName}_${lName}` : `${(candidate.id || "TRAINEE").replace(/[^A-Z0-9-]/g, "")}`;
+      const docPart = "ADMISSION_FORM";
+      const filename = `${namePart}_${docPart}.pdf`;
+      const mime = "application/pdf";
+
+      console.log({
+        filename,
+        mime,
+        size: buffer.length,
+        header: buffer.slice(0, 50).toString()
+      });
+
+      if (!isRealPdf) {
+        console.error(`[PDF Audit REJECTED] File does not begin with %PDF- header. Signature was: '${signature}'. Rejecting transmission. Filename: ${filename}`);
+        res.status(500);
+        res.setHeader("Content-Type", "application/json");
+        return res.json({
+          error: "PDF_BINARY_CORRUPTION",
+          message: "INVALID PDF GENERATED: The requested PDF document failed binary integrity verification (missing standard %PDF- header)."
+        });
+      }
+
       res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename="Admission_Form_${id}.pdf"`);
-      return res.status(200).send(pdfBuffer);
+      res.setHeader("Content-Length", buffer.length.toString());
+      res.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename="${filename}"`);
+      return res.status(200).send(buffer);
     } catch (err: any) {
       console.error("[AdmissionController] getFormPdf failed:", err);
       return res.status(500).send("Failed to stream printable admission form: " + err.message);

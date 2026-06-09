@@ -6,6 +6,8 @@
 import { Beneficiary } from "../types";
 import puppeteer from "puppeteer";
 import { DbRepo } from "./db";
+import { buildPublicUrl } from "../config/api";
+import { logForensicPdfTrace } from "./pdfTraceAudit";
 
 export class PdfService {
   /**
@@ -51,7 +53,7 @@ export class PdfService {
    * If puppeteer fails due to sandbox or library limitations, it returns the HTML source buffer
    * as a graceful fallback.
    */
-  private static async compileHtmlToPdfBuffer(htmlContent: string, isLandscape: boolean = false): Promise<Buffer> {
+  public static async compileHtmlToPdfBuffer(htmlContent: string, isLandscape: boolean = false): Promise<Buffer> {
     try {
       console.log(`[PdfService] Launching Puppeteer browser (Landscape mode: ${isLandscape})...`);
       const browser = await puppeteer.launch({
@@ -81,14 +83,17 @@ export class PdfService {
         });
 
         console.log(`[PdfService] PDF compilation completed successfully (${pdfBuffer.length} bytes).`);
-        return Buffer.from(pdfBuffer);
+        const buffer = Buffer.from(pdfBuffer);
+        
+        logForensicPdfTrace("PDF Generator (Compiled)", "document.pdf", buffer);
+
+        return buffer;
       } finally {
         await browser.close();
       }
     } catch (err: any) {
-      console.error("[PdfService] Puppeteer PDF compilation failed. Falling back to HTML container.", err.message || err);
-      // Fallback is simply the HTML encoded as buffer so the web flow does not crash
-      return Buffer.from(htmlContent);
+      console.error("[PdfService] Puppeteer PDF compilation failed.", err.message || err);
+      throw new Error(`INVALID PDF GENERATED: ${err.message || err}`);
     }
   }
 
@@ -583,8 +588,7 @@ export class PdfService {
       meta.verificationCode = formRef;
     }
     if (!meta.qrDataUrl) {
-      const origin = process.env.APP_URL || "https://ideas-tvet-system.org";
-      const verifyLink = `${origin}/api/admissions/verify/${formRef}`;
+      const verifyLink = buildPublicUrl(`/api/admissions/verify/${formRef}`);
       meta.qrDataUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(verifyLink)}`;
     }
 

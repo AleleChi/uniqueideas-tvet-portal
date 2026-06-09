@@ -4,6 +4,7 @@
  */
 
 import { v2 as cloudinary } from "cloudinary";
+import { logForensicPdfTrace } from "./pdfTraceAudit";
 
 let isCloudinaryConfigured = false;
 
@@ -60,35 +61,60 @@ export class CloudinaryService {
     const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9_-]/g, "_");
     const publicId = `${sanitizedFileName}_${timestamp}`;
 
+    const buffer = Buffer.isBuffer(fileContent)
+      ? fileContent
+      : typeof fileContent === "string" && fileContent.startsWith("data:")
+        ? Buffer.from(fileContent.split(",")[1] || fileContent, "base64")
+        : Buffer.from(fileContent, "base64");
+
     if (!isCloudinaryConfigured) {
       console.log(`[Cloudinary Simulation] Simulating secure upload for ${fileName}...`);
-      // Return a clean Cloudinary-like simulation URL for direct browser visual fidelity
-      const mockUrl = `https://res.cloudinary.com/ideas-tvet/image/upload/v${timestamp}/${folder}/${publicId}.pdf`;
+      const mockUrl = `https://res.cloudinary.com/ideas-tvet/raw/upload/v${timestamp}/${folder}/${publicId}.pdf`;
+      logForensicPdfTrace("Cloudinary Upload (Simulated)", fileName, buffer);
+      logForensicPdfTrace("Cloudinary Retrieval (Simulated)", fileName, buffer);
       return mockUrl;
     }
 
     try {
-      let uploadInput: string | Buffer = fileContent;
-      if (Buffer.isBuffer(fileContent)) {
-        // Convert buffer to dataURI for robust Cloudinary uploading
-        uploadInput = `data:application/pdf;base64,${fileContent.toString("base64")}`;
-      } else if (typeof fileContent === "string" && !fileContent.startsWith("data:")) {
-        uploadInput = `data:application/pdf;base64,${fileContent}`;
-      }
-
-      const result = await cloudinary.uploader.upload(uploadInput as string, {
-        resource_type: "auto",
+      const options = {
+        resource_type: "raw",
         folder: folder,
         public_id: publicId,
         access_mode: "public"
+      } as any;
+
+      const result = await new Promise<any>((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(options, (error, uploadResult) => {
+          if (error) reject(error);
+          else resolve(uploadResult);
+        });
+        stream.end(buffer);
       });
 
-      console.log(`[Cloudinary] Successfully uploaded ${fileName} to: ${result.secure_url}`);
+      console.log(`[Cloudinary] Successfully uploaded raw binary ${fileName} to: ${result.secure_url}`);
+      
+      logForensicPdfTrace("Cloudinary Upload", fileName, buffer);
+
+      try {
+        console.log(`[Cloudinary Verification] Downloading from ${result.secure_url} for forensic audit...`);
+        const retrieveRes = await fetch(result.secure_url);
+        if (retrieveRes.ok) {
+          const retrieveArrayBuffer = await retrieveRes.arrayBuffer();
+          const retrievedBuffer = Buffer.from(retrieveArrayBuffer);
+          logForensicPdfTrace("Cloudinary Retrieval (Downloaded)", fileName, retrievedBuffer);
+        } else {
+          console.error(`[Cloudinary Verification Error] Failed to download uploaded file: HTTP status ${retrieveRes.status}`);
+        }
+      } catch (dlErr: any) {
+        console.error("[Cloudinary Verification Error] Failed downloading uploaded file:", dlErr.message);
+      }
+
       return result.secure_url;
     } catch (err: any) {
       console.error(`[Cloudinary] Real upload failed for ${fileName}:`, err.message || err);
       // Fallback on error to ensure non-blocking operation
-      const mockUrl = `https://res.cloudinary.com/ideas-tvet/image/upload/v${timestamp}/${folder}/${publicId}_fallback.pdf`;
+      const mockUrl = `https://res.cloudinary.com/ideas-tvet/raw/upload/v${timestamp}/${folder}/${publicId}_fallback.pdf`;
+      logForensicPdfTrace("Cloudinary Upload (Fallback/Simulated)", fileName, buffer);
       return mockUrl;
     }
   }

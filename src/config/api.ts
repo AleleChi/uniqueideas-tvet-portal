@@ -81,3 +81,105 @@ export const isVercelMissingApi = typeof window !== "undefined" &&
   isProduction() &&
   isVercel() &&
   !((import.meta as any).env?.VITE_API_URL || (import.meta as any).env?.VITE_API_BASE_URL);
+
+export const buildPublicUrl = (requestPath: string, req?: any): string => {
+  let base = "";
+  
+  // 1. Single Source of Truth - PUBLIC_APP_URL from environment
+  if (typeof process !== "undefined" && process.env) {
+    base = process.env.PUBLIC_APP_URL || process.env.VITE_PUBLIC_APP_URL || "";
+  }
+  
+  if (!base && typeof import.meta !== "undefined" && (import.meta as any).env) {
+    const metaEnv = (import.meta as any).env;
+    base = metaEnv.PUBLIC_APP_URL || metaEnv.VITE_PUBLIC_APP_URL || "";
+  }
+
+  // Under NO circumstances should emails or admission links use preview URL patterns
+  const isPreviewOrLocal = (url: string): boolean => {
+    if (!url) return true;
+    const l = url.toLowerCase();
+    return (
+      l.includes("aistudio") ||
+      l.includes("google") ||
+      l.includes("run.app") ||
+      l.includes("localhost") ||
+      l.includes("127.0.0.1") ||
+      l.includes("sandbox") ||
+      l.includes("ais-dev") ||
+      l.includes("ais-pre") ||
+      l.includes("my_app_url")
+    );
+  };
+
+  // If base was not set via PUBLIC_APP_URL, check other non-preview general environment variables
+  if (!base) {
+    if (typeof process !== "undefined" && process.env) {
+      const candidates = [
+        process.env.APP_URL,
+        process.env.VITE_APP_URL,
+        process.env.VITE_API_URL,
+        process.env.VITE_API_BASE_URL
+      ];
+      for (const cand of candidates) {
+        if (cand && !isPreviewOrLocal(cand)) {
+          base = cand;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!base) {
+    if (typeof import.meta !== "undefined" && (import.meta as any).env) {
+      const metaEnv = (import.meta as any).env;
+      const candidates = [
+        metaEnv.VITE_APP_URL,
+        metaEnv.VITE_API_URL,
+        metaEnv.VITE_API_BASE_URL
+      ];
+      for (const cand of candidates) {
+        if (cand && !isPreviewOrLocal(cand)) {
+          base = cand;
+          break;
+        }
+      }
+    }
+  }
+
+  // Do not dynamically derive from req if it resolves to a preview or sandbox host
+  if (req) {
+    const proto = req.get("X-Forwarded-Proto") || req.protocol || "http";
+    const host = req.get("X-Forwarded-Host") || req.get("host");
+    if (host) {
+      const candidate = `${proto}://${host}`;
+      if (!isPreviewOrLocal(candidate)) {
+        base = candidate;
+      }
+    }
+  }
+
+  if (!base && typeof window !== "undefined") {
+    const candidate = window.location.origin;
+    if (!isPreviewOrLocal(candidate)) {
+      base = candidate;
+    }
+  }
+
+  // 3. Absolute fallback: production domain of Render (unless explicitly allowed localhost/5173 in dev)
+  if (!base || isPreviewOrLocal(base)) {
+    const explicitEnv = (typeof process !== "undefined" && process.env && (process.env.PUBLIC_APP_URL || process.env.VITE_PUBLIC_APP_URL)) ||
+                        (typeof import.meta !== "undefined" && (import.meta as any).env && ((import.meta as any).env.PUBLIC_APP_URL || (import.meta as any).env.VITE_PUBLIC_APP_URL));
+    
+    if (explicitEnv && explicitEnv.includes("localhost")) {
+      base = explicitEnv;
+    } else {
+      base = "https://uniqueideas-tvet-portal.onrender.com";
+    }
+  }
+
+  base = base.trim().replace(/\/$/, "");
+  const cleanPath = requestPath ? (requestPath.startsWith("/") ? requestPath : `/${requestPath}`) : "";
+  return `${base}${cleanPath}`;
+};
+
