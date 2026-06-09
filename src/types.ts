@@ -95,6 +95,8 @@ export interface Beneficiary {
   admissionFormPdfUrl?: string;
   enrollmentLetterUrl?: string;
   certificateUrl?: string;
+  tokenVersion?: number;
+  workflowVersion?: number;
   
   // Operational email delivery tracking & analytics
   emailTrackingStatus?: "Sent" | "Failed" | "Delivered" | "Opened";
@@ -317,6 +319,7 @@ export interface GeneratedDocument {
   verificationDate?: string;
   verifiedAt?: string;
   emailDeliveryStatus?: string;
+  documentStatus?: string;
 }
 
 export interface WorkflowHistory {
@@ -329,6 +332,10 @@ export interface WorkflowHistory {
   remarks?: string;
   reason?: string;
   ipAddress?: string;
+  tokenVersionBefore?: number;
+  tokenVersionAfter?: number;
+  workflowVersionBefore?: number;
+  workflowVersionAfter?: number;
 }
 
 export interface InstitutionLetterhead {

@@ -28,6 +28,9 @@ import { DocumentService } from "./src/backend/document.service";
 import { buildPublicUrl } from "./src/config/api";
 import { Jimp } from "jimp";
 import ExcelJS from "exceljs";
+import { LifecycleDependencyService } from "./src/backend/governance-dependency";
+import { CampaignAudienceService } from "./src/backend/campaign.service";
+import { EmailCampaignQueue, activeCampaignWorkers } from "./src/backend/queue";
 
 /**
  * Utility to build proper, clean, and sanitized filename based on Trainee name and document type
@@ -564,6 +567,152 @@ app.post("/api/email/production-test", requireAuth, requireRole(["SUPER_ADMIN", 
 });
 
 app.get("/api/admissions/stats", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.getAdmissionsStats);
+
+// --- Governance Global Stats KPI Endpoint ---
+app.get("/api/governance/global-stats", requireAuth, async (req, res) => {
+  const pool = getPgPool();
+  if (pool) {
+    try {
+      const activeTraineesRes = await pool.query(
+        "SELECT COUNT(*) as count FROM beneficiaries WHERE deleted_at IS NULL AND (status IN ('ACTIVE', 'ENROLLED', 'IN_TRAINING', 'ADMITTED') OR beneficiary_status = 'ACTIVE')"
+      );
+      const acceptedRes = await pool.query(
+        "SELECT COUNT(*) as count FROM beneficiaries WHERE deleted_at IS NULL AND (status IN ('ACCEPTED', 'VERIFIED', 'ENROLLED', 'IN_TRAINING', 'GRADUATED', 'ALUMNI') OR beneficiary_status = 'COMPLETED')"
+      );
+      const certifiedRes = await pool.query(
+        "SELECT COUNT(*) as count FROM beneficiaries WHERE deleted_at IS NULL AND (status IN ('CERTIFIED', 'CERTIFICATE_ISSUED') OR certification_status = 'CERTIFIED')"
+      );
+      const rollbacksRes = await pool.query(
+        "SELECT COUNT(*) as count FROM audit_logs WHERE action IN ('WORKFLOW_ROLLBACK', 'GOVERNANCE_ROLLBACK') OR details LIKE '%rolled back%' OR details LIKE '%ADMIN ROLLBACK%'"
+      );
+      const revokedTokensRes = await pool.query(
+        "SELECT COALESCE(SUM(token_version - 1), 0) as sum FROM beneficiaries WHERE deleted_at IS NULL AND token_version > 1"
+      );
+      const archivedDocsRes = await pool.query(
+        "SELECT COUNT(*) as count FROM generated_documents WHERE document_status = 'ARCHIVED'"
+      );
+      const activeSecureLinksRes = await pool.query(
+        "SELECT COUNT(*) as count FROM generated_documents WHERE document_status = 'ACTIVE'"
+      );
+
+      return res.json({
+        totalActiveTrainees: parseInt(activeTraineesRes.rows[0]?.count || "0", 10),
+        totalAccepted: parseInt(acceptedRes.rows[0]?.count || "0", 10),
+        totalCertified: parseInt(certifiedRes.rows[0]?.count || "0", 10),
+        totalRollbacks: parseInt(rollbacksRes.rows[0]?.count || "0", 10),
+        totalRevokedTokens: parseInt(revokedTokensRes.rows[0]?.sum || "0", 10),
+        totalArchivedDocuments: parseInt(archivedDocsRes.rows[0]?.count || "0", 10),
+        totalActiveSecureLinks: parseInt(activeSecureLinksRes.rows[0]?.count || "0", 10)
+      });
+    } catch (e) {
+      console.error("[Stats Route] Postgres stats lookup failed, falling back to JSON:", e);
+    }
+  }
+
+  try {
+    const state = (require("./src/backend/db").loadJsonState)();
+    const beneficiaries = state.beneficiaries || [];
+    const auditLogs = state.auditLogs || [];
+    const generatedDocuments = state.generatedDocuments || [];
+
+    const totalActiveTrainees = beneficiaries.filter((b: any) => 
+      ["ACTIVE", "ENROLLED", "IN_TRAINING", "ADMITTED"].includes(b.status || "") || b.beneficiaryStatus === "ACTIVE"
+    ).length;
+    const totalAccepted = beneficiaries.filter((b: any) =>
+      ["ACCEPTED", "VERIFIED", "ENROLLED", "IN_TRAINING", "GRADUATED", "ALUMNI"].includes(b.status || "") || b.beneficiaryStatus === "COMPLETED"
+    ).length;
+    const totalCertified = beneficiaries.filter((b: any) =>
+      ["CERTIFIED", "CERTIFICATE_ISSUED"].includes(b.status || "") || b.certificationStatus === "CERTIFIED"
+    ).length;
+    const totalRollbacks = auditLogs.filter((log: any) =>
+      ["WORKFLOW_ROLLBACK", "GOVERNANCE_ROLLBACK"].includes(log.action || "") || 
+      log.details?.includes("rolled back") || 
+      log.details?.includes("ADMIN ROLLBACK")
+    ).length;
+    const totalRevokedTokens = beneficiaries.reduce((sum: number, b: any) => {
+      const v = b.tokenVersion || 1;
+      return sum + (v > 1 ? v - 1 : 0);
+    }, 0);
+    const totalArchivedDocuments = generatedDocuments.filter((d: any) => d.documentStatus === "ARCHIVED").length;
+    const totalActiveSecureLinks = generatedDocuments.filter((d: any) => d.documentStatus === "ACTIVE").length;
+
+    return res.json({
+      totalActiveTrainees,
+      totalAccepted,
+      totalCertified,
+      totalRollbacks,
+      totalRevokedTokens,
+      totalArchivedDocuments,
+      totalActiveSecureLinks
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Lifecycle Dependency Analysis & Impact API ---
+app.get("/api/governance/dependency-analysis/:beneficiaryId", requireAuth, async (req, res) => {
+  try {
+    const { beneficiaryId } = req.params;
+    const author = (req as any).user || { username: "governance_officer", role: "Super Admin" };
+
+    const analysis = await LifecycleDependencyService.analyze(beneficiaryId);
+
+    // Dynamic Audit Log Creation for DEPENDENCY_ANALYSIS_RUN
+    const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1";
+    const ipString = Array.isArray(ip) ? ip[0] : ip;
+
+    const detailsStr = `Dependency analysis scan executed for beneficiary ID ${beneficiaryId}. Risk level identified: ${analysis.governanceRiskLevel}. Documents affected: ${analysis.documentsAffected.total}, Certifications: ${analysis.certificationsAffected.certificateCount}, Toolkits: ${analysis.toolkitsAffected.toolkitsAffected}, Dispatches: ${analysis.dispatchesAffected.dispatchCount}, Impact Evidence: ${analysis.evidenceAffected.impactRecordsAffected}, Financials: ${analysis.financialRecordsAffected.financialRecordsAffected}, Audit References: ${analysis.auditReferencesAffected.auditReferencesAffected}`;
+
+    const newLog = {
+      id: "log_dep_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+      timestamp: new Date().toISOString(),
+      username: author.username || "governance_officer",
+      role: author.role || "Super Admin",
+      action: "DEPENDENCY_ANALYSIS_RUN",
+      details: detailsStr,
+      ip_address: ipString
+    };
+
+    await DbRepo.saveAuditLog(newLog as any);
+
+    return res.json({
+      success: true,
+      analysis
+    });
+  } catch (err: any) {
+    console.error("[Dependency Analysis Endpoint ERROR]", err);
+    return res.status(500).json({ success: false, error: err.message || String(err) });
+  }
+});
+
+app.post("/api/governance/log-action", requireAuth, async (req, res) => {
+  try {
+    const { action, beneficiaryId, riskLevel, reason, workflowVersion, tokenVersion, dependencyCounts } = req.body;
+    const author = (req as any).user || { username: "governance_officer", role: "Super Admin" };
+    const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1";
+    const ipString = Array.isArray(ip) ? ip[0] : ip;
+
+    const detailsStr = `Action: ${action} for beneficiary ${beneficiaryId}. Risk: ${riskLevel}. Reason: ${reason || 'N/A'}. WF Ver: V${workflowVersion || 1}, Token Ver: T${tokenVersion || 1}. Counts: ${JSON.stringify(dependencyCounts || {})}`;
+
+    const newLog = {
+      id: "log_gov_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+      timestamp: new Date().toISOString(),
+      username: author.username || "governance_officer",
+      role: author.role || "Super Admin",
+      action: action,
+      details: detailsStr,
+      ip_address: ipString
+    };
+
+    await DbRepo.saveAuditLog(newLog as any);
+
+    return res.json({ success: true });
+  } catch (err: any) {
+    console.error("[Governance log-action ERROR]", err);
+    return res.status(500).json({ success: false, error: err.message || String(err) });
+  }
+});
 app.get("/api/admissions/list", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.getAdmissionsList);
 app.post("/api/admissions/bulk-transition", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.bulkTransitionStatus);
 app.post("/api/admissions/acceptance/review", requireAuth, requireRole(["SUPER_ADMIN", "REVIEW_OFFICER", "ADMIN_OFFICER"]), AdmissionController.reviewAcceptanceLetter);
@@ -5344,7 +5493,7 @@ app.post("/api/beneficiaries/:id/lifecycle-status", requireAuth, async (req: Aut
   }
 });
 
-app.post("/api/superadmin/beneficiaries/:id/workflow-rollback", requireAuth, requireRole(["SUPER_ADMIN"]), async (req: AuthenticatedRequest, res) => {
+app.post("/api/superadmin/beneficiaries/:id/workflow-rollback", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
   try {
     const { id } = req.params;
     const { targetState, reason } = req.body;
@@ -5366,6 +5515,9 @@ app.post("/api/superadmin/beneficiaries/:id/workflow-rollback", requireAuth, req
     const oldAdmissionStatus = beneficiary.admissionStatus || "Unknown";
     const oldFormStatus = beneficiary.admissionFormStatus || "Unknown";
     const oldCertStatus = beneficiary.certificationStatus || "NONE";
+
+    const oldTokenVersion = beneficiary.tokenVersion || 1;
+    const oldWorkflowVersion = beneficiary.workflowVersion || 1;
 
     const operator = req.user!.email;
 
@@ -5413,38 +5565,82 @@ app.post("/api/superadmin/beneficiaries/:id/workflow-rollback", requireAuth, req
       return res.status(400).json({ error: "Invalid targetState rollback value." });
     }
 
+    // Phase 1 / Phase 4 - Increment token and workflow versions on rollback
+    beneficiary.tokenVersion = oldTokenVersion + 1;
+    beneficiary.workflowVersion = oldWorkflowVersion + 1;
+
     beneficiary.statusReason = reason;
     beneficiary.statusChangedBy = operator;
     beneficiary.statusChangedAt = new Date().toISOString();
+
+    // Phase 3 - Archive all current active documents (ACTIVE -> ARCHIVED)
+    await DbRepo.archiveActiveDocuments(id);
 
     await DbRepo.upsertBeneficiary(beneficiary);
 
     const remarks = `ADMIN ROLLBACK: Workflow rolled back from [Status: ${oldStatus}, Admission: ${oldAdmissionStatus}, Cert: ${oldCertStatus}] to targeted state: ${targetState}.`;
     
-    // Save to workflow history
+    // Save to workflow history (wrapped to prevent rollback blocking if failing)
     const ipAddress = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1";
     const ipStr = Array.isArray(ipAddress) ? ipAddress[0] : ipAddress;
-    await DbRepo.saveWorkflowHistory({
-      beneficiaryId: id,
-      oldStatus: `${oldStatus} (Admission: ${oldAdmissionStatus})`,
-      newStatus: `${beneficiary.status} (Target: ${targetState})`,
-      changedBy: operator,
-      changedAt: new Date().toISOString(),
-      remarks,
-      reason,
-      ipAddress: ipStr
-    });
+    try {
+      await DbRepo.saveWorkflowHistory({
+        beneficiaryId: id,
+        oldStatus: `${oldStatus} (Admission: ${oldAdmissionStatus})`,
+        newStatus: `${beneficiary.status} (Target: ${targetState})`,
+        changedBy: operator,
+        changedAt: new Date().toISOString(),
+        remarks,
+        reason,
+        ipAddress: ipStr,
+        tokenVersionBefore: oldTokenVersion,
+        tokenVersionAfter: beneficiary.tokenVersion,
+        workflowVersionBefore: oldWorkflowVersion,
+        workflowVersionAfter: beneficiary.workflowVersion
+      });
+    } catch (wfErr) {
+      console.warn("[Rollback Route] Workflow history log failed, continuing rollback:", wfErr);
+    }
 
-    // Save to System Audit Log
-    const newLog: AuditLog = {
-      id: "log_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
-      timestamp: new Date().toISOString(),
-      username: operator,
-      role: req.user!.role,
-      action: "WORKFLOW_ROLLBACK",
-      details: `Super Admin manually rolled back candidate '${beneficiary.firstName} ${beneficiary.lastName}' (ID: ${id}) to targeted state: '${targetState}'. Reason: ${reason}`
-    };
-    await DbRepo.saveAuditLog(newLog);
+    // Save to System Audit Log (wrapped to prevent rollback blocking if failing)
+    try {
+      const newLog: AuditLog = {
+        id: "log_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+        timestamp: new Date().toISOString(),
+        username: operator,
+        role: req.user!.role,
+        action: "WORKFLOW_ROLLBACK",
+        ipAddress: ipStr,
+        details: [
+          `Super Admin manually rolled back candidate '${beneficiary.firstName} ${beneficiary.lastName}' (ID: ${id}) to targeted state: '${targetState}'.`,
+          `Reason: ${reason}`,
+          `IP: ${ipStr}`,
+          `Old Status: ${oldStatus} (Admission: ${oldAdmissionStatus})`,
+          `New Status: ${beneficiary.status} (Target: ${targetState})`,
+          `Token Version: ${oldTokenVersion} -> ${beneficiary.tokenVersion}`,
+          `Workflow Version: ${oldWorkflowVersion} -> ${beneficiary.workflowVersion}`
+        ].join("\n")
+      };
+      await DbRepo.saveAuditLog(newLog);
+    } catch (logErr) {
+      console.warn("[Rollback Route] Audit log failed, continuing rollback:", logErr);
+    }
+
+    try {
+      const depCheck = await LifecycleDependencyService.analyze(id);
+      const approveLog = {
+        id: "log_app_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+        timestamp: new Date().toISOString(),
+        username: operator,
+        role: req.user!.role,
+        action: "DEPENDENCY_ANALYSIS_APPROVED",
+        ipAddress: ipStr,
+        details: `Dependency analysis approved for rollback. Risk level: ${depCheck.governanceRiskLevel}. Reason: ${reason}. Workflow Version V${beneficiary.workflowVersion}, Token Version T${beneficiary.tokenVersion}. Counts: Documents: ${depCheck.documentsAffected.total}, Certifications: ${depCheck.certificationsAffected.certificateCount}, Toolkits: ${depCheck.toolkitsAffected.toolkitsAffected}, Dispatches: ${depCheck.dispatchesAffected.dispatchCount}, Outcome evidence: ${depCheck.evidenceAffected.impactRecordsAffected}, Financials: ${depCheck.financialRecordsAffected.financialRecordsAffected}, Audit Refs: ${depCheck.auditReferencesAffected.auditReferencesAffected}`
+      };
+      await DbRepo.saveAuditLog(approveLog as any);
+    } catch (depErr) {
+      console.warn("[Rollback Endpoint] Failed to log DEPENDENCY_ANALYSIS_APPROVED:", depErr);
+    }
 
     return res.json({ success: true, beneficiary });
   } catch (err: any) {
@@ -5928,6 +6124,263 @@ app.delete("/api/email-templates/:id", requireAuth, async (req, res) => {
     // Audit log template deleted
     await logAction((req as any).user?.email || "Admin", "EMAIL_TEMPLATE_DELETE", `Email template deleted: ${req.params.id}`);
     res.json({ success: true, message: "Template deleted successfully." });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================================
+// BULK COMMUNICATION & CAMPAIGN ENGINE API ENDPOINTS
+// ==========================================================
+
+// Previews audience counts and validation results before queuing (Phase 5)
+app.post("/api/communications/audience/preview", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
+  try {
+    const filters = req.body || {};
+    const result = await CampaignAudienceService.previewRecipients(filters);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Retrieves custom campaign templates (Phase 2 & Phase 9 Screen 1)
+app.get("/api/communications/templates", requireAuth, async (req, res) => {
+  try {
+    let list = await DbRepo.getCommunicationTemplates();
+    if (list.length === 0) {
+      console.log("[Seeding] Campaign templates empty. Seeding defaults...");
+      const defaultTemplates = [
+        {
+          name: "Admission Reminder Alert",
+          subject: "IMPORTANT REMINDER: Complete Your Enrollment - IDEAS-TVET",
+          htmlBody: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
+              <div style="background-color: #312e81; padding: 25px; text-align: center; color: white;">
+                <h2 style="margin: 0; font-size: 20px;">Unique Technology Nig. Ltd</h2>
+                <p style="margin: 5px 0 0 0; font-size: 11px; color: #a5b4fc; text-transform: uppercase; letter-spacing: 1px;">IDEAS-TVET Skills Sector Programme</p>
+              </div>
+              <div style="padding: 30px; color: #1e293b; line-height: 1.6;">
+                <p style="font-size: 15px; margin-top: 0;">Dear <strong>{{firstName}} {{lastName}}</strong>,</p>
+                <p>This is an automated reminder regarding your provisional offer of admission into the federal government's <strong>IDEAS-TVET skill enhancement cohort</strong>.</p>
+                <p>To view your letter of admission and complete your registration details, please click the secure button below to open your personalized trainee portal response link:</p>
+                {{portalLinkBlock}}
+                <p style="font-size: 12px; color: #64748b; background-color: #f8fafc; padding: 10px; border-radius: 6px; border-left: 4px solid #312e81;">
+                  <strong>Important notice:</strong> You are not required to create or sign into any account. Please review, download, and sign the attached PDF acceptance letter template to finalize your desk.
+                </p>
+              </div>
+            </div>
+          `,
+          isActive: true
+        },
+        {
+          name: "Portal Invitation Link",
+          subject: "ACCESS TEMPLATE: Open Secure Response Portal - {{firstName}} Link",
+          htmlBody: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
+              <div style="background-color: #047857; padding: 25px; text-align: center; color: white;">
+                <h2 style="margin: 0; font-size: 20px;">SECURE TRAINEE RESPONSE PORTAL</h2>
+              </div>
+              <div style="padding: 30px; color: #1e293b; line-height: 1.6;">
+                <p>Dear <strong>{{firstName}} {{lastName}}</strong>,</p>
+                <p>Your secure identity credentials have been created in the federal TVET coordinator directory. You can now access your profile, track attendance metrics, and view certification files dynamically.</p>
+                {{portalLinkBlock}}
+                <p>If you experience any portal response issues, please contact the coordinator or response desk.</p>
+              </div>
+            </div>
+          `,
+          isActive: true
+        }
+      ];
+      for (const t of defaultTemplates) {
+        await DbRepo.saveCommunicationTemplate(t);
+      }
+      list = await DbRepo.getCommunicationTemplates();
+    }
+    res.json(list);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Saves communication templates (Phase 2 & Phase 10 validation security)
+app.post("/api/communications/templates", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
+  try {
+    const data = req.body;
+    const item = await DbRepo.saveCommunicationTemplate(data);
+    res.json(item);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Retrieves communication campaigns list
+app.get("/api/communications/campaigns", requireAuth, async (req, res) => {
+  try {
+    const list = await DbRepo.getCommunicationCampaigns();
+    res.json(list);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Retrieve specific campaign detail (Phase 9 Screen 3)
+app.get("/api/communications/campaigns/:id", requireAuth, async (req, res) => {
+  try {
+    const camp = await DbRepo.getCommunicationCampaignById(req.params.id);
+    if (!camp) return res.status(404).json({ error: "Campaign not found" });
+    res.json(camp);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Retrieve specific campaign recipients (Phase 9 Screen 3)
+app.get("/api/communications/campaigns/:id/recipients", requireAuth, async (req, res) => {
+  try {
+    const reps = await DbRepo.getCommunicationRecipients(req.params.id);
+    res.json(reps);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Retrieve campaign real-time execution progress (Phase 9 Screen 3 / 4)
+app.get("/api/communications/campaigns/:id/progress", requireAuth, async (req, res) => {
+  try {
+    const active = activeCampaignWorkers.get(req.params.id);
+    const dbCamp = await DbRepo.getCommunicationCampaignById(req.params.id);
+    if (!dbCamp) return res.status(404).json({ error: "Campaign not found" });
+
+    res.json({
+      status: dbCamp.status,
+      total: dbCamp.totalRecipients || 0,
+      success: dbCamp.successCount || 0,
+      failed: dbCamp.failedCount || 0,
+      activeProgress: active || null
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Creates and launches a campaign queue in background immediately (Phase 3 flow)
+app.post("/api/communications/campaigns", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { campaignName, campaignType, filters, templateId, sendPortalLink, attachments } = req.body;
+
+    // 1. Fetch filtered list of beneficiaries based on built filters
+    const audience = await CampaignAudienceService.buildAudience(filters || {});
+    if (audience.length === 0) {
+      return res.status(400).json({ error: "Target audience size is 0. Please update your targeting parameters." });
+    }
+
+    // 2. Filter out duplicates/blocked/invalid for validation overview summary (Phase 5)
+    const validationSummary = await CampaignAudienceService.validateRecipients(audience);
+    const validAudience = audience.filter(r => {
+      if (r.activeStatus && r.activeStatus !== "ACTIVE") return false;
+      const email = (r.email || "").trim().toLowerCase();
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      return email && emailRegex.test(email);
+    });
+
+    if (validAudience.length === 0) {
+      return res.status(400).json({ error: "No valid deliverable recipients found in current filtered roster." });
+    }
+
+    // 3. Create Campaign record in database with status=QUEUED (Phase 2)
+    const actorName = (req as any).user?.email || "SUPER_ADMIN";
+    const campaignId = require("crypto").randomUUID();
+
+    const newCampaign = {
+      id: campaignId,
+      campaignName,
+      campaignType: campaignType || "EMAIL",
+      status: "QUEUED",
+      createdBy: actorName,
+      totalRecipients: validAudience.length,
+      successCount: 0,
+      failedCount: 0,
+      audienceFilter: filters || {},
+    };
+
+    await DbRepo.saveCommunicationCampaign(newCampaign);
+
+    // Audit Log: Queue Registered
+    await DbRepo.saveAuditLog({
+      id: require("crypto").randomUUID(),
+      timestamp: new Date().toISOString(),
+      username: actorName,
+      role: (req as any).user?.role || "SUPER_ADMIN",
+      action: "CAMPAIGN_QUEUED",
+      details: `Bulk campaign "${campaignName}" queued successfully. Total valid recipients: ${validAudience.length}`,
+      ipAddress: req.ip || "127.0.0.1"
+    });
+
+    // 4. Save recipients in database with status = PENDING (Phase 2 & 3)
+    const recipientsPayload = validAudience.map(recipient => ({
+      campaignId,
+      beneficiaryId: recipient.id,
+      email: recipient.email,
+      status: "PENDING"
+    }));
+
+    await DbRepo.addCommunicationRecipients(recipientsPayload);
+
+    // 5. Trigger Queue execution immediately in background (Non-blocking)
+    EmailCampaignQueue.queueCampaign({
+      campaignId,
+      templateId,
+      sendPortalLink: !!sendPortalLink,
+      attachments: attachments || [],
+      actor: actorName,
+      actorRole: (req as any).user?.role || "SUPER_ADMIN",
+      ipAddress: req.ip || "127.0.0.1"
+    });
+
+    // 6. Return success response immediately
+    res.json({
+      success: true,
+      campaignId,
+      totalRecipients: validAudience.length,
+      ignoredCount: audience.length - validAudience.length,
+      validation: validationSummary
+    });
+
+  } catch (err: any) {
+    console.error("[Campaign API error]:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Cancels campaign background worker (Phase 10 security rules)
+app.post("/api/communications/campaigns/:id/cancel", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const id = req.params.id;
+    const worker = activeCampaignWorkers.get(id);
+    if (worker) {
+      worker.isCancelled = true;
+    }
+
+    const dbCamp = await DbRepo.getCommunicationCampaignById(id);
+    if (dbCamp) {
+      dbCamp.status = "CANCELLED";
+      dbCamp.completedAt = new Date().toISOString();
+      await DbRepo.saveCommunicationCampaign(dbCamp);
+    }
+
+    // Log security audit cancellation action
+    await DbRepo.saveAuditLog({
+      id: require("crypto").randomUUID(),
+      timestamp: new Date().toISOString(),
+      username: (req as any).user?.email || "SUPER_ADMIN",
+      role: (req as any).user?.role || "SUPER_ADMIN",
+      action: "CAMPAIGN_CANCELLED",
+      details: `Bulk campaign ID ${id} was cancelled by administrator.`,
+      ipAddress: req.ip || "127.0.0.1"
+    });
+
+    res.json({ success: true, message: "Campaign cancellation registered." });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

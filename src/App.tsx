@@ -20,6 +20,7 @@ import { DocumentVerification } from "./components/DocumentVerification";
 import { SecureDocumentPortal } from "./components/SecureDocumentPortal";
 import { CertificateVerification } from "./components/CertificateVerification";
 import { SkeletonLoader } from "./components/SkeletonLoader";
+import BulkCommunications from "./components/BulkCommunications";
 
 const ReportsWorkspace = React.lazy(() => import("./components/ReportsWorkspace").then(module => ({ default: module.ReportsWorkspace })));
 const AuditTrail = React.lazy(() => import("./components/AuditTrail").then(module => ({ default: module.AuditTrail })));
@@ -51,7 +52,7 @@ export default function App() {
       return null;
     }
   });
-  const [activeTab, setActiveTab] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility" | "trainee-operations" | "certification" | "outcomes" | "evidence" | "toolkits" | "executive-m-and-e" | "quality-accreditation">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility" | "trainee-operations" | "certification" | "outcomes" | "evidence" | "toolkits" | "executive-m-and-e" | "quality-accreditation" | "communications">("dashboard");
   const [admissionsSubTab, setAdmissionsSubTab] = useState<"dashboard" | "letters" | "forms" | "acceptance" | "dispatches">("dashboard");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [registryViewMode, setRegistryViewMode] = useState<"list" | "details" | "create">("list");
@@ -471,8 +472,12 @@ export default function App() {
         body: JSON.stringify(data)
       });
       if (res.ok) {
+        const updated = await res.json().catch(() => null);
         await fetchBeneficiaries();
         await fetchAuditLogs();
+        if (updated && selectedBeneficiary && selectedBeneficiary.id === id) {
+          setSelectedBeneficiary(updated);
+        }
         showToast("Beneficiary updated successfully", "success");
       } else {
         const err = await res.json();
@@ -858,6 +863,10 @@ export default function App() {
               onAddField={handleAddCustomField}
               onRemoveField={handleRemoveCustomField}
             />
+          )}
+
+          {activeTab === "communications" && (
+            <BulkCommunications session={session} />
           )}
 
           {activeTab === "audits" && (

@@ -285,6 +285,8 @@ const SCHEMA_DDL = `
     alumni_entrepreneur_status VARCHAR(100),
     alumni_business_name VARCHAR(255),
     alumni_current_employer VARCHAR(255),
+    token_version INT DEFAULT 1,
+    workflow_version INT DEFAULT 1,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP WITH TIME ZONE
@@ -510,6 +512,7 @@ const SCHEMA_DDL = `
     verification_date TIMESTAMP WITH TIME ZONE,
     verified_at TIMESTAMP WITH TIME ZONE,
     email_delivery_status VARCHAR(50) DEFAULT 'Pending',
+    document_status VARCHAR(50) DEFAULT 'ACTIVE',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -546,7 +549,11 @@ const SCHEMA_DDL = `
     changed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     remarks TEXT,
     reason TEXT,
-    ip_address VARCHAR(100)
+    ip_address VARCHAR(100),
+    token_version_before INT DEFAULT 1,
+    token_version_after INT DEFAULT 1,
+    workflow_version_before INT DEFAULT 1,
+    workflow_version_after INT DEFAULT 1
   );
   CREATE INDEX IF NOT EXISTS idx_workflow_history_beneficiary_id ON workflow_history(beneficiary_id);
 
@@ -657,6 +664,48 @@ const SCHEMA_DDL = `
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
   );
   CREATE INDEX IF NOT EXISTS idx_portal_monitoring_beneficiary ON portal_monitoring(beneficiary_id);
+
+  -- Communication Templates table
+  CREATE TABLE IF NOT EXISTS communication_templates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) UNIQUE NOT NULL,
+    subject TEXT NOT NULL,
+    html_body TEXT NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- Communication Campaigns table
+  CREATE TABLE IF NOT EXISTS communication_campaigns (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    campaign_name VARCHAR(255) NOT NULL,
+    campaign_type VARCHAR(50) NOT NULL,
+    status VARCHAR(50) NOT NULL,
+    created_by VARCHAR(100),
+    total_recipients INTEGER DEFAULT 0,
+    success_count INTEGER DEFAULT 0,
+    failed_count INTEGER DEFAULT 0,
+    audience_filter TEXT, -- Saved filters as JSON string
+    started_at TIMESTAMP WITH TIME ZONE,
+    completed_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- Communication Recipients table
+  CREATE TABLE IF NOT EXISTS communication_recipients (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    campaign_id UUID REFERENCES communication_campaigns(id) ON DELETE CASCADE,
+    beneficiary_id VARCHAR(50),
+    email VARCHAR(255) NOT NULL,
+    status VARCHAR(50) NOT NULL,
+    error_message TEXT,
+    sent_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_comm_recipients_campaign ON communication_recipients(campaign_id);
+  CREATE INDEX IF NOT EXISTS idx_comm_recipients_beneficiary ON communication_recipients(beneficiary_id);
 `;
 
 /**
@@ -786,6 +835,8 @@ export async function initDb(): Promise<void> {
       ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS alumni_entrepreneur_status VARCHAR(100);
       ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS alumni_business_name VARCHAR(255);
       ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS alumni_current_employer VARCHAR(255);
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 1;
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS workflow_version INTEGER DEFAULT 1;
       
       ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS watermark_text VARCHAR(255) DEFAULT 'SECURED REGISTRY DOCUMENT';
       ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS watermark_enabled BOOLEAN DEFAULT TRUE;
@@ -852,6 +903,7 @@ export async function initDb(): Promise<void> {
         verification_date TIMESTAMP WITH TIME ZONE,
         verified_at TIMESTAMP WITH TIME ZONE,
         email_delivery_status VARCHAR(50) DEFAULT 'Pending',
+        document_status VARCHAR(50) DEFAULT 'ACTIVE',
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
       CREATE INDEX IF NOT EXISTS idx_generated_documents_beneficiary_id ON generated_documents(beneficiary_id);
@@ -861,6 +913,7 @@ export async function initDb(): Promise<void> {
       ALTER TABLE generated_documents ADD COLUMN IF NOT EXISTS verification_date TIMESTAMP WITH TIME ZONE;
       ALTER TABLE generated_documents ADD COLUMN IF NOT EXISTS verified_at TIMESTAMP WITH TIME ZONE;
       ALTER TABLE generated_documents ADD COLUMN IF NOT EXISTS email_delivery_status VARCHAR(50) DEFAULT 'Pending';
+      ALTER TABLE generated_documents ADD COLUMN IF NOT EXISTS document_status VARCHAR(50) DEFAULT 'ACTIVE';
 
       DO $$
       BEGIN
@@ -886,12 +939,20 @@ export async function initDb(): Promise<void> {
         changed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         remarks TEXT,
         reason TEXT,
-        ip_address VARCHAR(100)
+        ip_address VARCHAR(100),
+        token_version_before INTEGER DEFAULT 1,
+        token_version_after INTEGER DEFAULT 1,
+        workflow_version_before INTEGER DEFAULT 1,
+        workflow_version_after INTEGER DEFAULT 1
       );
       CREATE INDEX IF NOT EXISTS idx_workflow_history_beneficiary_id ON workflow_history(beneficiary_id);
       
       ALTER TABLE workflow_history ADD COLUMN IF NOT EXISTS reason TEXT;
       ALTER TABLE workflow_history ADD COLUMN IF NOT EXISTS ip_address VARCHAR(100);
+      ALTER TABLE workflow_history ADD COLUMN IF NOT EXISTS token_version_before INTEGER DEFAULT 1;
+      ALTER TABLE workflow_history ADD COLUMN IF NOT EXISTS token_version_after INTEGER DEFAULT 1;
+      ALTER TABLE workflow_history ADD COLUMN IF NOT EXISTS workflow_version_before INTEGER DEFAULT 1;
+      ALTER TABLE workflow_history ADD COLUMN IF NOT EXISTS workflow_version_after INTEGER DEFAULT 1;
     `);
 
     // Ensure admission_form_templates table is bootstrapped independently
@@ -1273,7 +1334,7 @@ export async function initDb(): Promise<void> {
 /**
  * Helper to load JSON file state (to back up operations and map schemas)
  */
-function loadJsonState(): { 
+export function loadJsonState(): { 
   customFields: CustomField[]; 
   beneficiaries: Beneficiary[]; 
   auditLogs: AuditLog[]; 
@@ -1350,7 +1411,7 @@ function loadJsonState(): {
 /**
  * Helper to save JSON file state
  */
-function saveJsonState(state: { 
+export function saveJsonState(state: { 
   customFields: CustomField[]; 
   beneficiaries: Beneficiary[]; 
   auditLogs: AuditLog[]; 
@@ -1986,7 +2047,7 @@ export class DbRepo {
                 beneficiary_status, status_reason, status_changed_at, status_changed_by, is_archived,
                 eligibility_override, eligibility_override_reason, eligibility_override_by, eligibility_override_at,
                 certification_status, certificate_number, certificate_issued_at, certificate_issued_by, graduation_batch, alumni_status, certificate_reference, certificate_verification_code, certificate_download_count, certificate_last_downloaded_at, alumni_employment_status, alumni_entrepreneur_status, alumni_business_name, alumni_current_employer,
-                created_at, updated_at
+                created_at, updated_at, token_version, workflow_version
          FROM beneficiaries
          WHERE id = $1 AND deleted_at IS NULL`,
         [id]
@@ -2149,7 +2210,9 @@ export class DbRepo {
         alumniEmploymentStatus: row.alumni_employment_status || "",
         alumniEntrepreneurStatus: row.alumni_entrepreneur_status || "",
         alumniBusinessName: row.alumni_business_name || "",
-        alumniCurrentEmployer: row.alumni_current_employer || ""
+        alumniCurrentEmployer: row.alumni_current_employer || "",
+        tokenVersion: row.token_version !== undefined && row.token_version !== null ? parseInt(row.token_version, 10) : 1,
+        workflowVersion: row.workflow_version !== undefined && row.workflow_version !== null ? parseInt(row.workflow_version, 10) : 1
       };
 
       const bDynamic = getDynamicEligibility(beneficiary);
@@ -2412,8 +2475,8 @@ export class DbRepo {
            certification_status, certificate_number, certificate_issued_at, certificate_issued_by, graduation_batch,
            alumni_status, certificate_reference, certificate_verification_code, certificate_download_count, certificate_last_downloaded_at,
            alumni_employment_status, alumni_entrepreneur_status, alumni_business_name, alumni_current_employer,
-           created_at, updated_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58)
+           created_at, updated_at, token_version, workflow_version
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60)
          ON CONFLICT (id) DO UPDATE SET 
            photo = EXCLUDED.photo,
            first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name, other_name = EXCLUDED.other_name,
@@ -2457,7 +2520,7 @@ export class DbRepo {
            alumni_employment_status = EXCLUDED.alumni_employment_status,
            alumni_entrepreneur_status = EXCLUDED.alumni_entrepreneur_status,
            alumni_business_name = EXCLUDED.alumni_business_name,
-           alumni_current_employer = EXCLUDED.alumni_current_employer,
+           alumni_current_employer = EXCLUDED.alumni_current_employer, token_version = EXCLUDED.token_version, workflow_version = EXCLUDED.workflow_version,
            updated_at = NOW()`,
         [
           b.id, b.photo || "", b.firstName, b.lastName, b.otherName || "", b.gender, b.bvn, b.nin,
@@ -2472,7 +2535,7 @@ export class DbRepo {
           !!b.eligibilityOverride, b.eligibilityOverrideReason || "", b.eligibilityOverrideBy || "", b.eligibilityOverrideAt ? new Date(b.eligibilityOverrideAt) : null,
           b.certificationStatus || "NONE", b.certificateNumber || "", b.certificateIssuedAt ? new Date(b.certificateIssuedAt) : null, b.certificateIssuedBy || "", b.graduationBatch || "",
           !!b.alumniStatus, b.certificateReference || "", b.certificateVerificationCode || "", b.certificateDownloadCount || 0, b.certificateLastDownloadedAt ? new Date(b.certificateLastDownloadedAt) : null,
-          b.alumniEmploymentStatus || "", b.alumniEntrepreneurStatus || "", b.alumniBusinessName || "", b.alumniCurrentEmployer || "",
+          b.alumniEmploymentStatus || "", b.alumniEntrepreneurStatus || "", b.alumniBusinessName || "", b.alumniCurrentEmployer || "", b.tokenVersion || 1, b.workflowVersion || 1,
           new Date(b.createdAt || Date.now()), new Date()
         ]
       );
@@ -2540,30 +2603,58 @@ export class DbRepo {
         }
       }
 
-      // 4. Reconcile acceptance declarations cascade
+      // 4. Reconcile acceptance declarations cascade without deleting older entries to preserve history (Phase 3)
       if (b.acceptanceLetterVersions && b.acceptanceLetterVersions.length > 0) {
-        // Delete older entries first and reconstruct from authoritative state
-        await client.query("DELETE FROM acceptance_letters WHERE beneficiary_id = $1", [b.id]);
         for (const accl of b.acceptanceLetterVersions) {
+          const existsRes = await client.query(
+            "SELECT id FROM acceptance_letters WHERE beneficiary_id = $1 AND version = $2",
+            [b.id, accl.version]
+          );
+          if (existsRes.rows.length === 0) {
+            await client.query(
+              `INSERT INTO acceptance_letters (beneficiary_id, version, url, name, uploaded_at, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
+              [
+                b.id, accl.version, accl.url, accl.name,
+                accl.uploadedAt ? new Date(accl.uploadedAt) : new Date()
+              ]
+            );
+          } else {
+            await client.query(
+              `UPDATE acceptance_letters SET url = $1, name = $2, uploaded_at = $3, updated_at = NOW() 
+               WHERE beneficiary_id = $4 AND version = $5`,
+              [
+                accl.url, accl.name, accl.uploadedAt ? new Date(accl.uploadedAt) : new Date(),
+                b.id, accl.version
+              ]
+            );
+          }
+        }
+      } else if (b.acceptanceLetterUploaded && b.acceptanceLetterUrl) {
+        const existsRes = await client.query(
+          "SELECT id FROM acceptance_letters WHERE beneficiary_id = $1 AND version = $2",
+          [b.id, 1]
+        );
+        if (existsRes.rows.length === 0) {
           await client.query(
             `INSERT INTO acceptance_letters (beneficiary_id, version, url, name, uploaded_at, created_at, updated_at)
              VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
             [
-              b.id, accl.version, accl.url, accl.name,
-              accl.uploadedAt ? new Date(accl.uploadedAt) : new Date()
+              b.id, 1, b.acceptanceLetterUrl, "Official Signed Acceptance.html",
+              b.acceptanceLetterUploadedAt ? new Date(b.acceptanceLetterUploadedAt) : new Date()
+            ]
+          );
+        } else {
+          await client.query(
+            `UPDATE acceptance_letters SET url = $1, name = $2, uploaded_at = $3, updated_at = NOW() 
+             WHERE beneficiary_id = $4 AND version = $5`,
+            [
+              b.acceptanceLetterUrl, "Official Signed Acceptance.html",
+              b.acceptanceLetterUploadedAt ? new Date(b.acceptanceLetterUploadedAt) : new Date(),
+              b.id, 1
             ]
           );
         }
-      } else if (b.acceptanceLetterUploaded && b.acceptanceLetterUrl) {
-        await client.query("DELETE FROM acceptance_letters WHERE beneficiary_id = $1", [b.id]);
-        await client.query(
-          `INSERT INTO acceptance_letters (beneficiary_id, version, url, name, uploaded_at, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
-          [
-            b.id, 1, b.acceptanceLetterUrl, "Official Signed Acceptance.html",
-            b.acceptanceLetterUploadedAt ? new Date(b.acceptanceLetterUploadedAt) : new Date()
-          ]
-        );
       }
 
       // 5. Reconcile attendance records log
@@ -3178,7 +3269,7 @@ export class DbRepo {
   }
 
   /**
-   * Save a generated document version to the centralized database
+   * Save a generated document version to the centralized database, marking previous active docs of same type as SUPERSEDED (Phase 3)
    */
   static async saveGeneratedDocument(doc: any): Promise<boolean> {
     const pool = getPgPool();
@@ -3188,37 +3279,103 @@ export class DbRepo {
       if (!state.generatedDocuments) {
         state.generatedDocuments = [];
       }
-      state.generatedDocuments.push(doc);
+      // Supercede any existing ACTIVE docs of same type and beneficiary
+      state.generatedDocuments.forEach((d: any) => {
+        if (d.beneficiaryId === doc.beneficiaryId && d.documentType === doc.documentType && d.id !== doc.id && d.documentStatus === "ACTIVE") {
+          d.documentStatus = "SUPERSEDED";
+        }
+      });
+      // Set current status to ACTIVE
+      doc.documentStatus = doc.documentStatus || "ACTIVE";
+      const idx = state.generatedDocuments.findIndex((x: any) => x.id === doc.id);
+      if (idx !== -1) {
+        state.generatedDocuments[idx] = doc;
+      } else {
+        state.generatedDocuments.push(doc);
+      }
+      saveJsonState(state);
+      return true;
+    }
+    try {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        
+        // Phase 3 - Set any previous ACTIVE docs of this type for this beneficiary to SUPERSEDED
+        await client.query(
+          "UPDATE generated_documents SET document_status = 'SUPERSEDED' WHERE beneficiary_id = $1 AND document_type = $2 AND document_status = 'ACTIVE'",
+          [doc.beneficiaryId, doc.documentType]
+        );
+
+        await client.query(
+          `INSERT INTO generated_documents (
+            id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at,
+            verification_code, verification_status, verification_date, verified_at, email_delivery_status, document_status
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+           ON CONFLICT (id) DO UPDATE SET
+             pdf_url = EXCLUDED.pdf_url,
+             docx_url = EXCLUDED.docx_url,
+             generated_by = EXCLUDED.generated_by,
+             created_at = EXCLUDED.created_at,
+             verification_code = EXCLUDED.verification_code,
+             verification_status = EXCLUDED.verification_status,
+             verification_date = EXCLUDED.verification_date,
+             verified_at = EXCLUDED.verified_at,
+             email_delivery_status = EXCLUDED.email_delivery_status,
+             document_status = EXCLUDED.document_status`,
+          [
+            doc.id, doc.beneficiaryId, doc.documentType, doc.version, doc.pdfUrl, doc.docxUrl || null, doc.generatedBy, new Date(doc.createdAt),
+            doc.verificationCode || null, doc.verificationStatus || "VALID",
+            doc.verificationDate ? new Date(doc.verificationDate) : null,
+            doc.verifiedAt ? new Date(doc.verifiedAt) : null,
+            doc.emailDeliveryStatus || "Pending",
+            doc.documentStatus || "ACTIVE"
+          ]
+        );
+        await client.query("COMMIT");
+        client.release();
+        return true;
+      } catch (err) {
+        await client.query("ROLLBACK");
+        client.release();
+        throw err;
+      }
+    } catch (e) {
+      console.error("[DB Repo] Failed to save generated document:", e);
+      return false;
+    }
+  }
+
+  /**
+   * Phase 3 / 4 / 5 - Archive all ACTIVE documents of a beneficiary on rollback/unlock (ACTIVE -> ARCHIVED)
+   */
+  static async archiveActiveDocuments(beneficiaryId: string): Promise<boolean> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState() as any;
+      const docsArr = state.generated_documents || state.generatedDocuments || [];
+      docsArr.forEach((d: any) => {
+        const matchesB = d.beneficiaryId === beneficiaryId || d.beneficiary_id === beneficiaryId;
+        const isActive = (d.documentStatus || d.document_status || "").toUpperCase() === "ACTIVE";
+        if (matchesB && isActive) {
+          if (d.documentStatus !== undefined) d.documentStatus = "ARCHIVED";
+          if (d.document_status !== undefined) d.document_status = "ARCHIVED";
+        }
+      });
+      // Save arrays under whichever key exists
+      if (state.generated_documents) state.generated_documents = docsArr;
+      if (state.generatedDocuments) state.generatedDocuments = docsArr;
       saveJsonState(state);
       return true;
     }
     try {
       await pool.query(
-        `INSERT INTO generated_documents (
-          id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at,
-          verification_code, verification_status, verification_date, verified_at, email_delivery_status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-         ON CONFLICT (id) DO UPDATE SET
-           pdf_url = EXCLUDED.pdf_url,
-           docx_url = EXCLUDED.docx_url,
-           generated_by = EXCLUDED.generated_by,
-           created_at = EXCLUDED.created_at,
-           verification_code = EXCLUDED.verification_code,
-           verification_status = EXCLUDED.verification_status,
-           verification_date = EXCLUDED.verification_date,
-           verified_at = EXCLUDED.verified_at,
-           email_delivery_status = EXCLUDED.email_delivery_status`,
-        [
-          doc.id, doc.beneficiaryId, doc.documentType, doc.version, doc.pdfUrl, doc.docxUrl || null, doc.generatedBy, new Date(doc.createdAt),
-          doc.verificationCode || null, doc.verificationStatus || "VALID",
-          doc.verificationDate ? new Date(doc.verificationDate) : null,
-          doc.verifiedAt ? new Date(doc.verifiedAt) : null,
-          doc.emailDeliveryStatus || "Pending"
-        ]
+        "UPDATE generated_documents SET document_status = 'ARCHIVED' WHERE beneficiary_id = $1 AND document_status = 'ACTIVE'",
+        [beneficiaryId]
       );
       return true;
     } catch (e) {
-      console.error("[DB Repo] Failed to save generated document:", e);
+      console.error("[DB Repo] Failed to archive active documents:", e);
       return false;
     }
   }
@@ -3259,7 +3416,7 @@ export class DbRepo {
     }
     try {
       const res = await pool.query(
-        "SELECT id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at, verification_code, verification_status, verification_date, verified_at, email_delivery_status FROM generated_documents WHERE beneficiary_id = $1 ORDER BY created_at DESC",
+        "SELECT id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at, verification_code, verification_status, verification_date, verified_at, email_delivery_status, document_status FROM generated_documents WHERE beneficiary_id = $1 ORDER BY created_at DESC",
         [beneficiaryId]
       );
       return res.rows.map(row => ({
@@ -3275,7 +3432,8 @@ export class DbRepo {
         verificationStatus: row.verification_status || undefined,
         verificationDate: row.verification_date ? row.verification_date.toISOString() : undefined,
         verifiedAt: row.verified_at ? row.verified_at.toISOString() : undefined,
-        emailDeliveryStatus: row.email_delivery_status || undefined
+        emailDeliveryStatus: row.email_delivery_status || undefined,
+        documentStatus: row.document_status || "ACTIVE"
       }));
     } catch (e) {
       console.error("[DB Repo] Failed to get generated documents:", e);
@@ -3305,8 +3463,9 @@ export class DbRepo {
     try {
       await pool.query(
         `INSERT INTO workflow_history (
-          beneficiary_id, old_status, new_status, changed_by, changed_at, remarks, reason, ip_address
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          beneficiary_id, old_status, new_status, changed_by, changed_at, remarks, reason, ip_address,
+          token_version_before, token_version_after, workflow_version_before, workflow_version_after
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
         [
           h.beneficiaryId,
           h.oldStatus,
@@ -3315,7 +3474,11 @@ export class DbRepo {
           h.changedAt ? new Date(h.changedAt) : new Date(),
           h.remarks || "",
           h.reason || "",
-          h.ipAddress || ""
+          h.ipAddress || "",
+          h.tokenVersionBefore || 1,
+          h.tokenVersionAfter || 1,
+          h.workflowVersionBefore || 1,
+          h.workflowVersionAfter || 1
         ]
       );
       return true;
@@ -3338,7 +3501,7 @@ export class DbRepo {
     }
     try {
       const res = await pool.query(
-        "SELECT id, beneficiary_id, old_status, new_status, changed_by, changed_at, remarks, reason, ip_address FROM workflow_history WHERE beneficiary_id = $1 ORDER BY id ASC, changed_at ASC",
+        "SELECT id, beneficiary_id, old_status, new_status, changed_by, changed_at, remarks, reason, ip_address, token_version_before, token_version_after, workflow_version_before, workflow_version_after FROM workflow_history WHERE beneficiary_id = $1 ORDER BY id ASC, changed_at ASC",
         [beneficiaryId]
       );
       return res.rows.map(row => ({
@@ -3350,7 +3513,11 @@ export class DbRepo {
         changedAt: row.changed_at ? row.changed_at.toISOString() : new Date().toISOString(),
         remarks: row.remarks || "",
         reason: row.reason || "",
-        ipAddress: row.ip_address || ""
+        ipAddress: row.ip_address || "",
+        tokenVersionBefore: row.token_version_before !== undefined && row.token_version_before !== null ? row.token_version_before : 1,
+        tokenVersionAfter: row.token_version_after !== undefined && row.token_version_after !== null ? row.token_version_after : 1,
+        workflowVersionBefore: row.workflow_version_before !== undefined && row.workflow_version_before !== null ? row.workflow_version_before : 1,
+        workflowVersionAfter: row.workflow_version_after !== undefined && row.workflow_version_after !== null ? row.workflow_version_after : 1
       }));
     } catch (e) {
       console.error("[DB Repo] Failed to get workflow history:", e);
@@ -3369,7 +3536,7 @@ export class DbRepo {
     }
     try {
       const res = await pool.query(
-        "SELECT id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at, verification_code, verification_status, verification_date, verified_at, email_delivery_status FROM generated_documents WHERE LOWER(verification_code) = LOWER($1)",
+        "SELECT id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at, verification_code, verification_status, verification_date, verified_at, email_delivery_status, document_status FROM generated_documents WHERE LOWER(verification_code) = LOWER($1)",
         [code]
       );
       if (res.rows.length === 0) return null;
@@ -3387,7 +3554,8 @@ export class DbRepo {
         verificationStatus: row.verification_status,
         verificationDate: row.verification_date ? row.verification_date.toISOString() : undefined,
         verifiedAt: row.verified_at ? row.verified_at.toISOString() : undefined,
-        emailDeliveryStatus: row.email_delivery_status
+        emailDeliveryStatus: row.email_delivery_status,
+        documentStatus: row.document_status || "ACTIVE"
       };
     } catch (e) {
       console.error("[DB Repo] Failed to get document by code:", e);
@@ -3406,7 +3574,7 @@ export class DbRepo {
     }
     try {
       const res = await pool.query(
-        "SELECT id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at, verification_code, verification_status, verification_date, verified_at, email_delivery_status FROM generated_documents WHERE id = $1",
+        "SELECT id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at, verification_code, verification_status, verification_date, verified_at, email_delivery_status, document_status FROM generated_documents WHERE id = $1",
         [id]
       );
       if (res.rows.length === 0) return null;
@@ -3424,7 +3592,8 @@ export class DbRepo {
         verificationStatus: row.verification_status,
         verificationDate: row.verification_date ? row.verification_date.toISOString() : undefined,
         verifiedAt: row.verified_at ? row.verified_at.toISOString() : undefined,
-        emailDeliveryStatus: row.email_delivery_status
+        emailDeliveryStatus: row.email_delivery_status,
+        documentStatus: row.document_status || "ACTIVE"
       };
     } catch (e) {
       console.error("[DB Repo] Failed to get document by id:", e);
@@ -6365,6 +6534,232 @@ export class DbRepo {
     } catch (e) {
       console.error("[DB Repo] Failed to save program cost to PG:", e);
       return fallbackSave();
+    }
+  }
+
+  // ==========================================================
+  // BULK COMMUNICATION & CAMPAIGN ENGINE METHODS
+  // ==========================================================
+
+  static async getCommunicationTemplates(): Promise<any[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) return [];
+    try {
+      const res = await pool.query(
+        `SELECT id, name, subject, html_body as "htmlBody", is_active as "isActive", created_at as "createdAt", updated_at as "updatedAt"
+         FROM communication_templates
+         ORDER BY name ASC`
+      );
+      return res.rows.map(r => ({ ...r, isActive: !!r.isActive }));
+    } catch (e) {
+      console.error("[DbRepo] Failed to get communication templates:", e);
+      return [];
+    }
+  }
+
+  static async saveCommunicationTemplate(tpl: any): Promise<any> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) return tpl;
+    const isNew = !tpl.id;
+    const id = tpl.id || require("crypto").randomUUID();
+    try {
+      if (!isNew) {
+        await pool.query(
+          `UPDATE communication_templates
+           SET name = $2, subject = $3, html_body = $4, is_active = $5, updated_at = NOW()
+           WHERE id = $1`,
+          [id, tpl.name, tpl.subject, tpl.htmlBody, tpl.isActive !== false]
+        );
+      } else {
+        await pool.query(
+          `INSERT INTO communication_templates (id, name, subject, html_body, is_active, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
+          [id, tpl.name, tpl.subject, tpl.htmlBody, tpl.isActive !== false]
+        );
+      }
+      return { ...tpl, id };
+    } catch (e) {
+      console.error("[DbRepo] Failed to save communication template:", e);
+      return tpl;
+    }
+  }
+
+  static async getCommunicationCampaigns(): Promise<any[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) return [];
+    try {
+      const res = await pool.query(
+        `SELECT id, campaign_name as "campaignName", campaign_type as "campaignType", status, created_by as "createdBy",
+                total_recipients as "totalRecipients", success_count as "successCount", failed_count as "failedCount",
+                audience_filter as "audienceFilter", started_at as "startedAt", completed_at as "completedAt",
+                created_at as "createdAt", updated_at as "updatedAt"
+         FROM communication_campaigns
+         ORDER BY created_at DESC`
+      );
+      return res.rows;
+    } catch (e) {
+      console.error("[DbRepo] Failed to get communication campaigns:", e);
+      return [];
+    }
+  }
+
+  static async getCommunicationCampaignById(id: string): Promise<any | null> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) return null;
+    try {
+      const res = await pool.query(
+        `SELECT id, campaign_name as "campaignName", campaign_type as "campaignType", status, created_by as "createdBy",
+                total_recipients as "totalRecipients", success_count as "successCount", failed_count as "failedCount",
+                audience_filter as "audienceFilter", started_at as "startedAt", completed_at as "completedAt",
+                created_at as "createdAt", updated_at as "updatedAt"
+         FROM communication_campaigns
+         WHERE id = $1`,
+        [id]
+      );
+      return res.rows[0] || null;
+    } catch (e) {
+      console.error("[DbRepo] Failed to get communication campaign by ID:", e);
+      return null;
+    }
+  }
+
+  static async saveCommunicationCampaign(camp: any): Promise<any> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) return camp;
+    const id = camp.id || require("crypto").randomUUID();
+    const isNew = !camp.id;
+    try {
+      if (!isNew) {
+        await pool.query(
+          `UPDATE communication_campaigns
+           SET campaign_name = $2, campaign_type = $3, status = $4, total_recipients = $5,
+               success_count = $6, failed_count = $7, audience_filter = $8,
+               started_at = $9, completed_at = $10, updated_at = NOW()
+           WHERE id = $1`,
+          [
+            id,
+            camp.campaignName,
+            camp.campaignType,
+            camp.status,
+            camp.totalRecipients || 0,
+            camp.successCount || 0,
+            camp.failedCount || 0,
+            camp.audienceFilter ? JSON.stringify(camp.audienceFilter) : null,
+            camp.startedAt || null,
+            camp.completedAt || null,
+          ]
+        );
+      } else {
+        await pool.query(
+          `INSERT INTO communication_campaigns (
+            id, campaign_name, campaign_type, status, created_by, total_recipients,
+            success_count, failed_count, audience_filter, started_at, completed_at, created_at, updated_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())`,
+          [
+            id,
+            camp.campaignName,
+            camp.campaignType,
+            camp.status,
+            camp.createdBy,
+            camp.totalRecipients || 0,
+            camp.successCount || 0,
+            camp.failedCount || 0,
+            camp.audienceFilter ? JSON.stringify(camp.audienceFilter) : null,
+            camp.startedAt || null,
+            camp.completedAt || null,
+          ]
+        );
+      }
+      return { ...camp, id };
+    } catch (e) {
+      console.error("[DbRepo] Failed to save communication campaign:", e);
+      return camp;
+    }
+  }
+
+  static async updateCampaignCounts(id: string, success: number, failed: number, status: string, completed: boolean = false): Promise<void> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) return;
+    try {
+      if (completed) {
+        await pool.query(
+          `UPDATE communication_campaigns
+           SET success_count = $2, failed_count = $3, status = $4, completed_at = NOW(), updated_at = NOW()
+           WHERE id = $1`,
+          [id, success, failed, status]
+        );
+      } else {
+        await pool.query(
+          `UPDATE communication_campaigns
+           SET success_count = $2, failed_count = $3, status = $4, updated_at = NOW()
+           WHERE id = $1`,
+          [id, success, failed, status]
+        );
+      }
+    } catch (e) {
+      console.error("[DbRepo] Failed to update campaign counts:", e);
+    }
+  }
+
+  static async addCommunicationRecipients(recipients: any[]): Promise<void> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) return;
+    try {
+      for (const r of recipients) {
+        const id = r.id || require("crypto").randomUUID();
+        await pool.query(
+          `INSERT INTO communication_recipients (id, campaign_id, beneficiary_id, email, status, created_at)
+           VALUES ($1, $2, $3, $4, $5, NOW())`,
+          [id, r.campaignId, r.beneficiaryId || null, r.email, r.status || "PENDING"]
+        );
+      }
+    } catch (e) {
+      console.error("[DbRepo] Failed to add communication recipients:", e);
+    }
+  }
+
+  static async getCommunicationRecipients(campaignId: string): Promise<any[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) return [];
+    try {
+      const res = await pool.query(
+        `SELECT cr.id, cr.campaign_id as "campaignId", cr.beneficiary_id as "beneficiaryId",
+                cr.email, cr.status, cr.error_message as "errorMessage", cr.sent_at as "sentAt",
+                b.first_name as "firstName", b.last_name as "lastName"
+         FROM communication_recipients cr
+         LEFT JOIN beneficiaries b ON cr.beneficiary_id = b.id
+         WHERE cr.campaign_id = $1
+         ORDER BY cr.created_at ASC`,
+        [campaignId]
+      );
+      return res.rows;
+    } catch (e) {
+      console.error("[DbRepo] Failed to get communication recipients:", e);
+      return [];
+    }
+  }
+
+  static async updateRecipientStatus(id: string, status: string, errorMessage?: string): Promise<void> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) return;
+    try {
+      if (status === "SENT") {
+        await pool.query(
+          `UPDATE communication_recipients
+           SET status = $2, sent_at = NOW()
+           WHERE id = $1`,
+          [id, status]
+        );
+      } else {
+        await pool.query(
+          `UPDATE communication_recipients
+           SET status = $2, error_message = $3, sent_at = NOW()
+           WHERE id = $1`,
+          [id, status, errorMessage || null]
+        );
+      }
+    } catch (e) {
+      console.error("[DbRepo] Failed to update recipient status:", e);
     }
   }
 }

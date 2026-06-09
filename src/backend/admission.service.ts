@@ -11,6 +11,7 @@ import { DbRepo } from "./db";
 import { CloudinaryService } from "./cloudinary.service";
 import { DocumentService } from "./document.service";
 import { buildSanitizedFilename } from "./pdfTraceAudit";
+import { performance } from "perf_hooks";
 
 export class AdmissionService {
   /**
@@ -32,7 +33,13 @@ export class AdmissionService {
    * Prepares and dispatches an admission offer email with formal PDFs
    */
   static async sendAdmissionOffer(beneficiaryId: string, customDomain: string): Promise<any> {
+    const totalStart = performance.now();
+    
+    // Measure Fetch time
+    const fetchStart = performance.now();
     const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
+    const fetchDuration = performance.now() - fetchStart;
+    console.log(`[PERF TRACE] [sendAdmissionOffer] Initial database beneficiary fetch took ${fetchDuration.toFixed(2)}ms`);
     
     if (!beneficiary) {
       throw new Error(`Beneficiary candidate '${beneficiaryId}' not found in registry.`);
@@ -50,24 +57,27 @@ export class AdmissionService {
     beneficiary.updatedAt = new Date().toISOString();
 
     // 2. Generate secure single-use response token link
-    const secureToken = TokenService.generateToken(beneficiary.id);
+    const secureToken = TokenService.generateToken(beneficiary.id, beneficiary.tokenVersion || 1);
     const secureLink = `${customDomain}/?token=${secureToken}`;
 
-    // 3. Generate dynamic documents via unified DocumentService
-    console.log("[AdmissionService] Generating official admission & acceptance documents through DocumentService...");
-    const { document: admissionDoc, pdfBuffer: admissionPdfBuffer } = await DocumentService.generateDocumentWithBuffer(
-      beneficiary.id,
-      DocumentType.ADMISSION_LETTER,
-      "SYSTEM_ADMISSIONS",
-      true
-    );
-    
-    const { document: acceptanceDoc, pdfBuffer: acceptancePdfBuffer } = await DocumentService.generateDocumentWithBuffer(
-      beneficiary.id,
-      DocumentType.ACCEPTANCE_LETTER,
-      "SYSTEM_ADMISSIONS",
-      true
-    );
+    // 3. Generate dynamic documents via unified DocumentService in parallel to optimize throughput
+    console.log("[AdmissionService] Generating official admission & acceptance documents through DocumentService in parallel...");
+    const [admissionResult, acceptanceResult] = await Promise.all([
+      DocumentService.generateDocumentWithBuffer(
+        beneficiary.id,
+        DocumentType.ADMISSION_LETTER,
+        "SYSTEM_ADMISSIONS",
+        true
+      ),
+      DocumentService.generateDocumentWithBuffer(
+        beneficiary.id,
+        DocumentType.ACCEPTANCE_LETTER,
+        "SYSTEM_ADMISSIONS",
+        true
+      )
+    ]);
+    const { document: admissionDoc, pdfBuffer: admissionPdfBuffer } = admissionResult;
+    const { document: acceptanceDoc, pdfBuffer: acceptancePdfBuffer } = acceptanceResult;
 
     // Sync URLs to main columns
     const admissionPdfUrl = admissionDoc.pdfUrl;
@@ -129,6 +139,7 @@ export class AdmissionService {
 
     console.log(`[AdmissionService] All PDF attachments successfully verified. Dispatched recipient: ${toEmail}. Files: ${admissionAttachmentName} (${admissionPdfBuffer.length} bytes), ${acceptanceAttachmentName} (${acceptancePdfBuffer.length} bytes). Tracing to step 6...`);
 
+    const emailSendStart = performance.now();
     const mailResult = await EmailService.sendAdmissionEmail(
       toEmail, 
       `${beneficiary.firstName} ${beneficiary.lastName}`, 
@@ -146,6 +157,8 @@ export class AdmissionService {
         }
       ]
     );
+    const emailSendDuration = performance.now() - emailSendStart;
+    console.log(`[PERF TRACE] SMTP/Resend notification email send took ${emailSendDuration.toFixed(2)}ms`);
 
     let changeRemarks = "";
     // Set Separate Email Status as requested
@@ -175,6 +188,7 @@ export class AdmissionService {
     };
     beneficiary.emailDeliveryHistory = [...deliveryHistory, newDeliveryRecord];
 
+    const persistenceStart = performance.now();
     // Write to Workflow History table!
     await DbRepo.saveWorkflowHistory({
       beneficiaryId: beneficiary.id,
@@ -193,6 +207,11 @@ export class AdmissionService {
     );
 
     await DbRepo.upsertBeneficiary(beneficiary);
+    const persistenceDuration = performance.now() - persistenceStart;
+    console.log(`[PERF TRACE] Database updates (workflow history, logs, upsertBeneficiary) took ${persistenceDuration.toFixed(2)}ms`);
+
+    const totalDuration = performance.now() - totalStart;
+    console.log(`[PERF TRACE] sendAdmissionOffer TOTAL request duration took ${totalDuration.toFixed(2)}ms`);
 
     return { 
       success: mailResult.success, 
@@ -377,14 +396,26 @@ export class AdmissionService {
    * Public Student response portal sub-flow: process signatures and demographics
    */
   static async processPortalSubmission(token: string, formData: any): Promise<{ success: boolean; beneficiary: Beneficiary }> {
+    const totalStart = performance.now();
     const decoded = TokenService.verifyToken(token);
     if (!decoded || !decoded.id) {
       throw new Error("Activation session token is invalid, corrupted, or has expired.");
     }
 
+    const fetchStart = performance.now();
     const beneficiary = await DbRepo.getBeneficiaryById(decoded.id);
+    const fetchDuration = performance.now() - fetchStart;
+    console.log(`[PERF TRACE] [processPortalSubmission] Initial database beneficiary fetch took ${fetchDuration.toFixed(2)}ms`);
+
     if (!beneficiary) {
       throw new Error("Primary biographical record corresponding to portal session could not be tracked.");
+    }
+
+    // Check token version (Phase 1)
+    const tokenVersion = decoded.tokenVersion !== undefined ? decoded.tokenVersion : 1;
+    const bTokenVersion = beneficiary.tokenVersion !== undefined ? beneficiary.tokenVersion : 1;
+    if (tokenVersion !== bTokenVersion) {
+      throw new Error("TOKEN_REVOKED: This portal or admission token has been revoked due to administrative rollback or status update.");
     }
 
     const oldAdmissionStatus = beneficiary.admissionStatus || "Pending";
@@ -420,12 +451,14 @@ export class AdmissionService {
     };
 
     // 3. Process signed acceptance letter document compile
+    const docProcessStart = performance.now();
     let signedAcceptanceUrl = "";
     let registeredDocId = "";
     let nextAccLetterVer = (beneficiary.acceptanceLetterVersions || []).length + 1;
 
     if (formData.uploadedAcceptanceLetter) {
       console.log("[AdmissionService] Custom hand-signed file detected, syncing to Cloudinary...");
+      const cloudStart = performance.now();
       if (formData.uploadedAcceptanceLetter.startsWith("data:")) {
         signedAcceptanceUrl = await CloudinaryService.uploadDocument(
           formData.uploadedAcceptanceLetter, 
@@ -434,6 +467,8 @@ export class AdmissionService {
       } else {
         signedAcceptanceUrl = formData.uploadedAcceptanceLetter;
       }
+      const cloudDuration = performance.now() - cloudStart;
+      console.log(`[PERF TRACE] Custom hand-signed Cloudinary upload took ${cloudDuration.toFixed(2)}ms`);
 
       // Manually register in generated_documents table for absolute completeness & traceability!
       const docId = `gdoc_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
@@ -480,6 +515,8 @@ export class AdmissionService {
       registeredDocId = acceptanceDoc.id;
       nextAccLetterVer = acceptanceDoc.version;
     }
+    const docProcessDuration = performance.now() - docProcessStart;
+    console.log(`[PERF TRACE] Acceptance document processing/compile took ${docProcessDuration.toFixed(2)}ms`);
 
     const fName = (beneficiary.firstName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
     const lName = (beneficiary.lastName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -517,6 +554,7 @@ export class AdmissionService {
     beneficiary.status = ProgramStatus.PENDING_PHOTO; // Mark status pending admin check
     beneficiary.updatedAt = new Date().toISOString();
 
+    const dbStart = performance.now();
     // Write to Workflow History secure table!
     try {
       await DbRepo.saveWorkflowHistory({
@@ -537,6 +575,11 @@ export class AdmissionService {
     );
 
     await DbRepo.upsertBeneficiary(beneficiary);
+    const dbDuration = performance.now() - dbStart;
+    console.log(`[PERF TRACE] Portal submission DB commits took ${dbDuration.toFixed(2)}ms`);
+
+    const totalDuration = performance.now() - totalStart;
+    console.log(`[PERF TRACE] processPortalSubmission TOTAL took ${totalDuration.toFixed(2)}ms`);
     return { success: true, beneficiary };
   }
 }

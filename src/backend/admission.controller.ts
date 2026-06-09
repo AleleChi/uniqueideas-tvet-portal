@@ -95,15 +95,22 @@ export class AdmissionController {
         return res.status(401).json({ error: "The response token is invalid, expired, or corrupted." });
       }
 
-      // Automatically record tracking Opened event when portal is opened
-      await AdmissionService.registerEmailOpened(decoded.id);
-
       // Load beneficiary using our non-blocking database repository
       const beneficiary = await DbRepo.getBeneficiaryById(decoded.id);
 
       if (!beneficiary) {
         return res.status(404).json({ error: "Candidate matching the secure token session could not be located." });
       }
+
+      // Check token version (Phase 1)
+      const tokenVersion = decoded.tokenVersion !== undefined ? decoded.tokenVersion : 1;
+      const bTokenVersion = beneficiary.tokenVersion !== undefined ? beneficiary.tokenVersion : 1;
+      if (tokenVersion !== bTokenVersion) {
+        return res.status(401).json({ error: "TOKEN_REVOKED: This portal or admission token has been revoked due to administrative rollback or status update." });
+      }
+
+      // Automatically record tracking Opened event when portal is opened
+      await AdmissionService.registerEmailOpened(decoded.id);
 
       // Return sanitized candidate fields suitable for public view (excluding core admin values if needed)
       return res.status(200).json({
@@ -196,7 +203,7 @@ export class AdmissionController {
    * Controller to retrieve secure response link on-demand
    * GET /api/admissions/secure-link
    */
-  static getSecureLink(req: Request, res: Response) {
+  static async getSecureLink(req: Request, res: Response) {
     try {
       const { beneficiaryId, origin } = req.query;
       if (!beneficiaryId || typeof beneficiaryId !== "string") {
@@ -222,7 +229,13 @@ export class AdmissionController {
 
       const safeOrigin = (typeof origin === "string" && !isPreviewOrLocal(origin)) ? origin : undefined;
       const customDomain = safeOrigin || buildPublicUrl("", req);
-      const secureToken = TokenService.generateToken(beneficiaryId);
+
+      const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
+      if (!beneficiary) {
+        return res.status(404).json({ error: "Candidate matching the secure token session could not be located." });
+      }
+
+      const secureToken = TokenService.generateToken(beneficiaryId, beneficiary.tokenVersion || 1);
       const secureLink = `${customDomain}/?token=${secureToken}`;
 
       return res.status(200).json({ secureLink });
@@ -910,12 +923,24 @@ export class AdmissionController {
       }
 
       const oldStatus = candidate.admissionFormStatus || "LOCKED";
+      const oldTokenVersion = candidate.tokenVersion || 1;
+      const oldWorkflowVersion = candidate.workflowVersion || 1;
 
       candidate.admissionFormConfirmedAt = undefined;
       candidate.admissionFormStatus = "IN_PROGRESS";
       candidate.admissionFormCompleted = false;
 
+      // Phase 1 / Phase 4 - Increment token and workflow versions on unlock form
+      candidate.tokenVersion = oldTokenVersion + 1;
+      candidate.workflowVersion = oldWorkflowVersion + 1;
+
+      // Phase 3 - Archive any active forms or letters
+      await DbRepo.archiveActiveDocuments(id);
+
       await DbRepo.upsertBeneficiary(candidate);
+
+      const ipAddress = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1";
+      const ipStr = Array.isArray(ipAddress) ? ipAddress[0] : ipAddress;
 
       await DbRepo.saveWorkflowHistory({
         beneficiaryId: id,
@@ -923,7 +948,13 @@ export class AdmissionController {
         newStatus: "IN_PROGRESS",
         changedBy: operatorUser,
         changedAt: new Date().toISOString(),
-        remarks: "FORM_UNLOCKED: Administrator unlocked the admission form for candidate edits."
+        remarks: "FORM_UNLOCKED: Administrator unlocked the admission form for candidate edits.",
+        reason: "Unlock form for candidate updates",
+        ipAddress: ipStr,
+        tokenVersionBefore: oldTokenVersion,
+        tokenVersionAfter: candidate.tokenVersion,
+        workflowVersionBefore: oldWorkflowVersion,
+        workflowVersionAfter: candidate.workflowVersion
       });
 
       await DbRepo.saveAuditLog({
@@ -932,7 +963,14 @@ export class AdmissionController {
         username: operatorUser,
         role: "SUPER_ADMIN",
         action: "ADMISSIONS_FORM_UNLOCKED",
-        details: `Unlocked official registration form for beneficiary '${id}'`
+        ipAddress: ipStr,
+        details: [
+          `Unlocked official registration form for beneficiary '${id}'`,
+          `Old Status: ${oldStatus}`,
+          `New Status: IN_PROGRESS`,
+          `Token Version: ${oldTokenVersion} -> ${candidate.tokenVersion}`,
+          `Workflow Version: ${oldWorkflowVersion} -> ${candidate.workflowVersion}`
+        ].join("\n")
       });
 
       return res.status(200).json({

@@ -11,6 +11,7 @@ import { buildSanitizedFilename } from "./pdfTraceAudit";
 import { GeneratedDocument, DocumentType, Beneficiary } from "../types";
 import QRCode from "qrcode";
 import { buildPublicUrl } from "../config/api";
+import { performance } from "perf_hooks";
 
 export class DocumentService {
   /**
@@ -107,6 +108,7 @@ export class DocumentService {
     };
 
     // 2. Generate the PDF buffer depending on type
+    const pdfStart = performance.now();
     let pdfBuffer: Buffer;
     switch (documentType) {
       case DocumentType.ADMISSION_LETTER:
@@ -130,14 +132,19 @@ export class DocumentService {
       default:
         throw new Error(`Unsupported document type requested: ${documentType}`);
     }
+    const pdfDuration = performance.now() - pdfStart;
+    console.log(`[PERF TRACE] PDF Compile [${documentType}] for candidate [${beneficiaryId}] took ${pdfDuration.toFixed(2)}ms`);
 
     const expectedFilename = buildSanitizedFilename(beneficiary, documentType, "pdf");
     console.log(`[PIPELINE TRACE] STAGE 1 - PDF GENERATION: Generated buffer for candidate '${beneficiary.id}' (${beneficiary.firstName} ${beneficiary.lastName}). Expected filename: '${expectedFilename}'. Size: ${pdfBuffer.length} bytes.`);
 
     // 3. Upload to Cloudinary with metadata context
+    const cloudinaryStart = performance.now();
     const publicId = `beneficiary_${beneficiaryId}_${documentType.toLowerCase()}_v${nextVersion}`;
     const uploadResult = await CloudinaryService.uploadDocument(pdfBuffer, publicId);
     const pdfUrl = uploadResult || `https://res.cloudinary.com/simulation/image/upload/${publicId}.pdf`;
+    const cloudinaryDuration = performance.now() - cloudinaryStart;
+    console.log(`[PERF TRACE] Cloudinary Upload [${documentType}] for candidate [${beneficiaryId}] took ${cloudinaryDuration.toFixed(2)}ms`);
 
     // 4. Create and register GeneratedDocument model
     const docId = `gdoc_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
@@ -155,7 +162,10 @@ export class DocumentService {
       emailDeliveryStatus: "NOT_SENT",
     };
 
+    const dbStart = performance.now();
     const registered = await DbRepo.saveGeneratedDocument(newDoc);
+    const dbDuration = performance.now() - dbStart;
+    console.log(`[PERF TRACE] DB Registry Save [${documentType}] for candidate [${beneficiaryId}] took ${dbDuration.toFixed(2)}ms`);
     if (!registered) {
       throw new Error(`Failed to save generated document record for ${documentType} in the database.`);
     }

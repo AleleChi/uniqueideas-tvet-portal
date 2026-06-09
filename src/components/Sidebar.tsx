@@ -7,7 +7,7 @@ import React from "react";
 import { 
   Users, Image as ImageIcon, Sliders, ShieldCheck, LogOut, 
   Settings, Landmark, Cpu, LayoutDashboard, History, Check, X, FileCheck, UserCheck, Award, FileText,
-  TrendingUp, ClipboardCheck, Briefcase, BarChart3, Wallet
+  TrendingUp, ClipboardCheck, Briefcase, BarChart3, Wallet, Mail
 } from "lucide-react";
 
 interface SidebarProps {
@@ -408,6 +408,23 @@ export const Sidebar = React.memo(function Sidebar({
             >
               <Sliders className="w-4 h-4 text-inherit" />
               <span>Dynamic field Schemas</span>
+            </button>
+          )}
+
+          {["SUPER_ADMIN", "ADMIN_OFFICER"].includes(session?.role || "") && (
+            <button 
+              onClick={() => {
+                setActiveTab("communications");
+                setIsSidebarOpen(false);
+              }}
+              className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+                activeTab === "communications" 
+                  ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                  : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+              }`}
+            >
+              <Mail className="w-4 h-4 text-inherit" />
+              <span>Bulk Communications</span>
             </button>
           )}
         </nav>

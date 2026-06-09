@@ -76,8 +76,8 @@ export function BeneficiaryList({
 
   const liveBeneficiary = selectedBeneficiary
     ? {
-        ...(beneficiaries.find(b => b.id === selectedBeneficiary.id) || {}),
-        ...selectedBeneficiary
+        ...selectedBeneficiary,
+        ...(beneficiaries.find(b => b.id === selectedBeneficiary.id) || {})
       }
     : null;
 

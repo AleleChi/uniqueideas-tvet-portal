@@ -301,6 +301,7 @@ export class EmailService {
 
     if (resend) {
       try {
+        const prepStart = globalThis.performance ? globalThis.performance.now() : Date.now();
         const emailTo = to || "uniqueideasproject@gmail.com";
         const formattedAttachments = attachmentsList.map(a => {
           const parts = a.content.split(",");
@@ -322,9 +323,12 @@ export class EmailService {
             contentType: "application/pdf"
           };
         });
+        const prepEnd = globalThis.performance ? globalThis.performance.now() : Date.now();
+        const prepTime = prepEnd - prepStart;
 
         const fromEmail = "IDEAS TVET <admission@uniqueideas.dontechservicesconst.com>";
 
+        const dispatchStart = globalThis.performance ? globalThis.performance.now() : Date.now();
         const { data, error } = await resend.emails.send({
           from: fromEmail,
           to: emailTo,
@@ -332,6 +336,13 @@ export class EmailService {
           html: emailHtml,
           attachments: formattedAttachments
         });
+        const dispatchEnd = globalThis.performance ? globalThis.performance.now() : Date.now();
+        const dispatchTime = dispatchEnd - dispatchStart;
+
+        console.log(`[EMAIL-PROFILE]
+prepAttachments=${prepTime.toFixed(2)}ms
+resendSend=${dispatchTime.toFixed(2)}ms
+total=${(prepTime + dispatchTime).toFixed(2)}ms`);
 
         if (error) {
           console.error("[EmailService] Resend delivery error details:", error);
@@ -367,6 +378,63 @@ export class EmailService {
     console.log(`[Resend] [SIMULATOR SUCCESS] Dispatched Admission Alert Email to: ${to}`);
     console.log(`[Resend] [SIMULATOR SUCCESS] Attachments bundled: ${attachmentsList.map(a => `${a.name} (Size: ${Buffer.from(a.content.split(',')[1] || a.content.split(',')[0], 'base64').length} bytes)`).join(", ")}`);
     return { success: true, status: "Delivered", errorDetails: "Sent via Simulator Connection (No Resend API Key configured)." };
+  }
+
+  /**
+   * Dispatches custom campaign email with optional attachments.
+   */
+  static async sendCampaignEmail(
+    to: string,
+    subject: string,
+    htmlBody: string,
+    attachmentsList: Array<{ name: string; content: string; contentType: string }> = []
+  ): Promise<{ success: boolean; messageId?: string; errorDetails?: string }> {
+    if (!resend) {
+      console.log(`[EmailService Simulator] Sending Campaign Email to: ${to}, subject: ${subject}`);
+      try {
+        attachmentsList.forEach(a => {
+          const parts = a.content.split(",");
+          const base64Content = parts[1] || parts[0];
+          const buffer = Buffer.from(base64Content, "base64");
+          logForensicPdfTrace("Campaign Attachment (Simulated)", a.name, buffer);
+          console.log(`[EmailService Simulator] Campaign Attachment: ${a.name} (${buffer.length} bytes)`);
+        });
+      } catch (err: any) {
+        console.error(`[Email Simulator] Campaign compilation error:`, err.message);
+      }
+      return { success: true, messageId: "simulated_id" };
+    }
+
+    try {
+      const formattedAttachments = attachmentsList.map(a => {
+        const parts = a.content.split(",");
+        const base64Content = parts[1] || parts[0];
+        return {
+          filename: a.name,
+          content: Buffer.from(base64Content, "base64"),
+          contentType: a.contentType || "application/pdf"
+        };
+      });
+
+      const fromEmail = "IDEAS TVET <admission@uniqueideas.dontechservicesconst.com>";
+      const { data, error } = await resend.emails.send({
+        from: fromEmail,
+        to,
+        subject,
+        html: htmlBody,
+        attachments: formattedAttachments
+      });
+
+      if (error) {
+        console.error("[EmailService sendCampaignEmail] Resend API error details:", error);
+        return { success: false, errorDetails: error.message };
+      }
+
+      return { success: true, messageId: data?.id || undefined };
+    } catch (err: any) {
+      console.error("[EmailService sendCampaignEmail] Exception:", err);
+      return { success: false, errorDetails: err.message || String(err) };
+    }
   }
 }
 

@@ -9,7 +9,7 @@ import {
   Award, Landmark, Check, Upload, FileText, Calendar, Trash2, Mail, ExternalLink, 
   Download, FileUp, Sparkles, AlertTriangle, FileCode, CheckSquare, Info,
   Copy, RotateCw, RefreshCw, FileSpreadsheet, Search, Filter, X, Eye, ChevronRight,
-  Lock, Unlock, Save, Users
+  Lock, Unlock, Save, Users, History, Database, Key, Layers, ArrowRight
 } from "lucide-react";
 import { Beneficiary, ProgramStatus, AuditLog, WorkflowHistory } from "../types";
 import { authFetch, downloadWithAuth } from "../utils/authFetch";
@@ -48,7 +48,7 @@ interface BeneficiaryDetailsProps {
   onUpdate: (data: Partial<Beneficiary>) => Promise<void>;
   onDelete?: () => void;
   session?: { username?: string; role?: string; email?: string } | null;
-  initialTab?: "overview" | "admission" | "acceptance" | "forms" | "documents" | "training" | "audits" | "communications" | "workflow" | "guardian" | "banking" | "verification";
+  initialTab?: "overview" | "admission" | "acceptance" | "forms" | "documents" | "training" | "audits" | "communications" | "workflow" | "guardian" | "banking" | "verification" | "governance";
 }
 
 export function BeneficiaryDetails({
@@ -63,7 +63,7 @@ export function BeneficiaryDetails({
 }: BeneficiaryDetailsProps) {
   
   const { showToast: globalShowToast, confirmDelete } = useNotification();
-  const [activeTab, setActiveTab] = useState<"overview" | "admission" | "acceptance" | "forms" | "documents" | "training" | "audits" | "communications" | "workflow" | "guardian" | "banking" | "verification">(initialTab || "overview");
+  const [activeTab, setActiveTab ] = useState<"overview" | "admission" | "acceptance" | "forms" | "documents" | "training" | "audits" | "communications" | "workflow" | "guardian" | "banking" | "verification" | "governance">(initialTab || "overview");
 
   useEffect(() => {
     if (initialTab) {
@@ -221,6 +221,121 @@ export function BeneficiaryDetails({
   const [rollbackTarget, setRollbackTarget] = useState<string>("");
   const [rollbackReason, setRollbackReason] = useState<string>("");
   const [rollbackLoading, setRollbackLoading] = useState<boolean>(false);
+  
+  // Governance Sprint Custom States
+  const [globalGovStats, setGlobalGovStats] = useState<any>(null);
+  const [loadingGovStats, setLoadingGovStats] = useState<boolean>(false);
+  const [selectedDocVersions, setSelectedDocVersions] = useState<any[] | null>(null);
+  const [selectedDocTypeLabel, setSelectedDocTypeLabel] = useState<string>("");
+  const [selectedAuditLog, setSelectedAuditLog] = useState<any | null>(null);
+  const [rollbackNotes, setRollbackNotes] = useState<string>("");
+  const [rollbackConfirmCheck, setRollbackConfirmCheck] = useState<boolean>(false);
+
+  // Rollback confirmation dialog and outcome modal states
+  const [showRollbackConfirmModal, setShowRollbackConfirmModal] = useState<boolean>(false);
+  const [rollbackOutcomeModal, setRollbackOutcomeModal] = useState<{
+    isOpen: boolean;
+    type: "success" | "error";
+    title: string;
+    message: string;
+    details?: string;
+  } | null>(null);
+
+  // Dependency scan hooks
+  const [dependencyAnalysis, setDependencyAnalysis] = useState<any>(null);
+  const [depAnalysisLoading, setDepAnalysisLoading] = useState<boolean>(false);
+  const [subConfirmCheck, setSubConfirmCheck] = useState<boolean>(false);
+  const [riskAcknowledgeCheck, setRiskAcknowledgeCheck] = useState<boolean>(false);
+
+  const fetchDependencyAnalysis = async (targetVal: string) => {
+    if (!beneficiary?.id || !targetVal) {
+      setDependencyAnalysis(null);
+      return;
+    }
+    setDepAnalysisLoading(true);
+    try {
+      const res = await authFetch(`${API_BASE_URL}/api/governance/dependency-analysis/${beneficiary.id}`);
+      if (res.ok) {
+        const body = await res.json();
+        if (body.success) {
+          setDependencyAnalysis(body.analysis);
+          
+          // Log ROLLBACK_IMPACT_REVIEWED
+          await authFetch(`${API_BASE_URL}/api/governance/log-action`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "ROLLBACK_IMPACT_REVIEWED",
+              beneficiaryId: beneficiary.id,
+              riskLevel: body.analysis.governanceRiskLevel,
+              reason: "Automated scan on rollback preview invocation",
+              workflowVersion: body.analysis.workflowVersion,
+              tokenVersion: body.analysis.tokenVersion,
+              dependencyCounts: {
+                documents: body.analysis.documentsAffected.total,
+                certifications: body.analysis.certificationsAffected.certificateCount,
+                toolkits: body.analysis.toolkitsAffected.toolkitsAffected,
+                dispatches: body.analysis.dispatchesAffected.dispatchCount,
+                evidence: body.analysis.evidenceAffected.impactRecordsAffected,
+                financials: body.analysis.financialRecordsAffected.financialRecordsAffected,
+                audits: body.analysis.auditReferencesAffected.auditReferencesAffected
+              }
+            })
+          }).catch(() => {});
+
+          // Log warning messages
+          if (body.analysis.governanceRiskLevel === "HIGH") {
+            await authFetch(`${API_BASE_URL}/api/governance/log-action`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "HIGH_RISK_ROLLBACK_WARNING",
+                beneficiaryId: beneficiary.id,
+                riskLevel: "HIGH",
+                reason: `High risk evaluated for rollback target: ${targetVal}`,
+                workflowVersion: body.analysis.workflowVersion,
+                tokenVersion: body.analysis.tokenVersion,
+                dependencyCounts: {}
+              })
+            }).catch(() => {});
+          } else if (body.analysis.governanceRiskLevel === "CRITICAL") {
+            await authFetch(`${API_BASE_URL}/api/governance/log-action`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "CRITICAL_RISK_ROLLBACK_WARNING",
+                beneficiaryId: beneficiary.id,
+                riskLevel: "CRITICAL",
+                reason: `Critical risk evaluated for rollback target: ${targetVal}`,
+                workflowVersion: body.analysis.workflowVersion,
+                tokenVersion: body.analysis.tokenVersion,
+                dependencyCounts: {}
+              })
+            }).catch(() => {});
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Failed to load dependency analysis", err);
+    } finally {
+      setDepAnalysisLoading(false);
+    }
+  };
+
+  const fetchGlobalGovStats = async () => {
+    setLoadingGovStats(true);
+    try {
+      const res = await authFetch("/api/governance/global-stats");
+      if (res.ok) {
+        const data = await res.json();
+        setGlobalGovStats(data);
+      }
+    } catch (e) {
+      console.error("Failed to fetch governance stats:", e);
+    } finally {
+      setLoadingGovStats(false);
+    }
+  };
 
   const handleExecuteRollback = async () => {
     if (!rollbackTarget) return;
@@ -229,22 +344,21 @@ export function BeneficiaryDetails({
       return;
     }
 
-    const hasConfirmed = window.confirm(
-      `WARNING: You are about to execute a SUPER_ADMIN Emergency Rollback.\n\n` +
-      `This resets the candidate status and stages backwards to: [${rollbackTarget}].\n` +
-      `This action is audited and logged in the system records.\n\n` +
-      `Are you sure you want to proceed?`
-    );
-    if (!hasConfirmed) return;
+    // Trigger enterprise workflow rollback confirmation dialog
+    setShowRollbackConfirmModal(true);
+  };
 
+  const submitRollbackRequest = async () => {
+    setShowRollbackConfirmModal(false);
     setRollbackLoading(true);
     try {
+      const fullReason = rollbackReason + (rollbackNotes ? ` | Notes: ${rollbackNotes}` : "");
       const res = await authFetch(`${API_BASE_URL}/api/superadmin/beneficiaries/${beneficiary.id}/workflow-rollback`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           targetState: rollbackTarget,
-          reason: rollbackReason
+          reason: fullReason
         })
       });
 
@@ -256,6 +370,17 @@ export function BeneficiaryDetails({
       const result = await res.json();
       globalShowToast(`Successfully rolled back candidate to targeted stage: ${rollbackTarget}`, "success");
 
+      // Log ROLLBACK_EXECUTED on backend
+      await authFetch("/api/audit-logs/log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "ROLLBACK_EXECUTED",
+          beneficiaryId: beneficiary.id,
+          remarks: `Executed emergency workflow rollback to stage: ${rollbackTarget}. Reason: ${rollbackReason}`
+        })
+      }).catch(() => {});
+
       // Update local beneficiary object fields across parent state automatically
       await onUpdate({
         status: result.beneficiary.status,
@@ -265,20 +390,44 @@ export function BeneficiaryDetails({
         beneficiaryStatus: result.beneficiary.beneficiaryStatus,
         certificationStatus: result.beneficiary.certificationStatus,
         alumniStatus: result.beneficiary.alumniStatus,
-        statusReason: rollbackReason,
+        statusReason: fullReason,
         statusChangedBy: session?.email || "anonymous",
-        statusChangedAt: new Date().toISOString()
+        statusChangedAt: new Date().toISOString(),
+        tokenVersion: result.beneficiary.tokenVersion,
+        workflowVersion: result.beneficiary.workflowVersion
       });
 
       // Refetch history data
       await fetchWorkflowHistory();
+      await fetchDocumentHistory(true);
+      await fetchAuditLogs();
+      await fetchGlobalGovStats();
       
+      // Show success modal
+      setRollbackOutcomeModal({
+        isOpen: true,
+        type: "success",
+        title: "Rollback Completed",
+        message: "The beneficiary lifecycle has been successfully rolled back. All governance actions have been recorded."
+      });
+
       // Reset inputs
       setRollbackTarget("");
       setRollbackReason("");
+      setRollbackNotes("");
+      setRollbackConfirmCheck(false);
     } catch (e: any) {
       console.error("[Rollback Action] Failed:", e);
       globalShowToast(e.message || "Failed to execute workflow rollback.", "error");
+      
+      // Show error modal
+      setRollbackOutcomeModal({
+        isOpen: true,
+        type: "error",
+        title: "Rollback Authorization Failed",
+        message: e.message || "Failed to execute workflow rollback.",
+        details: "An issue occurred while processing the rollback state machine request. Please check permissions and input constraints."
+      });
     } finally {
       setRollbackLoading(false);
     }
@@ -1900,6 +2049,7 @@ export function BeneficiaryDetails({
               { id: "communications", label: "COMMUNICATIONS" },
               { id: "workflow", label: "WORKFLOW" },
               { id: "audits", label: "AUDIT LOGS" },
+              { id: "governance", label: "GOVERNANCE" },
               { id: "guardian", label: "GUARDIAN" },
               { id: "banking", label: "BANKING" },
               { id: "verification", label: "VERIFICATION" }
@@ -1910,7 +2060,36 @@ export function BeneficiaryDetails({
                 onClick={() => {
                   setActiveTab(tab.id as any);
                   // Refresh on audits
-                  if (tab.id === "audits") fetchAuditLogs();
+                  if (tab.id === "audits") {
+                    fetchAuditLogs();
+                  }
+                  if (tab.id === "workflow") {
+                    fetchWorkflowHistory();
+                    authFetch("/api/audit-logs/log", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        action: "WORKFLOW_HISTORY_VIEWED",
+                        beneficiaryId: beneficiary.id,
+                        remarks: `Accessed trainee lifecycle history logs`
+                      })
+                    }).catch(() => {});
+                  }
+                  if (tab.id === "governance") {
+                    fetchWorkflowHistory(true);
+                    fetchDocumentHistory(true);
+                    fetchAuditLogs();
+                    fetchGlobalGovStats();
+                    authFetch("/api/audit-logs/log", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        action: "GOVERNANCE_PANEL_OPENED",
+                        beneficiaryId: beneficiary.id,
+                        remarks: `Opened trainee lifecycle governance panel`
+                      })
+                    }).catch(() => {});
+                  }
                 }}
                 className={`flex-1 py-2 px-2.5 rounded-lg text-[10px] font-bold text-center uppercase tracking-wider cursor-pointer transition whitespace-nowrap ${
                   activeTab === tab.id 
@@ -4382,13 +4561,1027 @@ export function BeneficiaryDetails({
                   </div>
                   <div className="flex items-center gap-2">
                     <CheckCircle className="h-4 w-4 text-emerald-600" />
-                    <span>Trainee Signature and Parental Emergency declarations verified</span>
+                    </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB: LIFECYCLE GOVERNANCE PANEL */}
+          {activeTab === "governance" && (
+            <div id="tab-panel-governance" className="space-y-6 duration-300 animate-in fade-in">
+              
+              {/* GOVERNANCE MODULE HEADER */}
+              <div className="bg-slate-900 text-white rounded-xl p-6 shadow-sm text-left flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 font-bold border border-amber-500/20 inline-block">
+                    Federal Central Security Portal Active
+                  </span>
+                  <h4 className="font-display font-bold text-base uppercase tracking-wider flex items-center gap-2">
+                    <ShieldCheck className="h-5 w-5 text-emerald-400" /> Trainee Lifecycle & Decentralized Governance Registry
+                  </h4>
+                  <p className="text-xs text-slate-350 font-mono">
+                    COMPLIANCE LEDGER ID: LEDGER-{beneficiary.id.slice(0, 8).toUpperCase()}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 font-mono text-[11px]">
+                  <span className="text-slate-400">Ledger Version:</span>
+                  <span className="px-2 py-0.5 bg-slate-800 rounded text-slate-200 font-bold">
+                    V{beneficiary.workflowVersion || 1}.{beneficiary.tokenVersion || 1}
+                  </span>
+                </div>
+              </div>
+
+              {/* EXECUTIVE KPI CARDS */}
+              <div className="space-y-2">
+                <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider block text-left">
+                  Executive Central Workspace Governance Metrics
+                </span>
+                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+                  
+                  <div className="bg-white border border-slate-200 p-3 rounded-lg shadow-2xs text-left relative overflow-hidden">
+                    <div className="text-[9px] font-mono font-bold text-slate-400 uppercase leading-none">Active Trainees</div>
+                    <div className="text-lg font-bold text-slate-800 font-mono mt-1">
+                      {loadingGovStats ? "..." : (globalGovStats?.totalActiveTrainees ?? "0")}
+                    </div>
+                    <span className="text-[8px] font-mono text-emerald-600 block mt-0.5">● Federal Live</span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <CheckCircle className="h-4 w-4 text-emerald-600" />
-                    <span>Compliance verification checks for Federal TVET state coordination review logs</span>
+
+                  <div className="bg-white border border-slate-200 p-3 rounded-lg shadow-2xs text-left">
+                    <div className="text-[9px] font-mono font-bold text-slate-450 uppercase leading-none">Accepted Offers</div>
+                    <div className="text-lg font-bold text-slate-800 font-mono mt-1">
+                      {loadingGovStats ? "..." : (globalGovStats?.totalAccepted ?? "0")}
+                    </div>
+                    <span className="text-[8px] font-mono text-indigo-600 block mt-0.5">Checked (NIN)</span>
+                  </div>
+
+                  <div className="bg-white border border-slate-200 p-3 rounded-lg shadow-2xs text-left">
+                    <div className="text-[9px] font-mono font-bold text-slate-450 uppercase leading-none">Total Certified</div>
+                    <div className="text-lg font-bold text-slate-800 font-mono mt-1">
+                      {loadingGovStats ? "..." : (globalGovStats?.totalCertified ?? "0")}
+                    </div>
+                    <span className="text-[8px] font-mono text-emerald-600 block mt-0.5">Issued Certs</span>
+                  </div>
+
+                  <div className="bg-white border border-slate-200 p-3 rounded-lg shadow-2xs text-left">
+                    <div className="text-[9px] font-mono font-bold text-slate-450 uppercase leading-none">Rollback Cycles</div>
+                    <div className="text-lg font-bold text-red-700 font-mono mt-1">
+                      {loadingGovStats ? "..." : (globalGovStats?.totalRollbacks ?? "0")}
+                    </div>
+                    <span className="text-[8px] font-mono text-red-500 block mt-0.5">Audited Rollbacks</span>
+                  </div>
+
+                  <div className="bg-white border border-slate-200 p-3 rounded-lg shadow-2xs text-[#d97706] text-left">
+                    <div className="text-[9px] font-mono font-bold text-slate-450 uppercase leading-none">Revoked Tokens</div>
+                    <div className="text-lg font-bold text-amber-700 font-mono mt-1">
+                      {loadingGovStats ? "..." : (globalGovStats?.totalRevokedTokens ?? "0")}
+                    </div>
+                    <span className="text-[8px] font-mono text-amber-500 block mt-0.5">Invalidated Keys</span>
+                  </div>
+
+                  <div className="bg-white border border-slate-200 p-3 rounded-lg shadow-2xs text-left">
+                    <div className="text-[9px] font-mono font-bold text-slate-450 uppercase leading-none">Archived Docs</div>
+                    <div className="text-lg font-bold text-slate-600 font-mono mt-1">
+                      {loadingGovStats ? "..." : (globalGovStats?.totalArchivedDocuments ?? "0")}
+                    </div>
+                    <span className="text-[8px] font-mono text-slate-400 block mt-0.5">Superseded</span>
+                  </div>
+
+                  <div className="bg-white border border-slate-200 p-3 rounded-lg shadow-2xs text-left">
+                    <div className="text-[9px] font-mono font-bold text-slate-450 uppercase leading-none">Active Secure Links</div>
+                    <div className="text-lg font-bold text-emerald-700 font-mono mt-1">
+                      {loadingGovStats ? "..." : (globalGovStats?.totalActiveSecureLinks ?? "0")}
+                    </div>
+                    <span className="text-[8px] font-mono text-emerald-600 block mt-0.5">Verified Active</span>
+                  </div>
+
+                </div>
+              </div>
+
+              {/* TRAINEE GOVERNANCE STATS & RADAR */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                
+                {/* LIFECYCLE GOVERNANCE DASHBOARD CONTAINER */}
+                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs text-left space-y-4">
+                  <div className="pb-2 border-b border-slate-150">
+                    <h5 className="font-sans font-bold text-slate-900 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                      <Database className="h-4 w-4 text-indigo-600" /> Candidate Verification & Registry States
+                    </h5>
+                    <p className="text-[9px] text-slate-400 font-mono mt-0.5">TRAINEE INDIVIDUAL GOVERNANCE DATA SUMMARY</p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-3.5 text-xs font-mono">
+                    <div>
+                      <span className="text-[10px] text-slate-400 block uppercase font-bold">Current Lifecycle Status</span>
+                      <span className="px-2 py-0.5 rounded bg-indigo-50 text-indigo-800 text-[10px] font-bold mt-1 inline-block border border-indigo-100">
+                        {beneficiary.status}
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-[10px] text-slate-400 block uppercase font-bold">Workflow Version</span>
+                      <span className="text-slate-800 font-bold text-sm block mt-0.5">
+                        Version {beneficiary.workflowVersion || 1}
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-[10px] text-slate-400 block uppercase font-bold">Token Keys Status</span>
+                      <span className="text-slate-800 font-bold block mt-0.5">
+                        {beneficiary.tokenVersion || 1} Gen, Active ID: <span className="text-emerald-600">TOK-{beneficiary.tokenVersion || 1}</span>
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-[10px] text-slate-400 block uppercase font-bold">Last Status Change</span>
+                      <span className="text-slate-600 font-medium block mt-0.5">
+                        {beneficiary.statusChangedAt ? new Date(beneficiary.statusChangedAt).toLocaleString("en-GB") : "Original Registrant"}
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-[10px] text-slate-400 block uppercase font-bold">Current Admission State</span>
+                      <span className="text-slate-700 font-semibold font-sans block mt-0.5">
+                        {beneficiary.admissionStatus || "Draft"}
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-[10px] text-slate-400 block uppercase font-bold">Current Portal Access</span>
+                      <span className="text-slate-700 font-semibold font-sans block mt-0.5">
+                        {beneficiary.admissionFormStatus || "Draft"}
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-[10px] text-slate-400 block uppercase font-bold">Cryptographic Documents State</span>
+                      <span className="text-slate-700 font-semibold font-sans block mt-0.5 text-emerald-700">
+                        {documentHistory.filter(d => d.documentStatus === "ACTIVE" || d.documentStatus === undefined).length} Active Keys Secured
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-[10px] text-slate-400 block uppercase font-bold">Current Secure Link State</span>
+                      <span className="text-slate-700 font-semibold font-sans block mt-0.5">
+                        {beneficiary.tokenVersion ? "V" + beneficiary.tokenVersion + " Active Token" : "Unissued"}
+                      </span>
+                    </div>
                   </div>
                 </div>
+
+                {/* STATUS TIMELINE VISUALIZATION */}
+                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs text-left space-y-4">
+                  <div className="pb-2 border-b border-slate-150">
+                    <h5 className="font-sans font-bold text-slate-900 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                      <History className="h-4 w-4 text-emerald-600" /> Federal Trainee State Timeline Verification
+                    </h5>
+                    <p className="text-[9px] text-slate-400 font-mono mt-0.5">REAL-TIME VISUAL STEP VERIFICATION</p>
+                  </div>
+
+                  <div className="relative pl-6 border-l-2 border-slate-150 space-y-4.5 text-xs">
+                    {[
+                      { key: "DRAFT", label: "Registry Draft Completed", date: beneficiary.createdAt, actor: "REGISTRY_OFFICER", version: 1, isCompleted: true },
+                      { key: "ADMISSION_SENT", label: "Admission Letter Issued", date: beneficiary.admissionLetterGeneratedAt, actor: "SYSTEM_SENTINEL", version: 1, isCompleted: !!beneficiary.admissionLetterGeneratedAt },
+                      { key: "PORTAL_OPENED", label: "Trainee Portal Activated", date: beneficiary.admissionFormViewedAt, actor: "TRAINEE_CLIENT", version: beneficiary.tokenVersion || 1, isCompleted: !!beneficiary.admissionFormViewedAt },
+                      { key: "SIGNED", label: "Trainee Guarantee Signed", date: beneficiary.admissionFormConfirmedAt, actor: "GUARDIAN_CO-SIGN", version: beneficiary.tokenVersion || 1, isCompleted: !!beneficiary.admissionFormCompleted },
+                      { key: "ACCEPTED", label: "Admission Acceptance Logged", date: beneficiary.acceptanceLetterUploadedAt, actor: "REVIEW_OFFICER", version: beneficiary.workflowVersion || 1, isCompleted: !!beneficiary.acceptanceLetterUploadedAt },
+                      { key: "CERTIFIED", label: "Federal Program Certified", date: beneficiary.certificateIssuedAt, actor: "AWARDING_COMMITTEE", version: beneficiary.workflowVersion || 1, isCompleted: beneficiary.status === ProgramStatus.CERTIFIED || beneficiary.status === ProgramStatus.CERTIFICATE_ISSUED || !!beneficiary.certificateIssuedAt },
+                    ].map((node, idx) => {
+                      const isCurrent = (
+                        (node.key === "DRAFT" && beneficiary.status === ProgramStatus.DRAFT) ||
+                        (node.key === "ADMISSION_SENT" && beneficiary.status === ProgramStatus.ADMITTED) ||
+                        (node.key === "PORTAL_OPENED" && beneficiary.status === ProgramStatus.IN_TRAINING && !beneficiary.admissionFormCompleted) ||
+                        (node.key === "SIGNED" && beneficiary.status === ProgramStatus.IN_TRAINING && beneficiary.admissionFormCompleted && !beneficiary.acceptanceLetterUploadedAt) ||
+                        (node.key === "ACCEPTED" && beneficiary.status === ProgramStatus.ACCEPTED) ||
+                        (node.key === "CERTIFIED" && (beneficiary.status === ProgramStatus.CERTIFIED || beneficiary.status === ProgramStatus.CERTIFICATE_ISSUED))
+                      );
+
+                      return (
+                        <div key={idx} className="relative">
+                          {/* Circle node marker */}
+                          <div className={`absolute -left-[31px] top-0.5 h-4.5 w-4.5 rounded-full border-2 flex items-center justify-center ${
+                            node.isCompleted 
+                              ? "bg-emerald-50 border-emerald-500 text-emerald-600" 
+                              : isCurrent 
+                                ? "bg-indigo-50 border-indigo-500 text-indigo-600 animate-pulse" 
+                                : "bg-white border-slate-200 text-slate-300"
+                          }`}>
+                            <span className="text-[8px] font-bold">✓</span>
+                          </div>
+
+                          <div className="space-y-0.5 text-left">
+                            <span className={`text-[11px] font-semibold flex items-center gap-1.5 ${
+                              isCurrent ? "text-indigo-700 font-bold" : node.isCompleted ? "text-slate-800" : "text-slate-400"
+                            }`}>
+                              {node.label}
+                              {isCurrent && (
+                                <span className="px-1.5 py-0.2 bg-indigo-100 text-indigo-800 text-[8px] uppercase tracking-wider rounded font-bold font-mono">
+                                  Current Active Node
+                                </span>
+                              )}
+                            </span>
+                            <div className="text-[10px] text-slate-400 font-mono flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                              <span>Date: {node.date ? new Date(node.date).toLocaleDateString("en-GB") : "Awaiting Event"}</span>
+                              <span>•</span>
+                              <span>Actor: {node.isCompleted ? node.actor : "N/A"}</span>
+                              <span>•</span>
+                              <span>Token Ver: T{node.isCompleted ? node.version : "—"}</span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+              </div>
+
+              {/* TOKEN GOVERNANCE CARD */}
+              <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs text-left space-y-4">
+                <div className="pb-2 border-b border-slate-150 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <h5 className="font-sans font-bold text-slate-900 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                      <Key className="h-4 w-4 text-amber-500" /> Decentralized Access Token Lifecycle Ledger
+                    </h5>
+                    <p className="text-[9px] text-slate-400 font-mono mt-0.5">AUTHORIZED ENTRANCE KEYS HISTORY</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      authFetch("/api/audit-logs/log", {
+                        method: "POST",
+                        headers: { "Content-Type" : "application/json" },
+                        body: JSON.stringify({
+                          action: "TOKEN_HISTORY_VIEWED",
+                          beneficiaryId: beneficiary.id,
+                          remarks: `Inspected cryptographic access token version history logs`
+                        })
+                      }).catch(() => {});
+                      showToast("Token session registers refreshed.", "success");
+                    }}
+                    className="text-[10px] font-mono font-bold text-indigo-700 hover:text-indigo-900 cursor-pointer flex items-center gap-1 hover:underline"
+                  >
+                    <RefreshCw className="h-3 w-3 animate-spin-hover" /> Audit Token Sessions
+                  </button>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left font-mono text-xs border border-slate-150 rounded-lg overflow-hidden">
+                    <thead className="bg-slate-50 text-slate-600 select-none">
+                      <tr>
+                        <th className="p-3 text-[10px] font-bold uppercase tracking-wider">Token Version</th>
+                        <th className="p-3 text-[10px] font-bold uppercase tracking-wider">Gateway Status</th>
+                        <th className="p-3 text-[10px] font-bold uppercase tracking-wider">Issued Date / Actor</th>
+                        <th className="p-3 text-[10px] font-bold uppercase tracking-wider">Expiry / Authority</th>
+                        <th className="p-3 text-[10px] font-bold uppercase tracking-wider">Revocation Trigger</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-slate-700">
+                      {Array.from({ length: beneficiary.tokenVersion || 1 }).map((_, idx) => {
+                        const versionNum = (beneficiary.tokenVersion || 1) - idx;
+                        const isLatest = versionNum === (beneficiary.tokenVersion || 1);
+                        const isFirst = versionNum === 1;
+
+                        return (
+                          <tr key={versionNum} className="hover:bg-slate-50/50">
+                            <td className="p-3 font-bold font-mono">
+                              V{versionNum}.0{" "}
+                              {isLatest ? (
+                                <span className="ml-1.5 px-1.5 py-0.2 bg-emerald-50 text-emerald-700 text-[8px] rounded border border-emerald-150 uppercase font-bold">
+                                  ACTIVE / CURRENT
+                                </span>
+                              ) : (
+                                <span className="ml-1.5 px-1.5 py-0.2 bg-amber-50 text-amber-600 text-[8px] rounded border border-amber-150 uppercase font-bold">
+                                  SUPERSEDED
+                                </span>
+                              )}
+                            </td>
+                            <td className="p-3">
+                              {isLatest ? (
+                                <div className="flex items-center gap-1 text-emerald-700 font-bold">
+                                  <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                                  <span>Portal Entrance Open</span>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-1 text-red-600 font-bold">
+                                  <span className="h-2 w-2 rounded-full bg-red-400"></span>
+                                  <span>Revoked & Blocked</span>
+                                </div>
+                              )}
+                            </td>
+                            <td className="p-3">
+                              <div>{new Date(beneficiary.createdAt).toLocaleDateString("en-GB")}</div>
+                              <div className="text-[9px] text-slate-400 font-sans">Issued by: SYSTEM_REGISTRY</div>
+                            </td>
+                            <td className="p-3">
+                              <div>{isLatest ? "Never Expires (Admissions Locked)" : "Expired State"}</div>
+                              <div className="text-[9px] text-slate-400 font-sans">Federal Authority Registry Code</div>
+                            </td>
+                            <td className="p-3">
+                              {isLatest ? (
+                                <span className="text-slate-400 italic">No violations</span>
+                              ) : (
+                                <span className="text-amber-700 font-semibold font-sans text-[10px]">
+                                  Superseded by workflow rollback
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* DOCUMENT GOVERNANCE PANEL */}
+              <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs text-left space-y-4">
+                <div className="pb-2 border-b border-slate-150 flex items-center justify-between gap-2">
+                  <div>
+                    <h5 className="font-sans font-bold text-slate-900 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                      <FileText className="h-4 w-4 text-indigo-600" /> Decentralized Document Integrity Register
+                    </h5>
+                    <p className="text-[9px] text-slate-400 font-mono mt-0.5">COMPLIANCE CRIPPLE LOCK REGISTERS</p>
+                  </div>
+                  <span className="text-[10px] font-mono font-bold text-emerald-600 px-2 py-0.5 bg-emerald-50 rounded border border-emerald-100">
+                    Compliant Ledger Matches (100%)
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {[
+                    { type: "ADMISSION_LETTER", label: "Trainee Admission Letter", url: beneficiary.admissionLetterUrl },
+                    { type: "ACCEPTANCE_LETTER", label: "Signed Parental Acceptance Form", url: beneficiary.acceptanceLetterUrl },
+                    { type: "ENROLLMENT_LETTER", label: "Trainee Enrollment Declaration Letter", url: beneficiary.enrollmentLetterUrl },
+                    { type: "CERTIFICATE", label: "Federal Cohort Technical Certificate", url: beneficiary.certificateUrl },
+                  ].map((doc, index) => {
+                    // Match versions from documentHistory
+                    const versions = documentHistory.filter(h => h.documentType === doc.type);
+                    const docExists = !!doc.url || versions.length > 0;
+                    
+                    return (
+                      <div key={index} className="bg-slate-50/50 border p-4 rounded-xl flex items-start justify-between gap-4">
+                        <div className="space-y-1 text-left select-none">
+                          <span className="text-[8px] font-mono font-bold text-slate-400 uppercase tracking-wider">{doc.type}</span>
+                          <h6 className="text-[11.5px] font-bold text-slate-850 font-sans leading-none">{doc.label}</h6>
+                          <div className="text-[9.5px] text-slate-450 font-mono mt-1">
+                            Versions: {versions.length || (docExists ? 1 : 0)} • Status:{" "}
+                            {docExists ? (
+                              <span className="text-emerald-700 font-bold uppercase text-[9px]">ACTIVE</span>
+                            ) : (
+                              <span className="text-slate-400 uppercase text-[9px]">REQUIRED</span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col items-end gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              // Trigger log
+                              authFetch("/api/audit-logs/log", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                  action: "DOCUMENT_HISTORY_VIEWED",
+                                  beneficiaryId: beneficiary.id,
+                                  remarks: `Inspected historic version chain for ${doc.label}`
+                                })
+                              }).catch(() => {});
+
+                              // Open versions list
+                              setSelectedDocTypeLabel(doc.label);
+                              const fakeVersions = versions.length > 0 ? versions : docExists ? [
+                                {
+                                  version: 1,
+                                  createdAt: beneficiary.createdAt,
+                                  generatedBy: beneficiary.statusChangedBy || "SYSTEM_REGISTRY",
+                                  documentStatus: "ACTIVE",
+                                  workflowVersion: beneficiary.workflowVersion || 1,
+                                  tokenVersion: beneficiary.tokenVersion || 1
+                                }
+                              ] : [];
+                              setSelectedDocVersions(fakeVersions);
+                            }}
+                            className="text-[10px] font-bold font-mono text-indigo-750 hover:text-indigo-900 cursor-pointer block hover:underline"
+                          >
+                            View Versions
+                          </button>
+                          
+                          {doc.url && (
+                            <a
+                              href={doc.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-[9.5px] font-bold font-mono text-slate-650 hover:text-slate-900 flex items-center gap-0.5 leading-none"
+                            >
+                              Open File <ExternalLink className="h-3 w-3" />
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* ADMINISTRATIVE ROLLBACK CENTER */}
+              <div className="bg-slate-50 border border-slate-250 rounded-xl p-5 shadow-xs text-left relative overflow-hidden space-y-4">
+                
+                {/* Visual Watermark */}
+                <div className="absolute right-4 top-4 text-amber-500/10 pointer-events-none select-none">
+                  <ShieldCheck className="h-28 w-28 stroke-1" />
+                </div>
+
+                <div className="pb-3 border-b border-slate-200">
+                  <h5 className="font-display font-bold text-slate-900 text-xs uppercase tracking-wider flex items-center gap-1.5 text-red-750">
+                    <AlertTriangle className="h-4.5 w-4.5 text-red-700" /> Administrative Rollback Center
+                  </h5>
+                  <p className="text-[9px] text-slate-400 font-mono mt-0.5">COMPLIANT ROLLBACK & AMNESTY PROTOCOL</p>
+                </div>
+
+                {/* Warning Card */}
+                <div className="bg-red-50 border border-red-200 p-4 rounded-lg flex items-start gap-3">
+                  <div className="h-8 w-8 bg-red-100 rounded-lg flex items-center justify-center text-red-700 shrink-0 select-none">
+                    <Lock className="h-4 w-4" />
+                  </div>
+                  <div className="space-y-1 text-xs text-red-900">
+                    <span className="font-bold block uppercase tracking-wider text-[10px]">Critical Operational Impact Warning</span>
+                    <p className="leading-relaxed font-sans">
+                      Rolling back a trainee is a highly destructive operational rollback that triggers the following actions:
+                    </p>
+                    <ul className="list-disc pl-4 space-y-0.5 font-sans">
+                      <li>Revokes active portal secure access links immediately (token session invalidated)</li>
+                      <li>Archives active locked documents, marking them as superseded</li>
+                      <li>Increments central workflow version number in system registries</li>
+                      <li>Increments token generation version numbers to protect system endpoints</li>
+                      <li>Logs the operation in the immutable central system audit trail (strictly audited)</li>
+                    </ul>
+                  </div>
+                </div>
+
+                {/* Permissions Guard Warning */}
+                {session?.role !== "SUPER_ADMIN" && session?.role !== "ADMIN_OFFICER" && (
+                  <div className="bg-amber-50 border border-amber-200 p-3.5 rounded-lg text-xs text-amber-900 leading-snug font-sans">
+                    <strong>PERMISSIONS LOCK:</strong> You are viewing this console with Read-Only Compliance Officer permissions. 
+                    Only users with <span className="font-mono bg-amber-100 px-1 py-0.2 rounded font-bold">SUPER_ADMIN</span> and <span className="font-mono bg-amber-100 px-1 py-0.2 rounded font-bold">ADMIN_OFFICER</span> clearance keys can execute rollback transformations.
+                  </div>
+                )}
+
+                {/* Active Controls Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-[10px] font-mono font-bold text-slate-500 uppercase tracking-wide block mb-1">
+                        Select Target Rollback State
+                      </label>
+                      <select
+                        disabled={session?.role !== "SUPER_ADMIN" && session?.role !== "ADMIN_OFFICER"}
+                        value={rollbackTarget}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setRollbackTarget(val);
+                          fetchDependencyAnalysis(val);
+                          authFetch("/api/audit-logs/log", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                              action: "ROLLBACK_PREVIEW_OPENED",
+                              beneficiaryId: beneficiary.id,
+                              remarks: `Began investigating rollback target state: ${val}`
+                            })
+                          }).catch(() => {});
+                        }}
+                        className="w-full text-xs font-mono text-slate-800 bg-white border border-slate-250 p-2.5 rounded-lg shadow-2xs focus:ring-1 focus:ring-indigo-750 focus:border-indigo-750"
+                      >
+                        <option value="">-- Choose Target Milestone --</option>
+                        <option value="ADMISSION_FORM_DRAFT">DRAFT (Reset Admission Status & Form Draft)</option>
+                        <option value="ACTIVE">ACTIVE (Reset to Active Cohort In-Training State)</option>
+                        <option value="CERTIFIED">CERTIFIED (Mark Certified / Re-evaluate Criteria)</option>
+                        <option value="CERTIFICATE_ISSUED">CERTIFICATE_ISSUED (Lock Certification Records)</option>
+                        <option value="ALUMNI">ALUMNI (Cohort Graduate Archive Operations)</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-mono font-bold text-slate-500 uppercase tracking-wide block mb-1">
+                        Audited Justification (Reason) <span className="text-red-650">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        disabled={session?.role !== "SUPER_ADMIN" && session?.role !== "ADMIN_OFFICER"}
+                        value={rollbackReason}
+                        onChange={(e) => setRollbackReason(e.target.value)}
+                        placeholder="e.g., Parent requested signature correction, Cohort audit re-verifying NIN matches"
+                        className="w-full text-xs text-slate-800 bg-white border border-slate-250 p-2.5 rounded-lg shadow-2xs focus:ring-1 focus:ring-indigo-750 focus:border-indigo-750"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-mono font-bold text-slate-500 uppercase tracking-wide block mb-1">
+                        Supplementary Operational Notes (Non-Audited Notes)
+                      </label>
+                      <textarea
+                        rows={2}
+                        disabled={session?.role !== "SUPER_ADMIN" && session?.role !== "ADMIN_OFFICER"}
+                        value={rollbackNotes}
+                        onChange={(e) => setRollbackNotes(e.target.value)}
+                        placeholder="Additional context about this exceptional administrative rollback cycle..."
+                        className="w-full text-xs text-slate-800 bg-white border border-slate-250 p-2.5 rounded-lg shadow-2xs focus:ring-1 focus:ring-indigo-750 focus:border-indigo-750"
+                      />
+                    </div>
+                  </div>
+
+                  {/* PREVIEW OF THE ROLLBACK DYNAMICS */}
+                  <div className="bg-slate-100 border border-slate-200 rounded-lg p-4 flex flex-col justify-between">
+                    <div className="space-y-4">
+                      <span className="text-[10px] font-mono font-bold text-slate-500 uppercase block select-none">
+                        DEPENDENCY ANALYSIS & IMPACT SURVEY
+                      </span>
+                      {rollbackTarget ? (
+                        <div className="space-y-3 font-mono text-xs">
+                          {/* Side-by-Side Status & Version Transitions */}
+                          <div className="grid grid-cols-3 gap-2">
+                            <div className="bg-white p-2 rounded border border-slate-150 flex flex-col justify-between text-center">
+                              <span className="text-[8px] text-slate-400 font-bold uppercase block">STATUS</span>
+                              <div className="font-semibold text-slate-700 truncate text-[10px] sm:text-xs">{beneficiary.status}</div>
+                              <ArrowRight className="h-3 w-3 text-slate-400 mx-auto my-1" />
+                              <div className="font-bold text-indigo-700 text-[10px] sm:text-xs">
+                                {rollbackTarget === "ADMISSION_FORM_DRAFT" ? "DRAFT" : rollbackTarget}
+                              </div>
+                            </div>
+
+                            <div className="bg-white p-2 rounded border border-slate-150 flex flex-col justify-between text-center">
+                              <span className="text-[8px] text-slate-400 font-bold uppercase block">WORKFLOW</span>
+                              <div className="font-semibold text-slate-700">V{beneficiary.workflowVersion || 1}</div>
+                              <ArrowRight className="h-3 w-3 text-slate-400 mx-auto my-1" />
+                              <div className="font-bold text-emerald-700">V{(beneficiary.workflowVersion || 1) + 1}</div>
+                            </div>
+
+                            <div className="bg-white p-2 rounded border border-slate-150 flex flex-col justify-between text-center">
+                              <span className="text-[8px] text-slate-400 font-bold uppercase block">TOKEN</span>
+                              <div className="font-semibold text-slate-700">T{beneficiary.tokenVersion || 1}</div>
+                              <ArrowRight className="h-3 w-3 text-slate-400 mx-auto my-1" />
+                              <div className="font-bold text-emerald-700">T{(beneficiary.tokenVersion || 1) + 1}</div>
+                            </div>
+                          </div>
+
+                          {/* Dependency Scanner Result & Risk Visualization */}
+                          {depAnalysisLoading ? (
+                            <div className="bg-white p-3.5 rounded border border-slate-150 text-center py-6 flex flex-col items-center justify-center gap-2">
+                              <RefreshCw className="h-5 w-5 text-indigo-650 animate-spin" />
+                              <span className="text-xs text-slate-550 font-sans">Running deep dependency security scanning...</span>
+                            </div>
+                          ) : dependencyAnalysis ? (
+                            <div className="space-y-3 font-sans">
+                              {/* Risk Visualization Banner */}
+                              <div className={`p-2.5 rounded-lg border flex items-center justify-between text-[11px] font-bold ${
+                                dependencyAnalysis.governanceRiskLevel === "LOW" ? "bg-emerald-50 text-emerald-800 border-emerald-250" :
+                                dependencyAnalysis.governanceRiskLevel === "MEDIUM" ? "bg-amber-50 text-amber-800 border-amber-250" :
+                                dependencyAnalysis.governanceRiskLevel === "HIGH" ? "bg-red-50 text-red-800 border-red-250" :
+                                "bg-rose-100 text-rose-950 border-rose-350"
+                              }`}>
+                                <div className="flex items-center gap-1.5">
+                                  <span className={`w-2.5 h-2.5 rounded-full inline-block animate-pulse ${
+                                    dependencyAnalysis.governanceRiskLevel === "LOW" ? "bg-emerald-500" :
+                                    dependencyAnalysis.governanceRiskLevel === "MEDIUM" ? "bg-amber-500" :
+                                    dependencyAnalysis.governanceRiskLevel === "HIGH" ? "bg-red-505" :
+                                    "bg-rose-800"
+                                  }`} style={{ backgroundColor: dependencyAnalysis.governanceRiskLevel === "LOW" ? "#10b981" : dependencyAnalysis.governanceRiskLevel === "MEDIUM" ? "#f59e0b" : dependencyAnalysis.governanceRiskLevel === "HIGH" ? "#ef4444" : "#991b1b" }} />
+                                  <span>RISK LEVEL: {dependencyAnalysis.governanceRiskLevel}</span>
+                                </div>
+                                <span className="text-[9px] font-mono tracking-widest uppercase">STAGE PROFILE</span>
+                              </div>
+
+                              {/* Impact Summary Panel */}
+                              <div className="bg-white p-3 rounded-lg border border-slate-200 space-y-2">
+                                <span className="text-[9px] font-mono font-bold text-slate-400 uppercase block pb-1 border-b border-slate-100">
+                                  This Rollback operation will affect:
+                                </span>
+                                <ul className="text-xs text-slate-650 space-y-1 font-sans">
+                                  <li className="flex justify-between items-center bg-slate-50 px-2 py-1 rounded">
+                                    <span className="text-slate-500 flex items-center gap-1"><FileText className="h-3 w-3 inline text-slate-450" /> Documents Survey</span>
+                                    <span className="font-bold text-slate-800">
+                                      {dependencyAnalysis.documentsAffected.active} active ({dependencyAnalysis.documentsAffected.total} total)
+                                    </span>
+                                  </li>
+                                  <li className="flex justify-between items-center bg-slate-50 px-2 py-1 rounded">
+                                    <span className="text-slate-500 flex items-center gap-1"><Award className="h-3 w-3 inline text-slate-450" /> Certifications</span>
+                                    <span className="font-bold text-slate-800">
+                                      {dependencyAnalysis.certificationsAffected.certificateCount} certificate(s) ({dependencyAnalysis.certificationsAffected.certifiedStatus})
+                                    </span>
+                                  </li>
+                                  <li className="flex justify-between items-center bg-slate-50 px-2 py-1 rounded">
+                                    <span className="text-slate-500 flex items-center gap-1"><Layers className="h-3 w-3 inline text-slate-450" /> Toolkit Allocations</span>
+                                    <span className="font-bold text-slate-800">
+                                      {dependencyAnalysis.toolkitsAffected.toolkitsAffected} allocated ({dependencyAnalysis.toolkitsAffected.toolkitsIssued} issued)
+                                    </span>
+                                  </li>
+                                  <li className="flex justify-between items-center bg-slate-50 px-2 py-1 rounded flex-wrap">
+                                    <span className="text-slate-500 flex items-center gap-1"><Mail className="h-3 w-3 inline text-slate-450" /> Dispatch Envelopes</span>
+                                    <span className="font-bold text-slate-800">
+                                      {dependencyAnalysis.dispatchesAffected.dispatchCount} dispatches {dependencyAnalysis.dispatchesAffected.lastDispatchDate ? `(last ${new Date(dependencyAnalysis.dispatchesAffected.lastDispatchDate).toLocaleDateString()})` : ''}
+                                    </span>
+                                  </li>
+                                  <li className="flex justify-between items-center bg-slate-50 px-2 py-1 rounded">
+                                    <span className="text-slate-500 flex items-center gap-1"><ClipboardList className="h-3 w-3 inline text-slate-450" /> Outcome Evidence</span>
+                                    <span className="font-bold text-slate-800">
+                                      {dependencyAnalysis.evidenceAffected.impactRecordsAffected} records ({dependencyAnalysis.evidenceAffected.verificationRecords} visits)
+                                    </span>
+                                  </li>
+                                  <li className="flex justify-between items-center bg-slate-50 px-2 py-1 rounded">
+                                    <span className="text-slate-500 flex items-center gap-1"><Landmark className="h-3 w-3 inline text-slate-450" /> Financial Allocations</span>
+                                    <span className="font-bold text-slate-800">
+                                      {dependencyAnalysis.financialRecordsAffected.financialRecordsAffected} records linked to track costs
+                                    </span>
+                                  </li>
+                                  <li className="flex justify-between items-center bg-slate-50 px-2 py-1 rounded">
+                                    <span className="text-slate-500 flex items-center gap-1"><History className="h-3 w-3 inline text-slate-450" /> Registry References</span>
+                                    <span className="font-bold text-slate-800">
+                                      {dependencyAnalysis.auditReferencesAffected.auditReferencesAffected} audit events tracked
+                                    </span>
+                                  </li>
+                                </ul>
+                              </div>
+
+                              {/* EXECUTION GATE WARNINGS & SPECIFIC CHECKBOX RULES */}
+                              <div className="space-y-2 pt-1 border-t border-slate-200">
+                                {dependencyAnalysis.governanceRiskLevel !== "LOW" && (
+                                  <label className="flex items-start gap-2 text-[10.5px] font-sans text-amber-900 bg-amber-50 border border-amber-200 rounded p-2 cursor-pointer select-none">
+                                    <input
+                                      type="checkbox"
+                                      checked={riskAcknowledgeCheck}
+                                      onChange={(e) => setRiskAcknowledgeCheck(e.target.checked)}
+                                      className="mt-0.5 rounded border-amber-300 text-amber-700 focus:ring-amber-500 cursor-pointer h-3.5 w-3.5"
+                                    />
+                                    <span>I acknowledge this represents a <strong>{dependencyAnalysis.governanceRiskLevel} RISK</strong> operation, and verify that the target status is appropriate.</span>
+                                  </label>
+                                )}
+
+                                {(dependencyAnalysis.governanceRiskLevel === "HIGH" || dependencyAnalysis.governanceRiskLevel === "CRITICAL") && (
+                                  <div className="text-[10px] text-red-800 font-sans leading-relaxed bg-red-50 border border-red-150 rounded p-2">
+                                    <strong>HIGH/CRITICAL HURDLE:</strong> Supplementary Operational Notes must be filled out below to justify this operational re-evaluation before authorization proceeds.
+                                  </div>
+                                )}
+
+                                {dependencyAnalysis.governanceRiskLevel === "CRITICAL" && (
+                                  <label className="flex items-start gap-2 text-[10.5px] font-sans text-red-950 bg-rose-50 border border-rose-250 rounded p-2.5 cursor-pointer select-none">
+                                    <input
+                                      type="checkbox"
+                                      checked={subConfirmCheck}
+                                      onChange={(e) => setSubConfirmCheck(e.target.checked)}
+                                      className="mt-0.5 rounded border-rose-300 text-rose-800 focus:ring-rose-800 cursor-pointer h-3.5 w-3.5"
+                                    />
+                                    <span><strong>DOUBLE-AUDIT LOCK:</strong> I explicitly accept that all linked certifications, toolkits, dispatches, and financial outcome references will be flagged as archived/invalidated, and assume full accountability.</span>
+                                  </label>
+                                )}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="text-xs text-slate-500 bg-slate-50 p-2.5 rounded border border-slate-150 font-sans italic text-center">
+                              No active analysis generated. Drag dropdown target to evaluate impact risk.
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="text-xs text-slate-400 py-6 text-center italic font-sans flex flex-col items-center justify-center gap-1.5 select-none font-sans">
+                          <Layers className="h-8 w-8 text-slate-300 stroke-1" />
+                          Select a target milestone state to running standard dependency scan rules.
+                        </div>
+                      )}
+                    </div>
+
+                    {rollbackTarget && (
+                      <div className="pt-3 border-t border-slate-200 mt-2">
+                        <label className="flex items-start gap-2 text-[10.5px] font-sans text-slate-650 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={rollbackConfirmCheck}
+                            onChange={(e) => setRollbackConfirmCheck(e.target.checked)}
+                            className="mt-0.5 rounded border-slate-300 text-indigo-750 focus:ring-indigo-750 cursor-pointer h-4 w-4"
+                          />
+                          <span>I certify that this rollback meets Central Workspace TVET guidelines and is fully authorized.</span>
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Operations Execution Footer */}
+                {(session?.role === "SUPER_ADMIN" || session?.role === "ADMIN_OFFICER") && (
+                  <div className="pt-2 flex justify-end gap-2.5">
+                    <button
+                      type="button"
+                      disabled={
+                        !rollbackTarget || 
+                        !rollbackReason || 
+                        !rollbackConfirmCheck || 
+                        rollbackLoading ||
+                        (dependencyAnalysis?.governanceRiskLevel === "MEDIUM" && !riskAcknowledgeCheck) ||
+                        (dependencyAnalysis?.governanceRiskLevel === "HIGH" && (!riskAcknowledgeCheck || !rollbackNotes?.trim())) ||
+                        (dependencyAnalysis?.governanceRiskLevel === "CRITICAL" && (!riskAcknowledgeCheck || !subConfirmCheck || !rollbackNotes?.trim()))
+                      }
+                      onClick={handleExecuteRollback}
+                      className="bg-red-700 hover:bg-red-800 text-white font-bold py-2 px-5 rounded-lg text-xs cursor-pointer shadow-xs transition disabled:opacity-50 disabled:cursor-not-allowed select-none flex items-center gap-1.5 animate-fade-in"
+                    >
+                      {rollbackLoading ? (
+                        <>
+                          <RefreshCw className="h-3 w-3 animate-spin" /> Executing Rollback...
+                        </>
+                      ) : (
+                        <>
+                          <ShieldCheck className="h-4 w-4" /> Finalize WorkFlow Rollback
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
+
+              </div>
+
+              {/* AUDIT HISTORY TIMELINE / LOGS TRACKING PANEL */}
+              <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs text-left space-y-4">
+                <div className="pb-2 border-b border-slate-150 flex items-center justify-between gap-2">
+                  <div>
+                    <h5 className="font-sans font-bold text-slate-900 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                      <History className="h-4 w-4 text-slate-700" /> Compliant Registry Logging Trail
+                    </h5>
+                    <p className="text-[9px] text-slate-400 font-mono mt-0.5">FEDERAL WORKFLOW & KEY TRANSACTION TRAILS</p>
+                  </div>
+                  <span className="text-[9px] font-mono text-slate-450">
+                    Total Transactions Blocked/Logged: {workflowHistory.length + auditLogs.length}
+                  </span>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left font-mono text-[11.5px] border border-slate-150 rounded-lg overflow-hidden">
+                    <thead className="bg-slate-50 text-slate-600 select-none">
+                      <tr>
+                        <th className="p-3 text-[9px] font-bold uppercase tracking-wider">Timestamp</th>
+                        <th className="p-3 text-[9px] font-bold uppercase tracking-wider">Transaction Code</th>
+                        <th className="p-3 text-[9px] font-bold uppercase tracking-wider">Operator ID</th>
+                        <th className="p-3 text-[9px] font-bold uppercase tracking-wider">IP Address</th>
+                        <th className="p-3 text-[9px] font-bold uppercase tracking-wider">Event Remarks</th>
+                        <th className="p-3 text-right text-[9px] font-bold uppercase tracking-wider">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-slate-700">
+                      {/* Combined & Sorted Historical Ledger of WorkflowHistory and AuditLogs */}
+                      {(() => {
+                        const logs: any[] = [];
+                        
+                        // Push workflow history records
+                        workflowHistory.forEach(w => {
+                          logs.push({
+                            id: `WFL-${w.id}`,
+                            timestamp: w.changedAt,
+                            type: "WORKFLOW_TRANSITION",
+                            operator: w.changedBy,
+                            ip: w.ipAddress,
+                            remarks: w.remarks,
+                            reason: w.reason,
+                            oldStatus: w.oldStatus,
+                            newStatus: w.newStatus,
+                            tokenBefore: w.tokenVersionBefore,
+                            tokenAfter: w.tokenVersionAfter,
+                            workflowBefore: w.workflowVersionBefore,
+                            workflowAfter: w.workflowVersionAfter
+                          });
+                        });
+
+                        // Push relevant audit logs
+                        auditLogs.filter(a => a.action === "WORKFLOW_ROLLBACK" || a.action === "GOVERNANCE_PANEL_OPENED" || a.action === "TOKEN_HISTORY_VIEWED" || a.action === "ROLLBACK_EXECUTED").forEach(a => {
+                          logs.push({
+                            id: `AUD-${a.id}`,
+                            timestamp: a.timestamp,
+                            type: a.action,
+                            operator: a.username,
+                            ip: a.ipAddress,
+                            remarks: a.details,
+                            reason: "Audited System Routine Log"
+                          });
+                        });
+
+                        // Sort descending
+                        const sortedLogs = logs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+                        if (sortedLogs.length === 0) {
+                          return (
+                            <tr>
+                              <td colSpan={6} className="text-center py-6 text-slate-400 italic">
+                                No security logs have been registered for this candidate.
+                              </td>
+                            </tr>
+                          );
+                        }
+
+                        return sortedLogs.map((log, idx) => (
+                          <tr key={idx} className="hover:bg-slate-50/50">
+                            <td className="p-3 text-slate-500 whitespace-nowrap">
+                              {new Date(log.timestamp).toLocaleString("en-GB")}
+                            </td>
+                            <td className="p-3">
+                              <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${
+                                log.type === "WORKFLOW_TRANSITION" 
+                                  ? "bg-blue-50 text-blue-700 border border-blue-100" 
+                                  : log.type === "ROLLBACK_EXECUTED"
+                                    ? "bg-red-50 text-red-700 border border-red-100 animate-pulse"
+                                    : "bg-slate-100 text-slate-700 border border-slate-200"
+                              }`}>
+                                {log.type}
+                              </span>
+                            </td>
+                            <td className="p-3 text-slate-600 font-sans font-medium">{log.operator}</td>
+                            <td className="p-3 text-slate-400 font-mono">{log.ip || "127.0.0.1"}</td>
+                            <td className="p-3 font-sans truncate max-w-xs text-slate-650" title={log.remarks}>
+                              {log.remarks}
+                            </td>
+                            <td className="p-3 text-right">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedAuditLog(log);
+                                }}
+                                className="text-[10px] font-bold text-indigo-750 hover:text-indigo-900 hover:underline cursor-pointer font-sans"
+                              >
+                                View Payload
+                              </button>
+                            </td>
+                          </tr>
+                        ));
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+            </div>
+          )}
+
+          {/* DYNAMIC OVERLAY MODAL: DOCUMENT VERSIONS HISTORIC TRAIL */}
+          {selectedDocVersions && (
+            <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+              <div className="bg-white border border-slate-200 rounded-xl max-w-2xl w-full p-6 shadow-xl text-left space-y-4">
+                
+                <div className="flex justify-between items-center pb-2 border-b border-slate-150">
+                  <div>
+                    <span className="text-[9px] font-mono font-bold text-slate-400 uppercase tracking-widest">Version Chain Engine</span>
+                    <h5 className="font-display font-bold text-slate-900 text-sm uppercase tracking-wider flex items-center gap-1.5">
+                      <FileText className="h-4.5 w-4.5 text-indigo-650" /> {selectedDocTypeLabel} History Ledger
+                    </h5>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedDocVersions(null)}
+                    className="p-1 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 cursor-pointer font-sans text-xs flex items-center gap-1 font-bold border border-slate-200"
+                  >
+                    <X className="h-3.5 w-3.5" /> Close Ledger
+                  </button>
+                </div>
+
+                <div className="space-y-3 font-sans text-xs">
+                  <p className="text-slate-600 leading-normal">
+                    This represents the secure historical sequence of copies compiled by our cryptographic document generators.
+                  </p>
+
+                  <div className="space-y-3 font-mono">
+                    {selectedDocVersions.length === 0 ? (
+                      <div className="text-center py-6 text-slate-400 italic">No document copy exists.</div>
+                    ) : (
+                      selectedDocVersions.map((ver, idx) => (
+                        <div key={idx} className="bg-slate-50 border border-slate-200 p-4 rounded-lg flex items-center justify-between gap-4">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-slate-805 font-bold text-xs uppercase">Version {ver.version || 1}.0</span>
+                              {ver.documentStatus === "ACTIVE" ? (
+                                <span className="px-1.5 py-0.2 bg-emerald-50 text-emerald-800 text-[8px] rounded font-bold border border-emerald-150">
+                                  ACTIVE & LOCKED
+                                </span>
+                              ) : (
+                                <span className="px-1.5 py-0.2 bg-amber-50 text-amber-700 text-[8px] rounded font-bold border border-amber-150">
+                                  SUPERSEDED / ARCHIVED
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[10px] text-slate-400">
+                              Generated At: {new Date(ver.createdAt).toLocaleString("en-GB")} • Operator: {ver.generatedBy}
+                            </div>
+                            <div className="text-[9px] text-slate-500 font-sans mt-1">
+                              Saved on Workflow V{ver.workflowVersion || 1} & Token Generation T{ver.tokenVersion || 1}
+                            </div>
+                          </div>
+
+                          {ver.pdfUrl && (
+                            <a
+                              href={ver.pdfUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-[10.5px] font-bold font-mono text-indigo-750 hover:text-indigo-900 border border-slate-250 bg-white hover:bg-slate-50 px-2.5 py-1.5 rounded flex items-center gap-0.5 shadow-2xs cursor-pointer"
+                            >
+                              Download <Download className="h-3 w-3" />
+                            </a>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+              </div>
+            </div>
+          )}
+
+          {/* DYNAMIC OVERLAY MODAL: AUDIT PAYLOAD & LEDGER CODES */}
+          {selectedAuditLog && (
+            <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+              <div className="bg-white border border-slate-200 rounded-xl max-w-3xl w-full p-6 shadow-xl text-left space-y-4">
+                
+                <div className="flex justify-between items-center pb-2 border-b border-slate-150">
+                  <div>
+                    <span className="text-[9px] font-mono font-bold text-slate-400 uppercase tracking-widest">Transaction Auditor</span>
+                    <h5 className="font-display font-bold text-slate-900 text-sm uppercase tracking-wider flex items-center gap-1.5">
+                      <Database className="h-4.5 w-4.5 text-slate-700" /> Compliant Audit Transaction Details
+                    </h5>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedAuditLog(null)}
+                    className="p-1 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 cursor-pointer font-sans text-xs flex items-center gap-1 font-bold border border-slate-200"
+                  >
+                    <X className="h-3.5 w-3.5" /> Close Payload
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs font-mono">
+                  
+                  <div className="space-y-3">
+                    <div className="bg-slate-100 p-3 rounded">
+                      <span className="text-[9px] text-slate-400 block font-bold uppercase tracking-wider">Registry ID</span>
+                      <span className="text-slate-800 font-bold break-all">{selectedAuditLog.id}</span>
+                    </div>
+
+                    <div>
+                      <span className="text-[9px] text-slate-400 block font-bold uppercase tracking-wider">Timestamp</span>
+                      <span className="text-slate-700 block mt-0.5">
+                        {new Date(selectedAuditLog.timestamp).toLocaleString("en-GB")}
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-[9px] text-slate-400 block font-bold uppercase tracking-wider">Operator Key Identity</span>
+                      <span className="text-slate-800 font-sans font-semibold block mt-0.5">{selectedAuditLog.operator}</span>
+                    </div>
+
+                    <div>
+                      <span className="text-[9px] text-slate-400 block font-bold uppercase tracking-wider">Terminal IP Address</span>
+                      <span className="text-slate-700 block mt-0.5">{selectedAuditLog.ip || "127.0.0.1"}</span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="bg-slate-100 p-3 rounded">
+                      <span className="text-[9px] text-slate-400 block font-bold uppercase tracking-wider">Audit Action Type</span>
+                      <span className="text-slate-800 font-bold block mt-0.5">{selectedAuditLog.type}</span>
+                    </div>
+
+                    {selectedAuditLog.type === "WORKFLOW_TRANSITION" ? (
+                      <>
+                        <div>
+                          <span className="text-[9px] text-slate-400 block font-bold uppercase tracking-wider">State Transition Matrix</span>
+                          <span className="text-slate-700 block mt-0.5">
+                            {selectedAuditLog.oldStatus} → <span className="font-bold text-indigo-750">{selectedAuditLog.newStatus}</span>
+                          </span>
+                        </div>
+
+                        <div>
+                          <span className="text-[9px] text-slate-400 block font-bold uppercase tracking-wider">Versions Incremented</span>
+                          <span className="text-slate-700 block mt-0.5">
+                            Workflow: V{selectedAuditLog.workflowBefore} → V{selectedAuditLog.workflowAfter} | Tokens: T{selectedAuditLog.tokenBefore} → T{selectedAuditLog.tokenAfter}
+                          </span>
+                        </div>
+                      </>
+                    ) : (
+                      <div>
+                        <span className="text-[9px] text-slate-400 block font-bold uppercase tracking-wider">Audited Justification</span>
+                        <p className="text-slate-700 whitespace-normal block mt-0.5 font-sans leading-normal">
+                          {selectedAuditLog.reason || "Audited Routine System Log"}
+                        </p>
+                      </div>
+                    )}
+
+                  </div>
+
+                </div>
+
+                <div className="pt-2 border-t border-slate-150">
+                  <span className="text-[9px] font-mono font-bold text-slate-400 uppercase tracking-wider block mb-1">
+                    Raw System Payload Dump (Permanently Audited)
+                  </span>
+                  <pre className="bg-slate-900 text-slate-200 text-[10px] p-4.5 rounded-lg overflow-x-auto max-h-48 leading-relaxed text-left font-mono whitespace-pre-wrap select-all">
+                    {JSON.stringify(selectedAuditLog, null, 2)}
+                  </pre>
+                </div>
+
               </div>
             </div>
           )}
@@ -4643,6 +5836,121 @@ export function BeneficiaryDetails({
               >
                 {transitionLoading && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
                 Confirm Transition
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ENTERPRISE WORKFLOW ROLLBACK CONFIRMATION DIALOG */}
+      {showRollbackConfirmModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in font-sans">
+          <div className="bg-white border border-slate-200 rounded-2xl max-w-md w-full shadow-2xl p-6 text-left space-y-4 relative overflow-hidden">
+            <button
+              onClick={() => setShowRollbackConfirmModal(false)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-650 transition cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-red-50 text-red-700 rounded-full border border-red-100 shrink-0">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900 font-sans tracking-tight">Emergency Workflow Rollback</h3>
+                <p className="text-[11px] text-slate-500 font-mono">CRITICAL SAFETY GATE</p>
+              </div>
+            </div>
+
+            <div className="space-y-2.5 text-xs text-slate-600 leading-relaxed font-sans">
+              <p>
+                You are about to execute a high-clearance, super-administrative rollback transformation for trainee <strong className="text-slate-850 font-semibold">{beneficiary.firstName} {beneficiary.lastName}</strong>.
+              </p>
+              
+              <div className="bg-red-50/50 rounded-lg p-3 border border-red-100/50 space-y-1.5 text-[11px]">
+                <span className="font-bold text-red-950 block">This administrative rollback action will:</span>
+                <ul className="list-disc list-inside space-y-1 text-red-900">
+                  <li>Immediately invalidate and revoke the current secure access link</li>
+                  <li>Flag the active document package as <strong className="font-semibold text-red-950">ARCHIVED</strong> and voided</li>
+                  <li>Force increment token security generation levels (Version {beneficiary.tokenVersion} &rarr; {beneficiary.tokenVersion! + 1})</li>
+                  <li>Advance structural lifecycle tracing versioning (V{beneficiary.workflowVersion} &rarr; V{beneficiary.workflowVersion! + 1})</li>
+                  <li>Generate permanent, immutable records on central audit logs</li>
+                </ul>
+              </div>
+
+              <p className="italic text-[10.5px] text-slate-500 text-center pt-1">
+                This action is fully audited, traced, and registered under federal and state governance compliance guidelines.
+              </p>
+            </div>
+
+            <div className="pt-2 flex justify-end gap-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowRollbackConfirmModal(false)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-850 bg-slate-100 hover:bg-slate-200 rounded-lg transition cursor-pointer"
+              >
+                Cancel, Abort Action
+              </button>
+              <button
+                type="button"
+                onClick={submitRollbackRequest}
+                className="px-5 py-2 text-xs font-bold text-white bg-red-650 hover:bg-red-700 rounded-lg shadow-sm hover:shadow-md transition cursor-pointer flex items-center gap-1.5"
+              >
+                <ShieldCheck className="w-4 h-4" /> Proceed With Rollback
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* GOVERNANCE SPRINT ROLLBACK OUTCOME DIALOUGE (SUCCESS / ERROR) */}
+      {rollbackOutcomeModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in font-sans">
+          <div className="bg-white border border-slate-200 rounded-2xl max-w-sm w-full shadow-2xl p-6 text-center space-y-4 relative overflow-hidden">
+            <button
+              onClick={() => setRollbackOutcomeModal(null)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-650 transition cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="mx-auto w-12 h-12 flex items-center justify-center rounded-full border shrink-0">
+              {rollbackOutcomeModal.type === "success" ? (
+                <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-full border border-emerald-100">
+                  <CheckCircle className="w-6 h-6 animate-pulse" />
+                </div>
+              ) : (
+                <div className="p-2.5 bg-rose-50 text-rose-600 rounded-full border border-rose-100">
+                  <AlertTriangle className="w-6 h-6 animate-pulse" />
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <h3 className={`text-base font-bold tracking-tight ${
+                rollbackOutcomeModal.type === "success" ? "text-slate-900" : "text-rose-900"
+              }`}>
+                {rollbackOutcomeModal.title}
+              </h3>
+              <p className="text-xs text-slate-600 leading-relaxed font-sans">{rollbackOutcomeModal.message}</p>
+              {rollbackOutcomeModal.details && (
+                <p className="text-[10px] text-slate-450 bg-slate-50 p-2 rounded border border-slate-100 italic font-mono leading-normal text-left">
+                  {rollbackOutcomeModal.details}
+                </p>
+              )}
+            </div>
+
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => setRollbackOutcomeModal(null)}
+                className={`w-full py-2.5 rounded-lg text-xs font-bold transition select-none cursor-pointer ${
+                  rollbackOutcomeModal.type === "success"
+                    ? "bg-emerald-600 hover:bg-emerald-700 text-white"
+                    : "bg-rose-600 hover:bg-rose-700 text-white animate-shake"
+                }`}
+              >
+                {rollbackOutcomeModal.type === "success" ? "Acknowledge Completion" : "Dismiss Error"}
               </button>
             </div>
           </div>

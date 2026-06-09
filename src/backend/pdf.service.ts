@@ -91,6 +91,8 @@ export class PdfService {
     console.log(`[PdfService] - launch mode: ${customExecutablePath ? "custom" : "default"}`);
     console.log("[PdfService] ==============================================");
 
+    const totalStart = globalThis.performance ? globalThis.performance.now() : Date.now();
+    let launchStart = totalStart;
     let browser: any = null;
     try {
       console.log(`[PdfService] Launching Puppeteer browser...`);
@@ -108,6 +110,7 @@ export class PdfService {
         launchOptions.executablePath = customExecutablePath;
       }
 
+      launchStart = globalThis.performance ? globalThis.performance.now() : Date.now();
       browser = await puppeteer.launch(launchOptions);
       console.log("[PdfService] Puppeteer browser launch SUCCESS.");
     } catch (launchErr: any) {
@@ -115,10 +118,19 @@ export class PdfService {
       throw new Error(`BROWSER_LAUNCH_FAILED: Chrome browser binary could not be loaded or executed. Details: ${launchErr.message}`);
     }
 
+    const launchEnd = globalThis.performance ? globalThis.performance.now() : Date.now();
+    const launchTime = launchEnd - launchStart;
+
     try {
+      const pageStart = globalThis.performance ? globalThis.performance.now() : Date.now();
       const page = await browser.newPage();
-      await page.setContent(htmlContent, { waitUntil: "networkidle0" as any });
+      const pageCreationTime = (globalThis.performance ? globalThis.performance.now() : Date.now()) - pageStart;
+
+      const setContentStart = globalThis.performance ? globalThis.performance.now() : Date.now();
+      await page.setContent(htmlContent, { waitUntil: "domcontentloaded" as any });
+      const setContentTime = (globalThis.performance ? globalThis.performance.now() : Date.now()) - setContentStart;
       
+      const pdfGenerationStart = globalThis.performance ? globalThis.performance.now() : Date.now();
       const pdfBuffer = await page.pdf({
         format: "A4",
         landscape: isLandscape,
@@ -130,11 +142,26 @@ export class PdfService {
           right: "15mm"
         }
       });
+      const pdfGenerationTime = (globalThis.performance ? globalThis.performance.now() : Date.now()) - pdfGenerationStart;
 
       console.log(`[PdfService] PDF compilation completed successfully (${pdfBuffer.length} bytes).`);
       const buffer = Buffer.from(pdfBuffer);
       
       logForensicPdfTrace("PDF Generator (Compiled)", "document.pdf", buffer);
+
+      const closeStart = globalThis.performance ? globalThis.performance.now() : Date.now();
+      await browser.close();
+      browser = null;
+      const closeTime = (globalThis.performance ? globalThis.performance.now() : Date.now()) - closeStart;
+
+      const totalTime = (globalThis.performance ? globalThis.performance.now() : Date.now()) - totalStart;
+
+      console.log(`[PDF-PROFILE]
+launch=${launchTime.toFixed(2)}ms
+setContent=${setContentTime.toFixed(2)}ms
+pdf=${pdfGenerationTime.toFixed(2)}ms
+close=${closeTime.toFixed(2)}ms
+total=${totalTime.toFixed(2)}ms`);
 
       return buffer;
     } catch (compileErr: any) {
@@ -142,7 +169,10 @@ export class PdfService {
       throw new Error(`PDF_GENERATION_FAILED: Failed to compile HTML to PDF. Details: ${compileErr.message}`);
     } finally {
       if (browser) {
+        const closeStart = globalThis.performance ? globalThis.performance.now() : Date.now();
         await browser.close();
+        const closeTime = (globalThis.performance ? globalThis.performance.now() : Date.now()) - closeStart;
+        console.log(`[PDF-PROFILE] Browser cleanup inside finally took ${closeTime.toFixed(2)}ms`);
       }
     }
   }

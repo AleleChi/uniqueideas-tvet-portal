@@ -11,10 +11,11 @@ export class TokenService {
   /**
    * Generates an encrypted token string representing a beneficiary session
    */
-  static generateToken(beneficiaryId: string): string {
+  static generateToken(beneficiaryId: string, tokenVersion: number = 1): string {
     const payload = JSON.stringify({
       id: beneficiaryId,
-      expires: Date.now() + 10 * 24 * 60 * 60 * 1000 // Valid for 10 days
+      expires: Date.now() + 10 * 24 * 60 * 60 * 1000, // Valid for 10 days
+      tokenVersion
     });
     
     // Derived static standard key from secret to ensure perfect compatibility
@@ -31,7 +32,7 @@ export class TokenService {
   /**
    * Verifies and decrypts a token string, returning target beneficiary ID if valid
    */
-  static verifyToken(token: string): { id: string } | null {
+  static verifyToken(token: string): { id: string; tokenVersion?: number } | null {
     try {
       const encryptedHex = Buffer.from(token, "base64url").toString("hex");
       const key = crypto.scryptSync(this.SECRET, "salt-tvet", 32);
@@ -46,7 +47,7 @@ export class TokenService {
         console.warn("[TOKEN] Verification failed: Token expired.");
         return null;
       }
-      return { id: payload.id };
+      return { id: payload.id, tokenVersion: payload.tokenVersion };
     } catch (e) {
       console.error("[TOKEN] Cryptographic decrypt decode error:", e);
       return null;
