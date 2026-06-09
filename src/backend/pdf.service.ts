@@ -12,95 +12,6 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 
-function findChromeExecutable(): string | null {
-  const searchDirs = [
-    path.join(process.cwd(), ".cache", "puppeteer"),
-    path.join(os.homedir(), ".cache", "puppeteer"),
-    "/opt/render/.cache/puppeteer",
-    "/home/render/.cache/puppeteer",
-    "/root/.cache/puppeteer",
-    "/vercel/.cache/puppeteer"
-  ];
-
-  console.log("[PdfService] Starting scan for Chrome browser in known caches...");
-  
-  const findFile = (dir: string): string | null => {
-    if (!fs.existsSync(dir)) return null;
-    try {
-      const files = fs.readdirSync(dir);
-      for (const file of files) {
-        const fullPath = path.join(dir, file);
-        const stat = fs.statSync(fullPath);
-        if (stat.isDirectory()) {
-          const found = findFile(fullPath);
-          if (found) return found;
-        } else {
-          const name = file.toLowerCase();
-          if (name === "chrome" || name === "chrome.exe" || name === "chromium") {
-            return fullPath;
-          }
-        }
-      }
-    } catch {
-      // Ignore reading errors for specific inaccessible directories
-    }
-    return null;
-  };
-
-  for (const dir of searchDirs) {
-    console.log(`[PdfService] Checking cache directory: ${dir}`);
-    const found = findFile(dir);
-    if (found) {
-      console.log(`[PdfService] Found Chrome executable candidate in cache path: ${found}`);
-      if (process.platform !== "win32") {
-        try {
-          fs.chmodSync(found, "755");
-          console.log(`[PdfService] Chmod 755 applied to: ${found}`);
-        } catch (chmodErr: any) {
-          console.warn(`[PdfService] Failed to chmod executable: ${chmodErr.message}`);
-        }
-      }
-      return found;
-    }
-  }
-
-  // System absolute fallbacks
-  const systemPaths = [
-    "/usr/bin/google-chrome",
-    "/usr/bin/google-chrome-stable",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    "/usr/bin/chrome",
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-  ];
-  for (const sysPath of systemPaths) {
-    if (fs.existsSync(sysPath)) {
-      console.log(`[PdfService] Found Chrome at system default path: ${sysPath}`);
-      return sysPath;
-    }
-  }
-
-  // Environment fallback
-  const envPath = process.env.CHROME_PATH || process.env.PUPPETEER_EXECUTABLE_PATH;
-  if (envPath && fs.existsSync(envPath)) {
-    console.log(`[PdfService] Found Chrome via env variable: ${envPath}`);
-    return envPath;
-  }
-
-  // Puppeteer default fallback
-  try {
-    const defaultPath = puppeteer.executablePath();
-    if (defaultPath && fs.existsSync(defaultPath)) {
-      console.log(`[PdfService] Found default Puppeteer executable at: ${defaultPath}`);
-      return defaultPath;
-    }
-  } catch (err: any) {
-    console.warn(`[PdfService] Could not resolve default Puppeteer executable path: ${err.message}`);
-  }
-
-  return null;
-}
-
 export class PdfService {
   /**
    * Dynamically retrieves organization settings from database with standard fallback defaults
@@ -146,16 +57,26 @@ export class PdfService {
    * as a graceful fallback.
    */
   public static async compileHtmlToPdfBuffer(htmlContent: string, isLandscape: boolean = false): Promise<Buffer> {
-    const executablePath = findChromeExecutable();
-
     let puppeteerDefaultPath = "N/A";
+    let defaultExists = false;
     try {
-      puppeteerDefaultPath = puppeteer.executablePath();
+      const resolved = puppeteer.executablePath();
+      if (typeof resolved === "string") {
+        puppeteerDefaultPath = resolved;
+      } else {
+        puppeteerDefaultPath = await resolved;
+      }
+      defaultExists = fs.existsSync(puppeteerDefaultPath);
     } catch (e: any) {
       puppeteerDefaultPath = "Error resolving: " + e.message;
     }
 
-    const binaryExistsFlag = executablePath ? fs.existsSync(executablePath) : false;
+    // Determine custom verified executable if it exists
+    let customExecutablePath: string | undefined = undefined;
+    const envPath = process.env.CHROME_PATH || process.env.PUPPETEER_EXECUTABLE_PATH;
+    if (envPath && fs.existsSync(envPath)) {
+      customExecutablePath = envPath;
+    }
 
     console.log("[PdfService] ==============================================");
     console.log("[PdfService] PUPPETEER DIAGNOSTIC LOG:");
@@ -165,13 +86,14 @@ export class PdfService {
     console.log(`[PdfService] - PUPPETEER_CACHE_DIR: ${process.env.PUPPETEER_CACHE_DIR || "N/A"}`);
     console.log(`[PdfService] - PUPPETEER_EXECUTABLE_PATH: ${process.env.PUPPETEER_EXECUTABLE_PATH || "N/A"}`);
     console.log(`[PdfService] - puppeteer.executablePath(): ${puppeteerDefaultPath}`);
-    console.log(`[PdfService] - Resolved Executable Path: ${executablePath || "None (Using Puppeteer Default)"}`);
-    console.log(`[PdfService] Chrome binary exists = ${binaryExistsFlag}`);
+    console.log(`[PdfService] - fs.existsSync(puppeteer.executablePath()): ${defaultExists}`);
+    console.log(`[PdfService] - Custom verified path: ${customExecutablePath || "None (Using Puppeteer Default)"}`);
+    console.log(`[PdfService] - launch mode: ${customExecutablePath ? "custom" : "default"}`);
     console.log("[PdfService] ==============================================");
 
     let browser: any = null;
     try {
-      console.log(`[PdfService] Launching Puppeteer browser with resolved path...`);
+      console.log(`[PdfService] Launching Puppeteer browser...`);
       const launchOptions: any = {
         headless: true,
         args: [
@@ -182,8 +104,8 @@ export class PdfService {
         ]
       };
 
-      if (executablePath) {
-        launchOptions.executablePath = executablePath;
+      if (customExecutablePath) {
+        launchOptions.executablePath = customExecutablePath;
       }
 
       browser = await puppeteer.launch(launchOptions);
