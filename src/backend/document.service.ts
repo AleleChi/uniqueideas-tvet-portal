@@ -7,6 +7,7 @@ import { DbRepo } from "./db";
 import { PdfService } from "./pdf.service";
 import { CloudinaryService } from "./cloudinary.service";
 import { EmailService } from "./email.service";
+import { buildSanitizedFilename } from "./pdfTraceAudit";
 import { GeneratedDocument, DocumentType, Beneficiary } from "../types";
 import QRCode from "qrcode";
 import { buildPublicUrl } from "../config/api";
@@ -130,6 +131,9 @@ export class DocumentService {
         throw new Error(`Unsupported document type requested: ${documentType}`);
     }
 
+    const expectedFilename = buildSanitizedFilename(beneficiary, documentType, "pdf");
+    console.log(`[PIPELINE TRACE] STAGE 1 - PDF GENERATION: Generated buffer for candidate '${beneficiary.id}' (${beneficiary.firstName} ${beneficiary.lastName}). Expected filename: '${expectedFilename}'. Size: ${pdfBuffer.length} bytes.`);
+
     // 3. Upload to Cloudinary with metadata context
     const publicId = `beneficiary_${beneficiaryId}_${documentType.toLowerCase()}_v${nextVersion}`;
     const uploadResult = await CloudinaryService.uploadDocument(pdfBuffer, publicId);
@@ -155,6 +159,8 @@ export class DocumentService {
     if (!registered) {
       throw new Error(`Failed to save generated document record for ${documentType} in the database.`);
     }
+
+    console.log(`[PIPELINE TRACE] STAGE 2 - STORAGE RECORD CREATION: Registered document record. ID: '${docId}', Beneficiary ID: '${beneficiaryId}', Type: '${documentType}', Target Filename: '${expectedFilename}', Url: '${pdfUrl}', Version: ${nextVersion}`);
 
     try {
       await DbRepo.saveDeliveryLog({

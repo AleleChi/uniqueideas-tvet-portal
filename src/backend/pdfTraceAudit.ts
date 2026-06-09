@@ -1,6 +1,17 @@
 import crypto from "crypto";
 
 /**
+ * Utility to build proper, clean, and sanitized filename based on Trainee name and document type
+ */
+export function buildSanitizedFilename(beneficiary: any, docType: string, ext: string = "pdf"): string {
+  const fName = (beneficiary.firstName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const lName = (beneficiary.lastName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const namePart = fName && lName ? `${fName}_${lName}` : `${(beneficiary.id || "TRAINEE").replace(/[^A-Z0-9-]/g, "")}`;
+  const docPart = docType.toUpperCase().replace(/[^A-Z0-9_]/g, "");
+  return `${namePart}_${docPart}.${ext}`;
+}
+
+/**
  * Utility to log the forensic state of a PDF at any stage of the pipeline
  */
 export function logForensicPdfTrace(label: string, filename: string, buffer: Buffer) {

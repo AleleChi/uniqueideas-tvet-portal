@@ -61,6 +61,8 @@ export class CloudinaryService {
     const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9_-]/g, "_");
     const publicId = `${sanitizedFileName}_${timestamp}`;
 
+    console.log(`[PIPELINE TRACE] STAGE 3 - CLOUDINARY UPLOAD: Initiating upload process. Input FileName hint: '${fileName}', Sanatized: '${sanitizedFileName}', Folder: '${folder}', Target publicId: '${publicId}'`);
+
     const buffer = Buffer.isBuffer(fileContent)
       ? fileContent
       : typeof fileContent === "string" && fileContent.startsWith("data:")

@@ -301,12 +301,20 @@ export class EmailService {
 
     if (resend) {
       try {
+        const emailTo = to || "uniqueideasproject@gmail.com";
         const formattedAttachments = attachmentsList.map(a => {
           const parts = a.content.split(",");
           const base64Content = parts[1] || parts[0];
           const buffer = Buffer.from(base64Content, "base64");
           
           logForensicPdfTrace("Email Attachment", a.name, buffer);
+
+          // Priority 2 requirement: Explicitly log recipient, filename, and attachment size
+          console.log(`[EmailService] STAGE 6 - EMAIL ATTACHMENT LOG:
+  Recipient: ${emailTo}
+  Filename: ${a.name}
+  Attachment Size: ${buffer.length} bytes
+  MIME Type: application/pdf`);
 
           return {
             filename: a.name,
@@ -316,7 +324,6 @@ export class EmailService {
         });
 
         const fromEmail = "IDEAS TVET <admission@uniqueideas.dontechservicesconst.com>";
-        const emailTo = to || "uniqueideasproject@gmail.com";
 
         const { data, error } = await resend.emails.send({
           from: fromEmail,
@@ -346,6 +353,11 @@ export class EmailService {
         const base64Content = parts[1] || parts[0];
         const buffer = Buffer.from(base64Content, "base64");
         logForensicPdfTrace("Email Attachment (Simulated)", a.name, buffer);
+        console.log(`[EmailService Simulator] STAGE 6 - EMAIL ATTACHMENT LOG (SIMULATED):
+  Recipient: ${to}
+  Filename: ${a.name}
+  Attachment Size: ${buffer.length} bytes
+  MIME Type: application/pdf`);
       });
     } catch (err: any) {
       console.error(`[Email Simulator] Email validation error:`, err.message);
@@ -353,7 +365,7 @@ export class EmailService {
     }
 
     console.log(`[Resend] [SIMULATOR SUCCESS] Dispatched Admission Alert Email to: ${to}`);
-    console.log(`[Resend] [SIMULATOR SUCCESS] Attachments bundled: ${attachmentsList.map(a => `${a.name} (${a.contentType})`).join(", ")}`);
+    console.log(`[Resend] [SIMULATOR SUCCESS] Attachments bundled: ${attachmentsList.map(a => `${a.name} (Size: ${Buffer.from(a.content.split(',')[1] || a.content.split(',')[0], 'base64').length} bytes)`).join(", ")}`);
     return { success: true, status: "Delivered", errorDetails: "Sent via Simulator Connection (No Resend API Key configured)." };
   }
 }

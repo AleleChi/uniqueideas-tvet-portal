@@ -10,6 +10,7 @@ import { EmailService } from "./email.service";
 import { DbRepo } from "./db";
 import { CloudinaryService } from "./cloudinary.service";
 import { DocumentService } from "./document.service";
+import { buildSanitizedFilename } from "./pdfTraceAudit";
 
 export class AdmissionService {
   /**
@@ -88,27 +89,45 @@ export class AdmissionService {
       generatedAt: new Date().toISOString()
     };
     beneficiary.admissionLetterVersions = [...currentVersions, newVersionItem];
+    console.log(`[PIPELINE TRACE] STAGE 2 - STORAGE RECORD CREATION (Versioning List): Registered version '${newVersionItem.name}' in beneficiary.admissionLetterVersions.`);
 
     // 6. Save documents inside Candidate's local document list
     const currentDocs = beneficiary.documentsList || [];
     const updatedDocs = [...currentDocs];
-    updatedDocs.push({
+    const newDocItem = {
       id: admissionDoc.id,
       name: `${namePart}_ADMISSION_LETTER.pdf`,
       type: "admission",
       url: admissionPdfUrl,
       uploadedAt: new Date().toISOString(),
       version: nextVersionNum
-    });
+    };
+    updatedDocs.push(newDocItem);
     beneficiary.documentsList = updatedDocs;
+    console.log(`[PIPELINE TRACE] STAGE 2 - STORAGE RECORD CREATION (Candidate Document Registry): Appended registry item '${newDocItem.name}' in beneficiary.documentsList.`);
 
     // 7. Send automated email using formal unique email coordinates
     const toEmail = beneficiary.email || "uniqueideasproject@gmail.com";
-    const admissionPdfBase64 = admissionPdfBuffer.toString("base64");
-    const acceptancePdfBase64 = acceptancePdfBuffer.toString("base64");
+    const admissionPdfBase64 = admissionPdfBuffer ? admissionPdfBuffer.toString("base64") : "";
+    const acceptancePdfBase64 = acceptancePdfBuffer ? acceptancePdfBuffer.toString("base64") : "";
 
-    const isAdmissionRealPdf = admissionPdfBuffer.length >= 4 && admissionPdfBuffer[0] === 0x25 && admissionPdfBuffer[1] === 0x50 && admissionPdfBuffer[2] === 0x44 && admissionPdfBuffer[3] === 0x46;
-    const isAcceptanceRealPdf = acceptancePdfBuffer.length >= 4 && acceptancePdfBuffer[0] === 0x25 && acceptancePdfBuffer[1] === 0x50 && acceptancePdfBuffer[2] === 0x44 && acceptancePdfBuffer[3] === 0x46;
+    const isAdmissionRealPdf = admissionPdfBuffer && admissionPdfBuffer.length >= 4 && admissionPdfBuffer[0] === 0x25 && admissionPdfBuffer[1] === 0x50 && admissionPdfBuffer[2] === 0x44 && admissionPdfBuffer[3] === 0x46;
+    const isAcceptanceRealPdf = acceptancePdfBuffer && acceptancePdfBuffer.length >= 4 && acceptancePdfBuffer[0] === 0x25 && acceptancePdfBuffer[1] === 0x50 && acceptancePdfBuffer[2] === 0x44 && acceptancePdfBuffer[3] === 0x46;
+
+    if (!isAdmissionRealPdf) {
+      console.error("[AdmissionService] WARNING: Admission Letter PDF compilation failed or is corrupt! Aborting automated email dispatch to prevent sending invalid files.");
+      throw new Error("Admission Letter compilation failed: Generated file is invalid or corrupted. Aborting email dispatch.");
+    }
+
+    if (!isAcceptanceRealPdf) {
+      console.error("[AdmissionService] WARNING: Acceptance Form PDF compilation failed or is corrupt! Aborting automated email dispatch to prevent sending invalid files.");
+      throw new Error("Acceptance Form compilation failed: Generated file is invalid or corrupted. Aborting email dispatch.");
+    }
+
+    const admissionAttachmentName = buildSanitizedFilename(beneficiary, "ADMISSION_LETTER", "pdf");
+    const acceptanceAttachmentName = buildSanitizedFilename(beneficiary, "ACCEPTANCE_LETTER", "pdf");
+
+    console.log(`[AdmissionService] All PDF attachments successfully verified. Dispatched recipient: ${toEmail}. Files: ${admissionAttachmentName} (${admissionPdfBuffer.length} bytes), ${acceptanceAttachmentName} (${acceptancePdfBuffer.length} bytes). Tracing to step 6...`);
 
     const mailResult = await EmailService.sendAdmissionEmail(
       toEmail, 
@@ -116,14 +135,14 @@ export class AdmissionService {
       secureLink,
       [
         {
-          name: isAdmissionRealPdf ? `${namePart}_ADMISSION_LETTER.pdf` : `${namePart}_ADMISSION_LETTER.html`,
+          name: admissionAttachmentName,
           content: admissionPdfBase64,
-          contentType: isAdmissionRealPdf ? "application/pdf" : "text/html"
+          contentType: "application/pdf"
         },
         {
-          name: isAcceptanceRealPdf ? `${namePart}_ACCEPTANCE_FORM.pdf` : `${namePart}_ACCEPTANCE_FORM.html`,
+          name: acceptanceAttachmentName,
           content: acceptancePdfBase64,
-          contentType: isAcceptanceRealPdf ? "application/pdf" : "text/html"
+          contentType: "application/pdf"
         }
       ]
     );

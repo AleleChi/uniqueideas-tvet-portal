@@ -7,6 +7,7 @@ import pg from "pg";
 import fs from "fs";
 import path from "path";
 import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 import { Beneficiary, ProgramStatus, AuditLog, CustomField, OrganizationSettings, TrainingProgram, WorkflowHistory, InstitutionLetterhead, AdmissionFormTemplate } from "../types";
 
 const { Pool } = pg;
@@ -2864,8 +2865,34 @@ export class DbRepo {
    * Retrieve session by token
    */
   static async getUserSessionByToken(token: string): Promise<any | null> {
+    const JWT_SECRET = process.env.JWT_SECRET || "ideas-tvet-system-secret-authority-token-1995";
+    
+    // Attempt to verify/decode the JWT token to see if it has valid claims
+    let decoded: any = null;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (err: any) {
+      console.log(`[DB Repo] Session JWT is verified invalid: ${err.message}`);
+    }
+
     const pool = getPgPool();
-    if (!pool || !isPgActive) return null;
+    if (!pool || !isPgActive) {
+      // B. Database unavailable
+      console.warn("[DB Repo] Database is currently unavailable (no active pool or pg flag is inactive).");
+      if (decoded) {
+        console.warn(`[DB Repo] DANGER/OUTAGE: Differentiating database offline status. Restoring offline session from valid JWT for user: ${decoded.email}`);
+        return {
+          session_id: "offline_session_" + decoded.id,
+          user_id: decoded.id,
+          token: token,
+          expires_at: new Date(Date.now() + 1000 * 60 * 60).toISOString(),
+          email: decoded.email,
+          role: decoded.role,
+          beneficiary_id: decoded.beneficiaryId || null
+        };
+      }
+      return null;
+    }
 
     try {
       const res = await pool.query(
@@ -2878,9 +2905,25 @@ export class DbRepo {
       if (res.rows.length > 0) {
         return res.rows[0];
       }
+      
+      // A. Session not found
+      console.log(`[DB Repo] Session look-up completed: No active session row found for token in database (Session not found or revoked).`);
       return null;
-    } catch (e) {
-      console.error("[DB Repo] Failed to get user session by token:", e);
+    } catch (e: any) {
+      // B. Database unavailable
+      console.error("[DB Repo] Database query failed during session Lookup (Differentiating database offline status):", e.message || e);
+      if (decoded) {
+        console.warn(`[DB Repo] DANGER/OUTAGE: Session lookup database error, but token JWT is valid. Restoring fallback data session for user: ${decoded.email}`);
+        return {
+          session_id: "offline_session_" + decoded.id,
+          user_id: decoded.id,
+          token: token,
+          expires_at: new Date(Date.now() + 1000 * 60 * 60).toISOString(),
+          email: decoded.email,
+          role: decoded.role,
+          beneficiary_id: decoded.beneficiaryId || null
+        };
+      }
       return null;
     }
   }

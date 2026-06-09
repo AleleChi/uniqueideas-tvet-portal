@@ -8,6 +8,98 @@ import puppeteer from "puppeteer";
 import { DbRepo } from "./db";
 import { buildPublicUrl } from "../config/api";
 import { logForensicPdfTrace } from "./pdfTraceAudit";
+import fs from "fs";
+import path from "path";
+import os from "os";
+
+function findChromeExecutable(): string | null {
+  const searchDirs = [
+    path.join(process.cwd(), ".cache", "puppeteer"),
+    path.join(os.homedir(), ".cache", "puppeteer"),
+    "/opt/render/.cache/puppeteer",
+    "/home/render/.cache/puppeteer",
+    "/root/.cache/puppeteer",
+    "/vercel/.cache/puppeteer"
+  ];
+
+  console.log("[PdfService] Starting scan for Chrome browser in known caches...");
+  
+  const findFile = (dir: string): string | null => {
+    if (!fs.existsSync(dir)) return null;
+    try {
+      const files = fs.readdirSync(dir);
+      for (const file of files) {
+        const fullPath = path.join(dir, file);
+        const stat = fs.statSync(fullPath);
+        if (stat.isDirectory()) {
+          const found = findFile(fullPath);
+          if (found) return found;
+        } else {
+          const name = file.toLowerCase();
+          if (name === "chrome" || name === "chrome.exe" || name === "chromium") {
+            return fullPath;
+          }
+        }
+      }
+    } catch {
+      // Ignore reading errors for specific inaccessible directories
+    }
+    return null;
+  };
+
+  for (const dir of searchDirs) {
+    console.log(`[PdfService] Checking cache directory: ${dir}`);
+    const found = findFile(dir);
+    if (found) {
+      console.log(`[PdfService] Found Chrome executable candidate in cache path: ${found}`);
+      if (process.platform !== "win32") {
+        try {
+          fs.chmodSync(found, "755");
+          console.log(`[PdfService] Chmod 755 applied to: ${found}`);
+        } catch (chmodErr: any) {
+          console.warn(`[PdfService] Failed to chmod executable: ${chmodErr.message}`);
+        }
+      }
+      return found;
+    }
+  }
+
+  // System absolute fallbacks
+  const systemPaths = [
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/chrome",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  ];
+  for (const sysPath of systemPaths) {
+    if (fs.existsSync(sysPath)) {
+      console.log(`[PdfService] Found Chrome at system default path: ${sysPath}`);
+      return sysPath;
+    }
+  }
+
+  // Environment fallback
+  const envPath = process.env.CHROME_PATH || process.env.PUPPETEER_EXECUTABLE_PATH;
+  if (envPath && fs.existsSync(envPath)) {
+    console.log(`[PdfService] Found Chrome via env variable: ${envPath}`);
+    return envPath;
+  }
+
+  // Puppeteer default fallback
+  try {
+    const defaultPath = puppeteer.executablePath();
+    if (defaultPath && fs.existsSync(defaultPath)) {
+      console.log(`[PdfService] Found default Puppeteer executable at: ${defaultPath}`);
+      return defaultPath;
+    }
+  } catch (err: any) {
+    console.warn(`[PdfService] Could not resolve default Puppeteer executable path: ${err.message}`);
+  }
+
+  return null;
+}
 
 export class PdfService {
   /**
@@ -54,9 +146,33 @@ export class PdfService {
    * as a graceful fallback.
    */
   public static async compileHtmlToPdfBuffer(htmlContent: string, isLandscape: boolean = false): Promise<Buffer> {
+    const executablePath = findChromeExecutable();
+
+    let puppeteerDefaultPath = "N/A";
     try {
-      console.log(`[PdfService] Launching Puppeteer browser (Landscape mode: ${isLandscape})...`);
-      const browser = await puppeteer.launch({
+      puppeteerDefaultPath = puppeteer.executablePath();
+    } catch (e: any) {
+      puppeteerDefaultPath = "Error resolving: " + e.message;
+    }
+
+    const binaryExistsFlag = executablePath ? fs.existsSync(executablePath) : false;
+
+    console.log("[PdfService] ==============================================");
+    console.log("[PdfService] PUPPETEER DIAGNOSTIC LOG:");
+    console.log(`[PdfService] - Platform: ${process.platform}`);
+    console.log(`[PdfService] - Architecture: ${process.arch}`);
+    console.log(`[PdfService] - NODE_ENV: ${process.env.NODE_ENV}`);
+    console.log(`[PdfService] - PUPPETEER_CACHE_DIR: ${process.env.PUPPETEER_CACHE_DIR || "N/A"}`);
+    console.log(`[PdfService] - PUPPETEER_EXECUTABLE_PATH: ${process.env.PUPPETEER_EXECUTABLE_PATH || "N/A"}`);
+    console.log(`[PdfService] - puppeteer.executablePath(): ${puppeteerDefaultPath}`);
+    console.log(`[PdfService] - Resolved Executable Path: ${executablePath || "None (Using Puppeteer Default)"}`);
+    console.log(`[PdfService] Chrome binary exists = ${binaryExistsFlag}`);
+    console.log("[PdfService] ==============================================");
+
+    let browser: any = null;
+    try {
+      console.log(`[PdfService] Launching Puppeteer browser with resolved path...`);
+      const launchOptions: any = {
         headless: true,
         args: [
           "--no-sandbox",
@@ -64,36 +180,48 @@ export class PdfService {
           "--disable-dev-shm-usage",
           "--disable-gpu"
         ]
+      };
+
+      if (executablePath) {
+        launchOptions.executablePath = executablePath;
+      }
+
+      browser = await puppeteer.launch(launchOptions);
+      console.log("[PdfService] Puppeteer browser launch SUCCESS.");
+    } catch (launchErr: any) {
+      console.error("[PdfService] Puppeteer browser launch FAILURE:", launchErr.message || launchErr);
+      throw new Error(`BROWSER_LAUNCH_FAILED: Chrome browser binary could not be loaded or executed. Details: ${launchErr.message}`);
+    }
+
+    try {
+      const page = await browser.newPage();
+      await page.setContent(htmlContent, { waitUntil: "networkidle0" as any });
+      
+      const pdfBuffer = await page.pdf({
+        format: "A4",
+        landscape: isLandscape,
+        printBackground: true,
+        margin: {
+          top: "15mm",
+          bottom: "15mm",
+          left: "15mm",
+          right: "15mm"
+        }
       });
 
-      try {
-        const page = await browser.newPage();
-        await page.setContent(htmlContent, { waitUntil: "networkidle0" as any });
-        
-        const pdfBuffer = await page.pdf({
-          format: "A4",
-          landscape: isLandscape,
-          printBackground: true,
-          margin: {
-            top: "15mm",
-            bottom: "15mm",
-            left: "15mm",
-            right: "15mm"
-          }
-        });
+      console.log(`[PdfService] PDF compilation completed successfully (${pdfBuffer.length} bytes).`);
+      const buffer = Buffer.from(pdfBuffer);
+      
+      logForensicPdfTrace("PDF Generator (Compiled)", "document.pdf", buffer);
 
-        console.log(`[PdfService] PDF compilation completed successfully (${pdfBuffer.length} bytes).`);
-        const buffer = Buffer.from(pdfBuffer);
-        
-        logForensicPdfTrace("PDF Generator (Compiled)", "document.pdf", buffer);
-
-        return buffer;
-      } finally {
+      return buffer;
+    } catch (compileErr: any) {
+      console.error("[PdfService] Page generation or PDF printing failed:", compileErr.message || compileErr);
+      throw new Error(`PDF_GENERATION_FAILED: Failed to compile HTML to PDF. Details: ${compileErr.message}`);
+    } finally {
+      if (browser) {
         await browser.close();
       }
-    } catch (err: any) {
-      console.error("[PdfService] Puppeteer PDF compilation failed.", err.message || err);
-      throw new Error(`INVALID PDF GENERATED: ${err.message || err}`);
     }
   }
 

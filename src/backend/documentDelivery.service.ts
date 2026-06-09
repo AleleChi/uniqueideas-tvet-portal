@@ -117,6 +117,8 @@ export class DocumentDeliveryService {
       const bodyText = template.bodyText ? this.substituteVariables(template.bodyText, vars) : ``;
 
       // 3. Dispatch Email
+      console.log(`[PIPELINE TRACE] STAGE 7 - DISPATCH CENTER DOCUMENT DELIVERY: Initiating dispatch template execution. Dispatch ID: '${dispatchId}', Beneficiary ID: '${dispatch.beneficiaryId}', Type: '${dispatch.documentType}', Recipient: '${dispatch.emailAddress}', resolved secureLink: '${vars.download_link || ""}'`);
+
       const result = await EmailDispatchService.sendEmail({
         to: dispatch.emailAddress,
         subject,

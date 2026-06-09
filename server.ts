@@ -72,6 +72,11 @@ export const sendDocumentResponse = (res: any, data: Buffer | string, beneficiar
 
   const filename = buildSanitizedFilename(beneficiary, type || "document", ext);
 
+  console.log(`[PIPELINE TRACE] STAGE 4 - DOWNLOAD RESPONSE HEADERS: Setting transport headers for candidate '${beneficiary.id}'. Filename: '${filename}', mime: '${mime}', size: ${buffer.length} bytes, inline: ${inline}`);
+  if (inline) {
+    console.log(`[PIPELINE TRACE] STAGE 5 - PREVIEW TITLE: Browser preview rendering title expected from inline content-disposition header: '${filename}'`);
+  }
+
   console.log({
     filename,
     mime,

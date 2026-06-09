@@ -11,6 +11,7 @@ import { DbRepo } from "./db";
 import { DocumentService } from "./document.service";
 import { PdfService } from "./pdf.service";
 import { DocumentType, Beneficiary } from "../types";
+import { buildSanitizedFilename } from "./pdfTraceAudit";
 import JSZip from "jszip";
 import { buildPublicUrl } from "../config/api";
 
@@ -864,11 +865,7 @@ export class AdmissionController {
       const signature = buffer.toString("ascii", 0, 5);
       const isRealPdf = buffer.length >= 5 && signature === "%PDF-";
 
-      const fName = (candidate.firstName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-      const lName = (candidate.lastName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-      const namePart = fName && lName ? `${fName}_${lName}` : `${(candidate.id || "TRAINEE").replace(/[^A-Z0-9-]/g, "")}`;
-      const docPart = "ADMISSION_FORM";
-      const filename = `${namePart}_${docPart}.pdf`;
+      const filename = buildSanitizedFilename(candidate, "ADMISSION_FORM", "pdf");
       const mime = "application/pdf";
 
       console.log({
