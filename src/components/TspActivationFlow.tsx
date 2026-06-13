@@ -21,6 +21,7 @@ export function TspActivationFlow({ token, onClose, onActivationSuccess }: TspAc
   const [currentStep, setCurrentStep] = useState<1 | 2>(token ? 1 : 2);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isAlreadyActivated, setIsAlreadyActivated] = useState(false);
   const [orgDetails, setOrgDetails] = useState<any>(null);
 
   // Step 1: Initializing Password
@@ -77,6 +78,15 @@ export function TspActivationFlow({ token, onClose, onActivationSuccess }: TspAc
           if (res.ok) {
             const data = await res.json();
             setOrgDetails(data);
+            
+            if (data.already_activated) {
+              setIsAlreadyActivated(true);
+              return;
+            }
+
+            if (data.onboarding_step === 2) {
+              setCurrentStep(2);
+            }
             
             setProfileForm(prev => ({
               ...prev,
@@ -310,6 +320,41 @@ export function TspActivationFlow({ token, onClose, onActivationSuccess }: TspAc
               className="mt-5 w-full bg-slate-900 text-white rounded-lg py-2.5 text-xs font-semibold hover:bg-slate-800 transition shadow-sm cursor-pointer"
             >
               Back to Home Gateway
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (isAlreadyActivated) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4 antialiased font-sans">
+        <div className="bg-white border border-slate-200/80 shadow-xl max-w-sm w-full p-8 rounded-2xl space-y-6 relative overflow-hidden text-center">
+          <div className="absolute top-0 inset-x-0 h-1.5 bg-emerald-500" />
+          <div className="h-12 w-12 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center mx-auto">
+            <Check className="w-6 h-6 text-emerald-600" />
+          </div>
+          <div className="space-y-2">
+            <h1 className="text-base font-bold text-slate-900 tracking-tight font-display">
+              Account Already Activated
+            </h1>
+            <p className="text-slate-500 text-xs leading-relaxed">
+              Great news! Your National TVET Platform account for <strong>{orgDetails?.name || "your organization"}</strong> is already fully activated and ready for use.
+            </p>
+          </div>
+          <div className="border-t border-slate-100 pt-5 space-y-3">
+            <button
+              onClick={() => { window.location.hash = "#/login"; onClose?.(); }}
+              className="w-full bg-indigo-600 text-white rounded-lg py-3 text-xs font-bold hover:bg-indigo-700 transition shadow-sm cursor-pointer"
+            >
+              Go to Login
+            </button>
+            <button
+              onClick={() => { window.location.hash = "#/forgot-password"; }}
+              className="w-full bg-slate-150 text-slate-700 hover:bg-slate-205 rounded-lg py-3 text-xs font-bold transition shadow-sm cursor-pointer"
+            >
+              Forgot Password
             </button>
           </div>
         </div>

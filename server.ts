@@ -5665,13 +5665,13 @@ app.post("/api/fed/tsps", requireAuth, async (req: AuthenticatedRequest, res) =>
       INSERT INTO tsps (
         tenant_id, state_id, name, code, tsp_code, contact_person, contact_email, contact_phone, 
         is_active, state, lga, account_status, invitation_status, organization_status, profile_completed, 
-        activation_token_hash, activation_expires_at, created_by
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, $10, 'PENDING_ACTIVATION', 'INVITED', 'PENDING_INVITATION', false, $11, $12, $13)
+        activation_token_hash, activation_token_raw, activation_expires_at, created_by
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, $10, 'ACTIVATION_SENT', 'ACTIVATION_SENT', 'PENDING_INVITATION', false, $11, $12, $13, $14)
       RETURNING id, tsp_code
     `, [
       tspTenantId, state_id, name, `TSP-${stateCode}-${Date.now().toString().slice(-4)}`, 
       computedTspCode, contact_person, normalizedEmail, contact_phone, 
-      stateName, lga, tokenHash, expiresAt, req.user.id
+      stateName, lga, tokenHash, token, expiresAt, req.user.id
     ]);
 
     console.log(`[CREATION] Database insert completed. rowCount = ${tspRes.rowCount || tspRes.rows.length}`);
@@ -5821,7 +5821,7 @@ app.get("/api/fed/activation-logs", requireAuth, async (req: AuthenticatedReques
   }
 });
 
-// 2. FED reissues/resends activation for a TSP
+// 2. FED reissues/resends activation/onboarding instructions for a TSP based on its status
 app.post("/api/fed/tsps/:id/resend-activation", requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
@@ -5841,98 +5841,78 @@ app.post("/api/fed/tsps/:id/resend-activation", requireAuth, async (req: Authent
     }
     const tsp = result.rows[0];
 
-    // Generate secure activation token and hash it (72h expiry)
-    const token = crypto.randomBytes(32).toString("hex");
-    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
-    const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+    const currentStatus = tsp.account_status || "INVITED";
 
-    // PHASE 1 LOGGING - Reissue Creation Trace
-    console.log("=== PHASE 1: TOKEN CREATION TRACE (POST /api/fed/tsps/:id/resend-activation) ===");
-    console.log(`[REISSUE_CREATION] TSP ID: "${id}"`);
-    console.log(`[REISSUE_CREATION] Generated raw token length: ${token.length}`);
-    console.log(`[REISSUE_CREATION] Generated SHA-256 hash: "${tokenHash}"`);
-    console.log(`[REISSUE_CREATION] activation_expires_at: ${expiresAt}`);
+    // Determine token and expiration details adaptively
+    const hasExpired = tsp.activation_expires_at ? (new Date(tsp.activation_expires_at).getTime() <= Date.now()) : true;
+    let token = tsp.activation_token_raw;
+    let tokenHash = tsp.activation_token_hash;
+    let expiresAt = tsp.activation_expires_at;
+    let isReused = false;
 
-    const updateRes = await pool.query(`
+    if (token && !hasExpired) {
+      isReused = true;
+    } else {
+      token = crypto.randomBytes(32).toString("hex");
+      tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+      expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+    }
+
+    // Determine target lifecycle status transitions
+    let nextStatus = currentStatus;
+    if (currentStatus === "INVITED") {
+      nextStatus = "ACTIVATION_SENT";
+    }
+
+    // Update database
+    await pool.query(`
       UPDATE tsps
       SET 
         activation_token_hash = $1,
-        activation_expires_at = $2,
-        account_status = 'PENDING_ACTIVATION',
+        activation_token_raw = $2,
+        activation_expires_at = $3,
+        account_status = $4,
         updated_at = NOW()
-      WHERE id = $3
-    `, [tokenHash, expiresAt, id]);
-
-    console.log(`[REISSUE_CREATION] Database update completed. rowCount = ${updateRes.rowCount}`);
-    if (updateRes.rowCount === 0) {
-      console.error("[REISSUE_CREATION ERROR] Affected row count on TSP update is 0. Failing operation.");
-      return res.status(500).json({ error: "Failed to update TSP activation settings. Record not modified." });
-    }
-
-    // PHASE 2 - DATABASE VERIFICATION
-    const verifyRes = await pool.query(`
-      SELECT
-        id,
-        name AS organization_name,
-        activation_token_hash,
-        activation_expires_at
-      FROM tsps
-      WHERE id = $1
-    `, [id]);
-
-    console.log("=== PHASE 2: DATABASE VERIFICATION ===");
-    if (verifyRes.rows.length === 0) {
-      console.error(`[VERIFY ERROR] TSP with ID ${id} could not be retrieved from DB immediately after update.`);
-      return res.status(500).json({ error: `Database verification failed. Record not found immediately after update.` });
-    }
-
-    const dbRow = verifyRes.rows[0];
-    console.log(`[VERIFY] id: ${dbRow.id}`);
-    console.log(`[VERIFY] organization_name (name alias): "${dbRow.organization_name}"`);
-    console.log(`[VERIFY] activation_token_hash in DB: "${dbRow.activation_token_hash}"`);
-    console.log(`[VERIFY] activation_expires_at in DB: ${dbRow.activation_expires_at}`);
-    
-    const dbExpiresTime = new Date(dbRow.activation_expires_at).getTime();
-    const nowTime = Date.now();
-    const isFuture = dbExpiresTime > nowTime;
-    console.log(`[VERIFY] is_future_expiry: ${isFuture} (Expires: ${dbRow.activation_expires_at}, Current: ${new Date(nowTime).toISOString()})`);
-    
-    // Obfuscating password for DB connection string telemetry logs
-    const dbUrl = process.env.DATABASE_URL || "pg://localhost:5432/ideas_tvet";
-    const maskedDbUrl = dbUrl.replace(/:([^:@]+)@/, ":[MASKED_PASSWORD]@");
-    console.log(`[ENVIRONMENT] Active Database Connection: ${maskedDbUrl}`);
-    console.log(`[ENVIRONMENT] Backend Base Url Origin: ${req.headers.origin || req.headers.host || "unknown"}`);
-    console.log("======================================");
-
-    if (!dbRow.activation_token_hash) {
-      return res.status(500).json({ error: "Database verification failed: activation_token_hash was not stored (is NULL or undefined)." });
-    }
-    if (!dbRow.activation_expires_at) {
-      return res.status(500).json({ error: "Database verification failed: activation_expires_at was not stored (is NULL or undefined)." });
-    }
-    if (!isFuture) {
-      return res.status(500).json({ error: `Database verification failed: activation_expires_at is already in the past or expired.` });
-    }
+      WHERE id = $5
+    `, [tokenHash, token, expiresAt, nextStatus, id]);
 
     const activationLink = buildPublicUrl(`/tsp/activate?token=${token}`, req);
     let dispatchError: string | null = null;
     try {
-      await EmailService.sendEmail({
-        recipient: tsp.contact_email,
-        subject: "IDEAS-TVET Training Service Provider Activation (Reissued)",
-        body: `
-          <div style="font-family: sans-serif; max-width: 600px; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
-            <h2 style="color: #1e3a8a; margin-top: 0;">Organization Onboarding Key Reissued</h2>
-            <p>A new secure activation link has been reissued for your organization, <strong>${tsp.name}</strong>.</p>
-            <p><strong>National TSP ID:</strong> <span style="font-family: monospace; font-weight: bold;">${tsp.tsp_code || tsp.code}</span></p>
-            <p>Please click the link below to initialize credentials:</p>
-            <p style="margin: 24px 0;">
-              <a href="${activationLink}" style="background-color: #2563eb; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block;">Activate Account</a>
-            </p>
-            <p style="font-size: 13px; color: #64748b;">This link is active for 72 hours.</p>
-          </div>
-        `
-      });
+      if (currentStatus === "IN_PROGRESS") {
+        await EmailService.sendEmail({
+          recipient: tsp.contact_email,
+          subject: "IDEAS-TVET Onboarding - Resume Registration",
+          body: `
+            <div style="font-family: sans-serif; max-width: 600px; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+              <h2 style="color: #1e3a8a; margin-top: 0;">Resume Your Organization Onboarding</h2>
+              <p>You can resume onboarding for <strong>${tsp.name}</strong> from where you last left off.</p>
+              <p>Please click the button below to resume:</p>
+              <p style="margin: 24px 0;">
+                <a href="${activationLink}" style="background-color: #2563eb; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block;">Resume Onboarding</a>
+              </p>
+              <p style="font-size: 13px; color: #64748b;">This secure link allows you to continue directly from your last completed step.</p>
+            </div>
+          `
+        });
+      } else {
+        await EmailService.sendEmail({
+          recipient: tsp.contact_email,
+          subject: "IDEAS-TVET Training Service Provider Activation",
+          body: `
+            <div style="font-family: sans-serif; max-width: 600px; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+              <h2 style="color: #1e3a8a; margin-top: 0;">Organization Onboarding Key</h2>
+              <p>A secure activation link is ready for your organization, <strong>${tsp.name}</strong>.</p>
+              <p><strong>National TSP ID:</strong> <span style="font-family: monospace; font-weight: bold;">${tsp.tsp_code || tsp.code}</span></p>
+              <p>Please click the link below to initialize credentials:</p>
+              <p style="margin: 24px 0;">
+                <a href="${activationLink}" style="background-color: #2563eb; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block;">Activate Account</a>
+              </p>
+              <p style="font-size: 13px; color: #64748b;">This secure link remains active for 72 hours.</p>
+            </div>
+          `
+        });
+      }
     } catch (mailErr: any) {
       dispatchError = mailErr.message || "Failed during SMTP transaction";
       console.log("[Onboarding] Reissued email dispatch failed:", mailErr.message);
@@ -5958,18 +5938,110 @@ app.post("/api/fed/tsps/:id/resend-activation", requireAuth, async (req: Authent
       "TSP_ACTIVATION_RESENT",
       `FED reissued/resent activation link for TSP: ${tsp.name}. ID: ${id}`
     );
-    await logAction(
-      req.user.email,
-      "TSP_INVITATION_RESENT",
-      `TSP invitation successfully resent for organization: ${tsp.name}. ID: ${id}`
-    );
 
     res.json({
       success: true,
       sandbox: !process.env.RESEND_API_KEY,
-      message: "Success. New invitation credential reissued and dispatched.",
+      message: `Success. Action processed for state: ${currentStatus}. ${isReused ? "Resent existing active token" : "New token generated and dispatched"}.`,
       activationToken: token
     });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// FED sends login instructions without issuing activation tokens (Phase 6)
+app.post("/api/fed/tsps/:id/send-login-instructions", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFed) {
+       return res.status(403).json({ error: "Access denied. Action restricted to Federal managers." });
+    }
+
+    const { id } = req.params;
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database offline" });
+    }
+
+    const result = await pool.query("SELECT * FROM tsps WHERE id = $1", [id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "TSP profile not found." });
+    }
+    const tsp = result.rows[0];
+
+    const portalLink = buildPublicUrl("/login", req);
+    const forgotLink = buildPublicUrl("/forgot-password", req);
+
+    await EmailService.sendEmail({
+      recipient: tsp.contact_email,
+      subject: "National TVET Platform Portal Access",
+      body: `
+        <div style="font-family: sans-serif; max-width: 600px; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+          <h2 style="color: #1e3a8a; margin-top: 0;">Portal Access Instructions</h2>
+          <p>Your National TVET Platform account has already been activated.</p>
+          <p>You may access your workspace using the portal link below:</p>
+          <p style="margin: 24px 0;">
+            <a href="${portalLink}" style="background-color: #2563eb; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block;">Access TSP Portal</a>
+          </p>
+          <p>If you have forgotten your password, you can reset it here:</p>
+          <p style="margin: 12px 0;">
+            <a href="${forgotLink}" style="color: #2563eb; font-weight: bold; text-decoration: underline;">Forgot Password</a>
+          </p>
+        </div>
+      `
+    });
+
+    await logAction(
+      req.user.email,
+      "TSP_LOGIN_INSTRUCTIONS_SENT",
+      `FED sent login access instructions email to active TSP: ${tsp.name}. ID: ${id}`
+    );
+
+    res.json({ success: true, message: "Login instructions email dispatched successfully." });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// FED transitions status to ACTIVE for PROFILE_COMPLETED TSPs (Phase 2)
+app.post("/api/fed/tsps/:id/activate-account", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFed) {
+       return res.status(403).json({ error: "Access denied. Action restricted to Federal managers." });
+    }
+
+    const { id } = req.params;
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database offline" });
+    }
+
+    const result = await pool.query("SELECT * FROM tsps WHERE id = $1", [id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "TSP profile not found." });
+    }
+    const tsp = result.rows[0];
+
+    await pool.query(`
+      UPDATE tsps
+      SET 
+        account_status = 'ACTIVE',
+        invitation_status = 'ACTIVE',
+        organization_status = 'ACTIVE',
+        is_active = true,
+        updated_at = NOW()
+      WHERE id = $1
+    `, [id]);
+
+    await logAction(
+      req.user.email,
+      "TSP_ACTIVATED_BY_FED",
+      `FED transitioned TSP status to ACTIVE for organization: ${tsp.name}. ID: ${id}`
+    );
+
+    res.json({ success: true, message: "TSP organization account has been transitioned to ACTIVE." });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -6153,8 +6225,26 @@ app.post("/api/tsp/activate", async (req, res) => {
 
     // Forensic Step 3: Check current account status (allowing ACTIVE status as an onboarding recovery mechanism)
     console.log(`[VALIDATE] Matched TSP Account Status: "${tsp.account_status}"`);
-    if (tsp.account_status !== "PENDING_ACTIVATION" && tsp.account_status !== "PENDING" && tsp.account_status !== "ACTIVE") {
-      console.log(`[VALIDATE OUTCOME] FAILED: TSP status is already resolved / active (current status: ${tsp.account_status}).`);
+    if (tsp.account_status === "ACTIVE" || tsp.profile_completed === true) {
+      console.log(`[VALIDATE OUTCOME] ALREADY ACTIVATED: TSP is already active.`);
+      console.log("==================================================");
+
+      await pool.query(`
+        INSERT INTO activation_audit_logs (
+          tsp_id, tsp_name, contact_email, action, token_truncated, token_hash, status, ip_address, user_agent, sandbox_mode, error_message
+        ) VALUES ($1, $2, $3, 'VALIDATE', $4, $5, 'ALREADY_ACTIVE', $6, $7, $8, 'Already active activation link clicked.')
+      `, [tsp.id, tsp.name, tsp.contact_email, tokenTruncated, tokenHash, ip, userAgent, sandbox]);
+
+      return res.json({
+        success: true,
+        already_activated: true,
+        name: tsp.name,
+        email: tsp.contact_email
+      });
+    }
+
+    if (tsp.account_status !== "PENDING_ACTIVATION" && tsp.account_status !== "PENDING" && tsp.account_status !== "IN_PROGRESS" && tsp.account_status !== "ACTIVATION_SENT" && tsp.account_status !== "PROFILE_COMPLETED") {
+      console.log(`[VALIDATE OUTCOME] FAILED: TSP status is already resolved in status: ${tsp.account_status}.`);
       console.log("==================================================");
 
       await pool.query(`
@@ -6163,10 +6253,10 @@ app.post("/api/tsp/activate", async (req, res) => {
         ) VALUES ($1, $2, $3, 'VALIDATE', $4, $5, 'WRONG_STATUS', $6, $7, $8, $9)
       `, [
         tsp.id, tsp.name, tsp.contact_email, tokenTruncated, tokenHash, ip, userAgent, sandbox, 
-        `TSP is already resolved in status ${tsp.account_status}. Activation blocked.`
+        `TSP is in blocked status: ${tsp.account_status}`
       ]);
 
-      return res.status(400).json({ error: `Onboarding cannot be completed because this account is already ${tsp.account_status}.` });
+      return res.status(400).json({ error: `Onboarding cannot be completed because this account is in status: ${tsp.account_status}.` });
     }
 
     console.log("[VALIDATE OUTCOME] SUCCESS: Token matches perfectly, token is active and account remains pending.");
@@ -6187,6 +6277,7 @@ app.post("/api/tsp/activate", async (req, res) => {
       state: tsp.state || "",
       lga: tsp.lga || "",
       contact_phone: tsp.contact_phone || "",
+      onboarding_step: tsp.onboarding_step || 1,
       is_nbte_accredited: tsp.is_nbte_accredited !== null && tsp.is_nbte_accredited !== undefined ? !!tsp.is_nbte_accredited : true,
       nbte_accreditation_number: tsp.nbte_accreditation_number || tsp.accreditation_number || "",
       accreditation_date: tsp.accreditation_date || "",
@@ -6291,14 +6382,13 @@ app.post("/api/tsp/set-password", async (req, res) => {
       `, [hashedCheck, user.id]);
     }
 
-    // Track active invitation activation timestamp and mark account ACTIVE
+    // Track active invitation activation timestamp and mark account IN_PROGRESS
     await pool.query(`
       UPDATE tsps
       SET 
         activated_at = NOW(),
-        activation_token_hash = NULL,
-        activation_expires_at = NULL,
-        account_status = 'ACTIVE',
+        account_status = 'IN_PROGRESS',
+        onboarding_step = 2,
         updated_at = NOW()
       WHERE id = $1
     `, [tsp.id]);
@@ -6433,9 +6523,9 @@ app.post("/api/tsp/complete-profile", requireAuth, async (req: AuthenticatedRequ
         nbte_accreditation_number = $14,
         accreditation_date = $15,
         accreditation_expiry_date = $16,
-        account_status = 'ACTIVE',
-        invitation_status = 'ACTIVE',
-        organization_status = 'ACTIVE',
+        account_status = 'PROFILE_COMPLETED',
+        invitation_status = 'PROFILE_COMPLETED',
+        organization_status = 'PROFILE_COMPLETED',
         profile_completed = true,
         updated_at = NOW()
       WHERE id = $17
@@ -6519,13 +6609,13 @@ app.post("/api/tsp/invitations", requireAuth, async (req: AuthenticatedRequest, 
       INSERT INTO tsps (
         tenant_id, state_id, name, code, tsp_code, contact_person, contact_email, contact_phone, 
         is_active, state, lga, account_status, invitation_status, organization_status, profile_completed, 
-        activation_token_hash, activation_expires_at, created_by
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, $10, 'PENDING_ACTIVATION', 'INVITED', 'PENDING_INVITATION', false, $11, $12, $13)
+        activation_token_hash, activation_token_raw, activation_expires_at, created_by
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, $10, 'ACTIVATION_SENT', 'ACTIVATION_SENT', 'PENDING_INVITATION', false, $11, $12, $13, $14)
       RETURNING id, tsp_code
     `, [
       tspTenantId, state_id, name, `TSP-${stateCode}-${Date.now().toString().slice(-4)}`, 
       computedTspCode, contact_person, normalizedEmail, contact_phone, 
-      stateName, lga, tokenHash, expiresAt, req.user.id
+      stateName, lga, tokenHash, token, expiresAt, req.user.id
     ]);
     const tspId = tspRes.rows[0].id;
     const tspCode = tspRes.rows[0].tsp_code;
@@ -6733,68 +6823,65 @@ app.post("/api/tsp/reset-access", requireAuth, async (req: AuthenticatedRequest,
     }
     const tsp = result.rows[0];
 
-    // Generate secure token and update activation details
-    const token = crypto.randomBytes(32).toString("hex");
-    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
-    const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+    // Find the TSP admin user
+    const userRes = await pool.query("SELECT * FROM users WHERE tsp_id = $1 AND role = 'TSP_ADMIN'", [tsp.id]);
+    if (userRes.rows.length === 0) {
+      return res.status(404).json({ error: "No TSP Administrator account is currently registered for this organization." });
+    }
+    const user = userRes.rows[0];
 
-    await pool.query(`
-      UPDATE tsps
-      SET 
-        activation_token_hash = $1,
-        activation_expires_at = $2,
-        account_status = 'PENDING_ACTIVATION',
-        invitation_status = 'INVITED',
-        organization_status = 'PENDING_INVITATION',
-        updated_at = NOW()
-      WHERE id = $3
-    `, [tokenHash, expiresAt, id]);
+    // Generate password_reset_token valid for 24 hours
+    const passwordResetToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(passwordResetToken).digest("hex");
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
-    // Force expire admin password
+    // Update user: set reset_token and reset_token_expires without touching activation token
     await pool.query(`
       UPDATE users
-      SET must_change_password = true, updated_at = NOW()
-      WHERE tsp_id = $1 AND role = 'TSP_ADMIN'
-    `, [id]);
+      SET 
+        reset_token = $1,
+        reset_token_expires = $2,
+        must_change_password = true,
+        updated_at = NOW()
+      WHERE id = $3
+    `, [tokenHash, expiresAt, user.id]);
 
-    // Invalidate sessions
+    // Force expire session cookies for safety
     await pool.query(`
       DELETE FROM user_sessions 
-      WHERE user_id IN (SELECT id FROM users WHERE tsp_id = $1)
-    `, [id]);
+      WHERE user_id = $1
+    `, [user.id]);
 
-    const resetLink = buildPublicUrl(`/tsp/activate?token=${token}`, req);
+    const resetLink = buildPublicUrl(`/reset-password?token=${passwordResetToken}`, req);
     try {
       await EmailService.sendEmail({
         recipient: tsp.contact_email,
-        subject: "IDEAS-TVET TSP Administrative Access Reset",
+        subject: "National TVET Platform - Restore Account Access",
         body: `
           <div style="font-family: sans-serif; max-width: 600px; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
-            <h2 style="color: #1e3a8a; margin-top: 0;">Administrative Access Reset</h2>
-            <p>An administrator access reset has been initiated for <strong>${tsp.name}</strong> by the Federal Program Office.</p>
-            <p>Your previous password has been suspended and a new credentials setup is required.</p>
-            <p>Please click the button below to reactivate your administrative access and set a new password:</p>
+            <p>A request has been made to restore access to your National TVET account.</p>
+            <p>Please click the button below to reset your password and restore access to your account:</p>
             <p style="margin: 24px 0;">
-              <a href="${resetLink}" style="background-color: #ef4444; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block;">Re-activate Access</a>
+              <a href="${resetLink}" style="background-color: #2563eb; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block;">Reset Password</a>
             </p>
-            <p style="font-size: 13px; color: #64748b;">This secure reactivation link remains active for 72 hours.</p>
+            <p style="font-size: 13px; color: #64748b;">This secure reset link remains active for 24 hours.</p>
           </div>
         `
       });
     } catch (mailErr: any) {
-      console.log("[Onboarding] Access reset email dispatch failed:", mailErr.message);
+      console.log("[Onboarding] Password reset access email dispatch failed:", mailErr.message);
     }
 
     await logAction(
       req.user.email,
-      "TSP_ACCESS_RESET",
-      `FED reset administrator access for TSP: ${tsp.name}. ID: ${id}`
+      "TSP_PASSWORD_RESET_ACCESS_ISSUED",
+      `FED triggered password reset and access restoration for TSP: ${tsp.name}. ID: ${id}`
     );
 
     res.json({
       success: true,
-      message: "TSP administrator access credentials reset, session invalidated, and reactivation link dispatched.",
-      activationToken: token
+      message: "Success. A secure password reset token has been registered and invitation dispatched.",
+      resetToken: passwordResetToken
     });
   } catch (e: any) {
     res.status(500).json({ error: e.message });

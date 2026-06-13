@@ -662,6 +662,60 @@ export function FedOrganizationsWorkspace() {
     );
   };
 
+  // Handle single Activate Account (PROFILE_COMPLETED -> ACTIVE)
+  const executeActivateAccount = async (id: string, name: string) => {
+    triggerConfirmation(
+      "Approve & Activate Training Service Provider Account",
+      `Would you like to approve and fully activate the portal credentials for ${name}? This will grant them complete access to their dashboard.`,
+      "Activate Portal Account",
+      "success",
+      async () => {
+        try {
+          setActionLoading(true);
+          const res = await authFetch(`/api/fed/tsps/${id}/activate-account`, {
+            method: "POST"
+          });
+
+          if (res.ok) {
+            showToast("success", `Authorized and activated administrative portal credentials for ${name}.`);
+            appendLocalAudit(id, "PORTAL_ACTIVATED", "Federal Admin manually activated account after profile completion.");
+            fetchData();
+          } else {
+            const error = await res.json();
+            showToast("error", error.error || "Action rejected.");
+          }
+        } catch (e: any) {
+          showToast("error", e.message);
+        } finally {
+          setActionLoading(false);
+        }
+      }
+    );
+  };
+
+  // Handle single Send Login Instructions (ACTIVE state)
+  const executeSendLoginInstructions = async (id: string) => {
+    try {
+      setActionLoading(true);
+      const res = await authFetch(`/api/fed/tsps/${id}/send-login-instructions`, {
+        method: "POST"
+      });
+
+      if (res.ok) {
+        showToast("success", "Login reference instructions generated and dispatched successfully.");
+        appendLocalAudit(id, "SECURITY_LOGIN_GUIDE", "Login reference and access portal instructions sent.");
+        fetchData();
+      } else {
+        const error = await res.json();
+        showToast("error", error.error || "Action rejected.");
+      }
+    } catch (e: any) {
+      showToast("error", e.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   // Handle Bulk submit wrapper
   const triggerBulkAction = (action: "suspend" | "reactivate" | "resend-activation") => {
     setShowBulkModal({ action });
@@ -1312,12 +1366,39 @@ export function FedOrganizationsWorkspace() {
                         </span>
                       </td>
                       <td className="py-3 px-4 font-sans">
-                        <span className={`text-[10.5px] font-bold flex items-center gap-1 ${
-                          t.profile_completed ? "text-emerald-400" : "text-amber-400"
-                        }`}>
-                          <span className={`h-1.5 w-1.5 rounded-full ${t.profile_completed ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-                          {t.profile_completed ? "Completed" : "Wizard Pending"}
-                        </span>
+                        {(() => {
+                          const status = t.account_status || (t.profile_completed ? "ACTIVE" : "INVITED");
+                          let color = "text-slate-400";
+                          let dotBg = "bg-slate-400";
+                          let label = "INVITED";
+                          if (t.organization_status === "SUSPENDED" || t.account_status === "SUSPENDED") {
+                            color = "text-rose-400";
+                            dotBg = "bg-rose-500";
+                            label = "SUSPENDED";
+                          } else if (status === "ACTIVE" || t.profile_completed) {
+                            color = "text-emerald-400";
+                            dotBg = "bg-emerald-400";
+                            label = "ACTIVE";
+                          } else if (status === "PROFILE_COMPLETED") {
+                            color = "text-blue-400";
+                            dotBg = "bg-blue-400";
+                            label = "PROFILE COMPLETED";
+                          } else if (status === "IN_PROGRESS") {
+                            color = "text-amber-400";
+                            dotBg = "bg-amber-400";
+                            label = "IN PROGRESS";
+                          } else if (status === "ACTIVATION_SENT") {
+                            color = "text-sky-400";
+                            dotBg = "bg-sky-400";
+                            label = "ACTIVATION SENT";
+                          }
+                          return (
+                            <span className={`text-[10.5px] font-bold flex items-center gap-1.5 ${color}`}>
+                              <span className={`h-1.5 w-1.5 rounded-full ${dotBg}`} />
+                              {label}
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td className="py-3 px-4 text-right pr-6 space-x-1" onClick={(e) => e.stopPropagation()}>
                         {/* Safe Details Action */}
@@ -2889,10 +2970,10 @@ export function FedOrganizationsWorkspace() {
                   
                   <div className="grid grid-cols-2 gap-3 text-center">
                     {/* Status Toggle Suspension Action */}
-                    {selectedTsp.organization_status === "SUSPENDED" ? (
+                    {selectedTsp.account_status === "SUSPENDED" || selectedTsp.organization_status === "SUSPENDED" ? (
                       <button
                         onClick={() => executeReactivate(selectedTsp.id, selectedTsp.name)}
-                        className="p-3 bg-emerald-950 hover:bg-emerald-900 border border-emerald-900/40 text-emerald-305 font-bold rounded-xl cursor-pointer transition active:scale-95 flex items-center justify-center gap-2"
+                        className="p-3 bg-emerald-950 hover:bg-emerald-900 border border-emerald-900/40 text-emerald-300 font-bold rounded-xl cursor-pointer transition active:scale-95 flex items-center justify-center gap-2"
                       >
                         <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                         <span>Restore Authority</span>
@@ -2903,30 +2984,73 @@ export function FedOrganizationsWorkspace() {
                           setSuspendTarget(selectedTsp);
                           setSuspensionReason("");
                         }}
-                        className="p-3 bg-rose-950 hover:bg-rose-900 border border-rose-900/40 text-rose-305 font-bold rounded-xl cursor-pointer transition active:scale-95 flex items-center justify-center gap-2"
+                        className="p-3 bg-rose-950 hover:bg-rose-900 border border-rose-900/40 text-rose-300 font-bold rounded-xl cursor-pointer transition active:scale-95 flex items-center justify-center gap-2"
                       >
                         <ShieldAlert className="w-4 h-4 text-rose-400" />
                         <span>Suspend Authority</span>
                       </button>
                     )}
 
-                    {/* Resend Invite */}
-                    <button
-                      onClick={() => executeResendInvitation(selectedTsp.id, selectedTsp.name)}
-                      className="p-3 bg-slate-900 hover:bg-slate-850 border border-slate-800 text-indigo-400 font-bold rounded-xl cursor-pointer transition active:scale-95 flex items-center justify-center gap-2 text-indigo-400"
-                    >
-                      <Send className="w-4 h-4 text-indigo-400" />
-                      <span>Resend Invite</span>
-                    </button>
+                    {/* Adaptive Primary Action */}
+                    {(selectedTsp.account_status === "INVITED" || (!selectedTsp.account_status && !selectedTsp.profile_completed)) && (
+                      <button
+                        onClick={() => executeResendInvitation(selectedTsp.id, selectedTsp.name)}
+                        className="p-3 bg-indigo-950 hover:bg-indigo-900 border border-indigo-900/40 text-indigo-400 font-bold rounded-xl cursor-pointer transition active:scale-95 flex items-center justify-center gap-2"
+                      >
+                        <Send className="w-4 h-4 text-indigo-400" />
+                        <span>Send Invitation</span>
+                      </button>
+                    )}
 
-                    {/* Danger Session Wipes */}
-                    <button
-                      onClick={() => executeResetAccess(selectedTsp.id, selectedTsp.name)}
-                      className="p-3 bg-slate-900 hover:bg-slate-850 border border-slate-800 text-amber-400 font-bold rounded-xl cursor-pointer transition active:scale-95 flex items-center justify-center gap-2 text-amber-400 col-span-2"
-                    >
-                      <RotateCcw className="w-4 h-4 text-amber-400" />
-                      <span>Revoke & Force Credential Reset</span>
-                    </button>
+                    {selectedTsp.account_status === "ACTIVATION_SENT" && (
+                      <button
+                        onClick={() => executeResendInvitation(selectedTsp.id, selectedTsp.name)}
+                        className="p-3 bg-slate-900 hover:bg-slate-850 border border-slate-800 text-indigo-400 font-bold rounded-xl cursor-pointer transition active:scale-95 flex items-center justify-center gap-2 text-indigo-400"
+                      >
+                        <Send className="w-4 h-4 text-indigo-400" />
+                        <span>Resend Invitation</span>
+                      </button>
+                    )}
+
+                    {selectedTsp.account_status === "IN_PROGRESS" && (
+                      <button
+                        onClick={() => executeResendInvitation(selectedTsp.id, selectedTsp.name)}
+                        className="p-3 bg-blue-950 hover:bg-blue-900 border border-blue-900/45 text-blue-400 font-bold rounded-xl cursor-pointer transition active:scale-95 flex items-center justify-center gap-2"
+                      >
+                        <Send className="w-4 h-4 text-blue-400" />
+                        <span>Resume Onboarding</span>
+                      </button>
+                    )}
+
+                    {selectedTsp.account_status === "PROFILE_COMPLETED" && (
+                      <button
+                        onClick={() => executeActivateAccount(selectedTsp.id, selectedTsp.name)}
+                        className="p-3 bg-emerald-950 hover:bg-emerald-950/85 border border-emerald-900/45 text-emerald-400 font-bold rounded-xl cursor-pointer transition active:scale-95 flex items-center justify-center gap-2"
+                      >
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                        <span>Activate Account</span>
+                      </button>
+                    )}
+
+                    {(selectedTsp.account_status === "ACTIVE" || selectedTsp.profile_completed || selectedTsp.account_status === "PENDING_ACTIVATION") && selectedTsp.organization_status !== "SUSPENDED" && selectedTsp.account_status !== "SUSPENDED" && (
+                      <>
+                        <button
+                          onClick={() => executeSendLoginInstructions(selectedTsp.id)}
+                          className="p-3 bg-sky-950 hover:bg-sky-900 border border-sky-900/40 text-sky-450 font-bold rounded-xl cursor-pointer transition active:scale-95 flex items-center justify-center gap-2"
+                        >
+                          <Mail className="w-4 h-4 text-sky-455" />
+                          <span>Send Login Instructions</span>
+                        </button>
+                        
+                        <button
+                          onClick={() => executeResetAccess(selectedTsp.id, selectedTsp.name)}
+                          className="p-3 bg-slate-900 hover:bg-slate-850 border border-slate-800 text-amber-500 font-bold rounded-xl cursor-pointer transition active:scale-95 flex items-center justify-center gap-2 col-span-2"
+                        >
+                          <RotateCcw className="w-4 h-4 text-amber-500" />
+                          <span>Revoke & Force Credential Reset</span>
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
 
