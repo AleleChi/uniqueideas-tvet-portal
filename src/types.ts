@@ -97,6 +97,11 @@ export interface Beneficiary {
   certificateUrl?: string;
   tokenVersion?: number;
   workflowVersion?: number;
+
+  // National Location Infrastructure UUID mappings
+  state_id?: string | null;
+  lga_id?: string | null;
+  training_center_id?: string | null;
   
   // Operational email delivery tracking & analytics
   emailTrackingStatus?: "Sent" | "Failed" | "Delivered" | "Opened";
@@ -204,6 +209,9 @@ export interface Beneficiary {
   alumniEntrepreneurStatus?: string;
   alumniBusinessName?: string;
   alumniCurrentEmployer?: string;
+  tenantId?: string;
+  stateId?: string;
+  tspId?: string;
 }
 
 export enum BeneficiaryStatus {

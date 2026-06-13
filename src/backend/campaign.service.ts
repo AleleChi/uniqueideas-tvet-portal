@@ -1,4 +1,4 @@
-import { getPgPool, DbRepo } from "./db";
+import { getPgPool, DbRepo, executeQuery } from "./db";
 
 export interface CampaignFilters {
   status?: string;
@@ -89,7 +89,7 @@ export class CampaignAudienceService {
     query += " ORDER BY b.id ASC";
 
     try {
-      const res = await pool.query(query, values);
+      const res = await executeQuery(query, values);
       return res.rows;
     } catch (e) {
       console.error("[CampaignAudienceService] buildAudience failed:", e);

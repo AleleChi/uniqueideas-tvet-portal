@@ -9,6 +9,8 @@ import path from "path";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { Beneficiary, ProgramStatus, AuditLog, CustomField, OrganizationSettings, TrainingProgram, WorkflowHistory, InstitutionLetterhead, AdmissionFormTemplate } from "../types";
+import { requestStorage } from "./request-storage";
+import { NIGERIAN_STATES_AND_LGAS } from "../utils/nigerianLgasData";
 
 const { Pool } = pg;
 const DB_FILE = path.join(process.cwd(), "database_ideas_tvet.json");
@@ -191,6 +193,44 @@ export function getPgPool(): pg.Pool | null {
   }
 }
 
+export async function executeQuery(
+  sql: string,
+  params: any[] = []
+): Promise<pg.QueryResult<any>> {
+  const store = requestStorage.getStore();
+  const activeClient = store?.dbClient;
+
+  if (activeClient) {
+    return activeClient.query(sql, params);
+  }
+
+  const pool = getPgPool();
+  if (!pool) {
+    throw new Error("Database pool unavailable");
+  }
+
+  return pool.query(sql, params);
+}
+
+export async function assertTenantContext(options?: { systemContext?: boolean }) {
+  if (options?.systemContext === true) {
+    return;
+  }
+  const res = await executeQuery(`
+    SELECT
+      current_setting('app.current_tenant_tier', true) AS tier,
+      current_setting('app.current_user_role', true) AS role
+  `);
+
+  const row = res.rows[0];
+
+  if (!row || !row.role) {
+    throw new Error(
+      "Tenant security context missing. Query execution blocked."
+    );
+  }
+}
+
 /**
  * Checks if PG is active and responding
  */
@@ -214,6 +254,98 @@ export async function checkPgStatus(): Promise<boolean> {
  * PostgreSQL Table Definitions Schema DDL
  */
 const SCHEMA_DDL = `
+  -- Create enum type if not exists
+  DO $$
+  BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'tenant_tier') THEN
+      CREATE TYPE tenant_tier AS ENUM ('FED', 'STA', 'TSP', 'BEN');
+    END IF;
+  END $$;
+
+  -- Create tenants table
+  CREATE TABLE IF NOT EXISTS tenants (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    domain VARCHAR(255) UNIQUE,
+    tier tenant_tier NOT NULL DEFAULT 'FED',
+    parent_id UUID REFERENCES tenants(id) ON DELETE SET NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMP WITH TIME ZONE
+  );
+
+  -- Create states table
+  CREATE TABLE IF NOT EXISTS states (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+    name VARCHAR(100) UNIQUE NOT NULL,
+    state_code VARCHAR(10) UNIQUE NOT NULL,
+    code VARCHAR(10),
+    geopolitical_zone VARCHAR(50),
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMP WITH TIME ZONE
+  );
+
+  -- Create local_governments table
+  CREATE TABLE IF NOT EXISTS local_governments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    state_id UUID REFERENCES states(id) ON DELETE CASCADE,
+    name VARCHAR(150) NOT NULL,
+    code VARCHAR(50),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- Create lgas reference table
+  CREATE TABLE IF NOT EXISTS lgas (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    state_name VARCHAR(100) NOT NULL,
+    name VARCHAR(150) NOT NULL,
+    UNIQUE(state_name, name)
+  );
+
+  -- Create training_centers table
+  CREATE TABLE IF NOT EXISTS training_centers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+    state_id UUID REFERENCES states(id) ON DELETE CASCADE,
+    lga_id UUID REFERENCES local_governments(id) ON DELETE CASCADE,
+    center_name VARCHAR(255) NOT NULL,
+    address TEXT,
+    latitude NUMERIC,
+    longitude NUMERIC,
+    status VARCHAR(50) DEFAULT 'ACTIVE',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- Create tsps table
+  CREATE TABLE IF NOT EXISTS tsps (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+    state_id UUID REFERENCES states(id) ON DELETE SET NULL,
+    name VARCHAR(255) NOT NULL,
+    code VARCHAR(50) UNIQUE NOT NULL,
+    contact_person VARCHAR(255),
+    contact_email VARCHAR(255),
+    contact_phone VARCHAR(50),
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMP WITH TIME ZONE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_tenants_tier ON tenants(tier);
+  CREATE INDEX IF NOT EXISTS idx_tenants_parent ON tenants(parent_id);
+  CREATE INDEX IF NOT EXISTS idx_states_tenant_id ON states(tenant_id);
+  CREATE INDEX IF NOT EXISTS idx_tsps_tenant_id ON tsps(tenant_id);
+  CREATE INDEX IF NOT EXISTS idx_tsps_state_id ON tsps(state_id);
+  CREATE INDEX IF NOT EXISTS idx_lg_state_id ON local_governments(state_id);
+  CREATE INDEX IF NOT EXISTS idx_tc_tenant_id ON training_centers(tenant_id);
+  CREATE INDEX IF NOT EXISTS idx_tc_state_id ON training_centers(state_id);
+  CREATE INDEX IF NOT EXISTS idx_tc_lga_id ON training_centers(lga_id);
+
   -- Custom dynamic fields definition table
   CREATE TABLE IF NOT EXISTS custom_fields (
     id VARCHAR(50) PRIMARY KEY,
@@ -287,6 +419,9 @@ const SCHEMA_DDL = `
     alumni_current_employer VARCHAR(255),
     token_version INT DEFAULT 1,
     workflow_version INT DEFAULT 1,
+    tenant_id UUID REFERENCES tenants(id) ON DELETE SET NULL,
+    state_id UUID REFERENCES states(id) ON DELETE SET NULL,
+    tsp_id UUID REFERENCES tsps(id) ON DELETE SET NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP WITH TIME ZONE
@@ -364,6 +499,7 @@ const SCHEMA_DDL = `
   -- Audit Trails table
   CREATE TABLE IF NOT EXISTS audit_logs (
     id VARCHAR(100) PRIMARY KEY,
+    tenant_id UUID REFERENCES tenants(id) ON DELETE SET NULL,
     timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     username VARCHAR(255) NOT NULL,
     role VARCHAR(100) NOT NULL,
@@ -484,6 +620,9 @@ const SCHEMA_DDL = `
     lockout_until TIMESTAMP WITH TIME ZONE,
     reset_token VARCHAR(255),
     reset_token_expires TIMESTAMP WITH TIME ZONE,
+    tenant_id UUID REFERENCES tenants(id) ON DELETE SET NULL,
+    state_id UUID REFERENCES states(id) ON DELETE SET NULL,
+    tsp_id UUID REFERENCES tsps(id) ON DELETE SET NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP WITH TIME ZONE
@@ -645,6 +784,7 @@ const SCHEMA_DDL = `
     check_out_time TIMESTAMP WITH TIME ZONE,
     attendance_source VARCHAR(50) DEFAULT 'MANUAL',
     status VARCHAR(50) DEFAULT 'PRESENT',
+    hours_logged NUMERIC(5, 2) DEFAULT 0.00,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (beneficiary_id, attendance_date)
@@ -706,6 +846,168 @@ const SCHEMA_DDL = `
   );
   CREATE INDEX IF NOT EXISTS idx_comm_recipients_campaign ON communication_recipients(campaign_id);
   CREATE INDEX IF NOT EXISTS idx_comm_recipients_beneficiary ON communication_recipients(beneficiary_id);
+
+  -- Cohorts table
+  CREATE TABLE IF NOT EXISTS cohorts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID REFERENCES tenants(id),
+    name VARCHAR(100) NOT NULL,
+    cohort_year INT NOT NULL,
+    start_date DATE,
+    end_date DATE,
+    status VARCHAR(30) DEFAULT 'ACTIVE',
+    created_by VARCHAR(100) REFERENCES users(id),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    deleted_at TIMESTAMP WITH TIME ZONE
+  );
+  CREATE INDEX IF NOT EXISTS idx_cohorts_tenant ON cohorts(tenant_id);
+  CREATE INDEX IF NOT EXISTS idx_cohorts_year ON cohorts(cohort_year);
+  CREATE INDEX IF NOT EXISTS idx_cohorts_status_deleted_at ON cohorts(status, deleted_at);
+
+  -- Training Batches table
+  CREATE TABLE IF NOT EXISTS training_batches (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID REFERENCES tenants(id),
+    tsp_id UUID REFERENCES tsps(id),
+    cohort_id UUID REFERENCES cohorts(id),
+    training_program_id VARCHAR(50) REFERENCES training_programs(id),
+    batch_number VARCHAR(50) NOT NULL,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    capacity INT DEFAULT 30,
+    status VARCHAR(30) DEFAULT 'ACTIVE',
+    created_by VARCHAR(100) REFERENCES users(id),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  );
+  CREATE INDEX IF NOT EXISTS idx_batches_tsp ON training_batches(tsp_id);
+  CREATE INDEX IF NOT EXISTS idx_batches_cohort ON training_batches(cohort_id);
+  CREATE INDEX IF NOT EXISTS idx_batches_status ON training_batches(status);
+
+  -- Trainers table
+  CREATE TABLE IF NOT EXISTS trainers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID REFERENCES tenants(id),
+    tsp_id UUID REFERENCES tsps(id),
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(100) NOT NULL,
+    email VARCHAR(150),
+    phone VARCHAR(30),
+    accreditation_details TEXT,
+    is_nbte_certified BOOLEAN DEFAULT FALSE,
+    status VARCHAR(30) DEFAULT 'ACTIVE',
+    created_by VARCHAR(100) REFERENCES users(id),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  );
+  CREATE INDEX IF NOT EXISTS idx_trainers_tsp ON trainers(tsp_id);
+  CREATE INDEX IF NOT EXISTS idx_trainers_status ON trainers(status);
+  CREATE INDEX IF NOT EXISTS idx_trainers_is_nbte_certified ON trainers(is_nbte_certified);
+
+  -- Assessments table
+  CREATE TABLE IF NOT EXISTS assessments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID REFERENCES tenants(id),
+    beneficiary_id VARCHAR(50) REFERENCES beneficiaries(id),
+    trainer_id UUID REFERENCES trainers(id),
+    assessment_name VARCHAR(150) NOT NULL,
+    continuous_assessment_score NUMERIC(5,2),
+    practical_score NUMERIC(5,2),
+    exam_score NUMERIC(5,2),
+    final_score NUMERIC(5,2),
+    final_grade VARCHAR(10),
+    examiner_comments TEXT,
+    exam_date DATE,
+    status VARCHAR(30) DEFAULT 'PENDING',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  );
+  CREATE INDEX IF NOT EXISTS idx_assessments_beneficiary ON assessments(beneficiary_id);
+  CREATE INDEX IF NOT EXISTS idx_assessments_trainer ON assessments(trainer_id);
+  CREATE INDEX IF NOT EXISTS idx_assessments_status_score ON assessments(status, final_score);
+
+  -- Graduation clearances table
+  CREATE TABLE IF NOT EXISTS graduation_clearances (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID REFERENCES tenants(id),
+    beneficiary_id VARCHAR(50) UNIQUE REFERENCES beneficiaries(id),
+    is_cleared_attendance BOOLEAN DEFAULT FALSE,
+    is_cleared_assessment BOOLEAN DEFAULT FALSE,
+    is_cleared_toolkit BOOLEAN DEFAULT FALSE,
+    cleared_by VARCHAR(100) REFERENCES users(id),
+    cleared_at TIMESTAMP WITH TIME ZONE,
+    ceremony_event_name VARCHAR(150),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  );
+  CREATE INDEX IF NOT EXISTS idx_graduation_beneficiary ON graduation_clearances(beneficiary_id);
+
+  -- Training batch assignments table
+  CREATE TABLE IF NOT EXISTS training_batch_assignments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID REFERENCES tenants(id),
+    batch_id UUID NOT NULL REFERENCES training_batches(id),
+    beneficiary_id VARCHAR(50) NOT NULL REFERENCES beneficiaries(id),
+    assigned_by VARCHAR(100) REFERENCES users(id),
+    assigned_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(batch_id, beneficiary_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_batch_assignments_batch ON training_batch_assignments(batch_id);
+  CREATE INDEX IF NOT EXISTS idx_batch_assignments_beneficiary ON training_batch_assignments(beneficiary_id);
+
+  -- National Sectors table
+  CREATE TABLE IF NOT EXISTS sectors (
+    id VARCHAR(50) PRIMARY KEY,
+    sector_code VARCHAR(50) UNIQUE NOT NULL,
+    sector_name VARCHAR(255) NOT NULL,
+    description TEXT,
+    status VARCHAR(50) DEFAULT 'ACTIVE',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- National Skills table
+  CREATE TABLE IF NOT EXISTS skills (
+    id VARCHAR(50) PRIMARY KEY,
+    skill_code VARCHAR(50) UNIQUE NOT NULL,
+    skill_name VARCHAR(255) NOT NULL,
+    sector_id VARCHAR(50) REFERENCES sectors(id) ON DELETE CASCADE,
+    description TEXT,
+    duration_weeks INT DEFAULT 12,
+    certification_type VARCHAR(100),
+    assessment_method VARCHAR(255),
+    equipment_requirements TEXT,
+    curriculum_version VARCHAR(50) DEFAULT '1.0',
+    status VARCHAR(50) DEFAULT 'ACTIVE',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- EOI Applications table
+  CREATE TABLE IF NOT EXISTS eoi_applications (
+    id VARCHAR(50) PRIMARY KEY,
+    application_code VARCHAR(100) UNIQUE NOT NULL,
+    organization_name VARCHAR(255) NOT NULL,
+    contact_person VARCHAR(255) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    phone VARCHAR(50) NOT NULL,
+    state VARCHAR(100) NOT NULL,
+    sector VARCHAR(100) NOT NULL,
+    skill_area VARCHAR(255) NOT NULL,
+    years_of_experience INT DEFAULT 0,
+    nbte_status VARCHAR(100) DEFAULT 'NOT_ACCREDITED',
+    application_status VARCHAR(50) DEFAULT 'SUBMITTED',
+    submission_date TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    reviewed_by VARCHAR(255),
+    review_date TIMESTAMP WITH TIME ZONE,
+    evaluation_score NUMERIC(5,2) DEFAULT 0.00,
+    recommendation TEXT,
+    remarks TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_eoi_status ON eoi_applications(application_status);
+  CREATE INDEX IF NOT EXISTS idx_skills_sector ON skills(sector_id);
 `;
 
 /**
@@ -713,15 +1015,68 @@ const SCHEMA_DDL = `
  */
 async function seedAuthAndRoles(pool: pg.Pool): Promise<void> {
   try {
-    console.log("[DB] Seeding roles, permissions, and default accounts...");
+    console.log("[DB] Seeding roles, permissions, and default accounts (National RBAC - Task 008)...");
     
-    // 1. Insert Roles
+    let rolesSeeded = false;
+    let permissionsSeeded = false;
+    let mappingsSeeded = false;
+    
+    try {
+      const checkRoles = await pool.query("SELECT COUNT(*)::int as count FROM roles");
+      const checkPermissions = await pool.query("SELECT COUNT(*)::int as count FROM permissions");
+      const checkMappings = await pool.query("SELECT COUNT(*)::int as count FROM role_permissions");
+      rolesSeeded = (checkRoles.rows[0]?.count || 0) > 0;
+      permissionsSeeded = (checkPermissions.rows[0]?.count || 0) > 0;
+      mappingsSeeded = (checkMappings.rows[0]?.count || 0) > 0;
+    } catch (e: any) {
+      console.warn("[DB] Failed to pre-check seeded counts, will perform full seeding:", e.message);
+    }
+    
+    if (process.env.SAFE_MODE === "true") {
+      console.log("[DB] SAFE_MODE is active. Skipping explicit roles/permissions/mappings seeding.");
+      return;
+    }
+
+    if (rolesSeeded && permissionsSeeded && mappingsSeeded) {
+      console.log("[DB] Roles, permissions, and mappings already seeded. Skipping full insert runs (saves 90+ roundtrips).");
+    } else {
+    
+    // 1. Insert Roles (Legacy and Target National Roles)
     const roles = [
+      // Legacy Roles
       { id: "SUPER_ADMIN", name: "Super Administrator", description: "Full system administration and user management" },
       { id: "ADMIN_OFFICER", name: "Admin Officer", description: "Manage admissions, generate letters, send emails" },
       { id: "REVIEW_OFFICER", name: "Review Officer", description: "Review submissions, approve acceptance letters" },
-      { id: "TRAINEE", name: "Trainee Candidate", description: "View profile, submit acceptance, track application" }
+      { id: "TRAINEE", name: "Trainee Candidate", description: "View profile, submit acceptance, track application" },
+
+      // Federal Roles
+      { id: "FEDERAL_SUPER_ADMIN", name: "Federal Super Administrator", description: "National platform administration, organization management, global configuration, schema migrations" },
+      { id: "FEDERAL_PROGRAM_MANAGER", name: "Federal Program Manager", description: "Manage national-level trainees, review Annex 9 submissions, global reports and dashboards" },
+      { id: "FEDERAL_REVIEW_MANAGER", name: "Federal Review Manager", description: "Highest authority for approving/rejecting beneficiary admissions, managing audit trails, system logs" },
+
+      // State Roles
+      { id: "STATE_COORDINATOR", name: "State Coordinator", description: "State-wide beneficiary monitoring, Annex 9 data validation, programmatic overview" },
+      { id: "STATE_REVIEW_OFFICER", name: "State Review Officer", description: "Perform direct audits and approve/reject admissions within state borders, prepare evaluation stats" },
+      { id: "STATE_M_E_OFFICER", name: "State Monitoring & Evaluation Officer", description: "Access state-wide analytical dashboards, system audit logs, and diagnostic reports" },
+
+      // TSP Roles
+      { id: "TSP_ADMIN", name: "TSP Administrator", description: "Manage local training center activities, roster changes, Annex 9 compliance declarations" },
+      { id: "TSP_TRAINING_MANAGER", name: "TSP Training Manager", description: "Enroll and monitor local trainee progress, record details, update lesson progress" },
+      { id: "TSP_REVIEW_OFFICER", name: "TSP Review Officer", description: "Assess local candidate entrance criteria, coordinate evaluations with external auditors" },
+
+      // Beneficiary Role
+      { id: "BENEFICIARY", name: "Beneficiary", description: "Access self-service portals, review training checklists, receive secure documentation letters" },
+
+      // Governance Roles
+      { id: "SYSTEM_AUDITOR", name: "System Auditor", description: "ReadOnly access to security records, transaction trails, database logs, baseline settings" },
+      { id: "REPORT_VIEWER", name: "Report Viewer", description: "ReadOnly access to standard reports, tables, graphical charts, data exports" },
+      { id: "HELPDESK_AGENT", name: "Helpdesk Agent", description: "Access basic diagnostics, view trainee rosters, resolve portal access credentials" },
+      { id: "MIGRATION_ADMIN", name: "Migration Administrator", description: "Execute bulk schema scripts, import seed lists, manipulate metadata definitions" },
+      { id: "FED", name: "Federal Governance Administrator", description: "Federal admin control and release certificate management" },
+      { id: "STA", name: "State Governance Administrator", description: "State-wide administrative coordinator and program oversight" },
+      { id: "TSP", name: "Training Provider Operating Agent", description: "Training service provider group representative" }
     ];
+
     for (const r of roles) {
       await pool.query(
         "INSERT INTO roles (id, name, description) VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description",
@@ -729,13 +1084,45 @@ async function seedAuthAndRoles(pool: pg.Pool): Promise<void> {
       );
     }
 
-    // 2. Insert Permissions
+    // 2. Insert Permissions (Legacy and target National Permissions)
     const permissions = [
+      // Legacy Permissions
       { id: "all_access", name: "All Access", description: "Unrestricted system actions" },
       { id: "manage_admissions", name: "Manage Admissions", description: "Ability to generate offers and send emails" },
       { id: "review_submissions", name: "Review Submissions", description: "Ability to audit candidate acceptance documents" },
-      { id: "trainee_access", name: "Trainee Access", description: "Access own student profile and form response submission" }
+      { id: "trainee_access", name: "Trainee Access", description: "Access own student profile and form response submission" },
+
+      // System Permissions
+      { id: "manage_users", name: "Manage Users", description: "Create, view, modify or disable user accounts" },
+      { id: "manage_roles", name: "Manage Roles", description: "Define custom platform roles, scopes, and hierarchies" },
+      { id: "manage_permissions", name: "Manage Permissions", description: "Configure system permissions and role assignments" },
+      { id: "execute_migrations", name: "Execute Migrations", description: "Trigger bulk SQL migrations, table audits, data schema upgrades" },
+
+      // Organizational Permissions
+      { id: "manage_tenants", name: "Manage Tenants", description: "Provision other federal/state/TSP tenants within platform bounds" },
+      { id: "manage_states", name: "Manage States", description: "Configure state registration details, boundaries, coordinates" },
+      { id: "manage_tsps", name: "Manage TSPs", description: "Configure Training Provider registration profiles, program catalogs" },
+
+      // Admissions/Beneficiary Permissions
+      { id: "review_admissions", name: "Review Admissions", description: "Perform administrative review on trainee applications, verify background" },
+      { id: "approve_admissions", name: "Approve Admissions", description: "Approve candidate acceptance letters, grant enrollment" },
+      { id: "reject_admissions", name: "Reject Admissions", description: "Reject unqualified applicants, file reasons for rejection" },
+      { id: "manage_beneficiaries", name: "Manage Beneficiaries", description: "Modify candidate rosters, update bio profiles, check milestones" },
+      { id: "manage_annex9", name: "Manage Annex 9", description: "Handle training readiness checklists and institutional declarations" },
+
+      // Reporting/Audit Permissions
+      { id: "view_reports", name: "View Reports", description: "Read programmatic summaries, dashboards, and trainee metrics" },
+      { id: "export_reports", name: "Export Reports", description: "Export telemetry, reports, spreadsheets, PDFs, or spreadsheet charts" },
+      { id: "audit_logs_access", name: "Audit Logs Access", description: "Inspect database session history, API transaction streams, administrative trace logs" },
+
+      // Dynamic National/Federal Permissions (Task 016C)
+      { id: "manage_cohorts", name: "Manage Cohorts", description: "Manage education cohorts" },
+      { id: "manage_batches", name: "Manage Batches", description: "Manage training batches" },
+      { id: "manage_trainers", name: "Manage Trainers", description: "Manage local and national instructors and trainers" },
+      { id: "manage_assessments", name: "Manage Assessments", description: "Manage exam and ca scores and assessments" },
+      { id: "manage_graduation", name: "Manage Graduation", description: "Clear and release official graduation certificates" }
     ];
+
     for (const p of permissions) {
       await pool.query(
         "INSERT INTO permissions (id, name, description) VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description",
@@ -745,34 +1132,196 @@ async function seedAuthAndRoles(pool: pg.Pool): Promise<void> {
 
     // 3. Map Roles and Permissions
     const mappings = [
+      // Legacy basic mappings
       { role_id: "SUPER_ADMIN", permission_id: "all_access" },
       { role_id: "ADMIN_OFFICER", permission_id: "manage_admissions" },
       { role_id: "REVIEW_OFFICER", permission_id: "review_submissions" },
-      { role_id: "TRAINEE", permission_id: "trainee_access" }
+      { role_id: "TRAINEE", permission_id: "trainee_access" },
+
+      // FEDERAL_SUPER_ADMIN
+      { role_id: "FEDERAL_SUPER_ADMIN", permission_id: "manage_users" },
+      { role_id: "FEDERAL_SUPER_ADMIN", permission_id: "manage_roles" },
+      { role_id: "FEDERAL_SUPER_ADMIN", permission_id: "manage_permissions" },
+      { role_id: "FEDERAL_SUPER_ADMIN", permission_id: "execute_migrations" },
+      { role_id: "FEDERAL_SUPER_ADMIN", permission_id: "manage_tenants" },
+      { role_id: "FEDERAL_SUPER_ADMIN", permission_id: "manage_states" },
+      { role_id: "FEDERAL_SUPER_ADMIN", permission_id: "manage_tsps" },
+      { role_id: "FEDERAL_SUPER_ADMIN", permission_id: "review_admissions" },
+      { role_id: "FEDERAL_SUPER_ADMIN", permission_id: "approve_admissions" },
+      { role_id: "FEDERAL_SUPER_ADMIN", permission_id: "reject_admissions" },
+      { role_id: "FEDERAL_SUPER_ADMIN", permission_id: "manage_beneficiaries" },
+      { role_id: "FEDERAL_SUPER_ADMIN", permission_id: "manage_annex9" },
+      { role_id: "FEDERAL_SUPER_ADMIN", permission_id: "view_reports" },
+      { role_id: "FEDERAL_SUPER_ADMIN", permission_id: "export_reports" },
+      { role_id: "FEDERAL_SUPER_ADMIN", permission_id: "audit_logs_access" },
+
+      // SUPER_ADMIN (Legacy role bridging - receives all FEDERAL_SUPER_ADMIN access explicitly as well)
+      { role_id: "SUPER_ADMIN", permission_id: "manage_users" },
+      { role_id: "SUPER_ADMIN", permission_id: "manage_roles" },
+      { role_id: "SUPER_ADMIN", permission_id: "manage_permissions" },
+      { role_id: "SUPER_ADMIN", permission_id: "execute_migrations" },
+      { role_id: "SUPER_ADMIN", permission_id: "manage_tenants" },
+      { role_id: "SUPER_ADMIN", permission_id: "manage_states" },
+      { role_id: "SUPER_ADMIN", permission_id: "manage_tsps" },
+      { role_id: "SUPER_ADMIN", permission_id: "review_admissions" },
+      { role_id: "SUPER_ADMIN", permission_id: "approve_admissions" },
+      { role_id: "SUPER_ADMIN", permission_id: "reject_admissions" },
+      { role_id: "SUPER_ADMIN", permission_id: "manage_beneficiaries" },
+      { role_id: "SUPER_ADMIN", permission_id: "manage_annex9" },
+      { role_id: "SUPER_ADMIN", permission_id: "view_reports" },
+      { role_id: "SUPER_ADMIN", permission_id: "export_reports" },
+      { role_id: "SUPER_ADMIN", permission_id: "audit_logs_access" },
+
+      // FEDERAL_PROGRAM_MANAGER
+      { role_id: "FEDERAL_PROGRAM_MANAGER", permission_id: "manage_beneficiaries" },
+      { role_id: "FEDERAL_PROGRAM_MANAGER", permission_id: "manage_annex9" },
+      { role_id: "FEDERAL_PROGRAM_MANAGER", permission_id: "view_reports" },
+      { role_id: "FEDERAL_PROGRAM_MANAGER", permission_id: "export_reports" },
+
+      // FEDERAL_REVIEW_MANAGER
+      { role_id: "FEDERAL_REVIEW_MANAGER", permission_id: "review_admissions" },
+      { role_id: "FEDERAL_REVIEW_MANAGER", permission_id: "approve_admissions" },
+      { role_id: "FEDERAL_REVIEW_MANAGER", permission_id: "reject_admissions" },
+      { role_id: "FEDERAL_REVIEW_MANAGER", permission_id: "audit_logs_access" },
+      { role_id: "FEDERAL_REVIEW_MANAGER", permission_id: "view_reports" },
+      { role_id: "FEDERAL_REVIEW_MANAGER", permission_id: "export_reports" },
+
+      // STATE_COORDINATOR
+      { role_id: "STATE_COORDINATOR", permission_id: "manage_beneficiaries" },
+      { role_id: "STATE_COORDINATOR", permission_id: "manage_annex9" },
+      { role_id: "STATE_COORDINATOR", permission_id: "view_reports" },
+      { role_id: "STATE_COORDINATOR", permission_id: "export_reports" },
+
+      // ADMIN_OFFICER (Legacy role bridging - additionally receives STATE_COORDINATOR equivalent and view/export reports)
+      { role_id: "ADMIN_OFFICER", permission_id: "manage_beneficiaries" },
+      { role_id: "ADMIN_OFFICER", permission_id: "manage_annex9" },
+      { role_id: "ADMIN_OFFICER", permission_id: "view_reports" },
+      { role_id: "ADMIN_OFFICER", permission_id: "export_reports" },
+
+      // STATE_REVIEW_OFFICER
+      { role_id: "STATE_REVIEW_OFFICER", permission_id: "review_admissions" },
+      { role_id: "STATE_REVIEW_OFFICER", permission_id: "approve_admissions" },
+      { role_id: "STATE_REVIEW_OFFICER", permission_id: "reject_admissions" },
+      { role_id: "STATE_REVIEW_OFFICER", permission_id: "view_reports" },
+
+      // REVIEW_OFFICER (Legacy role bridging - additionally receives STATE_REVIEW_OFFICER equivalent)
+      { role_id: "REVIEW_OFFICER", permission_id: "review_admissions" },
+      { role_id: "REVIEW_OFFICER", permission_id: "approve_admissions" },
+      { role_id: "REVIEW_OFFICER", permission_id: "reject_admissions" },
+      { role_id: "REVIEW_OFFICER", permission_id: "view_reports" },
+
+      // STATE_M_E_OFFICER
+      { role_id: "STATE_M_E_OFFICER", permission_id: "view_reports" },
+      { role_id: "STATE_M_E_OFFICER", permission_id: "export_reports" },
+
+      // TSP_ADMIN
+      { role_id: "TSP_ADMIN", permission_id: "manage_beneficiaries" },
+      { role_id: "TSP_ADMIN", permission_id: "manage_annex9" },
+      { role_id: "TSP_ADMIN", permission_id: "view_reports" },
+
+      // TSP_TRAINING_MANAGER
+      { role_id: "TSP_TRAINING_MANAGER", permission_id: "manage_beneficiaries" },
+      { role_id: "TSP_TRAINING_MANAGER", permission_id: "view_reports" },
+
+      // TSP_REVIEW_OFFICER
+      { role_id: "TSP_REVIEW_OFFICER", permission_id: "review_admissions" },
+      { role_id: "TSP_REVIEW_OFFICER", permission_id: "view_reports" },
+
+      // BENEFICIARY
+      { role_id: "BENEFICIARY", permission_id: "trainee_access" },
+
+      // SYSTEM_AUDITOR
+      { role_id: "SYSTEM_AUDITOR", permission_id: "audit_logs_access" },
+      { role_id: "SYSTEM_AUDITOR", permission_id: "view_reports" },
+
+      // REPORT_VIEWER
+      { role_id: "REPORT_VIEWER", permission_id: "view_reports" },
+      { role_id: "REPORT_VIEWER", permission_id: "export_reports" },
+
+      // HELPDESK_AGENT
+      { role_id: "HELPDESK_AGENT", permission_id: "view_reports" },
+
+      // MIGRATION_ADMIN
+      { role_id: "MIGRATION_ADMIN", permission_id: "execute_migrations" },
+      { role_id: "MIGRATION_ADMIN", permission_id: "manage_permissions" },
+      { role_id: "MIGRATION_ADMIN", permission_id: "manage_roles" },
+
+      // FED Permissions Mapping (Task 016C)
+      { role_id: "FED", permission_id: "view_reports" },
+      { role_id: "FED", permission_id: "audit_logs_access" },
+      { role_id: "FED", permission_id: "manage_cohorts" },
+      { role_id: "FED", permission_id: "manage_batches" },
+      { role_id: "FED", permission_id: "manage_trainers" },
+      { role_id: "FED", permission_id: "manage_assessments" },
+      { role_id: "FED", permission_id: "manage_graduation" }
     ];
+
     for (const m of mappings) {
       await pool.query(
         "INSERT INTO role_permissions (role_id, permission_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
         [m.role_id, m.permission_id]
       );
     }
+    }
 
-    // 4. Seed Default App Users
-    const defaultUsers = [
-      { id: "user_sa", email: "superadmin@ideas-tvet.ng", role: "SUPER_ADMIN", pass: "Password123" },
-      { id: "user_ao", email: "admin@ideas-tvet.ng", role: "ADMIN_OFFICER", pass: "Password123" },
-      { id: "user_ro", email: "reviewer@ideas-tvet.ng", role: "REVIEW_OFFICER", pass: "Password123" }
-    ];
-    
-    for (const u of defaultUsers) {
-      const existing = await pool.query("SELECT id FROM users WHERE email = $1", [u.email]);
-      if (existing.rows.length === 0) {
-        const hashedPassword = bcrypt.hashSync(u.pass, 10);
-        await pool.query(
-          "INSERT INTO users (id, email, password_hash, role, failed_login_attempts) VALUES ($1, $2, $3, $4, 0)",
-          [u.id, u.email, hashedPassword, u.role]
+    const isDevSeedingEnabled = process.env.NODE_ENV === "development" || process.env.ENABLE_DEV_SEEDS === "true";
+
+    if (isDevSeedingEnabled) {
+      // 4. Seed Default App Users
+      const defaultUsers = [
+        { id: "user_sa", email: "superadmin@ideas-tvet.ng", role: "SUPER_ADMIN", pass: "Password123" },
+        { id: "user_ao", email: "admin@ideas-tvet.ng", role: "ADMIN_OFFICER", pass: "Password123" },
+        { id: "user_ro", email: "reviewer@ideas-tvet.ng", role: "REVIEW_OFFICER", pass: "Password123" }
+      ];
+      
+      for (const u of defaultUsers) {
+        const existing = await pool.query("SELECT id FROM users WHERE email = $1", [u.email]);
+        if (existing.rows.length === 0) {
+          const hashedPassword = bcrypt.hashSync(u.pass, 10);
+          await pool.query(
+            "INSERT INTO users (id, email, password_hash, role, failed_login_attempts) VALUES ($1, $2, $3, $4, 0)",
+            [u.id, u.email, hashedPassword, u.role]
+          );
+          console.log(`[DB] Seeded default user: ${u.email} (${u.role})`);
+        }
+      }
+
+      // 5. Seed Federal Tenant & dedicated FED admin user (Task 016C)
+      let fedTenantId: string | null = null;
+      const fedTenantRes = await pool.query("SELECT id FROM tenants WHERE tier = 'FED' AND deleted_at IS NULL LIMIT 1");
+      if (fedTenantRes.rows.length > 0) {
+        fedTenantId = fedTenantRes.rows[0].id;
+      } else {
+        const insertTenantRes = await pool.query(
+          "INSERT INTO tenants (name, domain, tier, is_active) VALUES ($1, $2, 'FED', true) RETURNING id",
+          ["Federal TVET Ministry", "federal.tvet.local"]
         );
-        console.log(`[DB] Seeded default user: ${u.email} (${u.role})`);
+        fedTenantId = insertTenantRes.rows[0].id;
+        console.log(`[DB] Seeded default Federal Tenant: ${fedTenantId}`);
+      }
+
+      const existingFed = await pool.query("SELECT id FROM users WHERE email = $1", ["fed.admin@tvet.local"]);
+      if (existingFed.rows.length === 0) {
+        const fedHash = bcrypt.hashSync("ChangeMe123!", 10);
+        await pool.query(
+          "INSERT INTO users (id, email, password_hash, role, tenant_id, failed_login_attempts) VALUES ($1, $2, $3, $4, $5, 0)",
+          ["user_fed", "fed.admin@tvet.local", fedHash, "FED", fedTenantId]
+        );
+        console.log(`[DB] Seeded Federal user fed.admin@tvet.local connected to tenant: ${fedTenantId}`);
+      }
+    } else {
+      console.log("[DB] Skipping default mock/sandbox users seeding on production.");
+      
+      // We should still seed the Federal Tenant as it's structural
+      let fedTenantId: string | null = null;
+      const fedTenantRes = await pool.query("SELECT id FROM tenants WHERE tier = 'FED' AND deleted_at IS NULL LIMIT 1");
+      if (fedTenantRes.rows.length === 0) {
+        const insertTenantRes = await pool.query(
+          "INSERT INTO tenants (name, domain, tier, is_active) VALUES ($1, $2, 'FED', true) RETURNING id",
+          ["Federal TVET Ministry", "federal.tvet.local"]
+        );
+        fedTenantId = insertTenantRes.rows[0].id;
+        console.log(`[DB] Seeded default Federal Tenant (structural): ${fedTenantId}`);
       }
     }
   } catch (err) {
@@ -780,19 +1329,25 @@ async function seedAuthAndRoles(pool: pg.Pool): Promise<void> {
   }
 }
 
+export const startupWarnings: string[] = [];
+
 /**
  * Initializes schema and runs any pending JSON database records migration to PostgreSQL
  */
 export async function initDb(): Promise<void> {
+  console.log("[BOOT] PostgreSQL check starting");
   const active = await checkPgStatus();
+  console.log("[BOOT] PostgreSQL check completed. Active status: " + active);
   if (!active) {
     console.log("[DB] PostgreSQL is inactive. Working in file-system fallback mode.");
     return;
   }
 
   const pool = getPgPool()!;
+  console.log("[BOOT] Database Connected");
   
   try {
+    console.log("[BOOT] Schema migrations starting...");
     console.log("[DB] Creating PostgreSQL schema tables and indexes...");
     await pool.query(SCHEMA_DDL);
     
@@ -871,6 +1426,195 @@ export async function initDb(): Promise<void> {
       ALTER TABLE admissions ADD COLUMN IF NOT EXISTS admission_form_viewed_at TIMESTAMP WITH TIME ZONE;
       ALTER TABLE admissions ADD COLUMN IF NOT EXISTS admission_form_pdf_url TEXT;
       ALTER TABLE admissions ADD COLUMN IF NOT EXISTS admission_form_ref VARCHAR(100) UNIQUE;
+      
+      -- Tenancy Columns
+      ALTER TABLE states ADD COLUMN IF NOT EXISTS code VARCHAR(10);
+      ALTER TABLE states ADD COLUMN IF NOT EXISTS geopolitical_zone VARCHAR(50);
+
+      CREATE TABLE IF NOT EXISTS local_governments (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        state_id UUID REFERENCES states(id) ON DELETE CASCADE,
+        name VARCHAR(150) NOT NULL,
+        code VARCHAR(50),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS lgas (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        state_name VARCHAR(100) NOT NULL,
+        name VARCHAR(150) NOT NULL,
+        UNIQUE(state_name, name)
+      );
+
+      CREATE TABLE IF NOT EXISTS training_centers (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+        state_id UUID REFERENCES states(id) ON DELETE CASCADE,
+        lga_id UUID REFERENCES local_governments(id) ON DELETE CASCADE,
+        center_name VARCHAR(255) NOT NULL,
+        address TEXT,
+        latitude NUMERIC,
+        longitude NUMERIC,
+        status VARCHAR(50) DEFAULT 'ACTIVE',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_lg_state_id ON local_governments(state_id);
+      CREATE INDEX IF NOT EXISTS idx_tc_tenant_id ON training_centers(tenant_id);
+      CREATE INDEX IF NOT EXISTS idx_tc_state_id ON training_centers(state_id);
+      CREATE INDEX IF NOT EXISTS idx_tc_lga_id ON training_centers(lga_id);
+
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE SET NULL;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS state_id UUID REFERENCES states(id) ON DELETE SET NULL;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS tsp_id UUID REFERENCES tsps(id) ON DELETE SET NULL;
+      
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE SET NULL;
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS state_id UUID REFERENCES states(id) ON DELETE SET NULL;
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS lga_id UUID REFERENCES local_governments(id) ON DELETE SET NULL;
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS training_center_id UUID REFERENCES training_centers(id) ON DELETE SET NULL;
+      ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS tsp_id UUID REFERENCES tsps(id) ON DELETE SET NULL;
+      
+      ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE SET NULL;
+      ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS permission_used VARCHAR(150);
+      ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS effective_role VARCHAR(150);
+      ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS state_id UUID REFERENCES states(id) ON DELETE SET NULL;
+      ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS tsp_id UUID REFERENCES tsps(id) ON DELETE SET NULL;
+      ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS beneficiary_id UUID;
+      ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS user_id UUID;
+
+      -- User Sessions Tenancy columns (Task 006)
+      ALTER TABLE user_sessions ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE SET NULL;
+      ALTER TABLE user_sessions ADD COLUMN IF NOT EXISTS tenant_tier tenant_tier;
+      ALTER TABLE user_sessions ADD COLUMN IF NOT EXISTS state_id UUID REFERENCES states(id) ON DELETE SET NULL;
+      ALTER TABLE user_sessions ADD COLUMN IF NOT EXISTS tsp_id UUID REFERENCES tsps(id) ON DELETE SET NULL;
+
+      -- Add TSP profile columns (Task 017A-B)
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS state TEXT;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS lga TEXT;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS physical_address TEXT;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS latitude NUMERIC;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS longitude NUMERIC;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS registration_number TEXT;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS accreditation_status VARCHAR(50);
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS accreditation_number VARCHAR(100);
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS accreditation_expiry VARCHAR(50);
+      
+      -- Add TSP identity and provisioning columns (Task 017B)
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS tsp_code VARCHAR(50) UNIQUE;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS activation_token_hash TEXT;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS activation_expires_at TIMESTAMP;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS account_status VARCHAR(30);
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS invitation_status VARCHAR(50);
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS organization_status VARCHAR(50);
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS profile_completed BOOLEAN DEFAULT FALSE;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS activated_at TIMESTAMP;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS created_by VARCHAR(100);
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMP;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS suspension_reason TEXT;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS website VARCHAR(255);
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS secondary_contact VARCHAR(255);
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS invitation_email VARCHAR(255);
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS recovery_email VARCHAR(255);
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS programme_manager VARCHAR(255);
+
+      -- Ensure uniqueideasproject@gmail.com is registered as the official testing contact email for the existing Unique TSP record if not already registered
+      UPDATE tsps 
+      SET contact_email = 'uniqueideasproject@gmail.com' 
+      WHERE id = '00000000-0000-0000-0000-000000000001' AND (contact_email IS NULL OR contact_email = '' OR contact_email = 'moh.yusuf@tvet.local');
+
+      UPDATE tsps
+      SET contact_person = 'Tom Okwa'
+      WHERE id = '00000000-0000-0000-0000-000000000001' AND (contact_person IS NULL OR contact_person = '' OR contact_person = 'Engr. Yusuf Mohammed');
+
+      UPDATE tsps
+      SET programme_manager = 'Tom Okwa'
+      WHERE id = '00000000-0000-0000-0000-000000000001' AND (programme_manager IS NULL OR programme_manager = '');
+
+      -- Add user provisioning columns (Task 017B)
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS is_primary_contact BOOLEAN DEFAULT FALSE;
+
+      -- Central restoration center ledger
+      CREATE TABLE IF NOT EXISTS restoration_center (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        original_id VARCHAR(100) NOT NULL UNIQUE,
+        original_module VARCHAR(150) NOT NULL,
+        deleted_by VARCHAR(255) NOT NULL,
+        deleted_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        deleted_reason TEXT NOT NULL,
+        payload JSONB NOT NULL
+      );
+
+      -- TSP profile changes approval queue and audit history
+      CREATE TABLE IF NOT EXISTS tsp_profile_changes (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tsp_id UUID REFERENCES tsps(id) ON DELETE CASCADE,
+        requested_by VARCHAR(255) NOT NULL,
+        requested_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        status VARCHAR(50) DEFAULT 'PENDING',
+        reviewed_by VARCHAR(255),
+        reviewed_at TIMESTAMP WITH TIME ZONE,
+        reject_reason TEXT,
+        changes JSONB NOT NULL
+      );
+
+      -- Activation Audit Logs for the complete audit ledger
+      CREATE TABLE IF NOT EXISTS activation_audit_logs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tsp_id UUID,
+        tsp_name VARCHAR(255),
+        contact_email VARCHAR(255),
+        action VARCHAR(150),
+        token_truncated VARCHAR(50),
+        token_hash VARCHAR(100),
+        status VARCHAR(50),
+        ip_address VARCHAR(100),
+        user_agent TEXT,
+        sandbox_mode BOOLEAN DEFAULT TRUE,
+        error_message TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+      
+      -- Tenancy Indexes
+      CREATE INDEX IF NOT EXISTS idx_users_tenant_id ON users(tenant_id);
+      CREATE INDEX IF NOT EXISTS idx_beneficiaries_tenant_id ON beneficiaries(tenant_id);
+      CREATE INDEX IF NOT EXISTS idx_user_sessions_tenant ON user_sessions(tenant_id);
+      CREATE INDEX IF NOT EXISTS idx_user_sessions_state ON user_sessions(state_id);
+      CREATE INDEX IF NOT EXISTS idx_user_sessions_tsp ON user_sessions(tsp_id);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_permission ON audit_logs(permission_used);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON audit_logs(user_id);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant ON audit_logs(tenant_id);
+
+      -- Task 012 Performance hardening indexes
+      CREATE INDEX IF NOT EXISTS idx_beneficiaries_state_id ON beneficiaries(state_id);
+      CREATE INDEX IF NOT EXISTS idx_beneficiaries_tsp_id ON beneficiaries(tsp_id);
+      CREATE INDEX IF NOT EXISTS idx_beneficiaries_created_at ON beneficiaries(created_at);
+      CREATE INDEX IF NOT EXISTS idx_beneficiaries_status ON beneficiaries(status);
+      
+      CREATE INDEX IF NOT EXISTS idx_admissions_created_at ON admissions(created_at);
+      CREATE INDEX IF NOT EXISTS idx_admissions_form_status ON admissions(admission_form_status);
+
+      CREATE INDEX IF NOT EXISTS idx_users_state_id ON users(state_id);
+      CREATE INDEX IF NOT EXISTS idx_users_tsp_id ON users(tsp_id);
+      CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at);
+
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_state ON audit_logs(state_id);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_tsp ON audit_logs(tsp_id);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_beneficiary ON audit_logs(beneficiary_id);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(timestamp);
+
+      CREATE INDEX IF NOT EXISTS idx_trainee_profiles_created_at ON trainee_profiles(created_at);
+
+      CREATE INDEX IF NOT EXISTS idx_delivery_logs_sent_at ON document_delivery_logs(sent_at);
+
+      CREATE INDEX IF NOT EXISTS idx_campaigns_status ON communication_campaigns(status);
+      CREATE INDEX IF NOT EXISTS idx_campaigns_created_at ON communication_campaigns(created_at);
+
+      CREATE INDEX IF NOT EXISTS idx_comm_recipients_status ON communication_recipients(status);
+      CREATE INDEX IF NOT EXISTS idx_comm_recipients_sent_at ON communication_recipients(sent_at);
+
+      CREATE INDEX IF NOT EXISTS idx_email_logs_tracking_status ON email_logs(tracking_status);
+      CREATE INDEX IF NOT EXISTS idx_email_logs_date_sent ON email_logs(date_sent);
     `);
 
     // Ensure document_delivery_logs is bootstrapped independently
@@ -999,6 +1743,30 @@ export async function initDb(): Promise<void> {
     // Bootstrap secure user systems
     await seedAuthAndRoles(pool);
 
+    // Bootstrap national sectors
+    await pool.query(`
+      INSERT INTO sectors (id, sector_code, sector_name, description, status) VALUES
+      ('s1', 'AGR', 'Agriculture', 'Agricultural and farming skill development', 'ACTIVE'),
+      ('s2', 'CON', 'Construction', 'Civil work, masonry and modern construction infrastructure', 'ACTIVE'),
+      ('s3', 'ICT', 'ICT', 'Information and communications technology, digital systems', 'ACTIVE'),
+      ('s4', 'MAN', 'Manufacturing', 'Industrial manufacturing and product assembly', 'ACTIVE'),
+      ('s5', 'CRE', 'Creative Industry', 'Multimedia, digital design and creative crafts', 'ACTIVE'),
+      ('s6', 'AUT', 'Automotive', 'Vehicle diagnostics, auto-mechanics and assembly', 'ACTIVE'),
+      ('s7', 'REN', 'Renewable Energy', 'Solar installation, wind systems and clean technologies', 'ACTIVE'),
+      ('s8', 'HEA', 'Healthcare', 'Medical systems technology and healthcare support', 'ACTIVE'),
+      ('s9', 'HOS', 'Hospitality', 'Culinary arts, tourism and hospitality services', 'ACTIVE'),
+      ('s10', 'FAS', 'Fashion', 'Textile manufacturing, tailoring and apparel design', 'ACTIVE')
+      ON CONFLICT (id) DO NOTHING;
+    `);
+
+    // Bootstrap standard skills
+    await pool.query(`
+      INSERT INTO skills (id, skill_code, skill_name, sector_id, description, duration_weeks, certification_type, assessment_method, equipment_requirements, curriculum_version, status) VALUES
+      ('sk1', 'SK-COM-REP', 'Computer Hardware and Cell Phone Repairs', 's3', 'Micro-soldering, circuits diagnostic and operating system installation', 12, 'NBTE Modular', 'Practical, Examination', 'Multimeter, Heat guns, Screwdrivers', '2.1', 'ACTIVE'),
+      ('sk2', 'SK-SOL-INS', 'Solar Photovoltaic Panel Installation', 's7', 'Photovoltaic cells routing, inverter battery chemistry, panel diagnostics', 10, 'NBTE Modular', 'Continuous Assessment, Practical', 'Clamps, crimping tool, safety harness', '1.0', 'ACTIVE')
+      ON CONFLICT (id) DO NOTHING;
+    `);
+
     // Ensure the ID generation sequence exists and is synchronized
     await pool.query(`
       CREATE SEQUENCE IF NOT EXISTS ideas_beneficiary_id_seq START WITH 1;
@@ -1046,6 +1814,7 @@ export async function initDb(): Promise<void> {
       -- 4. Alter trainee_attendance for enterprise fields
       ALTER TABLE trainee_attendance ADD COLUMN IF NOT EXISTS captured_by VARCHAR(100);
       ALTER TABLE trainee_attendance ADD COLUMN IF NOT EXISTS remarks TEXT;
+      ALTER TABLE trainee_attendance ADD COLUMN IF NOT EXISTS hours_logged NUMERIC(5, 2) DEFAULT 0.00;
       
       -- 5. Alter portal_monitoring for verified_by
       ALTER TABLE portal_monitoring ADD COLUMN IF NOT EXISTS verified_by VARCHAR(255);
@@ -1203,8 +1972,17 @@ export async function initDb(): Promise<void> {
     `);
 
     console.log("[DB] PostgreSQL schema verified and migration performed.");
+    console.log("[BOOT] Core Migrations Complete");
 
-    // Seed default toolkits and assets if empty
+    // Optional and Reference Seeding Isolation
+    const isDevSeeding = process.env.NODE_ENV === "development" || process.env.ENABLE_DEV_SEEDS === "true";
+    if (isDevSeeding) {
+      console.log("[BOOT] Optional Seeds Started");
+    } else {
+      console.log("[BOOT] Optional Seeds Skipped (Production environment detected)");
+    }
+
+    // A. Seed default toolkits and assets if empty
     try {
       const taCheck = await pool.query("SELECT COUNT(*)::int as count FROM toolkit_assets");
       if (taCheck.rows[0].count === 0) {
@@ -1241,83 +2019,457 @@ export async function initDb(): Promise<void> {
         console.log("[DB] Seeding default toolkit assets completed.");
       }
     } catch (taErr: any) {
-      console.error("[DB Error] Failed to seed default toolkit assets:", taErr.message);
+      console.error("[BOOT] Optional Seeds Failed (toolkitAssets):", taErr.message);
+      startupWarnings.push(`Failed to seed toolkit assets: ${taErr.message}`);
     }
 
-    // Check if dynamic seed or JSON migration is required
-    const checkResult = await pool.query("SELECT COUNT(*) as count FROM beneficiaries");
-    const count = parseInt(checkResult.rows[0].count, 10);
-    
-    if (count === 0) {
-      console.log("[DB] PostgreSQL database is empty. Performing initial data migration from JSON file...");
-      await migrateJsonToPostgres();
-    } else {
-      console.log(`[DB] Database already initialized with ${count} records. Skipping CSV/JSON migration.`);
+    // B. Check if dynamic seed or JSON migration is required (Skip entirely in production)
+    if (isDevSeeding) {
+      try {
+        const checkResult = await pool.query("SELECT COUNT(*) as count FROM beneficiaries");
+        const count = parseInt(checkResult.rows[0].count, 10);
+        
+        if (count === 0) {
+          console.log("[DB] PostgreSQL database is empty. Performing initial data migration from JSON file...");
+          await migrateJsonToPostgres();
+        } else {
+          console.log(`[DB] Database already initialized with ${count} records. Skipping CSV/JSON migration.`);
+        }
+      } catch (checkErr: any) {
+        console.error("[BOOT] Optional Seeds Failed (migrateJsonToPostgres):", checkErr.message);
+        startupWarnings.push(`Failed JSON migration: ${checkErr.message}`);
+      }
     }
 
-    // Backfill trainee profiles and portal monitoring from beneficiaries
+    // C. Core Location Infrastructure seeding (Always run to seed structure like States/LGAs, but seeder itself will skip mock TSPs/users if isDevSeeding is false)
     try {
-      console.log("[DB] Backfilling trainee profiles and portal monitoring systems...");
-      await pool.query(`
-        INSERT INTO trainee_profiles (
-          beneficiary_id,
-          tvet_id,
-          nin,
-          bvn,
-          bank_name,
-          account_name,
-          account_number,
-          guardian_name,
-          guardian_phone,
-          education_level,
-          employment_status,
-          training_status,
-          sector,
-          skill,
-          state,
-          tsp
-        )
-        SELECT 
-          id,
-          'ID-TVE-26-' || SUBSTRING(id, 1, 6),
-          COALESCE(nin, ''),
-          COALESCE(bvn, ''),
-          COALESCE(bank_name, ''),
-          COALESCE(bank_account_holder, ''),
-          COALESCE(bank_account_number, ''),
-          COALESCE(guardian_name, ''),
-          COALESCE(guardian_phone, ''),
-          COALESCE(education_qualification, ''),
-          'NOT_EMPLOYED',
-          'ACTIVE_TRAINING',
-          COALESCE(skill_sector, ''),
-          COALESCE(skill_sector, ''),
-          state,
-          COALESCE(tsp, '')
-        FROM beneficiaries
-        WHERE status IN ('ADMITTED', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')
-        ON CONFLICT (beneficiary_id) DO NOTHING;
-      `);
+      await seedLocationInfrastructure(pool);
+    } catch (locErr: any) {
+      console.error("[BOOT] Optional Seeds Failed (seedLocationInfrastructure):", locErr.message);
+      startupWarnings.push(`Failed to seed location infrastructure: ${locErr.message}`);
+    }
 
+    // D. Backfill trainee profiles and portal monitoring from beneficiaries (Only run when isDevSeeding is enabled)
+    if (isDevSeeding) {
+      try {
+        console.log("[DB] Backfilling trainee profiles and portal monitoring systems...");
+        await pool.query(`
+          INSERT INTO trainee_profiles (
+            beneficiary_id,
+            tvet_id,
+            nin,
+            bvn,
+            bank_name,
+            account_name,
+            account_number,
+            guardian_name,
+            guardian_phone,
+            education_level,
+            employment_status,
+            training_status,
+            sector,
+            skill,
+            state,
+            tsp
+          )
+          SELECT 
+            id,
+            'ID-TVE-26-' || SUBSTRING(id, 1, 6),
+            COALESCE(nin, ''),
+            COALESCE(bvn, ''),
+            COALESCE(bank_name, ''),
+            COALESCE(bank_account_holder, ''),
+            COALESCE(bank_account_number, ''),
+            COALESCE(guardian_name, ''),
+            COALESCE(guardian_phone, ''),
+            COALESCE(education_qualification, ''),
+            'NOT_EMPLOYED',
+            'ACTIVE_TRAINING',
+            COALESCE(skill_sector, ''),
+            COALESCE(skill_sector, ''),
+            state,
+            COALESCE(tsp, '')
+          FROM beneficiaries
+          WHERE status IN ('ADMITTED', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')
+          ON CONFLICT (beneficiary_id) DO NOTHING;
+        `);
+
+        await pool.query(`
+          INSERT INTO portal_monitoring (
+            beneficiary_id,
+            still_on_portal,
+            still_attending,
+            remarks
+          )
+          SELECT 
+            id,
+            TRUE,
+            TRUE,
+            'Auto-initialized'
+          FROM beneficiaries
+          WHERE status IN ('ADMITTED', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')
+          ON CONFLICT (beneficiary_id) DO NOTHING;
+        `);
+        console.log("[DB] Backfill of trainee profiles completed successfully.");
+      } catch (err: any) {
+        console.error("[BOOT] Optional Seeds Failed (trainee backfill):", err.message || err);
+        startupWarnings.push(`Failed trainee profiles backfill: ${err.message || err}`);
+      }
+    }
+
+
+    // Bootstrap Row-Level Security (RLS) policies for multi-tenancy context
+    try {
+      console.log("[BOOT] Transitioning to RLS Verification");
+      console.log("[DB] Setting up Row-Level Security (RLS) policies...");
       await pool.query(`
-        INSERT INTO portal_monitoring (
-          beneficiary_id,
-          still_on_portal,
-          still_attending,
-          remarks
-        )
-        SELECT 
-          id,
-          TRUE,
-          TRUE,
-          'Auto-initialized'
-        FROM beneficiaries
-        WHERE status IN ('ADMITTED', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')
-        ON CONFLICT (beneficiary_id) DO NOTHING;
+        DO $$
+        BEGIN
+          IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'training_centers') THEN
+            ALTER TABLE training_centers ENABLE ROW LEVEL SECURITY;
+
+            DROP POLICY IF EXISTS policy_training_centers_fed ON training_centers;
+            CREATE POLICY policy_training_centers_fed ON training_centers
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'FED' OR
+                current_setting('app.current_user_role', true) = 'SUPER_ADMIN' OR
+                current_setting('app.current_user_role', true) = 'ADMIN_OFFICER' OR
+                current_setting('app.current_user_role', true) = 'REVIEW_OFFICER'
+              );
+
+            DROP POLICY IF EXISTS policy_training_centers_sta ON training_centers;
+            CREATE POLICY policy_training_centers_sta ON training_centers
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'STA' AND
+                training_centers.state_id = NULLIF(current_setting('app.current_state_id', true), '')::uuid
+              );
+
+            DROP POLICY IF EXISTS policy_training_centers_tsp ON training_centers;
+            CREATE POLICY policy_training_centers_tsp ON training_centers
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'TSP' AND
+                training_centers.tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+              );
+          END IF;
+
+          IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'beneficiaries') THEN
+            ALTER TABLE beneficiaries ENABLE ROW LEVEL SECURITY;
+
+            DROP POLICY IF EXISTS policy_beneficiaries_fed ON beneficiaries;
+            CREATE POLICY policy_beneficiaries_fed ON beneficiaries
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'FED'
+              );
+
+            DROP POLICY IF EXISTS policy_beneficiaries_sta ON beneficiaries;
+            CREATE POLICY policy_beneficiaries_sta ON beneficiaries
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'STA' AND
+                beneficiaries.state_id = NULLIF(current_setting('app.current_state_id', true), '')::uuid
+              );
+
+            DROP POLICY IF EXISTS policy_beneficiaries_tsp ON beneficiaries;
+            CREATE POLICY policy_beneficiaries_tsp ON beneficiaries
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'TSP' AND
+                beneficiaries.tsp_id = NULLIF(current_setting('app.current_tsp_id', true), '')::uuid
+              );
+
+            DROP POLICY IF EXISTS policy_beneficiaries_ben ON beneficiaries;
+            CREATE POLICY policy_beneficiaries_ben ON beneficiaries
+              USING (
+                current_setting('app.current_user_role', true) = 'TRAINEE' AND
+                beneficiaries.id::text = current_setting('app.current_beneficiary_id', true)
+              );
+          END IF;
+
+          IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'admissions') THEN
+            ALTER TABLE admissions ENABLE ROW LEVEL SECURITY;
+
+            DROP POLICY IF EXISTS policy_admissions_fed ON admissions;
+            CREATE POLICY policy_admissions_fed ON admissions
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'FED'
+              );
+
+            DROP POLICY IF EXISTS policy_admissions_sta ON admissions;
+            CREATE POLICY policy_admissions_sta ON admissions
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'STA' AND
+                EXISTS (
+                  SELECT 1 FROM beneficiaries b
+                  WHERE b.id = admissions.beneficiary_id
+                    AND b.state_id = NULLIF(current_setting('app.current_state_id', true), '')::uuid
+                )
+              );
+
+            DROP POLICY IF EXISTS policy_admissions_tsp ON admissions;
+            CREATE POLICY policy_admissions_tsp ON admissions
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'TSP' AND
+                EXISTS (
+                  SELECT 1 FROM beneficiaries b
+                  WHERE b.id = admissions.beneficiary_id
+                    AND b.tsp_id = NULLIF(current_setting('app.current_tsp_id', true), '')::uuid
+                )
+              );
+
+            DROP POLICY IF EXISTS policy_admissions_ben ON admissions;
+            CREATE POLICY policy_admissions_ben ON admissions
+              USING (
+                current_setting('app.current_user_role', true) = 'TRAINEE' AND
+                admissions.beneficiary_id = current_setting('app.current_beneficiary_id', true)
+              );
+          END IF;
+
+          IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'trainee_profiles') THEN
+            ALTER TABLE trainee_profiles ENABLE ROW LEVEL SECURITY;
+
+            DROP POLICY IF EXISTS policy_trainee_profiles_fed ON trainee_profiles;
+            CREATE POLICY policy_trainee_profiles_fed ON trainee_profiles
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'FED'
+              );
+
+            DROP POLICY IF EXISTS policy_trainee_profiles_sta ON trainee_profiles;
+            CREATE POLICY policy_trainee_profiles_sta ON trainee_profiles
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'STA' AND
+                EXISTS (
+                  SELECT 1 FROM beneficiaries b
+                  WHERE b.id = trainee_profiles.beneficiary_id
+                    AND b.state_id = NULLIF(current_setting('app.current_state_id', true), '')::uuid
+                )
+              );
+
+            DROP POLICY IF EXISTS policy_trainee_profiles_tsp ON trainee_profiles;
+            CREATE POLICY policy_trainee_profiles_tsp ON trainee_profiles
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'TSP' AND
+                EXISTS (
+                  SELECT 1 FROM beneficiaries b
+                  WHERE b.id = trainee_profiles.beneficiary_id
+                    AND b.tsp_id = NULLIF(current_setting('app.current_tsp_id', true), '')::uuid
+                )
+              );
+
+            DROP POLICY IF EXISTS policy_trainee_profiles_ben ON trainee_profiles;
+            CREATE POLICY policy_trainee_profiles_ben ON trainee_profiles
+              USING (
+                current_setting('app.current_user_role', true) = 'TRAINEE' AND
+                trainee_profiles.beneficiary_id = current_setting('app.current_beneficiary_id', true)
+              );
+          END IF;
+
+          IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'audit_logs') THEN
+            ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+
+            DROP POLICY IF EXISTS policy_audit_logs_fed ON audit_logs;
+            CREATE POLICY policy_audit_logs_fed ON audit_logs
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'FED'
+              );
+
+            DROP POLICY IF EXISTS policy_audit_logs_tenant ON audit_logs;
+            CREATE POLICY policy_audit_logs_tenant ON audit_logs
+              USING (
+                NULLIF(current_setting('app.current_user_role', true), '') IS NOT NULL AND
+                current_setting('app.current_tenant_tier', true) <> 'FED' AND
+                audit_logs.tenant_id::text = current_setting('app.current_tenant_id', true)
+              );
+          END IF;
+
+          IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'cohorts') THEN
+            ALTER TABLE cohorts ENABLE ROW LEVEL SECURITY;
+
+            DROP POLICY IF EXISTS policy_cohorts_fed ON cohorts;
+            CREATE POLICY policy_cohorts_fed ON cohorts
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'FED'
+              );
+
+            DROP POLICY IF EXISTS policy_cohorts_tenant ON cohorts;
+            CREATE POLICY policy_cohorts_tenant ON cohorts
+              USING (
+                current_setting('app.current_tenant_tier', true) IN ('STA', 'TSP') AND
+                cohorts.tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+              );
+          END IF;
+
+          IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'training_batches') THEN
+            ALTER TABLE training_batches ENABLE ROW LEVEL SECURITY;
+
+            DROP POLICY IF EXISTS policy_training_batches_fed ON training_batches;
+            CREATE POLICY policy_training_batches_fed ON training_batches
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'FED'
+              );
+
+            DROP POLICY IF EXISTS policy_training_batches_tenant ON training_batches;
+            CREATE POLICY policy_training_batches_tenant ON training_batches
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'STA' AND
+                training_batches.tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+              );
+
+            DROP POLICY IF EXISTS policy_training_batches_tsp ON training_batches;
+            CREATE POLICY policy_training_batches_tsp ON training_batches
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'TSP' AND
+                training_batches.tsp_id = NULLIF(current_setting('app.current_tsp_id', true), '')::uuid
+              );
+          END IF;
+
+          IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'trainers') THEN
+            ALTER TABLE trainers ENABLE ROW LEVEL SECURITY;
+
+            DROP POLICY IF EXISTS policy_trainers_fed ON trainers;
+            CREATE POLICY policy_trainers_fed ON trainers
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'FED'
+              );
+
+            DROP POLICY IF EXISTS policy_trainers_tenant ON trainers;
+            CREATE POLICY policy_trainers_tenant ON trainers
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'STA' AND
+                trainers.tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+              );
+
+            DROP POLICY IF EXISTS policy_trainers_tsp ON trainers;
+            CREATE POLICY policy_trainers_tsp ON trainers
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'TSP' AND
+                trainers.tsp_id = NULLIF(current_setting('app.current_tsp_id', true), '')::uuid
+              );
+          END IF;
+
+          IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'assessments') THEN
+            ALTER TABLE assessments ENABLE ROW LEVEL SECURITY;
+
+            DROP POLICY IF EXISTS policy_assessments_fed ON assessments;
+            CREATE POLICY policy_assessments_fed ON assessments
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'FED'
+              );
+
+            DROP POLICY IF EXISTS policy_assessments_tenant ON assessments;
+            CREATE POLICY policy_assessments_tenant ON assessments
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'STA' AND
+                assessments.tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+              );
+
+            DROP POLICY IF EXISTS policy_assessments_tsp ON assessments;
+            CREATE POLICY policy_assessments_tsp ON assessments
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'TSP' AND
+                EXISTS (
+                  SELECT 1 FROM beneficiaries b
+                  WHERE b.id = assessments.beneficiary_id
+                    AND b.tsp_id = NULLIF(current_setting('app.current_tsp_id', true), '')::uuid
+                )
+              );
+
+            DROP POLICY IF EXISTS policy_assessments_ben ON assessments;
+            CREATE POLICY policy_assessments_ben ON assessments
+              USING (
+                current_setting('app.current_user_role', true) = 'TRAINEE' AND
+                assessments.beneficiary_id = current_setting('app.current_beneficiary_id', true)
+              );
+          END IF;
+
+          IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'graduation_clearances') THEN
+            ALTER TABLE graduation_clearances ENABLE ROW LEVEL SECURITY;
+
+            DROP POLICY IF EXISTS policy_graduation_clearances_fed ON graduation_clearances;
+            CREATE POLICY policy_graduation_clearances_fed ON graduation_clearances
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'FED'
+              );
+
+            DROP POLICY IF EXISTS policy_graduation_clearances_tenant ON graduation_clearances;
+            CREATE POLICY policy_graduation_clearances_tenant ON graduation_clearances
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'STA' AND
+                graduation_clearances.tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+              );
+
+            DROP POLICY IF EXISTS policy_graduation_clearances_tsp ON graduation_clearances;
+            CREATE POLICY policy_graduation_clearances_tsp ON graduation_clearances
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'TSP' AND
+                EXISTS (
+                  SELECT 1 FROM beneficiaries b
+                  WHERE b.id = graduation_clearances.beneficiary_id
+                    AND b.tsp_id = NULLIF(current_setting('app.current_tsp_id', true), '')::uuid
+                )
+              );
+
+            DROP POLICY IF EXISTS policy_graduation_clearances_ben ON graduation_clearances;
+            CREATE POLICY policy_graduation_clearances_ben ON graduation_clearances
+              USING (
+                current_setting('app.current_user_role', true) = 'TRAINEE' AND
+                graduation_clearances.beneficiary_id = current_setting('app.current_beneficiary_id', true)
+              );
+          END IF;
+
+          IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'training_batch_assignments') THEN
+            ALTER TABLE training_batch_assignments ENABLE ROW LEVEL SECURITY;
+
+            DROP POLICY IF EXISTS policy_batch_assignments_fed ON training_batch_assignments;
+            CREATE POLICY policy_batch_assignments_fed ON training_batch_assignments
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'FED'
+              );
+
+            DROP POLICY IF EXISTS policy_batch_assignments_tenant ON training_batch_assignments;
+            CREATE POLICY policy_batch_assignments_tenant ON training_batch_assignments
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'STA' AND
+                training_batch_assignments.tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+              );
+
+            DROP POLICY IF EXISTS policy_batch_assignments_tsp ON training_batch_assignments;
+            CREATE POLICY policy_batch_assignments_tsp ON training_batch_assignments
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'TSP' AND
+                training_batch_assignments.batch_id IN (SELECT id FROM training_batches WHERE tsp_id = NULLIF(current_setting('app.current_tsp_id', true), '')::uuid)
+              );
+          END IF;
+
+          -- Add RLS on tsps table
+          IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'tsps') THEN
+            ALTER TABLE tsps ENABLE ROW LEVEL SECURITY;
+
+            DROP POLICY IF EXISTS policy_tsps_fed ON tsps;
+            CREATE POLICY policy_tsps_fed ON tsps
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'FED' OR
+                current_setting('app.current_user_role', true) IN ('SUPER_ADMIN', 'ADMIN_OFFICER', 'REVIEW_OFFICER', 'FEDERAL_SUPER_ADMIN', 'FEDERAL_PROGRAM_MANAGER', 'FEDERAL_REVIEW_MANAGER')
+              );
+
+            DROP POLICY IF EXISTS policy_tsps_sta ON tsps;
+            CREATE POLICY policy_tsps_sta ON tsps
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'STA' AND
+                tsps.state_id = NULLIF(current_setting('app.current_state_id', true), '')::uuid
+              );
+
+            DROP POLICY IF EXISTS policy_tsps_tsp ON tsps;
+            CREATE POLICY policy_tsps_tsp ON tsps
+              USING (
+                current_setting('app.current_tenant_tier', true) = 'TSP' AND
+                tsps.id = NULLIF(current_setting('app.current_tsp_id', true), '')::uuid
+              );
+          END IF;
+        END $$;
       `);
-      console.log("[DB] Backfill of trainee profiles completed successfully.");
-    } catch (err: any) {
-      console.error("[DB] Trainee backfill error:", err.message || err);
+      console.log("[DB] Row-Level Security (RLS) policies bootstrapped successfully.");
+      console.log("[BOOT] RLS Policies Verified");
+    } catch (rlsErr: any) {
+      console.error("[DB] Failed to bootstrap RLS policies:", rlsErr.message || rlsErr);
+      startupWarnings.push(`RLS policies error: ${rlsErr.message || rlsErr}`);
     }
 
     // Automatically recover and check template URLs on server startup/bootstrap
@@ -1345,6 +2497,9 @@ export function loadJsonState(): {
   toolkitAssets?: any[];
   graduateToolkits?: any[];
   programCosts?: any[];
+  sectors?: any[];
+  skills?: any[];
+  eoiApplications?: any[];
 } {
   try {
     if (fs.existsSync(DB_FILE)) {
@@ -1389,6 +2544,29 @@ export function loadJsonState(): {
       if (!data.graduateToolkits) {
         data.graduateToolkits = [];
       }
+      if (!data.sectors || data.sectors.length === 0) {
+        data.sectors = [
+          { id: "s1", sectorCode: "AGR", sectorName: "Agriculture", description: "Agricultural and farming skill development", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "s2", sectorCode: "CON", sectorName: "Construction", description: "Civil work, masonry and modern construction infrastructure", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "s3", sectorCode: "ICT", sectorName: "ICT", description: "Information and communications technology, digital systems", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "s4", sectorCode: "MAN", sectorName: "Manufacturing", description: "Industrial manufacturing and product assembly", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "s5", sectorCode: "CRE", sectorName: "Creative Industry", description: "Multimedia, digital design and creative crafts", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "s6", sectorCode: "AUT", sectorName: "Automotive", description: "Vehicle diagnostics, auto-mechanics and assembly", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "s7", sectorCode: "REN", sectorName: "Renewable Energy", description: "Solar installation, wind systems and clean technologies", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "s8", sectorCode: "HEA", sectorName: "Healthcare", description: "Medical systems technology and healthcare support", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "s9", sectorCode: "HOS", sectorName: "Hospitality", description: "Culinary arts, tourism and hospitality services", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "s10", sectorCode: "FAS", sectorName: "Fashion", description: "Textile manufacturing, tailoring and apparel design", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
+        ];
+      }
+      if (!data.skills || data.skills.length === 0) {
+        data.skills = [
+          { id: "sk1", skillCode: "SK-COM-REP", skillName: "Computer Hardware and Cell Phone Repairs", sectorId: "s3", description: "Micro-soldering, circuits diagnostic and operating system installation", durationWeeks: 12, certificationType: "NBTE Modular", assessmentMethod: "Practical, Examination", equipmentRequirements: "Multimeter, Heat guns, Screwdrivers", curriculumVersion: "2.1", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk2", skillCode: "SK-SOL-INS", skillName: "Solar Photovoltaic Panel Installation", sectorId: "s7", description: "Photovoltaic cells routing, inverter battery chemistry, panel diagnostics", durationWeeks: 10, certificationType: "NBTE Modular", assessmentMethod: "Continuous Assessment, Practical", equipmentRequirements: "Clamps, crimping tool, safety harness", curriculumVersion: "1.0", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
+        ];
+      }
+      if (!data.eoiApplications) {
+        data.eoiApplications = [];
+      }
       return data;
     }
   } catch (e) {
@@ -1404,7 +2582,10 @@ export function loadJsonState(): {
     emailTemplates: [],
     toolkitAssets: [],
     graduateToolkits: [],
-    programCosts: []
+    programCosts: [],
+    sectors: [],
+    skills: [],
+    eoiApplications: []
   };
 }
 
@@ -1422,6 +2603,9 @@ export function saveJsonState(state: {
   toolkitAssets?: any[];
   graduateToolkits?: any[];
   programCosts?: any[];
+  sectors?: any[];
+  skills?: any[];
+  eoiApplications?: any[];
 }) {
   try {
     if (!state.institutionLetterheads) {
@@ -1445,9 +2629,406 @@ export function saveJsonState(state: {
     if (!state.programCosts) {
       state.programCosts = [];
     }
+    if (!state.sectors) {
+      state.sectors = [];
+    }
+    if (!state.skills) {
+      state.skills = [];
+    }
+    if (!state.eoiApplications) {
+      state.eoiApplications = [];
+    }
     fs.writeFileSync(DB_FILE, JSON.stringify(state, null, 2), "utf-8");
   } catch (e) {
     console.error("[DB] Failed to write JSON file fallback state:", e);
+  }
+}
+
+/**
+ * Seeds the 36 Nigerian States + FCT and their corresponding 774 Local Government Areas.
+ * Also configures Kano State Admin login to be backed by real UUIDs.
+ * Finally migrates legacy free-text location states/cities to real local_governments/states DB IDs.
+ */
+export async function seedLocationInfrastructure(pool: pg.Pool): Promise<void> {
+  try {
+    console.log("[DB] Checking location infrastructure baseline...");
+    
+    // 1. Seed geopolitical zones and states
+    const statesData = [
+      { name: "Abia", code: "AB", zone: "South East" },
+      { name: "Adamawa", code: "AD", zone: "North East" },
+      { name: "Akwa Ibom", code: "AK", zone: "South South" },
+      { name: "Anambra", code: "AN", zone: "South East" },
+      { name: "Bauchi", code: "BA", zone: "North East" },
+      { name: "Bayelsa", code: "BY", zone: "South South" },
+      { name: "Benue", code: "BE", zone: "North Central" },
+      { name: "Borno", code: "BO", zone: "North East" },
+      { name: "Cross River", code: "CR", zone: "South South" },
+      { name: "Delta", code: "DE", zone: "South South" },
+      { name: "Ebonyi", code: "EB", zone: "South East" },
+      { name: "Edo", code: "ED", zone: "South South" },
+      { name: "Ekiti", code: "EK", zone: "South West" },
+      { name: "Enugu", code: "EN", zone: "South East" },
+      { name: "FCT", code: "FC", zone: "North Central" },
+      { name: "Gombe", code: "GO", zone: "North East" },
+      { name: "Imo", code: "IM", zone: "South East" },
+      { name: "Jigawa", code: "JI", zone: "North West" },
+      { name: "Kaduna", code: "KD", zone: "North West" },
+      { name: "Kano", code: "KN", zone: "North West" },
+      { name: "Katsina", code: "KT", zone: "North West" },
+      { name: "Kebbi", code: "KE", zone: "North West" },
+      { name: "Kogi", code: "KO", zone: "North Central" },
+      { name: "Kwara", code: "KW", zone: "North Central" },
+      { name: "Lagos", code: "LA", zone: "South West" },
+      { name: "Nasarawa", code: "NA", zone: "North Central" },
+      { name: "Niger", code: "NI", zone: "North Central" },
+      { name: "Ogun", code: "OG", zone: "South West" },
+      { name: "Ondo", code: "ON", zone: "South West" },
+      { name: "Osun", code: "OS", zone: "South West" },
+      { name: "Oyo", code: "OY", zone: "South West" },
+      { name: "Plateau", code: "PL", zone: "North Central" },
+      { name: "Rivers", code: "RI", zone: "South South" },
+      { name: "Sokoto", code: "SO", zone: "North West" },
+      { name: "Taraba", code: "TA", zone: "North East" },
+      { name: "Yobe", code: "YO", zone: "North East" },
+      { name: "Zamfara", code: "ZA", zone: "North West" }
+    ];
+
+    // Check if we need to seed states
+    const statesCountRes = await pool.query("SELECT COUNT(*) as count FROM states");
+    const statesCount = parseInt(statesCountRes.rows[0].count, 10);
+    
+    if (statesCount < 37) {
+      console.log(`[DB] States table has ${statesCount} records. Seeding 37 states and default state tenants...`);
+      for (const s of statesData) {
+        // Find or create associated state tenant
+        const tenantDomain = `state-${s.name.toLowerCase().replace(/\s+/g, "")}.tvet.local`;
+        let stateTenantId: string;
+        
+        const existingTenant = await pool.query("SELECT id FROM tenants WHERE tier = 'STA' AND domain = $1", [tenantDomain]);
+        if (existingTenant.rows.length > 0) {
+          stateTenantId = existingTenant.rows[0].id;
+        } else {
+          const insertTenant = await pool.query(
+            "INSERT INTO tenants (name, domain, tier, is_active) VALUES ($1, $2, 'STA', true) RETURNING id",
+            [`${s.name} State TVET Department`, tenantDomain]
+          );
+          stateTenantId = insertTenant.rows[0].id;
+        }
+
+        // Insert or update state with tenant association, name, state_code and geopolitical_zone
+        await pool.query(`
+          INSERT INTO states (tenant_id, name, state_code, code, geopolitical_zone, is_active)
+          VALUES ($1, $2, $3, $4, $5, true)
+          ON CONFLICT (name) DO UPDATE SET 
+            tenant_id = EXCLUDED.tenant_id,
+            state_code = EXCLUDED.state_code,
+            code = EXCLUDED.code,
+            geopolitical_zone = EXCLUDED.geopolitical_zone
+        `, [stateTenantId, s.name, s.code, s.code, s.zone]);
+      }
+      console.log("[DB] States and their associated STA tenants successfully seeded.");
+    }
+
+    // Now seed LGAs and reference lgas
+    const lgaCountRes = await pool.query("SELECT COUNT(*) as count FROM local_governments");
+    const lgaCount = parseInt(lgaCountRes.rows[0].count, 10);
+
+    const hasPlaceholdersRes = await pool.query("SELECT EXISTS(SELECT 1 FROM local_governments WHERE name LIKE '% LGA %' OR name LIKE '% Extra %')");
+    const hasPlaceholders = hasPlaceholdersRes.rows[0].exists;
+
+    if (hasPlaceholders || lgaCount < 770) {
+      console.log("[DB] Placeholders elements detected or index incomplete. Sanitizing and seeding official Nigerian 774 LGAs...");
+      await pool.query("DELETE FROM local_governments WHERE name LIKE '% LGA %' OR name LIKE '% Extra %' OR name LIKE 'Abia %' OR name LIKE 'Adama%' OR name LIKE 'Anam%'");
+
+      // Let's first load states mappings so we have the state_id
+      const statesMapRes = await pool.query("SELECT id, name FROM states");
+      const statesMap: { [key: string]: string } = {};
+      for (const row of statesMapRes.rows) {
+        statesMap[row.name.toLowerCase().trim()] = row.id;
+      }
+
+      // Seed official reference tables mapping
+      for (const [stateName, lgaList] of Object.entries(NIGERIAN_STATES_AND_LGAS)) {
+        // Direct state mapped search. Normalizes names ("fct abuja" vs "fct")
+        let matchedStateKey = stateName.toLowerCase().trim();
+        if (matchedStateKey.includes("fct")) matchedStateKey = "fct";
+
+        const stateUuid = statesMap[matchedStateKey];
+
+        for (let idx = 0; idx < lgaList.length; idx++) {
+          const lgaName = lgaList[idx];
+
+          // 1. Seed official lgas reference table
+          await pool.query(`
+            INSERT INTO lgas (state_name, name)
+            VALUES ($1, $2)
+            ON CONFLICT (state_name, name) DO NOTHING
+          `, [stateName, lgaName]);
+
+          // 2. Seed traditional local_governments table
+          if (stateUuid) {
+            const lgaCode = `${stateName.toUpperCase().slice(0, 3).replace(/ /g, "")}-LGA-${String(idx + 1).padStart(3, "0")}`;
+            await pool.query(`
+              INSERT INTO local_governments (state_id, name, code)
+              VALUES ($1, $2, $3)
+              ON CONFLICT DO NOTHING
+            `, [stateUuid, lgaName, lgaCode]);
+          }
+        }
+      }
+    } else {
+      console.log(`[DB] LGAs are already seeded (${lgaCount} LGAs). Skipping LGA insertion loop (saves 1500+ roundtrips).`);
+    }
+
+    const seededLgaCountRes = await pool.query("SELECT COUNT(*)::int as count FROM local_governments");
+    console.log(`[DB] Official LGAs successfully seeded: ${seededLgaCountRes.rows[0].count} LGAs are in database.`);
+
+    const isDevSeedingEnabled = process.env.NODE_ENV === "development" || process.env.ENABLE_DEV_SEEDS === "true";
+
+    if (isDevSeedingEnabled) {
+      // Now seed/ensure Kano State Admin user with UUID-backed tenant and state ids
+      console.log("[DB] Resolving Kano State Admin User and credentials...");
+      const kanoRes = await pool.query("SELECT id, tenant_id FROM states WHERE name = 'Kano' LIMIT 1");
+      if (kanoRes.rows.length > 0) {
+        const kanoUuid = kanoRes.rows[0].id;
+        const kanoTenantUuid = kanoRes.rows[0].tenant_id;
+
+        // Ensure user_sta is linked to this real tenant and state
+        const kanoAdminHash = bcrypt.hashSync("ChangeMe123!", 10);
+        
+        // Update/Ensure record in users table
+        await pool.query(`
+          INSERT INTO users (id, email, password_hash, role, tenant_id, state_id, failed_login_attempts)
+          VALUES ('user_sta', 'state.admin@tvet.local', $1, 'STA', $2, $3, 0)
+          ON CONFLICT (email) DO UPDATE SET 
+            tenant_id = EXCLUDED.tenant_id,
+            state_id = EXCLUDED.state_id,
+            role = 'STA'
+        `, [kanoAdminHash, kanoTenantUuid, kanoUuid]);
+        console.log(`[DB Seeder] Kano State Admin user is successfully seeded: user_sta connected to real Kano State UUID: ${kanoUuid} and Tenant UUID: ${kanoTenantUuid}`);
+      }
+
+      // Ensure default TSP exists (Phase 8 Production Bootstrapping)
+      const tspCountRes = await pool.query("SELECT COUNT(*) as count FROM tsps");
+      if (parseInt(tspCountRes.rows[0].count, 10) === 0) {
+        console.log("[DB] Seeding official default TSPs with Profile fields...");
+        
+        const imoTenantRes = await pool.query("SELECT id FROM tenants WHERE domain = 'imo.tvet.local' OR name LIKE '%Imo%' LIMIT 1");
+        let imoTenantId = imoTenantRes.rows.length > 0 ? imoTenantRes.rows[0].id : null;
+        if (!imoTenantId) {
+          const anyStaRes = await pool.query("SELECT id FROM tenants WHERE tier = 'STA' LIMIT 1");
+          imoTenantId = anyStaRes.rows.length > 0 ? anyStaRes.rows[0].id : null;
+        }
+
+        const stateImoRes = await pool.query("SELECT id FROM states WHERE name = 'Imo' LIMIT 1");
+        const stateImoId = stateImoRes.rows.length > 0 ? stateImoRes.rows[0].id : null;
+
+        const tspId = "00000000-0000-0000-0000-000000000001";
+        await pool.query(`
+          INSERT INTO tsps (id, tenant_id, state_id, name, code, tsp_code, contact_person, contact_email, contact_phone, is_active, state, lga, physical_address, latitude, longitude, registration_number, accreditation_status, accreditation_number, accreditation_expiry, account_status, profile_completed)
+          VALUES ($1, $2, $3, $4, $5, 'TVET-TSP-IMO-0001', $6, $7, $8, true, 'Imo', 'Owerri Municipal', 'Unique Technology Complex, Owerri Municipal, Imo State', 5.4851, 7.0346, 'RC-199201', 'ACTIVE', 'NBTE/TVET/UT-001/2024', '2026-12-31', 'ACTIVE', true)
+        `, [tspId, imoTenantId, stateImoId, "Unique Technology Nig. Ltd", "UT-001", "Tom Okwa", "moh.yusuf@tvet.local", "+234 803 123 4567"]);
+
+        // Seed a TSP tenant and a TSP Admin user connected to this TSP
+        const tspTenantRes = await pool.query("INSERT INTO tenants (name, domain, tier, is_active) VALUES ($1, $2, 'TSP', true) RETURNING id");
+        const tspTenantId = tspTenantRes.rows[0].id;
+
+        const tspAdminHash = bcrypt.hashSync("ChangeMe123!", 10);
+        await pool.query(`
+          INSERT INTO users (id, email, password_hash, role, tenant_id, state_id, tsp_id, failed_login_attempts, must_change_password, is_primary_contact)
+          VALUES ('user_tsp', 'tsp.admin@tvet.local', $1, 'TSP_ADMIN', $2, $3, $4, 0, false, true)
+          ON CONFLICT (email) DO NOTHING
+        `, [tspAdminHash, tspTenantId, stateImoId, tspId]);
+        
+        console.log("[DB] Seeded default TSP: Unique Technology Nig. Ltd and registered User tsp.admin@tvet.local (ChangeMe123!) linked to Imo.");
+      } else {
+        // Check and migrate existing default TSP_01 if needed
+        console.log("[DB] Migrating/verifying default TSP Unique Technology Nig. Ltd state references...");
+        const stateImoRes = await pool.query("SELECT id FROM states WHERE name = 'Imo' LIMIT 1");
+        const stateImoId = stateImoRes.rows.length > 0 ? stateImoRes.rows[0].id : null;
+        if (stateImoId) {
+          await pool.query(`
+            UPDATE tsps
+            SET 
+              state_id = COALESCE(state_id, $1),
+              state = 'Imo',
+              lga = 'Owerri Municipal',
+              tsp_code = 'TVET-TSP-IMO-0001',
+              account_status = 'ACTIVE',
+              profile_completed = true
+            WHERE id = '00000000-0000-0000-0000-000000000001'
+          `, [stateImoId]);
+          
+          await pool.query(`
+            UPDATE users
+            SET state_id = $1
+            WHERE id = 'user_tsp' OR email = 'tsp.admin@tvet.local'
+          `, [stateImoId]);
+        }
+      }
+    } else {
+      console.log("[DB] Skipping mock sandbox TSP and Kano/TSP admin users seeding on production.");
+    }
+
+    // Migrate any other legacy TSPs that don't have tsp_code
+    console.log("[DB Migration] Performing schema migration matching for legacy TSPs...");
+    const legacyTspsRes = await pool.query(`
+      SELECT t.id, t.name, t.state, s.code AS state_code
+      FROM tsps t
+      LEFT JOIN states s ON t.state_id = s.id
+      WHERE t.tsp_code IS NULL
+    `);
+    
+    for (const legacyTsp of legacyTspsRes.rows) {
+      let tCode = (legacyTsp.state_code || legacyTsp.state || "NIG").toUpperCase().substring(0, 3).replace(/ /g, "");
+      if (tCode.includes("FCT")) tCode = "FCT";
+      
+      const countRes = await pool.query("SELECT COUNT(*) as count FROM tsps WHERE tsp_code LIKE $1", [`TVET-TSP-${tCode}-%`]);
+      const nextSeq = parseInt(countRes.rows[0].count, 10) + 1;
+      const computedTspCode = `TVET-TSP-${tCode}-${String(nextSeq).padStart(4, "0")}`;
+      
+      await pool.query(`
+        UPDATE tsps
+        SET 
+          tsp_code = $1,
+          account_status = COALESCE(account_status, 'ACTIVE'),
+          profile_completed = COALESCE(profile_completed, true)
+        WHERE id = $2
+      `, [computedTspCode, legacyTsp.id]);
+    }
+
+    // Part 5: Perform backward compatibility displacement for beneficiaries free-text state and LGA
+    console.log("[DB Migration] Performing backward compatibility placement for beneficiaries free-text state and LGA...");
+    
+    // Map state string to state_id
+    await pool.query(`
+      UPDATE beneficiaries b
+      SET state_id = s.id
+      FROM states s
+      WHERE b.state_id IS NULL AND (
+        LOWER(TRIM(b.state)) = LOWER(TRIM(s.name)) OR
+        LOWER(TRIM(b.state)) = LOWER(TRIM(s.code))
+      )
+    `);
+
+    // Let's also see if we can resolve LGA strings
+    await pool.query(`
+      UPDATE beneficiaries b
+      SET lga_id = lg.id
+      FROM local_governments lg
+      WHERE b.lga_id IS NULL AND b.state_id = lg.state_id AND (
+        LOWER(TRIM(b.city)) = LOWER(TRIM(lg.name)) OR
+        LOWER(TRIM(b.custom_fields->>'Local Government Area (LGA)')) = LOWER(TRIM(lg.name)) OR
+        LOWER(TRIM(b.custom_fields->>'lga')) = LOWER(TRIM(lg.name)) OR
+        LOWER(TRIM(b.custom_fields->>'LGA')) = LOWER(TRIM(lg.name))
+      )
+    `);
+    console.log("[DB Migration] Backward compatibility location displacement completed.");
+
+    // PHASE 3 - UNIQUE DATA RELATIONSHIP AUDIT & REPAIR
+    console.log("[DB Audit] Auditing and repairing Unique Technology Nig. Ltd database relationships...");
+    
+    // Find Imo state ID
+    const imoStateRes = await pool.query("SELECT id FROM states WHERE name = 'Imo' LIMIT 1");
+    const imoStateId = imoStateRes.rows.length > 0 ? imoStateRes.rows[0].id : null;
+    
+    // Find Imo tenant ID
+    const imoTenantRes = await pool.query("SELECT id FROM tenants WHERE domain = 'imo.tvet.local' OR name LIKE '%Imo%' LIMIT 1");
+    let imoTenantId = imoTenantRes.rows.length > 0 ? imoTenantRes.rows[0].id : null;
+    if (!imoTenantId && imoStateId) {
+      const stateRow = await pool.query("SELECT tenant_id FROM states WHERE id = $1", [imoStateId]);
+      imoTenantId = stateRow.rows.length > 0 ? stateRow.rows[0].tenant_id : null;
+    }
+
+    const uniqueTspId = '00000000-0000-0000-0000-000000000001';
+
+    if (imoStateId && imoTenantId) {
+      // 1. Repair TSP central record in case tenant_id or state_id is null/missing
+      await pool.query(`
+        UPDATE tsps
+        SET 
+          tenant_id = COALESCE(tenant_id, $1::uuid),
+          state_id = COALESCE(state_id, $2::uuid),
+          state = 'Imo',
+          lga = COALESCE(lga, 'Owerri Municipal')
+        WHERE id = $3::uuid
+      `, [imoTenantId, imoStateId, uniqueTspId]);
+
+      // 2. Repair and align user maps (TSP admin and any other associated accounts)
+      await pool.query(`
+        UPDATE users
+        SET 
+          tenant_id = COALESCE(tenant_id, $1::uuid),
+          state_id = COALESCE(state_id, $2::uuid),
+          tsp_id = COALESCE(tsp_id, $3::uuid)
+        WHERE (email = 'tsp.admin@tvet.local' OR tsp_id = $3::uuid OR id = 'user_tsp')
+          AND (tenant_id IS NULL OR state_id IS NULL OR tsp_id IS NULL)
+      `, [imoTenantId, imoStateId, uniqueTspId]);
+
+      // 3. Audit and align Beneficiaries to ensure no orphaned Unique records exist
+      const orphanedBensBefore = await pool.query(`
+        SELECT COUNT(*)::int as count FROM beneficiaries
+        WHERE (tsp = 'Unique Technology Nig. Ltd' OR tsp_id = $1::uuid OR state = 'Imo')
+          AND (tsp_id IS NULL OR state_id IS NULL OR tenant_id IS NULL)
+      `, [uniqueTspId]);
+      console.log(`[DB Audit] Found ${orphanedBensBefore.rows[0].count} unaligned/orphaned Unique beneficiary records.`);
+
+      await pool.query(`
+        UPDATE beneficiaries
+        SET 
+          tsp_id = COALESCE(tsp_id, $1::uuid),
+          state_id = COALESCE(state_id, $2::uuid),
+          tenant_id = COALESCE(tenant_id, $3::uuid),
+          state = 'Imo'
+        WHERE (tsp = 'Unique Technology Nig. Ltd' OR tsp_id = $1::uuid OR state = 'Imo')
+          AND (tsp_id IS NULL OR state_id IS NULL OR tenant_id IS NULL)
+      `, [uniqueTspId, imoStateId, imoTenantId]);
+
+      // 4. Align training batches and assignments
+      let cohortId: string | null = null;
+      const cohortRes = await pool.query("SELECT id FROM cohorts LIMIT 1");
+      if (cohortRes.rows.length > 0) {
+        cohortId = cohortRes.rows[0].id;
+      } else {
+        const defaultCohortId = "c0c0c0c0-0000-0000-0000-000000000001";
+        await pool.query(`
+          INSERT INTO cohorts (id, tenant_id, name, cohort_year, start_date, end_date, status)
+          VALUES ($1, $2, 'Cohort-2026-A', 2026, '2026-01-01', '2026-12-31', 'ACTIVE')
+          ON CONFLICT (id) DO NOTHING
+        `, [defaultCohortId, imoTenantId]);
+        cohortId = defaultCohortId;
+      }
+
+      await pool.query(`
+        UPDATE training_batches
+        SET 
+          tenant_id = COALESCE(tenant_id, $1::uuid),
+          cohort_id = COALESCE(cohort_id, $3::uuid)
+        WHERE tsp_id = $2::uuid AND (tenant_id IS NULL OR cohort_id IS NULL)
+      `, [imoTenantId, uniqueTspId, cohortId]);
+
+      // 5. Align continuous assessments mapping
+      await pool.query(`
+        UPDATE assessments a
+        SET tenant_id = b.tenant_id
+        FROM beneficiaries b
+        WHERE a.beneficiary_id = b.id AND b.tsp_id = $1::uuid AND a.tenant_id IS NULL
+      `, [uniqueTspId]);
+
+      // 6. Align graduation clearances maps
+      await pool.query(`
+        UPDATE graduation_clearances g
+        SET tenant_id = b.tenant_id
+        FROM beneficiaries b
+        WHERE g.beneficiary_id = b.id AND b.tsp_id = $1::uuid AND g.tenant_id IS NULL
+      `, [uniqueTspId]);
+
+      console.log("[DB Audit] Database relationship audit and repair completed successfully.");
+    }
+
+  } catch (err: any) {
+    console.error("[DB Seeding Error] Location Infrastructure Seeder failed:", err.message || err);
   }
 }
 
@@ -1674,7 +3255,7 @@ export class DbRepo {
     }
 
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         "SELECT id, name, label, type, options, required FROM custom_fields WHERE deleted_at IS NULL ORDER BY created_at ASC"
       );
       return res.rows.map(r => ({
@@ -1704,7 +3285,7 @@ export class DbRepo {
     }
 
     try {
-      await pool.query(
+      await executeQuery(
         `INSERT INTO custom_fields (id, name, label, type, options, required, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
          ON CONFLICT (id) DO UPDATE SET 
@@ -1740,7 +3321,7 @@ export class DbRepo {
     }
 
     try {
-      const res = await pool.query("UPDATE custom_fields SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL", [id]);
+      const res = await executeQuery("UPDATE custom_fields SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL", [id]);
       return (res.rowCount ?? 0) > 0;
     } catch (e) {
       console.error("[DB Repo] Failed to soft-delete custom field in PG:", e);
@@ -1749,26 +3330,116 @@ export class DbRepo {
   }
 
   /**
-   * Loads all historical system-wide audit activity logs
+   * Loads all historical system-wide audit activity logs with optional pagination and filters
    */
-  static async getAuditLogs(): Promise<AuditLog[]> {
+  static async getAuditLogs(options?: {
+    limit?: number;
+    offset?: number;
+    startDate?: string;
+    endDate?: string;
+    tenantId?: string;
+    stateId?: string;
+    tspId?: string;
+    permissionUsed?: string;
+    systemContext?: boolean;
+  }): Promise<AuditLog[]> {
     const pool = getPgPool();
     if (!pool || !isPgActive) {
-      return loadJsonState().auditLogs;
+      let list = loadJsonState().auditLogs as any[];
+      if (options?.tenantId) {
+        list = list.filter(item => item.tenantId === options.tenantId || item.tenant_id === options.tenantId);
+      }
+      if (options?.stateId) {
+        list = list.filter(item => item.stateId === options.stateId || item.state_id === options.stateId);
+      }
+      if (options?.tspId) {
+        list = list.filter(item => item.tspId === options.tspId || item.tsp_id === options.tspId);
+      }
+      if (options?.permissionUsed) {
+        list = list.filter(item => item.permissionUsed === options.permissionUsed || item.permission_used === options.permissionUsed);
+      }
+      if (options?.startDate) {
+        const start = new Date(options.startDate).getTime();
+        list = list.filter(item => new Date(item.timestamp).getTime() >= start);
+      }
+      if (options?.endDate) {
+        const end = new Date(options.endDate).getTime();
+        list = list.filter(item => new Date(item.timestamp).getTime() <= end);
+      }
+      if (options?.offset !== undefined) {
+        list = list.slice(options.offset);
+      }
+      if (options?.limit !== undefined) {
+        list = list.slice(0, options.limit);
+      }
+      return list;
     }
 
     try {
-      const res = await pool.query(
-        "SELECT id, timestamp, username, role, action, details, ip_address FROM audit_logs WHERE deleted_at IS NULL ORDER BY timestamp DESC"
-      );
+      await assertTenantContext(options);
+      const conditions: string[] = ["deleted_at IS NULL"];
+      const params: any[] = [];
+
+      if (options?.tenantId) {
+        params.push(options.tenantId);
+        conditions.push(`tenant_id = $${params.length}`);
+      }
+      if (options?.stateId) {
+        params.push(options.stateId);
+        conditions.push(`state_id = $${params.length}`);
+      }
+      if (options?.tspId) {
+        params.push(options.tspId);
+        conditions.push(`tsp_id = $${params.length}`);
+      }
+      if (options?.permissionUsed) {
+        params.push(options.permissionUsed);
+        conditions.push(`permission_used = $${params.length}`);
+      }
+      if (options?.startDate) {
+        params.push(new Date(options.startDate));
+        conditions.push(`timestamp >= $${params.length}`);
+      }
+      if (options?.endDate) {
+        params.push(new Date(options.endDate));
+        conditions.push(`timestamp <= $${params.length}`);
+      }
+
+      const whereClause = conditions.length > 0 ? "WHERE " + conditions.join(" AND ") : "";
+      
+      let queryStr = `
+        SELECT id, timestamp, username, role, action, details, ip_address, 
+               permission_used, effective_role, tenant_id, state_id, tsp_id, beneficiary_id, user_id
+        FROM audit_logs 
+        ${whereClause} 
+        ORDER BY timestamp DESC
+      `;
+
+      if (options?.limit !== undefined) {
+        params.push(options.limit);
+        queryStr += ` LIMIT $${params.length}`;
+      }
+      if (options?.offset !== undefined) {
+        params.push(options.offset);
+        queryStr += ` OFFSET $${params.length}`;
+      }
+
+      const res = await executeQuery(queryStr, params);
       return res.rows.map(r => ({
         id: r.id,
-        timestamp: r.timestamp.toISOString(),
+        timestamp: r.timestamp instanceof Date ? r.timestamp.toISOString() : new Date(r.timestamp).toISOString(),
         username: r.username,
         role: r.role,
         action: r.action,
         details: r.details || "",
-        ipAddress: r.ip_address || undefined
+        ipAddress: r.ip_address || undefined,
+        permissionUsed: r.permission_used || undefined,
+        effectiveRole: r.effective_role || undefined,
+        tenantId: r.tenant_id || undefined,
+        stateId: r.state_id || undefined,
+        tspId: r.tsp_id || undefined,
+        beneficiaryId: r.beneficiary_id || undefined,
+        userId: r.user_id || undefined
       }));
     } catch (e) {
       console.error("[DB Repo] Failed to query audit logs from PG:", e);
@@ -1776,32 +3447,109 @@ export class DbRepo {
     }
   }
 
+  static isValidUuid(id: any): boolean {
+    if (typeof id !== "string") return false;
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+  }
+
   /**
    * Writes a new system security context logs entry
    */
-  static async saveAuditLog(log: AuditLog): Promise<AuditLog> {
+  static async saveAuditLog(logOrUsername: any, maybeAction?: string, maybeDetails?: string): Promise<any> {
+    let logObj: any = {};
+
+    if (typeof logOrUsername === "string") {
+      // Legacy style: saveAuditLog(username, action, details)
+      logObj = {
+        id: "log_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+        timestamp: new Date().toISOString(),
+        username: logOrUsername,
+        action: maybeAction || "",
+        details: maybeDetails || "",
+        role: "Operations Manager"
+      };
+    } else if (typeof logOrUsername === "object" && logOrUsername !== null) {
+      logObj = { ...logOrUsername };
+      if (!logObj.id) {
+        logObj.id = "log_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
+      }
+      if (!logObj.timestamp) {
+        logObj.timestamp = new Date().toISOString();
+      }
+      if (!logObj.role) {
+        logObj.role = logObj.effectiveRole || "Operations Manager";
+      }
+    } else {
+      console.error("[DB Repo] Invalid parameters to saveAuditLog:", logOrUsername);
+      return {};
+    }
+
     const pool = getPgPool();
     if (!pool || !isPgActive) {
       const state = loadJsonState();
-      state.auditLogs.unshift(log);
+      state.auditLogs.unshift({
+        id: logObj.id,
+        timestamp: logObj.timestamp,
+        username: logObj.username,
+        role: logObj.role || logObj.effectiveRole || "Operations Manager",
+        action: logObj.action,
+        details: logObj.details,
+        ipAddress: logObj.ipAddress || logObj.ip_address || undefined
+      });
       saveJsonState(state);
-      return log;
+      return logObj;
     }
 
     try {
-      await pool.query(
-        `INSERT INTO audit_logs (id, timestamp, username, role, action, details, ip_address, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())`,
-        [log.id, new Date(log.timestamp), log.username, log.role, log.action, log.details, log.ipAddress || null]
+      const id = logObj.id;
+      const ts = new Date(logObj.timestamp);
+      const username = logObj.username;
+      const role = logObj.role || logObj.effectiveRole || "Operations Manager";
+      const act = logObj.action;
+      const det = logObj.details || "";
+      const ip = logObj.ipAddress || logObj.ip_address || null;
+
+      // Modern attributes, default to null if missing
+      const permissionUsed = logObj.permissionUsed || logObj.permission_used || null;
+      const effectiveRole = logObj.effectiveRole || logObj.effective_role || role || null;
+
+      const tenantId = DbRepo.isValidUuid(logObj.tenantId || logObj.tenant_id) ? (logObj.tenantId || logObj.tenant_id) : null;
+      const stateId = DbRepo.isValidUuid(logObj.stateId || logObj.state_id) ? (logObj.stateId || logObj.state_id) : null;
+      const tspId = DbRepo.isValidUuid(logObj.tspId || logObj.tsp_id) ? (logObj.tspId || logObj.tsp_id) : null;
+      const beneficiaryId = DbRepo.isValidUuid(logObj.beneficiaryId || logObj.beneficiary_id) ? (logObj.beneficiaryId || logObj.beneficiary_id) : null;
+      const userId = DbRepo.isValidUuid(logObj.userId || logObj.user_id) ? (logObj.userId || logObj.user_id) : null;
+
+      await executeQuery(
+        `INSERT INTO audit_logs (
+          id, timestamp, username, role, action, details, ip_address,
+          permission_used, effective_role, tenant_id, state_id, tsp_id, beneficiary_id, user_id,
+          created_at, updated_at
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW())`,
+        [
+          id, ts, username, role, act, det, ip,
+          permissionUsed, effectiveRole, tenantId, stateId, tspId, beneficiaryId, userId
+        ]
       );
-      return log;
-    } catch (e) {
-      console.error("[DB Repo] Failed to append audit log to PG:", e);
-      // Fallback save
-      const state = loadJsonState();
-      state.auditLogs.unshift(log);
-      saveJsonState(state);
-      return log;
+      return logObj;
+    } catch (e: any) {
+      console.error("[DB Repo] Failed to append audit log to PG:", e.message || e);
+      try {
+        const state = loadJsonState();
+        state.auditLogs.unshift({
+          id: logObj.id,
+          timestamp: logObj.timestamp,
+          username: logObj.username,
+          role: logObj.role || logObj.effectiveRole || "Operations Manager",
+          action: logObj.action,
+          details: logObj.details,
+          ipAddress: logObj.ipAddress || logObj.ip_address || undefined
+        });
+        saveJsonState(state);
+      } catch (fallbackErr) {
+        console.error("[DB Repo] Fallback JSON state save failed:", fallbackErr);
+      }
+      return logObj;
     }
   }
 
@@ -1809,13 +3557,33 @@ export class DbRepo {
    * Queries and returns a list of active beneficiaries with pre-mapped joined records.
    * Leverages options to omit massive Base64 payloads and detail relations unless requested.
    */
-  static async getBeneficiaries(options?: { includePhoto?: boolean; includeDetails?: boolean }): Promise<Beneficiary[]> {
+  static async getBeneficiaries(options?: { 
+    includePhoto?: boolean; 
+    includeDetails?: boolean;
+    tenantId?: string;
+    stateId?: string;
+    tspId?: string;
+    beneficiaryId?: string;
+    systemContext?: boolean;
+  }): Promise<Beneficiary[]> {
     const includePhoto = options?.includePhoto ?? false;
     const includeDetails = options?.includeDetails ?? false;
 
     const pool = getPgPool();
     if (!pool || !isPgActive) {
-      const state = loadJsonState().beneficiaries as Beneficiary[];
+      let state = loadJsonState().beneficiaries as Beneficiary[];
+      if (options?.tenantId) {
+        state = state.filter(b => b.tenantId === options.tenantId);
+      }
+      if (options?.stateId) {
+        state = state.filter(b => b.stateId === options.stateId);
+      }
+      if (options?.tspId) {
+        state = state.filter(b => b.tspId === options.tspId);
+      }
+      if (options?.beneficiaryId) {
+        state = state.filter(b => b.id === options.beneficiaryId);
+      }
       return state.map(b => {
         const dynamic = getDynamicEligibility(b);
         return {
@@ -1829,7 +3597,30 @@ export class DbRepo {
     }
 
     try {
+      await assertTenantContext(options);
       const photoCol = includePhoto ? "b.photo" : "'' as photo";
+      const conditions: string[] = ["b.deleted_at IS NULL"];
+      const params: any[] = [];
+
+      if (options?.tenantId) {
+        params.push(options.tenantId);
+        conditions.push(`b.tenant_id = $${params.length}`);
+      }
+      if (options?.stateId) {
+        params.push(options.stateId);
+        conditions.push(`b.state_id = $${params.length}`);
+      }
+      if (options?.tspId) {
+        params.push(options.tspId);
+        conditions.push(`b.tsp_id = $${params.length}`);
+      }
+      if (options?.beneficiaryId) {
+        params.push(options.beneficiaryId);
+        conditions.push(`b.id = $${params.length}`);
+      }
+
+      const whereStr = conditions.length > 0 ? "WHERE " + conditions.join(" AND ") : "";
+
       const queryStr = `
         SELECT b.id, ${photoCol}, (b.photo IS NOT NULL AND b.photo != '') as has_photo, b.first_name, b.last_name, b.other_name, b.gender, b.bvn, b.nin, 
                b.state, b.city, b.phone_number, b.email, b.residential_address, b.batch, 
@@ -1847,11 +3638,12 @@ export class DbRepo {
                adm.admission_form_viewed_at, adm.admission_form_pdf_url
         FROM beneficiaries b
         LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
-        WHERE b.deleted_at IS NULL
+        ${whereStr}
         ORDER BY b.created_at DESC
+        LIMIT 2000
       `;
       
-      const bRes = await pool.query(queryStr);
+      const bRes = await executeQuery(queryStr, params);
       if (bRes.rows.length === 0) return [];
 
       const payloadList: Beneficiary[] = [];
@@ -1866,7 +3658,7 @@ export class DbRepo {
 
         if (includeDetails) {
           // A. Documents List
-          const docRes = await pool.query(
+          const docRes = await executeQuery(
             "SELECT id, name, type, url, version, uploaded_at FROM documents WHERE beneficiary_id = $1 AND deleted_at IS NULL",
             [bId]
           );
@@ -1880,7 +3672,7 @@ export class DbRepo {
           }));
 
           // B. Acceptance versions
-          const accRes = await pool.query(
+          const accRes = await executeQuery(
             "SELECT version, url, name, uploaded_at FROM acceptance_letters WHERE beneficiary_id = $1 AND deleted_at IS NULL ORDER BY version ASC",
             [bId]
           );
@@ -1892,7 +3684,7 @@ export class DbRepo {
           }));
 
           // C. Attendance
-          const attRes = await pool.query(
+          const attRes = await executeQuery(
             "SELECT id, date, status, hours_logged FROM attendance_logs WHERE beneficiary_id = $1 AND deleted_at IS NULL ORDER BY date ASC",
             [bId]
           );
@@ -1904,7 +3696,7 @@ export class DbRepo {
           }));
 
           // D. Latest email logs
-          const emailRes = await pool.query(
+          const emailRes = await executeQuery(
             `SELECT tracking_status, sender_emailstatus, smtp_error_details, tracking_history, delivery_history
              FROM email_logs
              WHERE beneficiary_id = $1 AND deleted_at IS NULL
@@ -2023,7 +3815,7 @@ export class DbRepo {
    * Retrieves a single beneficiary profile using its unique identifier.
    * Performs an optimized single query with child record hydration.
    */
-  static async getBeneficiaryById(id: string): Promise<Beneficiary | null> {
+  static async getBeneficiaryById(id: string, options?: { systemContext?: boolean }): Promise<Beneficiary | null> {
     const pool = getPgPool();
     if (!pool || !isPgActive) {
       const state = loadJsonState();
@@ -2037,7 +3829,8 @@ export class DbRepo {
     }
 
     try {
-      const bRes = await pool.query(
+      await assertTenantContext(options);
+      const bRes = await executeQuery(
         `SELECT id, photo, first_name, last_name, other_name, gender, bvn, nin, 
                 state, city, phone_number, email, residential_address, batch, 
                 custom_fields, tsp, program, skill_sector, status, 
@@ -2057,7 +3850,7 @@ export class DbRepo {
       const row = bRes.rows[0];
 
       // Hydrate Admissions
-      const admRes = await pool.query(
+      const admRes = await executeQuery(
         `SELECT admission_status, admission_ref, admission_form_ref, admission_letter_generated_at, 
                 admission_letter_sent_at, admission_form_completed, admission_form_status, 
                 admission_form_data, admission_letter_versions, admission_form_versions, training_progress,
@@ -2071,7 +3864,7 @@ export class DbRepo {
       const adm = admRes.rows[0] || {};
 
       // Hydrate Documents
-      const docRes = await pool.query(
+      const docRes = await executeQuery(
         "SELECT id, name, type, url, version, uploaded_at FROM documents WHERE beneficiary_id = $1 AND deleted_at IS NULL",
         [id]
       );
@@ -2085,7 +3878,7 @@ export class DbRepo {
       }));
 
       // Hydrate Acceptance Letter versions
-      const accRes = await pool.query(
+      const accRes = await executeQuery(
         "SELECT version, url, name, uploaded_at FROM acceptance_letters WHERE beneficiary_id = $1 AND deleted_at IS NULL ORDER BY version ASC",
         [id]
       );
@@ -2097,7 +3890,7 @@ export class DbRepo {
       }));
 
       // Hydrate Attendance logs
-      const attRes = await pool.query(
+      const attRes = await executeQuery(
         "SELECT id, date, status, hours_logged FROM attendance_logs WHERE beneficiary_id = $1 AND deleted_at IS NULL ORDER BY date ASC",
         [id]
       );
@@ -2109,7 +3902,7 @@ export class DbRepo {
       }));
 
       // Hydrate Email logs
-      const emailRes = await pool.query(
+      const emailRes = await executeQuery(
         `SELECT tracking_status, sender_emailstatus, smtp_error_details, tracking_history, delivery_history
          FROM email_logs
          WHERE beneficiary_id = $1 AND deleted_at IS NULL
@@ -2256,7 +4049,7 @@ export class DbRepo {
 
     try {
       if (!force) {
-        const existingRes = await pool.query(
+        const existingRes = await executeQuery(
           "SELECT admission_form_ref FROM admissions WHERE beneficiary_id = $1",
           [id]
         );
@@ -2266,7 +4059,7 @@ export class DbRepo {
       }
 
       // Generate a new sequential reference
-      const countRes = await pool.query(
+      const countRes = await executeQuery(
         "SELECT count(*) as total FROM admissions WHERE admission_form_ref IS NOT NULL AND admission_form_ref LIKE 'IDEAS-AF-%'"
       );
       const nextSeq = Number(countRes.rows[0]?.total || 0) + 1;
@@ -2274,7 +4067,7 @@ export class DbRepo {
       const newRef = `IDEAS-AF-${year}-${String(nextSeq).padStart(6, "0")}`;
 
       // Insert/Update admissions record with this reference
-      await pool.query(
+      await executeQuery(
         "INSERT INTO admissions (beneficiary_id, admission_form_ref) VALUES ($1, $2) ON CONFLICT (beneficiary_id) DO UPDATE SET admission_form_ref = $2",
         [id, newRef]
       );
@@ -2325,7 +4118,7 @@ export class DbRepo {
 
     try {
       // Check if already has one
-      const existRes = await pool.query(
+      const existRes = await executeQuery(
         "SELECT certificate_number, certificate_reference, certificate_verification_code FROM beneficiaries WHERE id = $1",
         [id]
       );
@@ -2338,7 +4131,7 @@ export class DbRepo {
       }
 
       // Sequential generation
-      const countRes = await pool.query(
+      const countRes = await executeQuery(
         "SELECT count(*) as total FROM beneficiaries WHERE certificate_number IS NOT NULL AND certificate_number LIKE 'IDEAS-CERT-%'"
       );
       const nextSeq = Number(countRes.rows[0]?.total || 0) + 1;
@@ -2363,7 +4156,7 @@ export class DbRepo {
       return found ? (found.photo || "") : "";
     }
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         "SELECT photo FROM beneficiaries WHERE id = $1 AND deleted_at IS NULL",
         [id]
       );
@@ -2392,7 +4185,7 @@ export class DbRepo {
       return map;
     }
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         "SELECT id, photo FROM beneficiaries WHERE id = ANY($1) AND deleted_at IS NULL",
         [ids]
       );
@@ -2426,13 +4219,13 @@ export class DbRepo {
     }
 
     try {
-      const seqRes = await pool.query("SELECT nextval('ideas_beneficiary_id_seq') as val");
+      const seqRes = await executeQuery("SELECT nextval('ideas_beneficiary_id_seq') as val");
       const nextVal = seqRes.rows[0].val;
       const pad = String(nextVal).padStart(3, "0");
       return `IDEAS-${year}-${pad}`;
     } catch (e) {
       console.error("[DB Repo] Failed to get nextval for beneficiary ID sequence:", e);
-      const countRes = await pool.query("SELECT count(*) as count FROM beneficiaries");
+      const countRes = await executeQuery("SELECT count(*) as count FROM beneficiaries");
       const nextVal = parseInt(countRes.rows[0].count, 10) + 1;
       const pad = String(nextVal).padStart(3, "0");
       return `IDEAS-${year}-${pad}`;
@@ -2749,10 +4542,10 @@ export class DbRepo {
     }
 
     try {
-      const curRes = await pool.query("SELECT beneficiary_status FROM beneficiaries WHERE id = $1 AND deleted_at IS NULL", [id]);
+      const curRes = await executeQuery("SELECT beneficiary_status FROM beneficiaries WHERE id = $1 AND deleted_at IS NULL", [id]);
       const oldStatus = curRes.rows[0]?.beneficiary_status || "ACTIVE";
 
-      const res = await pool.query(
+      const res = await executeQuery(
         `UPDATE beneficiaries SET 
            beneficiary_status = 'REMOVED', 
            is_archived = TRUE, 
@@ -2799,6 +4592,29 @@ export class DbRepo {
       if (normalizedEmail === "reviewer@ideas-tvet.ng") {
         return { id: "user_ro", email: normalizedEmail, password_hash: bcrypt.hashSync("Password123", 10), role: "REVIEW_OFFICER", failed_login_attempts: 0 };
       }
+      if (normalizedEmail === "fed.admin@tvet.local") {
+        return {
+          id: "user_fed",
+          email: normalizedEmail,
+          password_hash: bcrypt.hashSync("ChangeMe123!", 10),
+          role: "FED",
+          tenant_id: "fed_tenant_default",
+          tenant_tier: "FED",
+          failed_login_attempts: 0
+        };
+      }
+      if (normalizedEmail === "state.admin@tvet.local") {
+        return {
+          id: "user_sta",
+          email: normalizedEmail,
+          password_hash: bcrypt.hashSync("ChangeMe123!", 10),
+          role: "STA",
+          tenant_id: "55555555-5555-5555-5555-555555555555",
+          tenant_tier: "STA",
+          state_id: "66666666-6666-6666-6666-666666666666",
+          failed_login_attempts: 0
+        };
+      }
       // Trainee fallback search
       const state = loadJsonState();
       const b = state.beneficiaries.find(x => x.email.toLowerCase() === normalizedEmail);
@@ -2816,8 +4632,8 @@ export class DbRepo {
     }
 
     try {
-      const res = await pool.query(
-        "SELECT id, email, password_hash, role, beneficiary_id, failed_login_attempts, lockout_until, reset_token, reset_token_expires, created_at, updated_at FROM users WHERE email = $1 AND deleted_at IS NULL",
+      const res = await executeQuery(
+        "SELECT u.id, u.email, u.password_hash, u.role, u.beneficiary_id, u.failed_login_attempts, u.lockout_until, u.reset_token, u.reset_token_expires, u.created_at, u.updated_at, u.tenant_id, u.state_id, u.tsp_id, t.tier as tenant_tier FROM users u LEFT JOIN tenants t ON t.id = u.tenant_id WHERE u.email = $1 AND u.deleted_at IS NULL",
         [email.toLowerCase().trim()]
       );
       if (res.rows.length > 0) {
@@ -2832,20 +4648,24 @@ export class DbRepo {
           reset_token: res.rows[0].reset_token,
           reset_token_expires: res.rows[0].reset_token_expires ? res.rows[0].reset_token_expires.toISOString() : null,
           created_at: res.rows[0].created_at ? res.rows[0].created_at.toISOString() : new Date().toISOString(),
-          updated_at: res.rows[0].updated_at ? res.rows[0].updated_at.toISOString() : new Date().toISOString()
+          updated_at: res.rows[0].updated_at ? res.rows[0].updated_at.toISOString() : new Date().toISOString(),
+          tenant_id: res.rows[0].tenant_id,
+          state_id: res.rows[0].state_id,
+          tsp_id: res.rows[0].tsp_id,
+          tenant_tier: res.rows[0].tenant_tier
         };
       }
 
       // If user not found, dynamically provision the Trainee account if they already exist in beneficiaries
-      const bRes = await pool.query("SELECT id, first_name, last_name, nin, bvn FROM beneficiaries WHERE email = $1 AND deleted_at IS NULL LIMIT 1", [email.toLowerCase().trim()]);
+      const bRes = await executeQuery("SELECT id, first_name, last_name, nin, bvn, tenant_id, state_id, tsp_id FROM beneficiaries WHERE email = $1 AND deleted_at IS NULL LIMIT 1", [email.toLowerCase().trim()]);
       if (bRes.rows.length > 0) {
         const b = bRes.rows[0];
         const defaultTraineePassword = b.nin ? b.nin : (b.bvn ? b.bvn : "Password123");
         const defaultHash = bcrypt.hashSync(defaultTraineePassword, 10);
         const newUid = `usr_tr_${b.id}`;
-        await pool.query(
-          "INSERT INTO users (id, email, password_hash, role, beneficiary_id, failed_login_attempts) VALUES ($1, $2, $3, $4, $5, 0) ON CONFLICT (email) DO NOTHING",
-          [newUid, email.toLowerCase().trim(), defaultHash, "TRAINEE", b.id]
+        await executeQuery(
+          "INSERT INTO users (id, email, password_hash, role, beneficiary_id, failed_login_attempts, tenant_id, state_id, tsp_id) VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8) ON CONFLICT (email) DO NOTHING",
+          [newUid, email.toLowerCase().trim(), defaultHash, "TRAINEE", b.id, b.tenant_id, b.state_id, b.tsp_id]
         );
         return {
           id: newUid,
@@ -2858,7 +4678,11 @@ export class DbRepo {
           reset_token: null,
           reset_token_expires: null,
           created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
+          tenant_id: b.tenant_id,
+          state_id: b.state_id,
+          tsp_id: b.tsp_id,
+          tenant_tier: "BEN"
         };
       }
       return null;
@@ -2877,12 +4701,14 @@ export class DbRepo {
       if (id === "user_sa") return { id: "user_sa", email: "superadmin@ideas-tvet.ng", role: "SUPER_ADMIN" };
       if (id === "user_ao") return { id: "user_ao", email: "admin@ideas-tvet.ng", role: "ADMIN_OFFICER" };
       if (id === "user_ro") return { id: "user_ro", email: "reviewer@ideas-tvet.ng", role: "REVIEW_OFFICER" };
+      if (id === "user_fed") return { id: "user_fed", email: "fed.admin@tvet.local", role: "FED", tenant_id: "fed_tenant_default", tenant_tier: "FED" };
+      if (id === "user_sta") return { id: "user_sta", email: "state.admin@tvet.local", role: "STA", tenant_id: "55555555-5555-5555-5555-555555555555", tenant_tier: "STA", state_id: "66666666-6666-6666-6666-666666666666" };
       return null;
     }
 
     try {
-      const res = await pool.query(
-        "SELECT id, email, role, beneficiary_id, failed_login_attempts, lockout_until, created_at FROM users WHERE id = $1 AND deleted_at IS NULL",
+      const res = await executeQuery(
+        "SELECT u.id, u.email, u.role, u.beneficiary_id, u.failed_login_attempts, u.lockout_until, u.created_at, u.tenant_id, u.state_id, u.tsp_id, t.tier as tenant_tier FROM users u LEFT JOIN tenants t ON t.id = u.tenant_id WHERE u.id = $1 AND u.deleted_at IS NULL",
         [id]
       );
       if (res.rows.length > 0) {
@@ -2906,7 +4732,7 @@ export class DbRepo {
       const lockoutTimestamp = user.lockout_until ? new Date(user.lockout_until) : null;
       const resetTokenExpires = user.reset_token_expires ? new Date(user.reset_token_expires) : null;
 
-      await pool.query(
+      await executeQuery(
         `UPDATE users SET 
            password_hash = $1, 
            failed_login_attempts = $2, 
@@ -2932,28 +4758,81 @@ export class DbRepo {
   }
 
   /**
-   * Save user session with token
+   * Save user session with token (Task 006 - Modernized & Backward-compatible overloaded signature)
    */
-  static async saveUserSession(id: string, user_id: string, token: string, expires_at: string): Promise<boolean> {
+  static async saveUserSession(
+    idOrParams: string | {
+      id?: string;
+      user_id: string;
+      token: string;
+      expires_at: string;
+      tenant_id?: string;
+      tenant_tier?: string;
+      state_id?: string;
+      tsp_id?: string;
+    },
+    user_id?: string,
+    token?: string,
+    expires_at?: string,
+    tenant_id?: string,
+    tenant_tier?: string,
+    state_id?: string,
+    tsp_id?: string
+  ): Promise<boolean> {
     const pool = getPgPool();
     if (!pool || !isPgActive) return true;
 
+    let finalId = "";
+    let finalUserId = "";
+    let finalToken = "";
+    let finalExpiresAt: Date;
+    let finalTenantId: string | null = null;
+    let finalTenantTier: string | null = null;
+    let finalStateId: string | null = null;
+    let finalTspId: string | null = null;
+
+    if (idOrParams && typeof idOrParams === "object") {
+      finalId = idOrParams.id || "sess_" + require("crypto").randomBytes(16).toString("hex");
+      finalUserId = idOrParams.user_id;
+      finalToken = idOrParams.token;
+      finalExpiresAt = new Date(idOrParams.expires_at);
+      finalTenantId = idOrParams.tenant_id || null;
+      finalTenantTier = idOrParams.tenant_tier || null;
+      finalStateId = idOrParams.state_id || null;
+      finalTspId = idOrParams.tsp_id || null;
+    } else {
+      finalId = typeof idOrParams === "string" ? idOrParams : "";
+      finalUserId = user_id || "";
+      finalToken = token || "";
+      finalExpiresAt = expires_at ? new Date(expires_at) : new Date();
+      finalTenantId = tenant_id || null;
+      finalTenantTier = tenant_tier || null;
+      finalStateId = state_id || null;
+      finalTspId = tsp_id || null;
+    }
+
     try {
-      await pool.query(
-        `INSERT INTO user_sessions (id, user_id, token, expires_at) 
-         VALUES ($1, $2, $3, $4) 
-         ON CONFLICT (id) DO UPDATE SET token = EXCLUDED.token, expires_at = EXCLUDED.expires_at`,
-        [id, user_id, token, new Date(expires_at)]
+      await executeQuery(
+        `INSERT INTO user_sessions (id, user_id, token, expires_at, tenant_id, tenant_tier, state_id, tsp_id) 
+         VALUES ($1, $2, $3, $4, $5, $6::tenant_tier, $7, $8) 
+         ON CONFLICT (id) DO UPDATE SET 
+           token = EXCLUDED.token, 
+           expires_at = EXCLUDED.expires_at,
+           tenant_id = EXCLUDED.tenant_id,
+           tenant_tier = EXCLUDED.tenant_tier,
+           state_id = EXCLUDED.state_id,
+           tsp_id = EXCLUDED.tsp_id`,
+        [finalId, finalUserId, finalToken, finalExpiresAt, finalTenantId, finalTenantTier, finalStateId, finalTspId]
       );
       return true;
-    } catch (e) {
-      console.error("[DB Repo] Failed to save session:", e);
+    } catch (e: any) {
+      console.error("[DB Repo] Failed to save session:", e.message || e);
       return false;
     }
   }
 
   /**
-   * Retrieve session by token
+   * Retrieve session by token (Task 006 - Strengthening Database Resolution)
    */
   static async getUserSessionByToken(token: string): Promise<any | null> {
     const JWT_SECRET = process.env.JWT_SECRET || "ideas-tvet-system-secret-authority-token-1995";
@@ -2979,17 +4858,26 @@ export class DbRepo {
           expires_at: new Date(Date.now() + 1000 * 60 * 60).toISOString(),
           email: decoded.email,
           role: decoded.role,
-          beneficiary_id: decoded.beneficiaryId || null
+          beneficiary_id: decoded.beneficiaryId || null,
+          tenant_id: decoded.tenantId || null,
+          tenant_tier: decoded.tenantTier || null,
+          state_id: decoded.stateId || null,
+          tsp_id: decoded.tspId || null
         };
       }
       return null;
     }
 
     try {
-      const res = await pool.query(
-        `SELECT us.id as session_id, us.user_id, us.token, us.expires_at, u.email, u.role, u.beneficiary_id 
+      const res = await executeQuery(
+        `SELECT us.id as session_id, us.user_id, us.token, us.expires_at, u.email, u.role, u.beneficiary_id, 
+                COALESCE(us.tenant_id, u.tenant_id) AS tenant_id, 
+                COALESCE(us.state_id, u.state_id) AS state_id, 
+                COALESCE(us.tsp_id, u.tsp_id) AS tsp_id, 
+                COALESCE(us.tenant_tier, t.tier) AS tenant_tier 
          FROM user_sessions us
          INNER JOIN users u ON u.id = us.user_id
+         LEFT JOIN tenants t ON t.id = u.tenant_id
          WHERE us.token = $1 AND us.expires_at > NOW() AND u.deleted_at IS NULL`,
         [token]
       );
@@ -3012,10 +4900,81 @@ export class DbRepo {
           expires_at: new Date(Date.now() + 1000 * 60 * 60).toISOString(),
           email: decoded.email,
           role: decoded.role,
-          beneficiary_id: decoded.beneficiaryId || null
+          beneficiary_id: decoded.beneficiaryId || null,
+          tenant_id: decoded.tenantId || null,
+          tenant_tier: decoded.tenantTier || null,
+          state_id: decoded.stateId || null,
+          tsp_id: decoded.tspId || null
         };
       }
       return null;
+    }
+  }
+
+  /**
+   * Get user permissions (Task 009 - Dynamic Permission Authorization Engine implementation)
+   */
+  static async getUserPermissions(userId: string): Promise<string[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      // JSON/SQLite local file database offline fallback compatibility
+      if (userId === "user_sa") {
+        return [
+          "all_access", "manage_users", "manage_roles", "manage_permissions", "execute_migrations",
+          "manage_tenants", "manage_states", "manage_tsps", "review_admissions", "approve_admissions",
+          "reject_admissions", "manage_beneficiaries", "manage_annex9", "view_reports", "export_reports",
+          "audit_logs_access"
+        ];
+      }
+      if (userId === "user_ao") {
+        return [
+          "manage_admissions", "manage_beneficiaries", "manage_annex9", "view_reports", "export_reports"
+        ];
+      }
+      if (userId === "user_ro") {
+        return [
+          "review_submissions", "review_admissions", "approve_admissions", "reject_admissions", "view_reports"
+        ];
+      }
+      if (userId === "user_fed") {
+        return [
+          "view_reports", "audit_logs_access", "manage_cohorts", "manage_batches", "manage_trainers", "manage_assessments", "manage_graduation"
+        ];
+      }
+      if (userId === "user_sta") {
+        return [
+          "view_reports", "manage_cohorts", "manage_batches", "manage_trainers", "manage_assessments", "manage_graduation"
+        ];
+      }
+      if (userId && (userId.startsWith("usr_tr_") || userId === "user_tr")) {
+        return ["trainee_access"];
+      }
+      return [];
+    }
+
+    try {
+      // Use query resolving over both roles.id (standard matching for role names inside users.role)
+      // and permissions.id (the snake_case keys used by permission-based checking)
+      const res = await executeQuery(
+        `SELECT DISTINCT p.id AS permission_id
+         FROM users u
+         JOIN roles r ON r.id = u.role OR r.name = u.role
+         JOIN role_permissions rp ON rp.role_id = r.id
+         JOIN permissions p ON p.id = rp.permission_id
+         WHERE u.id = $1`,
+        [userId]
+      );
+      
+      const permissions: string[] = [];
+      for (const row of res.rows) {
+        if (row.permission_id) {
+          permissions.push(row.permission_id);
+        }
+      }
+      return permissions;
+    } catch (e: any) {
+      console.error("[DB Repo] Failed to get user permissions:", e.message || e);
+      return [];
     }
   }
 
@@ -3027,7 +4986,7 @@ export class DbRepo {
     if (!pool || !isPgActive) return true;
 
     try {
-      await pool.query("DELETE FROM user_sessions WHERE token = $1", [token]);
+      await executeQuery("DELETE FROM user_sessions WHERE token = $1", [token]);
       return true;
     } catch (e) {
       console.error("[DB Repo] Failed to delete session:", e);
@@ -3043,8 +5002,8 @@ export class DbRepo {
     if (!pool || !isPgActive) return null;
 
     try {
-      const res = await pool.query(
-        "SELECT id, email, password_hash, role, failed_login_attempts, lockout_until, reset_token, reset_token_expires FROM users WHERE reset_token = $1 AND reset_token_expires > NOW() AND deleted_at IS NULL",
+      const res = await executeQuery(
+        "SELECT u.id, u.email, u.password_hash, u.role, u.failed_login_attempts, u.lockout_until, u.reset_token, u.reset_token_expires, u.tenant_id, u.state_id, u.tsp_id, t.tier as tenant_tier FROM users u LEFT JOIN tenants t ON t.id = u.tenant_id WHERE u.reset_token = $1 AND u.reset_token_expires > NOW() AND u.deleted_at IS NULL",
         [token]
       );
       if (res.rows.length > 0) {
@@ -3097,7 +5056,7 @@ export class DbRepo {
     }
 
     try {
-      const res = await pool.query("SELECT id, organization_name, tpm_name, tpm_title, contact_email, contact_phone, contact_address, letterhead_url, signature_url, stamp_url, watermark_text, watermark_enabled, fme_logo_url, ideas_logo_url, world_bank_logo_url, nbte_logo_url, custom_logo_url, admission_letterhead_url, acceptance_letterhead_url, enrollment_letterhead_url, certificate_background_url, photo_album_header_url, training_venue, training_start_date, training_end_date, attendance_threshold, completion_threshold FROM organization_settings ORDER BY updated_at DESC LIMIT 1");
+      const res = await executeQuery("SELECT id, organization_name, tpm_name, tpm_title, contact_email, contact_phone, contact_address, letterhead_url, signature_url, stamp_url, watermark_text, watermark_enabled, fme_logo_url, ideas_logo_url, world_bank_logo_url, nbte_logo_url, custom_logo_url, admission_letterhead_url, acceptance_letterhead_url, enrollment_letterhead_url, certificate_background_url, photo_album_header_url, training_venue, training_start_date, training_end_date, attendance_threshold, completion_threshold FROM organization_settings ORDER BY updated_at DESC LIMIT 1");
       if (res.rows.length > 0) {
         const row = res.rows[0];
         return {
@@ -3147,7 +5106,7 @@ export class DbRepo {
     }
 
     try {
-      await pool.query(
+      await executeQuery(
         `INSERT INTO organization_settings (
           id, organization_name, tpm_name, tpm_title, contact_email, contact_phone, contact_address, letterhead_url, signature_url, stamp_url, watermark_text, watermark_enabled, fme_logo_url, ideas_logo_url, world_bank_logo_url, nbte_logo_url, custom_logo_url, admission_letterhead_url, acceptance_letterhead_url, enrollment_letterhead_url, certificate_background_url, photo_album_header_url, training_venue, training_start_date, training_end_date, attendance_threshold, completion_threshold, updated_at
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, NOW())
@@ -3211,7 +5170,7 @@ export class DbRepo {
     }
 
     try {
-      const res = await pool.query("SELECT id, name, sector, code, total_hours FROM training_programs ORDER BY name ASC");
+      const res = await executeQuery("SELECT id, name, sector, code, total_hours FROM training_programs ORDER BY name ASC");
       return res.rows.map(row => ({
         id: row.id,
         name: row.name,
@@ -3234,7 +5193,7 @@ export class DbRepo {
       return true;
     }
     try {
-      await pool.query(
+      await executeQuery(
         `INSERT INTO training_programs (id, name, sector, code, total_hours)
          VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (id) DO UPDATE SET
@@ -3260,7 +5219,7 @@ export class DbRepo {
       return true;
     }
     try {
-      await pool.query("DELETE FROM training_programs WHERE id = $1", [id]);
+      await executeQuery("DELETE FROM training_programs WHERE id = $1", [id]);
       return true;
     } catch (e) {
       console.error("[DB Repo] Failed to delete training program:", e);
@@ -3369,7 +5328,7 @@ export class DbRepo {
       return true;
     }
     try {
-      await pool.query(
+      await executeQuery(
         "UPDATE generated_documents SET document_status = 'ARCHIVED' WHERE beneficiary_id = $1 AND document_status = 'ACTIVE'",
         [beneficiaryId]
       );
@@ -3394,7 +5353,7 @@ export class DbRepo {
       return Math.max(...docs.map((d: any) => d.version));
     }
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         "SELECT COALESCE(MAX(version), 0) as max_version FROM generated_documents WHERE beneficiary_id = $1 AND document_type = $2",
         [beneficiaryId, documentType]
       );
@@ -3415,7 +5374,7 @@ export class DbRepo {
       return (state.generatedDocuments || []).filter((d: any) => d.beneficiaryId === beneficiaryId);
     }
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         "SELECT id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at, verification_code, verification_status, verification_date, verified_at, email_delivery_status, document_status FROM generated_documents WHERE beneficiary_id = $1 ORDER BY created_at DESC",
         [beneficiaryId]
       );
@@ -3461,7 +5420,7 @@ export class DbRepo {
       return true;
     }
     try {
-      await pool.query(
+      await executeQuery(
         `INSERT INTO workflow_history (
           beneficiary_id, old_status, new_status, changed_by, changed_at, remarks, reason, ip_address,
           token_version_before, token_version_after, workflow_version_before, workflow_version_after
@@ -3500,7 +5459,7 @@ export class DbRepo {
         .sort((a: any, b: any) => new Date(a.changedAt).getTime() - new Date(b.changedAt).getTime());
     }
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         "SELECT id, beneficiary_id, old_status, new_status, changed_by, changed_at, remarks, reason, ip_address, token_version_before, token_version_after, workflow_version_before, workflow_version_after FROM workflow_history WHERE beneficiary_id = $1 ORDER BY id ASC, changed_at ASC",
         [beneficiaryId]
       );
@@ -3535,7 +5494,7 @@ export class DbRepo {
       return (state.generatedDocuments || []).find((d: any) => d.verificationCode?.toLowerCase() === code.toLowerCase()) || null;
     }
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         "SELECT id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at, verification_code, verification_status, verification_date, verified_at, email_delivery_status, document_status FROM generated_documents WHERE LOWER(verification_code) = LOWER($1)",
         [code]
       );
@@ -3573,7 +5532,7 @@ export class DbRepo {
       return (state.generatedDocuments || []).find((d: any) => d.id === id) || null;
     }
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         "SELECT id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at, verification_code, verification_status, verification_date, verified_at, email_delivery_status, document_status FROM generated_documents WHERE id = $1",
         [id]
       );
@@ -3619,7 +5578,7 @@ export class DbRepo {
       return false;
     }
     try {
-      await pool.query(
+      await executeQuery(
         "UPDATE generated_documents SET verification_status = $1, verification_date = $2, verified_at = $2 WHERE id = $3",
         [status, date, id]
       );
@@ -3646,7 +5605,7 @@ export class DbRepo {
       return false;
     }
     try {
-      await pool.query(
+      await executeQuery(
         "UPDATE generated_documents SET email_delivery_status = $1 WHERE id = $2",
         [emailStatus, id]
       );
@@ -3693,7 +5652,7 @@ export class DbRepo {
       return true;
     }
     try {
-      await pool.query(
+      await executeQuery(
         `INSERT INTO document_delivery_logs (
           id, document_id, beneficiary_id, delivery_type, recipient, sent_by, sent_at, status
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -3728,7 +5687,7 @@ export class DbRepo {
       return (state.deliveryLogs || []).filter((l: any) => l.beneficiaryId === beneficiaryId);
     }
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         `SELECT id, document_id as "documentId", beneficiary_id as "beneficiaryId",
                 delivery_type as "deliveryType", recipient, sent_by as "sentBy",
                 sent_at as "sentAt", status
@@ -3824,7 +5783,7 @@ export class DbRepo {
 
     try {
       // Direct high-efficiency groupings in Postgres
-      const summaryRes = await pool.query(`
+      const summaryRes = await executeQuery(`
         SELECT COALESCE(adm.admission_status, 'Pending') as status, COUNT(*) as count
          FROM beneficiaries b
          LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
@@ -3849,7 +5808,7 @@ export class DbRepo {
         }
       }
 
-      const sectorRes = await pool.query(`
+      const sectorRes = await executeQuery(`
         SELECT b.skill_sector, COUNT(*) as count 
          FROM beneficiaries b WHERE b.deleted_at IS NULL GROUP BY b.skill_sector
       `);
@@ -3858,7 +5817,7 @@ export class DbRepo {
         bySector[r.skill_sector || "Computer Repairs"] = parseInt(r.count, 10);
       }
 
-      const programRes = await pool.query(`
+      const programRes = await executeQuery(`
         SELECT b.program, COUNT(*) as count 
          FROM beneficiaries b WHERE b.deleted_at IS NULL GROUP BY b.program
       `);
@@ -3867,7 +5826,7 @@ export class DbRepo {
         byProgram[r.program || "IDEAS-TVET"] = parseInt(r.count, 10);
       }
 
-      const tspRes = await pool.query(`
+      const tspRes = await executeQuery(`
         SELECT b.tsp, COUNT(*) as count 
          FROM beneficiaries b WHERE b.deleted_at IS NULL GROUP BY b.tsp
       `);
@@ -3876,7 +5835,7 @@ export class DbRepo {
         byTsp[r.tsp || "Unique Tech"] = parseInt(r.count, 10);
       }
 
-      const stateRes = await pool.query(`
+      const stateRes = await executeQuery(`
         SELECT b.state, COUNT(*) as count 
          FROM beneficiaries b WHERE b.deleted_at IS NULL GROUP BY b.state
       `);
@@ -3886,7 +5845,7 @@ export class DbRepo {
         byState[name] = parseInt(r.count, 10);
       }
 
-      const lgaRes = await pool.query(`
+      const lgaRes = await executeQuery(`
         SELECT b.city, COUNT(*) as count 
          FROM beneficiaries b WHERE b.deleted_at IS NULL GROUP BY b.city
       `);
@@ -3896,7 +5855,7 @@ export class DbRepo {
       }
 
       // Fetch acceptance letter statuses count
-      const accLetterRes = await pool.query(`
+      const accLetterRes = await executeQuery(`
         SELECT COALESCE(adm.acceptance_letter_status, 'NOT_SUBMITTED') as status, COUNT(*) as count
         FROM beneficiaries b
         LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
@@ -3914,7 +5873,7 @@ export class DbRepo {
       const recentActivities = await DbRepo.getRecentAdmissionsActivities();
 
       // Fetch admission form stats
-      const formStatsRes = await pool.query(`
+      const formStatsRes = await executeQuery(`
         SELECT 
           COUNT(CASE WHEN admission_form_pdf_url IS NOT NULL OR admission_form_generated_at IS NOT NULL THEN 1 END) as generated,
           COUNT(CASE WHEN admission_form_viewed_at IS NOT NULL THEN 1 END) as viewed,
@@ -3968,7 +5927,7 @@ export class DbRepo {
       });
     }
     try {
-      const res = await pool.query(`
+      const res = await executeQuery(`
         SELECT h.id, h.beneficiary_id, h.old_status, h.new_status, h.changed_by, h.changed_at, h.remarks,
                b.first_name, b.last_name
         FROM workflow_history h
@@ -3993,7 +5952,7 @@ export class DbRepo {
   }
 
   /**
-   * Fetch paginated list of admissions with selective non-photo column projections
+   * Fetch paginated list of admissions with selective non-photo column projections and role/tenancy filters
    */
   static async getAdmissionsPaged(options: {
     page: number;
@@ -4006,6 +5965,11 @@ export class DbRepo {
     dateApplied?: string;
     sortBy?: string;
     sortOrder?: "ASC" | "DESC";
+    tenantId?: string;
+    stateId?: string;
+    tspId?: string;
+    beneficiaryId?: string;
+    systemContext?: boolean;
   }): Promise<{
     rows: Array<{
       id: string;
@@ -4038,6 +6002,19 @@ export class DbRepo {
       // In JSON simulation, read list on the fly
       const stateData = loadJsonState();
       let list = stateData.beneficiaries as Beneficiary[];
+
+      if (options.tenantId) {
+        list = list.filter(b => b.tenantId === options.tenantId);
+      }
+      if (options.stateId) {
+        list = list.filter(b => b.stateId === options.stateId);
+      }
+      if (options.tspId) {
+        list = list.filter(b => b.tspId === options.tspId);
+      }
+      if (options.beneficiaryId) {
+        list = list.filter(b => b.id === options.beneficiaryId);
+      }
 
       // Filter in memory
       if (search) {
@@ -4121,6 +6098,7 @@ export class DbRepo {
     }
 
     try {
+      await assertTenantContext(options);
       // 1. Build dynamic parameterized SQL search conditions
       const selectParts = [
         "b.id",
@@ -4143,9 +6121,9 @@ export class DbRepo {
         "b.bvn",
         "b.guardian_name",
         "b.guardian_phone",
-        "b.address",
+        "b.residential_address as address",
         "b.bank_name",
-        "b.account_number",
+        "b.bank_account_number as account_number",
         "b.nin",
         "b.date_of_birth",
         "b.photo"
@@ -4196,8 +6174,30 @@ export class DbRepo {
         paramCount++;
       }
 
+      // Append optional role/tenancy isolation filters (Task 012)
+      if (options.tenantId) {
+        queryWhere += `AND b.tenant_id = $${paramCount} `;
+        params.push(options.tenantId);
+        paramCount++;
+      }
+      if (options.stateId) {
+        queryWhere += `AND b.state_id = $${paramCount} `;
+        params.push(options.stateId);
+        paramCount++;
+      }
+      if (options.tspId) {
+        queryWhere += `AND b.tsp_id = $${paramCount} `;
+        params.push(options.tspId);
+        paramCount++;
+      }
+      if (options.beneficiaryId) {
+        queryWhere += `AND b.id = $${paramCount} `;
+        params.push(options.beneficiaryId);
+        paramCount++;
+      }
+
       // Count Query
-      const countRes = await pool.query(
+      const countRes = await executeQuery(
         `SELECT COUNT(*) as count 
          FROM beneficiaries b
          LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
@@ -4242,7 +6242,7 @@ export class DbRepo {
         LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}
       `;
 
-      const rowsRes = await pool.query(pagedStr, paginationParams);
+      const rowsRes = await executeQuery(pagedStr, paginationParams);
       const rows = rowsRes.rows.map(r => ({
         id: r.id,
         referenceNumber: r.reference_number,
@@ -4328,7 +6328,7 @@ export class DbRepo {
         SET ${parts.join(", ")}
         WHERE beneficiary_id = $4 AND deleted_at IS NULL
       `;
-      const res = await pool.query(queryStr, params);
+      const res = await executeQuery(queryStr, params);
       return res.rowCount !== null && res.rowCount > 0;
     } catch (e) {
       console.error("[DB Repo] Failed to update acceptance letter status:", e);
@@ -4396,7 +6396,7 @@ export class DbRepo {
         LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
         WHERE b.deleted_at IS NULL
       `;
-      const res = await pool.query(q);
+      const res = await executeQuery(q);
       const row = res.rows[0];
       return {
         totalRegistered: parseInt(row.total_registered || "0", 10),
@@ -4470,7 +6470,7 @@ export class DbRepo {
         GROUP BY b.tsp
         ORDER BY total DESC
       `;
-      const res = await pool.query(q);
+      const res = await executeQuery(q);
       return res.rows.map(r => ({
         tsp: r.tsp,
         total: parseInt(r.total || "0", 10),
@@ -4532,7 +6532,7 @@ export class DbRepo {
         GROUP BY b.state
         ORDER BY total DESC
       `;
-      const res = await pool.query(q);
+      const res = await executeQuery(q);
       return res.rows.map(r => ({
         state: r.state,
         total: parseInt(r.total || "0", 10),
@@ -4559,6 +6559,7 @@ export class DbRepo {
     tsp?: string;
     sortBy?: string;
     sortOrder?: "ASC" | "DESC";
+    systemContext?: boolean;
   }): Promise<{
     rows: Array<{
       id: string;
@@ -4663,6 +6664,7 @@ export class DbRepo {
     }
 
     try {
+      await assertTenantContext(options);
       const selectParts = [
         "b.id",
         "COALESCE(adm.admission_ref, 'DRAFT') as reference_number",
@@ -4717,7 +6719,7 @@ export class DbRepo {
       }
 
       // Count Query
-      const countRes = await pool.query(
+      const countRes = await executeQuery(
         `SELECT COUNT(*) as count 
          FROM beneficiaries b
          LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
@@ -4754,7 +6756,7 @@ export class DbRepo {
         LIMIT $${lIndex} OFFSET $${oIndex}
       `;
 
-      const dataRes = await pool.query(itemsQuery, dataParams);
+      const dataRes = await executeQuery(itemsQuery, dataParams);
       const rows = dataRes.rows.map(r => ({
         id: r.id,
         referenceNumber: r.reference_number || "DRAFT",
@@ -4786,7 +6788,7 @@ export class DbRepo {
     }
 
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         "SELECT id, name, description, file_url, thumbnail_url, file_type, is_default, is_active, uploaded_by, created_at, updated_at FROM institution_letterheads ORDER BY created_at DESC"
       );
       return res.rows.map(r => ({
@@ -4855,13 +6857,13 @@ export class DbRepo {
     try {
       // If setting this one as default, run transactional reset of others
       if (lh.isDefault && lh.isActive) {
-        await pool.query(
+        await executeQuery(
           "UPDATE institution_letterheads SET is_default = FALSE WHERE id <> $1",
           [lh.id]
         );
       }
 
-      await pool.query(
+      await executeQuery(
         `INSERT INTO institution_letterheads (
           id, name, description, file_url, thumbnail_url, file_type, 
           is_default, is_active, uploaded_by, created_at, updated_at
@@ -4910,7 +6912,7 @@ export class DbRepo {
     }
 
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         "DELETE FROM institution_letterheads WHERE id = $1",
         [id]
       );
@@ -4932,7 +6934,7 @@ export class DbRepo {
     }
 
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         "SELECT id, name, description, file_url, file_type, is_default, is_active, uploaded_by, created_at, updated_at FROM admission_form_templates ORDER BY created_at DESC"
       );
       return res.rows.map(r => ({
@@ -5000,13 +7002,13 @@ export class DbRepo {
     try {
       // If setting this one as default, run transactional reset of others
       if (t.isDefault && t.isActive) {
-        await pool.query(
+        await executeQuery(
           "UPDATE admission_form_templates SET is_default = FALSE WHERE id <> $1",
           [t.id]
         );
       }
 
-      await pool.query(
+      await executeQuery(
         `INSERT INTO admission_form_templates (
           id, name, description, file_url, file_type, 
           is_default, is_active, uploaded_by, created_at, updated_at
@@ -5054,7 +7056,7 @@ export class DbRepo {
     }
 
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         "DELETE FROM admission_form_templates WHERE id = $1",
         [id]
       );
@@ -5281,6 +7283,7 @@ export class DbRepo {
     tsp?: string;
     page?: number;
     limit?: number;
+    systemContext?: boolean;
   }): Promise<{ profiles: any[]; total: number }> {
     const pool = getPgPool();
     if (!pool || !isPgActive) {
@@ -5288,6 +7291,7 @@ export class DbRepo {
     }
 
     const { search, state, skill, tsp, page = 1, limit = 20 } = params;
+    await assertTenantContext(params);
     const offset = (page - 1) * limit;
 
     let whereClause = "WHERE b.deleted_at IS NULL AND b.status IN ('ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')";
@@ -5328,7 +7332,7 @@ export class DbRepo {
 
     try {
       // count query
-      const countRes = await pool.query(
+      const countRes = await executeQuery(
         `SELECT COUNT(*) as count 
          FROM beneficiaries b
          LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
@@ -5383,7 +7387,7 @@ export class DbRepo {
       `;
       
       const fetchValues = [...values, limit, offset];
-      const res = await pool.query(queryStr, fetchValues);
+      const res = await executeQuery(queryStr, fetchValues);
 
       return {
         profiles: res.rows,
@@ -5395,11 +7399,12 @@ export class DbRepo {
     }
   }
 
-  static async getTraineeProfileByBeneficiaryId(beneficiaryId: string): Promise<any | null> {
+  static async getTraineeProfileByBeneficiaryId(beneficiaryId: string, options?: { systemContext?: boolean }): Promise<any | null> {
     const pool = getPgPool();
     if (!pool || !isPgActive) return null;
     try {
-      const res = await pool.query(`
+      await assertTenantContext(options);
+      const res = await executeQuery(`
         SELECT 
           COALESCE(tp.id, gen_random_uuid()) as id,
           b.id as beneficiary_id,
@@ -5449,7 +7454,7 @@ export class DbRepo {
     if (!pool || !isPgActive) return null;
     try {
       // 1. Update master record in beneficiaries
-      await pool.query(`
+      await executeQuery(`
         UPDATE beneficiaries
         SET 
           nin = COALESCE($1, nin),
@@ -5483,7 +7488,7 @@ export class DbRepo {
       ]);
 
       // 2. Insert or update thin pointer in trainee_profiles to maintain TVET ID
-      await pool.query(`
+      await executeQuery(`
         INSERT INTO trainee_profiles (beneficiary_id, tvet_id, updated_at)
         VALUES ($1, $2, NOW())
         ON CONFLICT (beneficiary_id) DO UPDATE SET
@@ -5535,7 +7540,7 @@ export class DbRepo {
     }
 
     try {
-      const countRes = await pool.query(
+      const countRes = await executeQuery(
         `SELECT COUNT(*) as count 
          FROM trainee_attendance ta
          JOIN beneficiaries b ON ta.beneficiary_id = b.id
@@ -5562,7 +7567,7 @@ export class DbRepo {
       `;
 
       const fetchValues = [...values, limit, offset];
-      const res = await pool.query(queryStr, fetchValues);
+      const res = await executeQuery(queryStr, fetchValues);
 
       return {
         attendance: res.rows,
@@ -5587,7 +7592,24 @@ export class DbRepo {
     const pool = getPgPool();
     if (!pool || !isPgActive) return null;
     try {
-      const res = await pool.query(`
+      let hours_logged = 0;
+      const cleanStatus = (record.status || "").toUpperCase();
+      if (cleanStatus === "PRESENT" || cleanStatus === "LATE") {
+        hours_logged = 6.00;
+        if (record.check_in_time && record.check_out_time) {
+          try {
+            const checkIn = new Date(record.check_in_time).getTime();
+            const checkOut = new Date(record.check_out_time).getTime();
+            if (checkOut > checkIn) {
+              hours_logged = parseFloat(((checkOut - checkIn) / (1000 * 60 * 60)).toFixed(2));
+            }
+          } catch (e) {
+            // standard day fallback
+          }
+        }
+      }
+
+      const res = await executeQuery(`
         INSERT INTO trainee_attendance (
           beneficiary_id,
           attendance_date,
@@ -5597,8 +7619,9 @@ export class DbRepo {
           status,
           captured_by,
           remarks,
+          hours_logged,
           updated_at
-        ) VALUES ($1, $2, $3, $4, COALESCE($5, 'MANUAL'), COALESCE($6, 'PRESENT'), $7, $8, NOW())
+        ) VALUES ($1, $2, $3, $4, COALESCE($5, 'MANUAL'), COALESCE($6, 'PRESENT'), $7, $8, $9, NOW())
         ON CONFLICT (beneficiary_id, attendance_date) DO UPDATE SET
           check_in_time = EXCLUDED.check_in_time,
           check_out_time = EXCLUDED.check_out_time,
@@ -5606,6 +7629,7 @@ export class DbRepo {
           status = EXCLUDED.status,
           captured_by = EXCLUDED.captured_by,
           remarks = EXCLUDED.remarks,
+          hours_logged = EXCLUDED.hours_logged,
           updated_at = NOW()
         RETURNING *
       `, [
@@ -5616,7 +7640,8 @@ export class DbRepo {
         record.attendance_source,
         record.status,
         record.captured_by || null,
-        record.remarks || null
+        record.remarks || null,
+        hours_logged
       ]);
       return res.rows[0];
     } catch (e) {
@@ -5642,12 +7667,12 @@ export class DbRepo {
     }
     const targetDate = dateStr || new Date().toISOString().split("T")[0];
     try {
-      const activeTraineesRes = await pool.query(`
+      const activeTraineesRes = await executeQuery(`
         SELECT COUNT(*) as count FROM beneficiaries WHERE status IN ('ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI') AND deleted_at IS NULL
       `);
       const totalTrainees = parseInt(activeTraineesRes.rows[0].count, 10);
 
-      const statsRes = await pool.query(`
+      const statsRes = await executeQuery(`
         SELECT status, COUNT(*) as count
         FROM trainee_attendance
         WHERE attendance_date = $1
@@ -5666,7 +7691,7 @@ export class DbRepo {
         else if (row.status === "EXCUSED") excusedNum = parseInt(row.count, 10);
       }
 
-      const bioRes = await pool.query(`
+      const bioRes = await executeQuery(`
         SELECT COUNT(*) as count
         FROM trainee_attendance
         WHERE attendance_date = $1 AND attendance_source = 'BIOMETRIC'
@@ -5674,13 +7699,13 @@ export class DbRepo {
       const biometricCount = parseInt(bioRes.rows[0].count, 10);
 
       // Fetch portal active count
-      const portalRes = await pool.query(`
+      const portalRes = await executeQuery(`
         SELECT COUNT(*) as count FROM portal_monitoring WHERE still_on_portal = true
       `);
       const portalActive = parseInt(portalRes.rows[0].count, 10);
 
       // Fetch certification ready count
-      const readyRes = await pool.query(`
+      const readyRes = await executeQuery(`
         SELECT COUNT(*) as count FROM readiness_metrics WHERE readiness_status = 'READY_FOR_CERTIFICATION'
       `);
       const certificationReady = readyRes.rows.length > 0 ? parseInt(readyRes.rows[0].count, 10) : 0;
@@ -5721,7 +7746,7 @@ export class DbRepo {
     const pool = getPgPool();
     if (!pool || !isPgActive) return null;
     try {
-      const res = await pool.query(`
+      const res = await executeQuery(`
         INSERT INTO portal_monitoring (
           beneficiary_id,
           still_on_portal,
@@ -5779,7 +7804,7 @@ export class DbRepo {
     }
 
     try {
-      const countRes = await pool.query(
+      const countRes = await executeQuery(
         `SELECT COUNT(*) as count 
          FROM beneficiaries b
          ${whereClause}`,
@@ -5811,7 +7836,7 @@ export class DbRepo {
       `;
 
       const fetchValues = [...values, limit, offset];
-      const res = await pool.query(queryStr, fetchValues);
+      const res = await executeQuery(queryStr, fetchValues);
 
       return {
         list: res.rows,
@@ -5831,7 +7856,7 @@ export class DbRepo {
       return loadJsonState().documentDispatches || [];
     }
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         `SELECT id, beneficiary_id as "beneficiaryId", document_type as "documentType", 
                 document_reference as "documentReference", email_address as "emailAddress", 
                 status, sent_at as "sentAt", opened_at as "openedAt", downloaded_at as "downloadedAt", 
@@ -5855,7 +7880,7 @@ export class DbRepo {
       return (state.documentDispatches || []).find(d => d.secureToken === token) || null;
     }
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         `SELECT id, beneficiary_id as "beneficiaryId", document_type as "documentType", 
                 document_reference as "documentReference", email_address as "emailAddress", 
                 status, sent_at as "sentAt", opened_at as "openedAt", downloaded_at as "downloadedAt", 
@@ -5881,7 +7906,7 @@ export class DbRepo {
       return (state.documentDispatches || []).find(d => d.id === id) || null;
     }
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         `SELECT id, beneficiary_id as "beneficiaryId", document_type as "documentType", 
                 document_reference as "documentReference", email_address as "emailAddress", 
                 status, sent_at as "sentAt", opened_at as "openedAt", downloaded_at as "downloadedAt", 
@@ -5907,7 +7932,7 @@ export class DbRepo {
       return (state.documentDispatches || []).filter(d => d.beneficiaryId === beneficiaryId);
     }
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         `SELECT id, beneficiary_id as "beneficiaryId", document_type as "documentType", 
                 document_reference as "documentReference", email_address as "emailAddress", 
                 status, sent_at as "sentAt", opened_at as "openedAt", downloaded_at as "downloadedAt", 
@@ -5947,7 +7972,7 @@ export class DbRepo {
     }
 
     try {
-      await pool.query(
+      await executeQuery(
         `INSERT INTO document_dispatches (
           id, beneficiary_id, document_type, document_reference, email_address, status,
           sent_at, opened_at, downloaded_at, failed_at, failure_reason,
@@ -5997,7 +8022,7 @@ export class DbRepo {
       return loadJsonState().emailTemplates || [];
     }
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         `SELECT id, name, template_type as "templateType", subject, body_html as "bodyHtml", 
                 body_text as "bodyText", is_default as "isDefault", is_active as "isActive", 
                 created_at as "createdAt", updated_at as "updatedAt" 
@@ -6018,7 +8043,7 @@ export class DbRepo {
       return (state.emailTemplates || []).find(t => t.id === id) || null;
     }
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         `SELECT id, name, template_type as "templateType", subject, body_html as "bodyHtml", 
                 body_text as "bodyText", is_default as "isDefault", is_active as "isActive", 
                 created_at as "createdAt", updated_at as "updatedAt" 
@@ -6046,7 +8071,7 @@ export class DbRepo {
       return match || null;
     }
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         `SELECT id, name, template_type as "templateType", subject, body_html as "bodyHtml", 
                 body_text as "bodyText", is_default as "isDefault", is_active as "isActive", 
                 created_at as "createdAt", updated_at as "updatedAt" 
@@ -6096,12 +8121,12 @@ export class DbRepo {
 
     try {
       if (t.isDefault && t.isActive) {
-        await pool.query(
+        await executeQuery(
           "UPDATE email_templates SET is_default = FALSE WHERE template_type = $1 AND id <> $2",
           [t.templateType, t.id]
         );
       }
-      await pool.query(
+      await executeQuery(
         `INSERT INTO email_templates (
           id, name, template_type, subject, body_html, body_text, is_default, is_active, created_at, updated_at
          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -6145,7 +8170,7 @@ export class DbRepo {
     }
 
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         "DELETE FROM email_templates WHERE id = $1",
         [id]
       );
@@ -6170,7 +8195,7 @@ export class DbRepo {
     }
 
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         `SELECT id, asset_code AS "assetCode", asset_name AS "assetName", 
                 asset_category AS "assetCategory", training_track AS "trainingTrack", 
                 description, unit_cost::float AS "unitCost", quantity, status, 
@@ -6213,7 +8238,7 @@ export class DbRepo {
 
     try {
       const id = asset.id || "ta_" + Date.now().toString(36) + Math.random().toString(36).substring(2, 5);
-      const res = await pool.query(
+      const res = await executeQuery(
         `INSERT INTO toolkit_assets (
           id, asset_code, asset_name, asset_category, training_track, description, unit_cost, quantity, status, created_at, updated_at
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, NOW()), NOW())
@@ -6261,7 +8286,7 @@ export class DbRepo {
     }
 
     try {
-      const res = await pool.query("UPDATE toolkit_assets SET status = 'ARCHIVED', updated_at = NOW() WHERE id = $1", [id]);
+      const res = await executeQuery("UPDATE toolkit_assets SET status = 'ARCHIVED', updated_at = NOW() WHERE id = $1", [id]);
       return (res.rowCount ?? 0) > 0;
     } catch (e) {
       console.error("[DB Repo] Failed to archive toolkit asset in PG:", e);
@@ -6296,7 +8321,7 @@ export class DbRepo {
     }
 
     try {
-      const res = await pool.query(`
+      const res = await executeQuery(`
         SELECT 
           gt.id,
           gt.beneficiary_id AS "beneficiaryId",
@@ -6371,7 +8396,7 @@ export class DbRepo {
     }
 
     try {
-      const checkRes = await pool.query(
+      const checkRes = await executeQuery(
         "SELECT id, beneficiary_id AS \"beneficiaryId\", asset_id AS \"assetId\" FROM graduate_toolkits WHERE beneficiary_id = $1 AND asset_id = $2",
         [beneficiaryId, assetId]
       );
@@ -6379,7 +8404,7 @@ export class DbRepo {
         return checkRes.rows[0];
       }
 
-      const res = await pool.query(
+      const res = await executeQuery(
         `INSERT INTO graduate_toolkits (
           id, beneficiary_id, asset_id, verification_status, utilization_status, condition_status, replacement_requested, created_at, updated_at
         ) VALUES ($1, $2, $3, 'ALLOCATED', 'NOT_IN_USE', 'NEW', FALSE, NOW(), NOW())
@@ -6438,7 +8463,7 @@ export class DbRepo {
         WHERE id = $1
         RETURNING id, beneficiary_id AS "beneficiaryId", asset_id AS "assetId"
       `;
-      const res = await pool.query(query, values);
+      const res = await executeQuery(query, values);
       return res.rows[0];
     } catch (e) {
       console.error("[DB Repo] Failed to update graduate toolkit status in PG:", e);
@@ -6452,7 +8477,7 @@ export class DbRepo {
       return loadJsonState().programCosts || [];
     }
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         `SELECT id, cost_category AS "costCategory", amount, description, 
                 training_track AS "trainingTrack", cohort, batch, recorded_by AS "recordedBy", 
                 created_at AS "createdAt", updated_at AS "updatedAt" 
@@ -6503,9 +8528,9 @@ export class DbRepo {
       
       let res;
       if (!isNew) {
-        const checkRes = await pool.query("SELECT id FROM program_costs WHERE id = $1", [id]);
+        const checkRes = await executeQuery("SELECT id FROM program_costs WHERE id = $1", [id]);
         if (checkRes.rows.length > 0) {
-          res = await pool.query(
+          res = await executeQuery(
             `UPDATE program_costs 
              SET cost_category = $2, amount = $3, description = $4, training_track = $5, cohort = $6, batch = $7, recorded_by = $8, updated_at = NOW() 
              WHERE id = $1 
@@ -6520,7 +8545,7 @@ export class DbRepo {
       }
       
       const insertId = isNew ? require("crypto").randomUUID() : id;
-      res = await pool.query(
+      res = await executeQuery(
         `INSERT INTO program_costs (
           id, cost_category, amount, description, training_track, cohort, batch, recorded_by, created_at, updated_at
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
@@ -6545,7 +8570,7 @@ export class DbRepo {
     const pool = getPgPool();
     if (!pool || !isPgActive) return [];
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         `SELECT id, name, subject, html_body as "htmlBody", is_active as "isActive", created_at as "createdAt", updated_at as "updatedAt"
          FROM communication_templates
          ORDER BY name ASC`
@@ -6564,14 +8589,14 @@ export class DbRepo {
     const id = tpl.id || require("crypto").randomUUID();
     try {
       if (!isNew) {
-        await pool.query(
+        await executeQuery(
           `UPDATE communication_templates
            SET name = $2, subject = $3, html_body = $4, is_active = $5, updated_at = NOW()
            WHERE id = $1`,
           [id, tpl.name, tpl.subject, tpl.htmlBody, tpl.isActive !== false]
         );
       } else {
-        await pool.query(
+        await executeQuery(
           `INSERT INTO communication_templates (id, name, subject, html_body, is_active, created_at, updated_at)
            VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
           [id, tpl.name, tpl.subject, tpl.htmlBody, tpl.isActive !== false]
@@ -6588,7 +8613,7 @@ export class DbRepo {
     const pool = getPgPool();
     if (!pool || !isPgActive) return [];
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         `SELECT id, campaign_name as "campaignName", campaign_type as "campaignType", status, created_by as "createdBy",
                 total_recipients as "totalRecipients", success_count as "successCount", failed_count as "failedCount",
                 audience_filter as "audienceFilter", started_at as "startedAt", completed_at as "completedAt",
@@ -6607,7 +8632,7 @@ export class DbRepo {
     const pool = getPgPool();
     if (!pool || !isPgActive) return null;
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         `SELECT id, campaign_name as "campaignName", campaign_type as "campaignType", status, created_by as "createdBy",
                 total_recipients as "totalRecipients", success_count as "successCount", failed_count as "failedCount",
                 audience_filter as "audienceFilter", started_at as "startedAt", completed_at as "completedAt",
@@ -6630,7 +8655,7 @@ export class DbRepo {
     const isNew = !camp.id;
     try {
       if (!isNew) {
-        await pool.query(
+        await executeQuery(
           `UPDATE communication_campaigns
            SET campaign_name = $2, campaign_type = $3, status = $4, total_recipients = $5,
                success_count = $6, failed_count = $7, audience_filter = $8,
@@ -6650,7 +8675,7 @@ export class DbRepo {
           ]
         );
       } else {
-        await pool.query(
+        await executeQuery(
           `INSERT INTO communication_campaigns (
             id, campaign_name, campaign_type, status, created_by, total_recipients,
             success_count, failed_count, audience_filter, started_at, completed_at, created_at, updated_at
@@ -6682,14 +8707,14 @@ export class DbRepo {
     if (!pool || !isPgActive) return;
     try {
       if (completed) {
-        await pool.query(
+        await executeQuery(
           `UPDATE communication_campaigns
            SET success_count = $2, failed_count = $3, status = $4, completed_at = NOW(), updated_at = NOW()
            WHERE id = $1`,
           [id, success, failed, status]
         );
       } else {
-        await pool.query(
+        await executeQuery(
           `UPDATE communication_campaigns
            SET success_count = $2, failed_count = $3, status = $4, updated_at = NOW()
            WHERE id = $1`,
@@ -6707,7 +8732,7 @@ export class DbRepo {
     try {
       for (const r of recipients) {
         const id = r.id || require("crypto").randomUUID();
-        await pool.query(
+        await executeQuery(
           `INSERT INTO communication_recipients (id, campaign_id, beneficiary_id, email, status, created_at)
            VALUES ($1, $2, $3, $4, $5, NOW())`,
           [id, r.campaignId, r.beneficiaryId || null, r.email, r.status || "PENDING"]
@@ -6722,7 +8747,7 @@ export class DbRepo {
     const pool = getPgPool();
     if (!pool || !isPgActive) return [];
     try {
-      const res = await pool.query(
+      const res = await executeQuery(
         `SELECT cr.id, cr.campaign_id as "campaignId", cr.beneficiary_id as "beneficiaryId",
                 cr.email, cr.status, cr.error_message as "errorMessage", cr.sent_at as "sentAt",
                 b.first_name as "firstName", b.last_name as "lastName"
@@ -6744,14 +8769,14 @@ export class DbRepo {
     if (!pool || !isPgActive) return;
     try {
       if (status === "SENT") {
-        await pool.query(
+        await executeQuery(
           `UPDATE communication_recipients
            SET status = $2, sent_at = NOW()
            WHERE id = $1`,
           [id, status]
         );
       } else {
-        await pool.query(
+        await executeQuery(
           `UPDATE communication_recipients
            SET status = $2, error_message = $3, sent_at = NOW()
            WHERE id = $1`,
@@ -6761,6 +8786,1218 @@ export class DbRepo {
     } catch (e) {
       console.error("[DbRepo] Failed to update recipient status:", e);
     }
+  }
+
+  // --- COHORTS METHODS ---
+  static async getCohorts(options?: {
+    tenantId?: string;
+    search?: string;
+    page?: number;
+    pageSize?: number;
+  }): Promise<{ rows: any[]; totalCount: number; page: number; pageSize: number; totalPages: number }> {
+    const page = options?.page || 1;
+    const pageSize = options?.pageSize || 10;
+    const offset = (page - 1) * pageSize;
+    const pool = getPgPool();
+
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      let list = (state as any).cohorts || [];
+      if (options?.tenantId) {
+        list = list.filter((c: any) => c.tenantId === options.tenantId);
+      }
+      if (options?.search) {
+        const s = options.search.toLowerCase();
+        list = list.filter((c: any) => c.name?.toLowerCase().includes(s));
+      }
+      const totalCount = list.length;
+      const totalPages = Math.ceil(totalCount / pageSize);
+      const rows = list.slice(offset, offset + pageSize);
+      return { rows, totalCount, page, pageSize, totalPages };
+    }
+
+    try {
+      const params: any[] = [];
+      let whereClause = "WHERE deleted_at IS NULL";
+
+      if (options?.tenantId) {
+        params.push(options.tenantId);
+        whereClause += ` AND tenant_id = $${params.length}`;
+      }
+      if (options?.search) {
+        params.push(`%${options.search}%`);
+        whereClause += ` AND name ILIKE $${params.length}`;
+      }
+
+      const countRes = await executeQuery(`SELECT COUNT(*)::int as count FROM cohorts ${whereClause}`, params);
+      const totalCount = countRes.rows[0]?.count || 0;
+
+      const rowsParams = [...params];
+      rowsParams.push(pageSize, offset);
+      const rowsRes = await executeQuery(
+        `SELECT id, tenant_id as "tenantId", name, cohort_year as "cohortYear", 
+                start_date as "startDate", end_date as "endDate", status, 
+                created_by as "createdBy", created_at as "createdAt", updated_at as "updatedAt"
+         FROM cohorts 
+         ${whereClause} 
+         ORDER BY cohort_year DESC, created_at DESC 
+         LIMIT $${rowsParams.length - 1} OFFSET $${rowsParams.length}`,
+        rowsParams
+      );
+
+      const totalPages = Math.ceil(totalCount / pageSize);
+      return { rows: rowsRes.rows, totalCount, page, pageSize, totalPages };
+    } catch (e) {
+      console.error("[DbRepo] Failed to get cohorts:", e);
+      return { rows: [], totalCount: 0, page, pageSize, totalPages: 0 };
+    }
+  }
+
+  static async saveCohort(cohort: any): Promise<any> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      if (!(state as any).cohorts) (state as any).cohorts = [];
+      const newCohort = {
+        id: cohort.id || require("crypto").randomUUID(),
+        tenantId: cohort.tenantId || null,
+        name: cohort.name,
+        cohortYear: parseInt(cohort.cohortYear || cohort.cohort_year || new Date().getFullYear()),
+        startDate: cohort.startDate || cohort.start_date || null,
+        endDate: cohort.endDate || cohort.end_date || null,
+        status: cohort.status || "ACTIVE",
+        createdBy: cohort.createdBy || cohort.created_by || null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      (state as any).cohorts.push(newCohort);
+      saveJsonState(state);
+      return newCohort;
+    }
+
+    try {
+      const id = cohort.id || require("crypto").randomUUID();
+      const tenantId = cohort.tenantId || cohort.tenant_id || null;
+      const name = cohort.name;
+      const cohortYear = parseInt(cohort.cohortYear || cohort.cohort_year || new Date().getFullYear());
+      const startDate = cohort.startDate || cohort.start_date || null;
+      const endDate = cohort.endDate || cohort.end_date || null;
+      const status = cohort.status || "ACTIVE";
+      const createdBy = cohort.createdBy || cohort.created_by || null;
+
+      const res = await executeQuery(
+        `INSERT INTO cohorts (id, tenant_id, name, cohort_year, start_date, end_date, status, created_by, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+         RETURNING id, tenant_id as "tenantId", name, cohort_year as "cohortYear", start_date as "startDate", end_date as "endDate", status, created_by as "createdBy", created_at as "createdAt", updated_at as "updatedAt"`,
+        [id, tenantId, name, cohortYear, startDate, endDate, status, createdBy]
+      );
+
+      const saved = res.rows[0];
+      await DbRepo.saveAuditLog(createdBy || "system", "CREATE_COHORT", `Created cohort ${name} (ID: ${id})`);
+      return saved;
+    } catch (e) {
+      console.error("[DbRepo] Failed to save cohort:", e);
+      throw e;
+    }
+  }
+
+  static async updateCohort(id: string, cohort: any): Promise<any> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      if (!(state as any).cohorts) (state as any).cohorts = [];
+      const index = (state as any).cohorts.findIndex((c: any) => c.id === id);
+      if (index === -1) throw new Error("Cohort not found");
+      const updated = {
+        ...(state as any).cohorts[index],
+        name: cohort.name !== undefined ? cohort.name : (state as any).cohorts[index].name,
+        cohortYear: cohort.cohortYear !== undefined ? parseInt(cohort.cohortYear) : (state as any).cohorts[index].cohortYear,
+        startDate: cohort.startDate !== undefined ? cohort.startDate : (state as any).cohorts[index].startDate,
+        endDate: cohort.endDate !== undefined ? cohort.endDate : (state as any).cohorts[index].endDate,
+        status: cohort.status !== undefined ? cohort.status : (state as any).cohorts[index].status,
+        updatedAt: new Date().toISOString()
+      };
+      (state as any).cohorts[index] = updated;
+      saveJsonState(state);
+      return updated;
+    }
+
+    try {
+      const name = cohort.name;
+      const cohortYear = cohort.cohortYear !== undefined ? parseInt(cohort.cohortYear) : undefined;
+      const startDate = cohort.startDate;
+      const endDate = cohort.endDate;
+      const status = cohort.status;
+
+      const updateFields: string[] = [];
+      const params: any[] = [id];
+
+      if (name !== undefined) {
+        params.push(name);
+        updateFields.push(`name = $${params.length}`);
+      }
+      if (cohortYear !== undefined) {
+        params.push(cohortYear);
+        updateFields.push(`cohort_year = $${params.length}`);
+      }
+      if (startDate !== undefined) {
+        params.push(startDate);
+        updateFields.push(`start_date = $${params.length}`);
+      }
+      if (endDate !== undefined) {
+        params.push(endDate);
+        updateFields.push(`end_date = $${params.length}`);
+      }
+      if (status !== undefined) {
+        params.push(status);
+        updateFields.push(`status = $${params.length}`);
+      }
+
+      if (updateFields.length === 0) {
+        const getRes = await executeQuery(`SELECT id, tenant_id as "tenantId", name, cohort_year as "cohortYear", start_date as "startDate", end_date as "endDate", status FROM cohorts WHERE id = $1`, [id]);
+        return getRes.rows[0];
+      }
+
+      updateFields.push(`updated_at = NOW()`);
+      const query = `UPDATE cohorts SET ${updateFields.join(", ")} WHERE id = $1 RETURNING id, tenant_id as "tenantId", name, cohort_year as "cohortYear", start_date as "startDate", end_date as "endDate", status, created_by as "createdBy", created_at as "createdAt", updated_at as "updatedAt"`;
+      const res = await executeQuery(query, params);
+
+      const updated = res.rows[0];
+      await DbRepo.saveAuditLog(cohort.updatedBy || cohort.created_by || "system", "UPDATE_COHORT", `Updated cohort ${updated?.name || id} (ID: ${id})`);
+      return updated;
+    } catch (e) {
+      console.error("[DbRepo] Failed to update cohort:", e);
+      throw e;
+    }
+  }
+
+  static async deleteCohort(id: string): Promise<boolean> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      if (!(state as any).cohorts) return false;
+      const index = (state as any).cohorts.findIndex((c: any) => c.id === id);
+      if (index === -1) return false;
+      (state as any).cohorts[index].deletedAt = new Date().toISOString();
+      saveJsonState(state);
+      return true;
+    }
+
+    try {
+      await executeQuery(`UPDATE cohorts SET deleted_at = NOW(), status = 'DELETED' WHERE id = $1`, [id]);
+      await DbRepo.saveAuditLog("system", "DELETE_COHORT", `Soft deleted cohort ID: ${id}`);
+      return true;
+    } catch (e) {
+      console.error("[DbRepo] Failed to delete cohort:", e);
+      return false;
+    }
+  }
+
+  // --- TRAINING BATCHES METHODS ---
+  static async getTrainingBatches(options?: {
+    tenantId?: string;
+    tspId?: string;
+    cohortId?: string;
+    page?: number;
+    pageSize?: number;
+  }): Promise<{ rows: any[]; totalCount: number; page: number; pageSize: number; totalPages: number }> {
+    const page = options?.page || 1;
+    const pageSize = options?.pageSize || 10;
+    const offset = (page - 1) * pageSize;
+    const pool = getPgPool();
+
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      let list = (state as any).trainingBatches || [];
+      if (options?.tenantId) {
+        list = list.filter((b: any) => b.tenantId === options.tenantId);
+      }
+      if (options?.tspId) {
+        list = list.filter((b: any) => b.tspId === options.tspId);
+      }
+      if (options?.cohortId) {
+        list = list.filter((b: any) => b.cohortId === options.cohortId);
+      }
+      const totalCount = list.length;
+      const totalPages = Math.ceil(totalCount / pageSize);
+      const rows = list.slice(offset, offset + pageSize);
+      return { rows, totalCount, page, pageSize, totalPages };
+    }
+
+    try {
+      const params: any[] = [];
+      let whereClause = "WHERE tb.status != 'DELETED'";
+
+      if (options?.tenantId) {
+        params.push(options.tenantId);
+        whereClause += ` AND tb.tenant_id = $${params.length}`;
+      }
+      if (options?.tspId) {
+        params.push(options.tspId);
+        whereClause += ` AND tb.tsp_id = $${params.length}`;
+      }
+      if (options?.cohortId) {
+        params.push(options.cohortId);
+        whereClause += ` AND tb.cohort_id = $${params.length}`;
+      }
+
+      const countRes = await executeQuery(`SELECT COUNT(*)::int as count FROM training_batches tb ${whereClause}`, params);
+      const totalCount = countRes.rows[0]?.count || 0;
+
+      const rowsParams = [...params];
+      rowsParams.push(pageSize, offset);
+      const rowsRes = await executeQuery(
+        `SELECT tb.id, tb.tenant_id as "tenantId", tb.tsp_id as "tspId", tb.cohort_id as "cohortId", 
+                tb.training_program_id as "trainingProgramId", tb.batch_number as "batchNumber", 
+                tb.start_date as "startDate", tb.end_date as "endDate", tb.capacity, tb.status, 
+                c.name as "cohortName", tp.name as "programName", tsp.name as "tspName"
+         FROM training_batches tb
+         LEFT JOIN cohorts c ON tb.cohort_id = c.id
+         LEFT JOIN training_programs tp ON tb.training_program_id = tp.id
+         LEFT JOIN tsps tsp ON tb.tsp_id = tsp.id
+         ${whereClause} 
+         ORDER BY tb.created_at DESC 
+         LIMIT $${rowsParams.length - 1} OFFSET $${rowsParams.length}`,
+        rowsParams
+      );
+
+      const totalPages = Math.ceil(totalCount / pageSize);
+      return { rows: rowsRes.rows, totalCount, page, pageSize, totalPages };
+    } catch (e) {
+      console.error("[DbRepo] Failed to get training batches:", e);
+      return { rows: [], totalCount: 0, page, pageSize, totalPages: 0 };
+    }
+  }
+
+  static async saveTrainingBatch(batch: any): Promise<any> {
+    const pool = getPgPool();
+    const tspId = batch.tspId || batch.tsp_id;
+    const startDate = batch.startDate || batch.start_date;
+    const endDate = batch.endDate || batch.end_date;
+    const id = batch.id || null;
+
+    if (pool && isPgActive) {
+      let overlapCheck;
+      if (id) {
+        overlapCheck = await executeQuery(
+          `SELECT id, batch_number FROM training_batches 
+           WHERE tsp_id = $1 AND status = 'ACTIVE' AND id != $2 
+             AND NOT (end_date < $3 OR start_date > $4)`,
+          [tspId, id, startDate, endDate]
+        );
+      } else {
+        overlapCheck = await executeQuery(
+          `SELECT id, batch_number FROM training_batches 
+           WHERE tsp_id = $1 AND status = 'ACTIVE'
+             AND NOT (end_date < $2 OR start_date > $3)`,
+          [tspId, startDate, endDate]
+        );
+      }
+
+      if (overlapCheck.rows.length > 0) {
+        throw new Error(`Schedule overlap error: Batch ${overlapCheck.rows[0].batch_number} is already scheduled within the same timeframe for this TSP.`);
+      }
+    }
+
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      if (!(state as any).trainingBatches) (state as any).trainingBatches = [];
+      const newBatch = {
+        id: batch.id || require("crypto").randomUUID(),
+        tenantId: batch.tenantId || null,
+        tspId: batch.tspId || null,
+        cohortId: batch.cohortId || null,
+        trainingProgramId: batch.trainingProgramId || null,
+        batchNumber: batch.batchNumber,
+        startDate: batch.startDate,
+        endDate: batch.endDate,
+        capacity: batch.capacity !== undefined ? parseInt(batch.capacity) : 30,
+        status: batch.status || "ACTIVE",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      (state as any).trainingBatches.push(newBatch);
+      saveJsonState(state);
+      return newBatch;
+    }
+
+    try {
+      const insertId = batch.id || require("crypto").randomUUID();
+      const tenantId = batch.tenantId || batch.tenant_id || null;
+      const cohortId = batch.cohortId || batch.cohort_id || null;
+      const trainingProgramId = batch.trainingProgramId || batch.training_program_id || null;
+      const batchNumber = batch.batchNumber || batch.batch_number;
+      const capacity = batch.capacity !== undefined ? parseInt(batch.capacity) : 30;
+      const status = batch.status || "ACTIVE";
+      const createdBy = batch.createdBy || batch.created_by || null;
+
+      const res = await executeQuery(
+        `INSERT INTO training_batches (id, tenant_id, tsp_id, cohort_id, training_program_id, batch_number, start_date, end_date, capacity, status, created_by, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
+         ON CONFLICT (id) DO UPDATE SET
+           tenant_id = EXCLUDED.tenant_id, tsp_id = EXCLUDED.tsp_id, cohort_id = EXCLUDED.cohort_id,
+           training_program_id = EXCLUDED.training_program_id, batch_number = EXCLUDED.batch_number,
+           start_date = EXCLUDED.start_date, end_date = EXCLUDED.end_date, capacity = EXCLUDED.capacity,
+           status = EXCLUDED.status, updated_at = NOW()
+         RETURNING id, tenant_id as "tenantId", tsp_id as "tspId", cohort_id as "cohortId", training_program_id as "trainingProgramId", batch_number as "batchNumber", start_date as "startDate", end_date as "endDate", capacity, status, created_by as "createdBy"`,
+        [insertId, tenantId, tspId, cohortId, trainingProgramId, batchNumber, startDate, endDate, capacity, status, createdBy]
+      );
+
+      const saved = res.rows[0];
+      await DbRepo.saveAuditLog(createdBy || "system", "SAVE_BATCH", `Saved training batch ${batchNumber} (ID: ${insertId})`);
+      return saved;
+    } catch (e) {
+      console.error("[DbRepo] Failed to save training batch:", e);
+      throw e;
+    }
+  }
+
+  static async assignTraineesToBatch(batchId: string, traineeIds: string[], assignedByUserId?: string): Promise<boolean> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      if ((state as any).beneficiaries) {
+        (state as any).beneficiaries.forEach((b: any) => {
+          if (traineeIds.includes(b.id)) {
+            b.training_batch_id = batchId;
+          }
+        });
+        saveJsonState(state);
+      }
+      return true;
+    }
+
+    try {
+      if (traineeIds.length === 0) return true;
+
+      const batchRes = await executeQuery(`SELECT id, tenant_id, batch_number, capacity FROM training_batches WHERE id = $1`, [batchId]);
+      if (batchRes.rows.length === 0) {
+        throw new Error("Batch not found");
+      }
+      const batch = batchRes.rows[0];
+
+      const currentRes = await executeQuery(`SELECT COUNT(*)::int as count FROM beneficiaries WHERE training_batch_id = $1 AND deleted_at IS NULL`, [batchId]);
+      const currentAssigned = currentRes.rows[0]?.count || 0;
+      if (currentAssigned + traineeIds.length > batch.capacity) {
+        throw new Error(`Batch capacity exceeded: Batch ${batch.batch_number} has a maximum capacity of ${batch.capacity}. Currently assigned: ${currentAssigned}, attempting to add: ${traineeIds.length}.`);
+      }
+
+      // Populate assignment in the mapping table
+      for (const tId of traineeIds) {
+        await executeQuery(`
+          INSERT INTO training_batch_assignments (id, tenant_id, batch_id, beneficiary_id, assigned_by, assigned_at)
+          VALUES (gen_random_uuid(), $1, $2, $3, $4, NOW())
+          ON CONFLICT (batch_id, beneficiary_id) DO NOTHING
+        `, [batch.tenant_id, batchId, tId, assignedByUserId || null]);
+      }
+
+      await executeQuery(
+        `UPDATE beneficiaries 
+         SET training_batch_id = $1, batch = (SELECT 'Batch ' || batch_number FROM training_batches WHERE id = $1)
+         WHERE id = ANY($2)`,
+        [batchId, traineeIds]
+      );
+
+      await DbRepo.saveAuditLog(assignedByUserId || "system", "ASSIGN_TRAINEES", `Assigned ${traineeIds.length} trainees to batch ID: ${batchId}`);
+      return true;
+    } catch (e) {
+      console.error("[DbRepo] Failed to assign trainees to batch:", e);
+      throw e;
+    }
+  }
+
+  static async removeTraineesFromBatch(batchId: string, traineeIds: string[], removedByUserId?: string): Promise<boolean> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return true;
+    }
+
+    try {
+      if (traineeIds.length === 0) return true;
+
+      await executeQuery(
+        `DELETE FROM training_batch_assignments WHERE batch_id = $1 AND beneficiary_id = ANY($2)`,
+        [batchId, traineeIds]
+      );
+
+      await executeQuery(
+        `UPDATE beneficiaries 
+         SET training_batch_id = NULL, batch = NULL
+         WHERE id = ANY($1) AND training_batch_id = $2`,
+        [traineeIds, batchId]
+      );
+
+      await DbRepo.saveAuditLog(removedByUserId || "system", "REMOVE_TRAINEES", `Removed ${traineeIds.length} trainees from batch ID: ${batchId}`);
+      return true;
+    } catch (e) {
+      console.error("[DbRepo] Failed to remove trainees from batch:", e);
+      throw e;
+    }
+  }
+
+  static async deleteTrainingBatch(id: string): Promise<boolean> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return true;
+    }
+    const assignedRes = await executeQuery(`SELECT COUNT(*)::int as count FROM beneficiaries WHERE training_batch_id = $1 AND deleted_at IS NULL`, [id]);
+    const tblAssignedRes = await executeQuery(`SELECT COUNT(*)::int as count FROM training_batch_assignments WHERE batch_id = $1`, [id]);
+    if ((assignedRes.rows[0]?.count || 0) > 0 || (tblAssignedRes.rows[0]?.count || 0) > 0) {
+      throw new Error(`Cannot delete batch: Active assignments exist for this batch.`);
+    }
+
+    try {
+      await executeQuery(`UPDATE training_batches SET status = 'DELETED' WHERE id = $1`, [id]);
+      await DbRepo.saveAuditLog("system", "DELETE_BATCH", `Deleted batch ID: ${id}`);
+      return true;
+    } catch (e) {
+      console.error("[DbRepo] Failed to delete training batch:", e);
+      throw e;
+    }
+  }
+
+  // --- TRAINERS METHODS ---
+  static async getTrainers(options?: {
+    tenantId?: string;
+    tspId?: string;
+    status?: string;
+    page?: number;
+    pageSize?: number;
+  }): Promise<{ rows: any[]; totalCount: number; page: number; pageSize: number; totalPages: number }> {
+    const page = options?.page || 1;
+    const pageSize = options?.pageSize || 10;
+    const offset = (page - 1) * pageSize;
+    const pool = getPgPool();
+
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      let list = (state as any).trainers || [];
+      if (options?.tenantId) {
+        list = list.filter((t: any) => t.tenantId === options.tenantId);
+      }
+      if (options?.tspId) {
+        list = list.filter((t: any) => t.tspId === options.tspId);
+      }
+      if (options?.status) {
+        list = list.filter((t: any) => t.status === options.status);
+      }
+      const totalCount = list.length;
+      const totalPages = Math.ceil(totalCount / pageSize);
+      const rows = list.slice(offset, offset + pageSize);
+      return { rows, totalCount, page, pageSize, totalPages };
+    }
+
+    try {
+      const params: any[] = [];
+      let whereClause = "WHERE status != 'DELETED'";
+
+      if (options?.tenantId) {
+        params.push(options.tenantId);
+        whereClause += ` AND tenant_id = $${params.length}`;
+      }
+      if (options?.tspId) {
+        params.push(options.tspId);
+        whereClause += ` AND tsp_id = $${params.length}`;
+      }
+      if (options?.status) {
+        params.push(options.status);
+        whereClause += ` AND status = $${params.length}`;
+      }
+
+      const countRes = await executeQuery(`SELECT COUNT(*)::int as count FROM trainers ${whereClause}`, params);
+      const totalCount = countRes.rows[0]?.count || 0;
+
+      const rowsParams = [...params];
+      rowsParams.push(pageSize, offset);
+      const rowsRes = await executeQuery(
+        `SELECT id, tenant_id as "tenantId", tsp_id as "tspId", first_name as "firstName", 
+                last_name as "lastName", email, phone, accreditation_details as "accreditationDetails", 
+                is_nbte_certified as "isNbteCertified", status, created_by as "createdBy", 
+                created_at as "createdAt", updated_at as "updatedAt"
+         FROM trainers 
+         ${whereClause} 
+         ORDER BY created_at DESC 
+         LIMIT $${rowsParams.length - 1} OFFSET $${rowsParams.length}`,
+        rowsParams
+      );
+
+      const totalPages = Math.ceil(totalCount / pageSize);
+      return { rows: rowsRes.rows, totalCount, page, pageSize, totalPages };
+    } catch (e) {
+      console.error("[DbRepo] Failed to get trainers:", e);
+      return { rows: [], totalCount: 0, page, pageSize, totalPages: 0 };
+    }
+  }
+
+  static async saveTrainer(trainer: any): Promise<any> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      if (!(state as any).trainers) (state as any).trainers = [];
+      const newTrainer = {
+        id: trainer.id || require("crypto").randomUUID(),
+        tenantId: trainer.tenantId || null,
+        tspId: trainer.tspId || null,
+        firstName: trainer.firstName,
+        lastName: trainer.lastName,
+        email: trainer.email || null,
+        phone: trainer.phone || null,
+        accreditationDetails: trainer.accreditationDetails || null,
+        isNbteCertified: !!trainer.isNbteCertified,
+        status: trainer.status || "ACTIVE",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      (state as any).trainers.push(newTrainer);
+      saveJsonState(state);
+      return newTrainer;
+    }
+
+    try {
+      const id = trainer.id || require("crypto").randomUUID();
+      const tenantId = trainer.tenantId || trainer.tenant_id || null;
+      const tspId = trainer.tspId || trainer.tsp_id || null;
+      const firstName = trainer.firstName || trainer.first_name;
+      const lastName = trainer.lastName || trainer.last_name;
+      const email = trainer.email || null;
+      const phone = trainer.phone || null;
+      const accreditationDetails = trainer.accreditationDetails || trainer.accreditation_details || null;
+      const isNbteCertified = !!(trainer.isNbteCertified || trainer.is_nbte_certified);
+      const status = trainer.status || "ACTIVE";
+      const createdBy = trainer.createdBy || trainer.created_by || null;
+
+      const res = await executeQuery(
+        `INSERT INTO trainers (id, tenant_id, tsp_id, first_name, last_name, email, phone, accreditation_details, is_nbte_certified, status, created_by, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
+         RETURNING id, tenant_id as "tenantId", tsp_id as "tspId", first_name as "firstName", last_name as "lastName", email, phone, accreditation_details as "accreditationDetails", is_nbte_certified as "isNbteCertified", status, created_by as "createdBy"`,
+        [id, tenantId, tspId, firstName, lastName, email, phone, accreditationDetails, isNbteCertified, status, createdBy]
+      );
+
+      const saved = res.rows[0];
+      await DbRepo.saveAuditLog(createdBy || "system", "CREATE_TRAINER", `Created trainer ${firstName} ${lastName}`);
+      return saved;
+    } catch (e) {
+      console.error("[DbRepo] Failed to save trainer:", e);
+      throw e;
+    }
+  }
+
+  static async updateTrainer(id: string, trainer: any): Promise<any> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      if (!(state as any).trainers) (state as any).trainers = [];
+      const index = (state as any).trainers.findIndex((t: any) => t.id === id);
+      if (index === -1) throw new Error("Trainer not found");
+      const updated = {
+        ...(state as any).trainers[index],
+        firstName: trainer.firstName !== undefined ? trainer.firstName : (state as any).trainers[index].firstName,
+        lastName: trainer.lastName !== undefined ? trainer.lastName : (state as any).trainers[index].lastName,
+        email: trainer.email !== undefined ? trainer.email : (state as any).trainers[index].email,
+        phone: trainer.phone !== undefined ? trainer.phone : (state as any).trainers[index].phone,
+        accreditationDetails: trainer.accreditationDetails !== undefined ? trainer.accreditationDetails : (state as any).trainers[index].accreditationDetails,
+        isNbteCertified: trainer.isNbteCertified !== undefined ? !!trainer.isNbteCertified : (state as any).trainers[index].isNbteCertified,
+        status: trainer.status !== undefined ? trainer.status : (state as any).trainers[index].status,
+        updatedAt: new Date().toISOString()
+      };
+      (state as any).trainers[index] = updated;
+      saveJsonState(state);
+      return updated;
+    }
+
+    try {
+      const firstName = trainer.firstName !== undefined ? trainer.firstName : trainer.first_name;
+      const lastName = trainer.lastName !== undefined ? trainer.lastName : trainer.last_name;
+      const email = trainer.email;
+      const phone = trainer.phone;
+      const accreditationDetails = trainer.accreditationDetails !== undefined ? trainer.accreditationDetails : trainer.accreditation_details;
+      const isNbteCertified = trainer.isNbteCertified !== undefined ? !!trainer.isNbteCertified : (trainer.is_nbte_certified !== undefined ? !!trainer.is_nbte_certified : undefined);
+      const status = trainer.status;
+
+      const updateFields: string[] = [];
+      const params: any[] = [id];
+
+      if (firstName !== undefined) {
+        params.push(firstName);
+        updateFields.push(`first_name = $${params.length}`);
+      }
+      if (lastName !== undefined) {
+        params.push(lastName);
+        updateFields.push(`last_name = $${params.length}`);
+      }
+      if (email !== undefined) {
+        params.push(email);
+        updateFields.push(`email = $${params.length}`);
+      }
+      if (phone !== undefined) {
+        params.push(phone);
+        updateFields.push(`phone = $${params.length}`);
+      }
+      if (accreditationDetails !== undefined) {
+        params.push(accreditationDetails);
+        updateFields.push(`accreditation_details = $${params.length}`);
+      }
+      if (isNbteCertified !== undefined) {
+        params.push(isNbteCertified);
+        updateFields.push(`is_nbte_certified = $${params.length}`);
+      }
+      if (status !== undefined) {
+        params.push(status);
+        updateFields.push(`status = $${params.length}`);
+      }
+
+      if (updateFields.length === 0) {
+        const getRes = await executeQuery(`SELECT id, first_name as "firstName", last_name as "lastName" FROM trainers WHERE id = $1`, [id]);
+        return getRes.rows[0];
+      }
+
+      updateFields.push(`updated_at = NOW()`);
+      const query = `UPDATE trainers SET ${updateFields.join(", ")} WHERE id = $1 RETURNING id, tenant_id as "tenantId", tsp_id as "tspId", first_name as "firstName", last_name as "lastName", email, phone, accreditation_details as "accreditationDetails", is_nbte_certified as "isNbteCertified", status`;
+      const res = await executeQuery(query, params);
+      const updated = res.rows[0];
+      await DbRepo.saveAuditLog("system", "UPDATE_TRAINER", `Updated trainer ${firstName} ${lastName} (ID: ${id})`);
+      return updated;
+    } catch (e) {
+      console.error("[DbRepo] Failed to update trainer:", e);
+      throw e;
+    }
+  }
+
+  // --- ASSESSMENTS METHODS ---
+  static calculateFinalScoreAndGrade(ca: number, practical: number, exam: number): { finalScore: number; finalGrade: string } {
+    if (ca < 0 || ca > 100 || practical < 0 || practical > 100 || exam < 0 || exam > 100) {
+      throw new Error("Validation error: Scores must be between 0 and 100.");
+    }
+    const finalScore = (ca * 0.3) + (practical * 0.4) + (exam * 0.3);
+    let finalGrade = "F";
+    if (finalScore >= 70) finalGrade = "A";
+    else if (finalScore >= 60) finalGrade = "B";
+    else if (finalScore >= 50) finalGrade = "C";
+    else if (finalScore >= 45) finalGrade = "D";
+
+    return { finalScore: parseFloat(finalScore.toFixed(2)), finalGrade };
+  }
+
+  static async getAssessments(options?: {
+    tenantId?: string;
+    beneficiaryId?: string;
+    trainerId?: string;
+    page?: number;
+    pageSize?: number;
+  }): Promise<{ rows: any[]; totalCount: number; page: number; pageSize: number; totalPages: number }> {
+    const page = options?.page || 1;
+    const pageSize = options?.pageSize || 10;
+    const offset = (page - 1) * pageSize;
+    const pool = getPgPool();
+
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      let list = (state as any).assessments || [];
+      if (options?.tenantId) {
+        list = list.filter((a: any) => a.tenantId === options.tenantId);
+      }
+      if (options?.beneficiaryId) {
+        list = list.filter((b: any) => b.beneficiaryId === options.beneficiaryId);
+      }
+      if (options?.trainerId) {
+        list = list.filter((a: any) => a.trainerId === options.trainerId);
+      }
+      const totalCount = list.length;
+      const totalPages = Math.ceil(totalCount / pageSize);
+      const rows = list.slice(offset, offset + pageSize);
+      return { rows, totalCount, page, pageSize, totalPages };
+    }
+
+    try {
+      const params: any[] = [];
+      let whereClause = "WHERE 1=1";
+
+      if (options?.tenantId) {
+        params.push(options.tenantId);
+        whereClause += ` AND a.tenant_id = $${params.length}`;
+      }
+      if (options?.beneficiaryId) {
+        params.push(options.beneficiaryId);
+        whereClause += ` AND a.beneficiary_id = $${params.length}`;
+      }
+      if (options?.trainerId) {
+        params.push(options.trainerId);
+        whereClause += ` AND a.trainer_id = $${params.length}`;
+      }
+
+      const countRes = await executeQuery(`SELECT COUNT(*)::int as count FROM assessments a ${whereClause}`, params);
+      const totalCount = countRes.rows[0]?.count || 0;
+
+      const rowsParams = [...params];
+      rowsParams.push(pageSize, offset);
+      const rowsRes = await executeQuery(
+        `SELECT a.id, a.tenant_id as "tenantId", a.beneficiary_id as "beneficiaryId", a.trainer_id as "trainerId", 
+                a.assessment_name as "assessmentName", a.continuous_assessment_score as "continuousAssessmentScore", 
+                a.practical_score as "practicalScore", a.exam_score as "examScore", a.final_score as "finalScore", 
+                a.final_grade as "finalGrade", a.examiner_comments as "examinerComments", a.exam_date as "examDate", 
+                a.status, a.created_at as "createdAt",
+                b.first_name as "beneficiaryFirstName", b.last_name as "beneficiaryLastName",
+                t.first_name as "trainerFirstName", t.last_name as "trainerLastName"
+         FROM assessments a
+         LEFT JOIN beneficiaries b ON a.beneficiary_id = b.id
+         LEFT JOIN trainers t ON a.trainer_id = t.id
+         ${whereClause} 
+         ORDER BY a.created_at DESC 
+         LIMIT $${rowsParams.length - 1} OFFSET $${rowsParams.length}`,
+        rowsParams
+      );
+
+      const totalPages = Math.ceil(totalCount / pageSize);
+      return { rows: rowsRes.rows, totalCount, page, pageSize, totalPages };
+    } catch (e) {
+      console.error("[DbRepo] Failed to get assessments:", e);
+      return { rows: [], totalCount: 0, page, pageSize, totalPages: 0 };
+    }
+  }
+
+  static async saveAssessment(assessment: any): Promise<any> {
+    const ca = parseFloat(assessment.continuousAssessmentScore || assessment.continuous_assessment_score || 0);
+    const practical = parseFloat(assessment.practicalScore || assessment.practical_score || 0);
+    const exam = parseFloat(assessment.examScore || assessment.exam_score || 0);
+
+    const { finalScore, finalGrade } = DbRepo.calculateFinalScoreAndGrade(ca, practical, exam);
+
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      if (!(state as any).assessments) (state as any).assessments = [];
+      const newAss = {
+        id: assessment.id || require("crypto").randomUUID(),
+        tenantId: assessment.tenantId || null,
+        beneficiaryId: assessment.beneficiaryId || null,
+        trainerId: assessment.trainerId || null,
+        assessmentName: assessment.assessmentName || "",
+        continuousAssessmentScore: ca,
+        practicalScore: practical,
+        examScore: exam,
+        finalScore,
+        finalGrade,
+        examinerComments: assessment.examinerComments || null,
+        examDate: assessment.examDate || null,
+        status: assessment.status || "PENDING",
+        createdAt: new Date().toISOString()
+      };
+      (state as any).assessments.push(newAss);
+      saveJsonState(state);
+      return newAss;
+    }
+
+    try {
+      const id = assessment.id || require("crypto").randomUUID();
+      const tenantId = assessment.tenantId || assessment.tenant_id || null;
+      const beneficiaryId = assessment.beneficiaryId || assessment.beneficiary_id || null;
+      const trainerId = assessment.trainerId || assessment.trainer_id || null;
+      const assessmentName = assessment.assessmentName || assessment.assessment_name || "";
+      const examinerComments = assessment.examinerComments || assessment.examiner_comments || null;
+      const examDate = assessment.examDate || assessment.exam_date || null;
+      const status = assessment.status || "PENDING";
+
+      const res = await executeQuery(
+        `INSERT INTO assessments (id, tenant_id, beneficiary_id, trainer_id, assessment_name, continuous_assessment_score, practical_score, exam_score, final_score, final_grade, examiner_comments, exam_date, status, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+         RETURNING id, tenant_id as "tenantId", beneficiary_id as "beneficiaryId", trainer_id as "trainerId", assessment_name as "assessmentName", continuous_assessment_score as "continuousAssessmentScore", practical_score as "practicalScore", exam_score as "examScore", final_score as "finalScore", final_grade as "finalGrade", examiner_comments as "examinerComments", exam_date as "examDate", status`,
+        [id, tenantId, beneficiaryId, trainerId, assessmentName, ca, practical, exam, finalScore, finalGrade, examinerComments, examDate, status]
+      );
+      const saved = res.rows[0];
+      await DbRepo.saveAuditLog("system", "CREATE_ASSESSMENT", `Created assessment record for beneficiary ID: ${beneficiaryId}`);
+      return saved;
+    } catch (e) {
+      console.error("[DbRepo] Failed to save assessment:", e);
+      throw e;
+    }
+  }
+
+  static async updateAssessment(id: string, assessment: any): Promise<any> {
+    const pool = getPgPool();
+    let original: any;
+    if (pool && isPgActive) {
+      const origRes = await executeQuery(`SELECT * FROM assessments WHERE id = $1`, [id]);
+      if (origRes.rows.length === 0) throw new Error("Assessment not found");
+      original = origRes.rows[0];
+    } else {
+      const state = loadJsonState();
+      original = ((state as any).assessments || []).find((a: any) => a.id === id);
+      if (!original) throw new Error("Assessment not found");
+    }
+
+    const ca = assessment.continuousAssessmentScore !== undefined ? parseFloat(assessment.continuousAssessmentScore) : parseFloat(original.continuous_assessment_score || original.continuousAssessmentScore || 0);
+    const practical = assessment.practicalScore !== undefined ? parseFloat(assessment.practicalScore) : parseFloat(original.practical_score || original.practicalScore || 0);
+    const exam = assessment.examScore !== undefined ? parseFloat(assessment.examScore) : parseFloat(original.exam_score || original.examScore || 0);
+
+    const { finalScore, finalGrade } = DbRepo.calculateFinalScoreAndGrade(ca, practical, exam);
+
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      const index = (state as any).assessments.findIndex((a: any) => a.id === id);
+      const updated = {
+        ...(state as any).assessments[index],
+        assessmentName: assessment.assessmentName !== undefined ? assessment.assessmentName : original.assessmentName,
+        continuousAssessmentScore: ca,
+        practicalScore: practical,
+        examScore: exam,
+        finalScore,
+        finalGrade,
+        examinerComments: assessment.examinerComments !== undefined ? assessment.examinerComments : original.examinerComments,
+        examDate: assessment.examDate !== undefined ? assessment.examDate : original.examDate,
+        status: assessment.status !== undefined ? assessment.status : original.status
+      };
+      (state as any).assessments[index] = updated;
+      saveJsonState(state);
+      return updated;
+    }
+
+    try {
+      const assessmentName = assessment.assessmentName !== undefined ? assessment.assessmentName : assessment.assessment_name;
+      const examinerComments = assessment.examinerComments !== undefined ? assessment.examinerComments : assessment.examiner_comments;
+      const examDate = assessment.examDate !== undefined ? assessment.examDate : assessment.exam_date;
+      const status = assessment.status;
+
+      const updateFields: string[] = [];
+      const params: any[] = [id];
+
+      params.push(ca, practical, exam, finalScore, finalGrade);
+      updateFields.push(`continuous_assessment_score = $2`, `practical_score = $3`, `exam_score = $4`, `final_score = $5`, `final_grade = $6`);
+
+      if (assessmentName !== undefined) {
+        params.push(assessmentName);
+        updateFields.push(`assessment_name = $${params.length}`);
+      }
+      if (examinerComments !== undefined) {
+        params.push(examinerComments);
+        updateFields.push(`examiner_comments = $${params.length}`);
+      }
+      if (examDate !== undefined) {
+        params.push(examDate);
+        updateFields.push(`exam_date = $${params.length}`);
+      }
+      if (status !== undefined) {
+        params.push(status);
+        updateFields.push(`status = $${params.length}`);
+      }
+
+      const query = `UPDATE assessments SET ${updateFields.join(", ")} WHERE id = $1 RETURNING id, tenant_id as "tenantId", beneficiary_id as "beneficiaryId", trainer_id as "trainerId", assessment_name as "assessmentName", continuous_assessment_score as "continuousAssessmentScore", practical_score as "practicalScore", exam_score as "examScore", final_score as "finalScore", final_grade as "finalGrade", examiner_comments as "examinerComments", exam_date as "examDate", status`;
+      const res = await executeQuery(query, params);
+      const updated = res.rows[0];
+      await DbRepo.saveAuditLog("system", "UPDATE_ASSESSMENT", `Updated assessment ID: ${id}`);
+      return updated;
+    } catch (e) {
+      console.error("[DbRepo] Failed to update assessment:", e);
+      throw e;
+    }
+  }
+
+  // --- GRADUATION METHODS ---
+  static async getGraduationClearances(options?: {
+    tenantId?: string;
+    beneficiaryId?: string;
+    page?: number;
+    pageSize?: number;
+  }): Promise<{ rows: any[]; totalCount: number; page: number; pageSize: number; totalPages: number }> {
+    const page = options?.page || 1;
+    const pageSize = options?.pageSize || 10;
+    const offset = (page - 1) * pageSize;
+    const pool = getPgPool();
+
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      let list = (state as any).graduationClearances || [];
+      if (options?.tenantId) {
+        list = list.filter((g: any) => g.tenantId === options.tenantId);
+      }
+      if (options?.beneficiaryId) {
+        list = list.filter((g: any) => g.beneficiaryId === options.beneficiaryId);
+      }
+      const totalCount = list.length;
+      const totalPages = Math.ceil(totalCount / pageSize);
+      const rows = list.slice(offset, offset + pageSize);
+      return { rows, totalCount, page, pageSize, totalPages };
+    }
+
+    try {
+      const params: any[] = [];
+      let whereClause = "WHERE 1=1";
+
+      if (options?.tenantId) {
+        params.push(options.tenantId);
+        whereClause += ` AND gc.tenant_id = $${params.length}`;
+      }
+      if (options?.beneficiaryId) {
+        params.push(options.beneficiaryId);
+        whereClause += ` AND gc.beneficiary_id = $${params.length}`;
+      }
+
+      const countRes = await executeQuery(`SELECT COUNT(*)::int as count FROM graduation_clearances gc ${whereClause}`, params);
+      const totalCount = countRes.rows[0]?.count || 0;
+
+      const rowsParams = [...params];
+      rowsParams.push(pageSize, offset);
+      const rowsRes = await executeQuery(
+        `SELECT gc.id, gc.tenant_id as "tenantId", gc.beneficiary_id as "beneficiaryId", 
+                gc.is_cleared_attendance as "isClearedAttendance", gc.is_cleared_assessment as "isClearedAssessment", 
+                gc.is_cleared_toolkit as "isClearedToolkit", gc.cleared_by as "clearedBy", gc.cleared_at as "clearedAt", 
+                gc.ceremony_event_name as "ceremonyEventName", gc.created_at as "createdAt",
+                b.first_name as "beneficiaryFirstName", b.last_name as "beneficiaryLastName", b.state as "beneficiaryState", b.tsp as "beneficiaryTsp"
+         FROM graduation_clearances gc
+         LEFT JOIN beneficiaries b ON gc.beneficiary_id = b.id
+         ${whereClause} 
+         ORDER BY gc.created_at DESC 
+         LIMIT $${rowsParams.length - 1} OFFSET $${rowsParams.length}`,
+        rowsParams
+      );
+
+      const totalPages = Math.ceil(totalCount / pageSize);
+      return { rows: rowsRes.rows, totalCount, page, pageSize, totalPages };
+    } catch (e) {
+      console.error("[DbRepo] Failed to get graduation clearances:", e);
+      return { rows: [], totalCount: 0, page, pageSize, totalPages: 0 };
+    }
+  }
+
+  static async evaluateAndClearTrainee(beneficiaryId: string, clearedBy: string, ceremonyEventName?: string, tenantId?: string): Promise<any> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return { beneficiaryId, success: true };
+    }
+
+    const attendanceRes = await executeQuery(
+      `SELECT COUNT(*)::int as total, SUM(CASE WHEN status = 'PRESENT' THEN 1 ELSE 0 END)::int as present FROM trainee_attendance WHERE beneficiary_id = $1`,
+      [beneficiaryId]
+    );
+    const attTotal = attendanceRes.rows[0]?.total || 0;
+    const attPresent = attendanceRes.rows[0]?.present || 0;
+    const attRate = attTotal > 0 ? (attPresent / attTotal) : 0;
+    const attendanceSatisfied = attTotal > 0 && attRate >= 0.80;
+
+    if (!attendanceSatisfied) {
+      throw new Error(`Graduation clearance blocked: Candidate does not satisfy the training attendance requirement (Attendance rate: ${Math.round(attRate * 100)}%, minimum required: 80%).`);
+    }
+
+    const assessmentRes = await executeQuery(
+      `SELECT COUNT(*)::int as count, MAX(final_score)::numeric as max_score FROM assessments WHERE beneficiary_id = $1 AND status = 'COMPLETED'`,
+      [beneficiaryId]
+    );
+    const assCount = assessmentRes.rows[0]?.count || 0;
+    const maxScore = parseFloat(assessmentRes.rows[0]?.max_score || 0);
+    const assessmentSatisfied = assCount > 0 && maxScore >= 45.00;
+
+    if (!assessmentSatisfied) {
+      throw new Error(`Graduation clearance blocked: Candidate does not satisfy the assessment results requirement (Top final score: ${maxScore}/100, passing grade minimum: 45/100).`);
+    }
+
+    const toolkitRes = await executeQuery(
+      `SELECT COUNT(*)::int as count FROM graduate_toolkits WHERE beneficiary_id = $1`,
+      [beneficiaryId]
+    );
+    const toolkitCount = toolkitRes.rows[0]?.count || 0;
+    const toolkitSatisfied = toolkitCount > 0;
+
+    if (!toolkitSatisfied) {
+      throw new Error(`Graduation clearance blocked: Candidate has not been issued a graduate startup toolkit.`);
+    }
+
+    let finalTenantId = tenantId;
+    if (!finalTenantId) {
+      const benRes = await executeQuery(`SELECT tenant_id FROM beneficiaries WHERE id = $1`, [beneficiaryId]);
+      finalTenantId = benRes.rows[0]?.tenant_id || null;
+    }
+
+    const id = require("crypto").randomUUID();
+    const res = await executeQuery(
+      `INSERT INTO graduation_clearances (id, tenant_id, beneficiary_id, is_cleared_attendance, is_cleared_assessment, is_cleared_toolkit, cleared_by, cleared_at, ceremony_event_name)
+       VALUES ($1, $2, $3, TRUE, TRUE, TRUE, $4, NOW(), $5)
+       ON CONFLICT (beneficiary_id) DO UPDATE SET
+         is_cleared_attendance = TRUE, is_cleared_assessment = TRUE, is_cleared_toolkit = TRUE,
+         cleared_by = EXCLUDED.cleared_by, cleared_at = NOW(), ceremony_event_name = EXCLUDED.ceremony_event_name
+       RETURNING id, tenant_id as "tenantId", beneficiary_id as "beneficiaryId", is_cleared_attendance as "isClearedAttendance", is_cleared_assessment as "isClearedAssessment", is_cleared_toolkit as "isClearedToolkit", cleared_by as "clearedBy", cleared_at as "clearedAt", ceremony_event_name as "ceremonyEventName"`,
+      [id, finalTenantId, beneficiaryId, clearedBy, ceremonyEventName || "Annual TVET Graduation Ceremony"]
+    );
+
+    await executeQuery(`UPDATE beneficiaries SET beneficiary_status = 'ALUMNI', certification_status = 'CERTIFIED', certificate_issued_at = NOW(), certificate_issued_by = $2 WHERE id = $1`, [beneficiaryId, clearedBy]);
+
+    await DbRepo.saveAuditLog(clearedBy, "GRADUATION_CLEAR", `Issued graduation clearance and certified trainee ID: ${beneficiaryId}`);
+    return res.rows[0];
+  }
+
+  static async saveGraduationClearance(clearance: any): Promise<any> {
+    const beneficiaryId = clearance.beneficiaryId || clearance.beneficiary_id;
+    const clearedBy = clearance.clearedBy || clearance.cleared_by || "system";
+    const ceremonyEventName = clearance.ceremonyEventName || clearance.ceremony_event_name || null;
+    const tenantId = clearance.tenantId || clearance.tenant_id || null;
+
+    return DbRepo.evaluateAndClearTrainee(beneficiaryId, clearedBy, ceremonyEventName, tenantId);
+  }
+
+  static async bulkGraduationClearance(beneficiaryIds: string[], clearedBy: string, ceremonyEventName?: string): Promise<boolean> {
+    if (beneficiaryIds.length === 0) return true;
+
+    const errors: string[] = [];
+    for (const id of beneficiaryIds) {
+      try {
+        await DbRepo.evaluateAndClearTrainee(id, clearedBy, ceremonyEventName);
+      } catch (err: any) {
+        errors.push(`Beneficiary ${id}: ${err.message}`);
+      }
+    }
+
+    if (errors.length > 0) {
+      throw new Error(`Bulk clearance completed with errors:\n${errors.join("\n")}`);
+    }
+    return true;
+  }
+
+  static async getCohortDashboardStats(options?: { systemContext?: boolean }): Promise<any> {
+    await assertTenantContext(options);
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return {
+        totalCohorts: 0,
+        activeCohorts: 0,
+        completedCohorts: 0,
+        cohortsByYear: []
+      };
+    }
+    const totalCohortsRes = await executeQuery(`SELECT COUNT(*)::int as count FROM cohorts WHERE deleted_at IS NULL`);
+    const activeCohortsRes = await executeQuery(`SELECT COUNT(*)::int as count FROM cohorts WHERE status = 'ACTIVE' AND deleted_at IS NULL`);
+    const completedCohortsRes = await executeQuery(`SELECT COUNT(*)::int as count FROM cohorts WHERE status = 'COMPLETED' AND deleted_at IS NULL`);
+    const cohortsByYearRes = await executeQuery(`
+      SELECT cohort_year as "cohortYear", COUNT(*)::int as count 
+      FROM cohorts 
+      WHERE deleted_at IS NULL 
+      GROUP BY cohort_year 
+      ORDER BY cohort_year DESC
+    `);
+
+    return {
+      totalCohorts: totalCohortsRes.rows[0]?.count || 0,
+      activeCohorts: activeCohortsRes.rows[0]?.count || 0,
+      completedCohorts: completedCohortsRes.rows[0]?.count || 0,
+      cohortsByYear: cohortsByYearRes.rows.map(r => ({ cohortYear: r.cohortYear, count: r.count }))
+    };
+  }
+
+  static async getBatchDashboardStats(options?: { systemContext?: boolean }): Promise<any> {
+    await assertTenantContext(options);
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return {
+        totalBatches: 0,
+        activeBatches: 0,
+        completedBatches: 0,
+        traineesAssigned: 0
+      };
+    }
+    const totalBatchesRes = await executeQuery(`SELECT COUNT(*)::int as count FROM training_batches WHERE status != 'DELETED'`);
+    const activeBatchesRes = await executeQuery(`SELECT COUNT(*)::int as count FROM training_batches WHERE status = 'ACTIVE'`);
+    const completedBatchesRes = await executeQuery(`SELECT COUNT(*)::int as count FROM training_batches WHERE status = 'COMPLETED'`);
+    const traineesAssignedRes = await executeQuery(`SELECT COUNT(DISTINCT beneficiary_id)::int as count FROM training_batch_assignments`);
+
+    return {
+      totalBatches: totalBatchesRes.rows[0]?.count || 0,
+      activeBatches: activeBatchesRes.rows[0]?.count || 0,
+      completedBatches: completedBatchesRes.rows[0]?.count || 0,
+      traineesAssigned: traineesAssignedRes.rows[0]?.count || 0
+    };
+  }
+
+  static async getTrainerDashboardStats(options?: { systemContext?: boolean }): Promise<any> {
+    await assertTenantContext(options);
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return {
+        totalTrainers: 0,
+        nbteCertified: 0,
+        active: 0,
+        inactive: 0
+      };
+    }
+    const totalTrainersRes = await executeQuery(`SELECT COUNT(*)::int as count FROM trainers`);
+    const nbteCertifiedRes = await executeQuery(`SELECT COUNT(*)::int as count FROM trainers WHERE is_nbte_certified = TRUE`);
+    const activeRes = await executeQuery(`SELECT COUNT(*)::int as count FROM trainers WHERE status = 'ACTIVE'`);
+    const inactiveRes = await executeQuery(`SELECT COUNT(*)::int as count FROM trainers WHERE status = 'INACTIVE'`);
+
+    return {
+      totalTrainers: totalTrainersRes.rows[0]?.count || 0,
+      nbteCertified: nbteCertifiedRes.rows[0]?.count || 0,
+      active: activeRes.rows[0]?.count || 0,
+      inactive: inactiveRes.rows[0]?.count || 0
+    };
+  }
+
+  static async getAssessmentDashboardStats(options?: { systemContext?: boolean }): Promise<any> {
+    await assertTenantContext(options);
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return {
+        totalAssessments: 0,
+        passed: 0,
+        failed: 0,
+        pending: 0,
+        averageScore: 0
+      };
+    }
+    const totalAssessmentsRes = await executeQuery(`SELECT COUNT(*)::int as count FROM assessments`);
+    const passedRes = await executeQuery(`SELECT COUNT(*)::int as count FROM assessments WHERE final_score >= 45 AND status = 'COMPLETED'`);
+    const failedRes = await executeQuery(`SELECT COUNT(*)::int as count FROM assessments WHERE final_score < 45 AND status = 'COMPLETED'`);
+    const pendingRes = await executeQuery(`SELECT COUNT(*)::int as count FROM assessments WHERE status = 'PENDING'`);
+    const avgScoreRes = await executeQuery(`SELECT AVG(final_score)::numeric as avg FROM assessments WHERE final_score IS NOT NULL`);
+
+    return {
+      totalAssessments: totalAssessmentsRes.rows[0]?.count || 0,
+      passed: passedRes.rows[0]?.count || 0,
+      failed: failedRes.rows[0]?.count || 0,
+      pending: pendingRes.rows[0]?.count || 0,
+      averageScore: parseFloat(parseFloat(avgScoreRes.rows[0]?.avg || "0").toFixed(1))
+    };
+  }
+
+  static async getGraduationDashboardStats(options?: { systemContext?: boolean }): Promise<any> {
+    await assertTenantContext(options);
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return {
+        eligible: 0,
+        cleared: 0,
+        pending: 0
+      };
+    }
+    const clearedRes = await executeQuery(`SELECT COUNT(*)::int as count FROM graduation_clearances`);
+    const pendingRes = await executeQuery(`
+      SELECT COUNT(DISTINCT b.id)::int as count 
+      FROM beneficiaries b
+      JOIN (
+        SELECT beneficiary_id 
+        FROM trainee_attendance 
+        WHERE status = 'PRESENT' 
+        GROUP BY beneficiary_id 
+        HAVING COUNT(*) >= 10
+      ) att ON att.beneficiary_id = b.id
+      JOIN (
+        SELECT DISTINCT beneficiary_id 
+        FROM assessments 
+        WHERE status = 'COMPLETED' AND final_score >= 45
+      ) ass ON ass.beneficiary_id = b.id
+      JOIN (
+        SELECT DISTINCT beneficiary_id 
+        FROM graduate_toolkits
+      ) tk ON tk.beneficiary_id = b.id
+      LEFT JOIN graduation_clearances gc ON gc.beneficiary_id = b.id
+      WHERE gc.beneficiary_id IS NULL
+    `);
+
+    const cleared = clearedRes.rows[0]?.count || 0;
+    const pending = pendingRes.rows[0]?.count || 0;
+    const eligible = cleared + pending;
+
+    return {
+      eligible,
+      cleared,
+      pending
+    };
   }
 }
 

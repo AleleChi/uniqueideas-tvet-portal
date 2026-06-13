@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { getPgPool } from "./db";
+import { getPgPool, executeQuery } from "./db";
 
 export class CertificateNumberService {
   /**
@@ -18,7 +18,7 @@ export class CertificateNumberService {
     // We can check PG availability using the pool and its status
     if (pool && (global as any)._pgPool) {
       try {
-        const res = await pool.query(
+        const res = await executeQuery(
           `SELECT COALESCE(MAX(CAST(SPLIT_PART(certificate_number, '-', 4) AS INTEGER)), 0) as max_seq 
            FROM beneficiaries 
            WHERE certificate_number LIKE $1 AND deleted_at IS NULL`,

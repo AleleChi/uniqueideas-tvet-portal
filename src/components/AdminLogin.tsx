@@ -32,7 +32,7 @@ export function AdminLogin({ onLoginSuccess, onBackToHome }: AdminLoginProps) {
   const [isLoading, setIsLoading] = useState(false);
 
   // Health check and cold-start state indicators
-  const [healthStatus, setHealthStatus] = useState<"CHECKING" | "ONLINE" | "OFFLINE">("CHECKING");
+  const [healthStatus, setHealthStatus] = useState<"CHECKING" | "ONLINE" | "DEGRADED" | "OFFLINE">("CHECKING");
   const [isRetryingHealth, setIsRetryingHealth] = useState(false);
 
   const checkBackendHealth = async (isManualRetry = false) => {
@@ -51,11 +51,21 @@ export function AdminLogin({ onLoginSuccess, onBackToHome }: AdminLoginProps) {
       attempts++;
       try {
         const response = await fetch(healthUrl);
-        if (response.ok) {
-          success = true;
+        success = true;
+        
+        // Handle normal vs degraded vs redirect/error statuses gracefully
+        if (response.status === 200) {
+          const data = await response.json().catch(() => ({}));
+          if (data.status === "degraded") {
+            setHealthStatus("DEGRADED");
+          } else {
+            setHealthStatus("ONLINE");
+          }
+        } else {
+          // If 401, 403, 500, etc., the backend is STILL online
           setHealthStatus("ONLINE");
-          break;
         }
+        break;
       } catch (err) {
         console.warn(`[HEALTH CHECK] Attempt ${attempts} unreachable:`, err);
       }
@@ -299,6 +309,17 @@ export function AdminLogin({ onLoginSuccess, onBackToHome }: AdminLoginProps) {
               </>
             )}
           </div>
+
+          {/* Degraded State Indicator */}
+          {healthStatus === "DEGRADED" && (
+            <div className="text-xs text-amber-700 font-medium bg-amber-50 border border-amber-100 p-3 rounded-lg flex items-center gap-2">
+              <span className="flex h-2 w-2 relative">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+              </span>
+              <span>Centralized services are fully running under a degraded bootstrap state (optional seeds skipped/failed). Control and logins are functional.</span>
+            </div>
+          )}
 
           {/* Feedback alerts */}
           {error && (

@@ -453,7 +453,7 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
               education_level: row["education_level"] || "Diploma/N/A",
               skills: row["skill"] || row["skills"] || "Mobile Phone Repairs",
               state: row["state"] || "Imo State",
-              tsp: row["tsp"] || "New World Access"
+              tsp: row["tsp"] || "Unique Technology Nig. Ltd"
             });
           } else {
             invalidCount++;
@@ -1332,7 +1332,7 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
           {loading ? (
             <div className="py-24 text-center flex flex-col items-center justify-center gap-3">
               <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
-              <p className="text-xs text-slate-500 font-bold">Quering Secure Postgres instances...</p>
+              <p className="text-xs text-slate-500 font-bold">Querying Secure Federal Data Directory...</p>
             </div>
           ) : trainees.length === 0 ? (
             <div className="py-20 text-center text-slate-400">
@@ -1386,7 +1386,7 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
                         </td>
                         <td className="py-3 px-4 leading-tight">
                           <p className="text-slate-850 font-bold">{t.state || "Imo State"}</p>
-                          <p className="text-[10px] text-slate-400 mt-0.5 max-w-[160px] truncate" title={t.tsp}>{t.tsp || "New World Access"}</p>
+                          <p className="text-[10px] text-slate-400 mt-0.5 max-w-[160px] truncate" title={t.tsp}>{t.tsp || "Unique Technology Nig. Ltd"}</p>
                         </td>
                         <td className="py-3 px-4 text-center font-mono font-black">
                           <span className={`${metrics.attendance >= 70 ? 'text-emerald-700 bg-emerald-50' : 'text-rose-700 bg-rose-50'} border border-transparent px-1.5 py-0.5 rounded text-[11px]`}>
@@ -1640,7 +1640,7 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
                 <div className="bg-white border text-center p-20 rounded-2xl flex flex-col items-center justify-center space-y-3">
                   <Loader2 className="w-8 h-8 text-indigo-650 animate-spin" />
                   <p className="text-sm font-bold text-slate-700">Aggregating biometric terminal logs from Owerri classrooms...</p>
-                  <p className="text-xs text-slate-400 font-mono">Loading data from postgres without N+1 overrides</p>
+                  <p className="text-xs text-slate-400 font-sans">Connecting to the secure TVET terminal registry...</p>
                 </div>
               ) : (() => {
                 const ds = dashboardStats || {
@@ -2291,7 +2291,7 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
                   <Database className="w-5 h-5 text-indigo-600" />
                   <div>
                     <h3 className="text-sm font-extrabold text-slate-900 font-sans">Recent TCP Synchronization Audits</h3>
-                    <p className="text-[10px] text-slate-500 mt-0.5">Physical device transaction logs loaded onto postgres</p>
+                    <p className="text-[10px] text-slate-500 mt-0.5">Physical device logs synchronized with national platform</p>
                   </div>
                 </div>
               </div>
@@ -2608,8 +2608,8 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
               <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-6 animate-in slide-in-from-bottom-2 duration-300">
                 <div className="flex items-center justify-between border-b pb-4">
                   <div>
-                    <h3 className="text-base font-extrabold text-slate-900 font-sans">Step 3: Relational Database Core Ingestion Terminal</h3>
-                    <p className="text-xs text-slate-500 mt-1">Commit validated CSV updates onto secure Postgres table matrices. System lock is active during writing.</p>
+                    <h3 className="text-base font-extrabold text-slate-900 font-sans">Step 3: Secure Data Directory Verification Engine</h3>
+                    <p className="text-xs text-slate-500 mt-1">Commit validated CSV updates onto secure national data ledger. System lock is active during synchronization.</p>
                   </div>
                   <button
                     type="button"
@@ -2640,16 +2640,16 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
                     </div>
                     <div className="flex items-center gap-1 leading-none text-slate-500">
                       <span>[{new Date().toLocaleTimeString()}]</span>
-                      <span>[DBCORE] Category: Mapped onto Annex 9 {importSheetType.toUpperCase()} schema tables.</span>
+                      <span>[REGISTRY] Category: Associated with Annex 9 {importSheetType.toUpperCase()} directory.</span>
                     </div>
                     <div className="flex items-center gap-1 leading-none text-slate-500">
                       <span>[{new Date().toLocaleTimeString()}]</span>
-                      <span>[DBCORE] Pre-audited: Verified {validationSummary.valid} spreadsheet nodes loaded seamlessly.</span>
+                      <span>[REGISTRY] Pre-audited: Verified {validationSummary.valid} entries parsed and validated.</span>
                     </div>
                     {bulkImporting ? (
                       <div className="flex items-center gap-1.5 leading-none font-bold text-indigo-400 animate-pulse mt-2">
                         <Loader2 className="w-3 h-3 animate-spin" />
-                        <span>[INGEST] Transaction lock activated... Bulk writing ledger records to postgres schemas...</span>
+                        <span>[REGISTRY] Processing imports... Safely integrating records with the registry database...</span>
                       </div>
                     ) : (
                       <div className="flex items-center gap-1 leading-none font-bold text-slate-400 mt-2">
@@ -2696,7 +2696,7 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
                 <div className="space-y-2">
                   <h3 className="text-base font-extrabold text-slate-900 font-sans">Batch Ingestion Successful!</h3>
                   <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
-                    The verified spreadsheet records have been successfully parsed, validated, and synchronized onto active Postgres relational schemas. Updated certification metrics are active across overview KPIs.
+                    The verified spreadsheet records have been successfully parsed, validated, and synchronized onto secure enterprise databases. Updated certification metrics are active across overview KPIs.
                   </p>
                 </div>
 
@@ -2749,7 +2749,7 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
               { label: "Mobile Repairs %", val: `${trainees.length ? Math.round((trainees.filter(t => (t.skill || "").toLowerCase().includes("mobile")).length / trainees.length) * 100) : 40}%`, desc: "Mobile phone repairs", icon: Tablet, col: "border-indigo-200 bg-indigo-50/10 text-indigo-805" },
               { label: "Certified Ready %", val: `${readinessList.length ? Math.round((readinessList.filter(r => r.readiness_status === "READY").length / readinessList.length) * 100) : 0}%`, desc: "Passed all metrics", icon: Award, col: "border-emerald-200 bg-emerald-50/10 text-emerald-800 font-bold" },
               { label: "At Risk Profile %", val: `${readinessList.length ? Math.round((readinessList.filter(r => r.readiness_status === "AT_RISK").length / readinessList.length) * 100) : 0}%`, desc: "Urgent check-up needed", icon: ShieldAlert, col: "border-rose-200 bg-rose-50/10 text-rose-800" },
-              { label: "Active Imo TSPs", val: distinctTSPs.length || 1, desc: "New World Access Owerri", icon: Building, col: "border-slate-200" }
+              { label: "Active Imo TSPs", val: distinctTSPs.length || 1, desc: "Unique Technology Owerri", icon: Building, col: "border-slate-200" }
             ].map((card) => {
               const Icon = card.icon;
               return (
@@ -2825,7 +2825,7 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
             <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
               <div>
                 <h3 className="text-sm font-extrabold text-slate-900">Attendance Yield by Digital Skills Specialization</h3>
-                <p className="text-[11px] text-slate-500 mt-0.5">Statistical yield tracking for New World Access Owerri classrooms.</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">Statistical yield tracking for Unique Technology Owerri classrooms.</p>
               </div>
 
               {/* Chart generated with beautiful layered bar visuals */}
@@ -2947,7 +2947,7 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
                           <div className="text-[10px] font-mono text-indigo-600 mt-0.5 font-bold">{r.tvet_id}</div>
                         </td>
                         <td className="py-3 px-3 font-semibold text-slate-655">{r.state || "Imo State"} (Owerri)</td>
-                        <td className="py-3 px-3 font-mono text-slate-500 text-[11px] truncate max-w-[130px]" title={r.tsp}>{r.tsp || "New World Access"}</td>
+                        <td className="py-3 px-3 font-mono text-slate-500 text-[11px] truncate max-w-[130px]" title={r.tsp}>{r.tsp || "Unique Technology Nig. Ltd"}</td>
                         <td className="py-3 px-3 text-center">
                           <span className={`font-mono font-black ${r.attendance_percentage >= 70 ? 'text-emerald-700' : 'text-rose-700'}`}>
                             {r.attendance_percentage || 0}%
@@ -3074,7 +3074,7 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
                       </div>
                       <div>
                         <p className="text-[9px] text-slate-400 font-mono uppercase font-bold">Accredited TSP Center</p>
-                        <p className="text-slate-800 font-bold">{selectedTrainee.tsp || "New World Access"}</p>
+                        <p className="text-slate-800 font-bold">{selectedTrainee.tsp || "Unique Technology Nig. Ltd"}</p>
                       </div>
                       <div>
                         <p className="text-[9px] text-slate-400 font-mono uppercase font-bold">Skill Stream</p>
@@ -3228,7 +3228,7 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
                         { time: "24 hours ago", event: "Calculated Certification weights status", node: "Engine computed value" },
                         { time: "7 days ago", event: "Active government portal CDN verification audited", node: "Federal check sync" },
                         { time: "14 days ago", event: "Physical terminal biometrics synced from Owerri ZK-9500 Device", node: "ZKTeco hardware connection" },
-                        { time: "30 days ago", event: "Profile initialized into Postgres Relational Database", node: "Admin login admissions" }
+                        { time: "30 days ago", event: "Profile initialized into Secure National Database Ledger", node: "Admin login admissions" }
                       ].map((item, idx) => (
                         <div key={idx} className="flex items-start gap-2.5 border-l-2 border-slate-200 pl-3 pb-2 last:pb-0 relative mt-1 ml-1 leading-normal selection:bg-slate-205 h-fit text-left">
                           <span className="w-2 h-2 rounded-full bg-indigo-600 absolute -left-[5px] top-1.5" />

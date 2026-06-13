@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { getPgPool, loadJsonState } from "./db";
+import { getPgPool, loadJsonState, executeQuery } from "./db";
 
 export interface DependencyAnalysisResult {
   beneficiaryId: string;
@@ -67,7 +67,7 @@ export class LifecycleDependencyService {
     let beneficiary: any = null;
     if (isPg) {
       try {
-        const bRes = await pool.query("SELECT * FROM beneficiaries WHERE id = $1", [beneficiaryId]);
+        const bRes = await executeQuery("SELECT * FROM beneficiaries WHERE id = $1", [beneficiaryId]);
         if (bRes.rows.length > 0) {
           beneficiary = bRes.rows[0];
         }
@@ -142,7 +142,7 @@ export class LifecycleDependencyService {
     if (isPg) {
       try {
         // Phase 2: Document Scan
-        const docRes = await pool.query(
+        const docRes = await executeQuery(
           "SELECT document_status FROM generated_documents WHERE beneficiary_id = $1",
           [beneficiaryId]
         );
@@ -155,14 +155,14 @@ export class LifecycleDependencyService {
         });
 
         // Phase 3: Certification Scan
-        const certRes = await pool.query(
+        const certRes = await executeQuery(
           "SELECT COUNT(*)::int as count FROM certificates WHERE beneficiary_id = $1",
           [beneficiaryId]
         );
         certificateCount = certRes.rows[0]?.count || 0;
 
         // Phase 4: Toolkit Scan
-        const toolkitRes = await pool.query(
+        const toolkitRes = await executeQuery(
           "SELECT issue_date, verification_status, condition_status, replacement_requested FROM graduate_toolkits WHERE beneficiary_id = $1",
           [beneficiaryId]
         );
@@ -175,7 +175,7 @@ export class LifecycleDependencyService {
         });
 
         // Phase 5: Dispatch Scan
-        const dispatchRes = await pool.query(
+        const dispatchRes = await executeQuery(
           "SELECT COUNT(*)::int as count, MAX(sent_at) as last_sent FROM document_dispatches WHERE beneficiary_id = $1",
           [beneficiaryId]
         );
@@ -186,13 +186,13 @@ export class LifecycleDependencyService {
         }
 
         // Phase 6: Impact Evidence Scan
-        const fieldRes = await pool.query(
+        const fieldRes = await executeQuery(
           "SELECT visited FROM field_verifications WHERE beneficiary_id = $1",
           [beneficiaryId]
         );
         verificationRecords = fieldRes.rows.length;
 
-        const evidenceRes = await pool.query(
+        const evidenceRes = await executeQuery(
           "SELECT outcome_type FROM impact_evidence WHERE beneficiary_id = $1",
           [beneficiaryId]
         );
@@ -203,14 +203,14 @@ export class LifecycleDependencyService {
           if (type.includes("BUSINESS") || type.includes("SETUP") || type.includes("ENTREPRENEUR")) businessRecords++;
         });
 
-        const tracerRes = await pool.query(
+        const tracerRes = await executeQuery(
           "SELECT COUNT(*)::int as count FROM tracer_studies WHERE beneficiary_id = $1",
           [beneficiaryId]
         );
         const tracerCount = tracerRes.rows[0]?.count || 0;
         employmentRecords += tracerCount;
 
-        const outcomeRes = await pool.query(
+        const outcomeRes = await executeQuery(
           "SELECT outcome_status, employment_type FROM training_outcomes WHERE beneficiary_id = $1",
           [beneficiaryId]
         );
@@ -226,7 +226,7 @@ export class LifecycleDependencyService {
         impactRecordsAffected = evidenceCount + verificationRecords + tracerCount + outcomeCount;
 
         // Phase 7: Financial Scan
-        const financialRes = await pool.query(
+        const financialRes = await executeQuery(
           "SELECT cost_category, amount FROM program_costs WHERE training_track = $1 AND batch = $2",
           [skillSector, batch]
         );
@@ -239,13 +239,13 @@ export class LifecycleDependencyService {
         });
 
         // Phase 8: Audit Scan
-        const workflowRes = await pool.query(
+        const workflowRes = await executeQuery(
           "SELECT COUNT(*)::int as count FROM workflow_history WHERE beneficiary_id = $1",
           [beneficiaryId]
         );
         workflowHistoryCount = workflowRes.rows[0]?.count || 0;
 
-        const auditRes = await pool.query(
+        const auditRes = await executeQuery(
           "SELECT action FROM audit_logs WHERE beneficiary_id = $1 OR details LIKE $2",
           [beneficiaryId, `%${beneficiaryId}%`]
         );

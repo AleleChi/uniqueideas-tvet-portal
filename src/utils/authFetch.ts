@@ -81,17 +81,20 @@ export async function authFetch(
   const fetchPromise = (async () => {
     const headers = new Headers(options.headers || {});
 
-    // Retrieve token from localStorage
-    try {
-      const cached = localStorage.getItem("ideas-session");
-      if (cached) {
-        const session = JSON.parse(cached);
-        if (session && session.token) {
-          headers.set("Authorization", `Bearer ${session.token}`);
+    // Retrieve token from localStorage (skip for login endpoints to avoid sending expired tokens on login attempts)
+    const isLoginEndpoint = url.includes("/api/auth/login");
+    if (!isLoginEndpoint) {
+      try {
+        const cached = localStorage.getItem("ideas-session");
+        if (cached) {
+          const session = JSON.parse(cached);
+          if (session && session.token) {
+            headers.set("Authorization", `Bearer ${session.token}`);
+          }
         }
+      } catch (err) {
+        console.error("Error parsing login session for authFetch:", err);
       }
-    } catch (err) {
-      console.error("Error parsing login session for authFetch:", err);
     }
 
     // Ensure Content-Type is set to application/json by default for body-bearing requests,
@@ -134,9 +137,13 @@ export async function authFetch(
           
           // Handle 401/403 security context boundaries without silent failures
           if (response.status === 401) {
-            console.error(`[SESSION EXPIRED] 401 Unauthorized detected for ${url}. Current session state invalid.`);
-            if (typeof window !== "undefined") {
-              window.dispatchEvent(new CustomEvent("ideas-auth-unauthorized", { detail: { url } }));
+            if (url.includes("/api/auth/login")) {
+              console.log(`[LOGIN CHALLENGE] 401 response on login credentials verification for ${url}.`);
+            } else {
+              console.error(`[SESSION EXPIRED] 401 Unauthorized detected for ${url}. Current session state invalid.`);
+              if (typeof window !== "undefined") {
+                window.dispatchEvent(new CustomEvent("ideas-auth-unauthorized", { detail: { url } }));
+              }
             }
           } else if (response.status === 403) {
             console.error(`[ACCESS DENIED] 403 Forbidden detected for ${url}. Security role context disallowed.`);

@@ -7,7 +7,7 @@ import React from "react";
 import { 
   Users, Image as ImageIcon, Sliders, ShieldCheck, LogOut, 
   Settings, Landmark, Cpu, LayoutDashboard, History, Check, X, FileCheck, UserCheck, Award, FileText,
-  TrendingUp, ClipboardCheck, Briefcase, BarChart3, Wallet, Mail
+  TrendingUp, ClipboardCheck, Briefcase, BarChart3, Wallet, Mail, Database
 } from "lucide-react";
 
 interface SidebarProps {
@@ -41,6 +41,9 @@ export const Sidebar = React.memo(function Sidebar({
   session,
   handleLogout
 }: SidebarProps) {
+  const FED_ROLES_LIST = ["FED", "FED_SUPER_ADMIN", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "FEDERAL_ME_OFFICER"];
+  const isFedUser = session?.role === "SUPER_ADMIN" || FED_ROLES_LIST.includes(session?.role || "");
+
   return (
     <aside 
       id="ideas-platform-sidebar"
@@ -360,6 +363,38 @@ export const Sidebar = React.memo(function Sidebar({
             <span>Reports</span>
           </button>
 
+          <button 
+            onClick={() => {
+              setActiveTab("locations");
+              setIsSidebarOpen(false);
+            }}
+            className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+              activeTab === "locations" 
+                ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+            }`}
+          >
+            <Landmark className="w-4 h-4 text-inherit" />
+            <span>Training Centers & Locations</span>
+          </button>
+
+          {["TSP", "TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER"].includes(session?.role || "") && (
+            <button 
+              onClick={() => {
+                setActiveTab("tsp-profile");
+                setIsSidebarOpen(false);
+              }}
+              className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+                activeTab === "tsp-profile" 
+                  ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                  : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+              }`}
+            >
+              <Briefcase className="w-4 h-4 text-inherit" />
+              <span>My Organization</span>
+            </button>
+          )}
+
           {["SUPER_ADMIN", "ADMIN_OFFICER"].includes(session?.role || "") && (
             <button 
               onClick={() => {
@@ -426,6 +461,70 @@ export const Sidebar = React.memo(function Sidebar({
               <Mail className="w-4 h-4 text-inherit" />
               <span>Bulk Communications</span>
             </button>
+          )}
+
+          {isFedUser && (
+            <>
+              <button 
+                onClick={() => {
+                  setActiveTab("organizations");
+                  setIsSidebarOpen(false);
+                }}
+                className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+                  activeTab === "organizations" 
+                    ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                    : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+                }`}
+              >
+                <Landmark className="w-4 h-4 text-inherit" />
+                <span>FED Organizations</span>
+              </button>
+
+              <button 
+                onClick={() => {
+                  setActiveTab("restoration-center");
+                  setIsSidebarOpen(false);
+                }}
+                className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+                  activeTab === "restoration-center" 
+                    ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                    : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+                }`}
+              >
+                <Database className="w-4 h-4 text-inherit" />
+                <span>Restoration Center</span>
+              </button>
+
+              <button 
+                onClick={() => {
+                  setActiveTab("email-audit");
+                  setIsSidebarOpen(false);
+                }}
+                className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+                  activeTab === "email-audit" 
+                    ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                    : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+                }`}
+              >
+                <Mail className="w-4 h-4 text-inherit" />
+                <span>Email Delivery System</span>
+              </button>
+
+              <button 
+                onClick={() => {
+                  setActiveTab("system-status");
+                  setIsSidebarOpen(false);
+                }}
+                className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+                  activeTab === "system-status" 
+                    ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                    : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+                }`}
+              >
+                <Cpu className="w-4 h-4 text-inherit" />
+                <span>System Status</span>
+              </button>
+            </>
           )}
         </nav>
       </div>

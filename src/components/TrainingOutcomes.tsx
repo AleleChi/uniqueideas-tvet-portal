@@ -20,7 +20,18 @@ interface TrainingOutcomesProps {
   };
 }
 
-export const TrainingOutcomes = React.memo(function TrainingOutcomes({ session, toast }: TrainingOutcomesProps) {
+export const TrainingOutcomes = React.memo(function TrainingOutcomes({ session, toast: incomingToast }: TrainingOutcomesProps) {
+  const toast = useMemo(() => {
+    if (typeof incomingToast === "function") {
+      const fn = incomingToast as any;
+      return {
+        success: (msg: string) => fn(msg, "success"),
+        error: (msg: string) => fn(msg, "error")
+      };
+    }
+    return incomingToast || { success: () => {}, error: () => {} };
+  }, [incomingToast]);
+
   const [activeTab, setActiveTab] = useState<"dashboard" | "employment" | "entrepreneurship" | "cohorts">("dashboard");
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);

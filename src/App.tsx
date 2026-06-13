@@ -25,6 +25,7 @@ import BulkCommunications from "./components/BulkCommunications";
 const ReportsWorkspace = React.lazy(() => import("./components/ReportsWorkspace").then(module => ({ default: module.ReportsWorkspace })));
 const AuditTrail = React.lazy(() => import("./components/AuditTrail").then(module => ({ default: module.AuditTrail })));
 const SettingsWorkspace = React.lazy(() => import("./components/SettingsWorkspace").then(module => ({ default: module.SettingsWorkspace })));
+const IAMWorkspace = React.lazy(() => import("./components/IAMWorkspace").then(module => ({ default: module.IAMWorkspace })));
 const EligibilityCenter = React.lazy(() => import("./components/EligibilityCenter").then(module => ({ default: module.EligibilityCenter })));
 const CertificationCenter = React.lazy(() => import("./components/CertificationCenter").then(module => ({ default: module.CertificationCenter })));
 const TraineeOperationsView = React.lazy(() => import("./components/TraineeOperations").then(module => ({ default: module.TraineeOperationsView })));
@@ -33,17 +34,43 @@ import { TrainingOutcomes } from "./components/TrainingOutcomes";
 import ImpactEvidence from "./components/ImpactEvidence";
 import { ExecutiveMAndECenter } from "./components/ExecutiveMAndECenter";
 import { QualityAccreditationCenter } from "./components/QualityAccreditationCenter";
+import { LocationsWorkspace } from "./components/LocationsWorkspace";
 import { FinancialsRoiCenter } from "./components/FinancialsRoiCenter";
 import { Beneficiary, CustomField, AuditLog, UserSession } from "./types";
 import { authFetch, downloadWithAuth } from "./utils/authFetch";
 import { useNotification } from "./components/NotificationContext";
 import { API_BASE_URL, isVercelMissingApi, getEnvironmentType } from "./config/api";
 import { Sidebar } from "./components/Sidebar";
+import { TspProfileComponent } from "./components/TspProfileComponent";
+import { TspActivationFlow } from "./components/TspActivationFlow";
+import { FedOrganizationsWorkspace } from "./components/FedOrganizationsWorkspace";
+import { SystemStatusDashboard } from "./components/SystemStatusDashboard";
+import RestorationCenter from "./components/RestorationCenter";
+import EmailDeliverySystem from "./components/EmailDeliverySystem";
+
+import { FederalLayout } from "./layouts/FederalLayout";
+import { StateLayout } from "./layouts/StateLayout";
+import { FederalDashboard } from "./pages/federal/FederalDashboard";
+import { CohortsPage } from "./pages/federal/CohortsPage";
+import { BatchesPage } from "./pages/federal/BatchesPage";
+import { TrainersPage } from "./pages/federal/TrainersPage";
+import { AssessmentsPage } from "./pages/federal/AssessmentsPage";
+import { GraduationPage } from "./pages/federal/GraduationPage";
+import { ProgrammesPage } from "./pages/federal/ProgrammesPage";
+import { InternshipPage } from "./pages/federal/InternshipPage";
+import DocumentsCenter from "./modules/documents";
+import { AdmissionsWorkspace } from "./components/AdmissionsWorkspace";
+import { EOIWorkspace } from "./modules/eoi/EOIWorkspace";
+import { SkillsRegistry } from "./modules/skills/SkillsRegistry";
+import { SectorRegistry } from "./modules/sectors/SectorRegistry";
+import { LocationProvider } from "./modules/locations/LocationContext";
 
 const CACHE_VERSION = "ideas-cache-v3";
 
 export default function App() {
   const { showToast } = useNotification();
+  const [healthStatus, setHealthStatus] = useState<{ checked: boolean; reachable: boolean; error: string | null; startupMode?: string; lastCheckpoint?: string } | null>(null);
+  const [showDiagnosticScreen, setShowDiagnosticScreen] = useState(false);
   const [session, setSession] = useState<UserSession | null>(() => {
     try {
       const cached = localStorage.getItem("ideas-session");
@@ -52,7 +79,7 @@ export default function App() {
       return null;
     }
   });
-  const [activeTab, setActiveTab] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility" | "trainee-operations" | "certification" | "outcomes" | "evidence" | "toolkits" | "executive-m-and-e" | "quality-accreditation" | "communications">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility" | "trainee-operations" | "certification" | "outcomes" | "evidence" | "toolkits" | "executive-m-and-e" | "quality-accreditation" | "communications" | "locations" | "tsp-profile" | "organizations" | "system-status" | "restoration-center" | "email-audit">("dashboard");
   const [admissionsSubTab, setAdmissionsSubTab] = useState<"dashboard" | "letters" | "forms" | "acceptance" | "dispatches">("dashboard");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [registryViewMode, setRegistryViewMode] = useState<"list" | "details" | "create">("list");
@@ -85,8 +112,33 @@ export default function App() {
   const [captureTarget, setCaptureTarget] = useState<Beneficiary | null>(null);
   const [tempCreatedPhoto, setTempCreatedPhoto] = useState<string | null>(null);
   const [selectedBeneficiary, setSelectedBeneficiary] = useState<Beneficiary | null>(null);
-  const [portalToken, setPortalToken] = useState<string | null>(null);
+
+  // Helper check to detect activation routes immediately prior to execution
+  const isTspActivationUrl = (): boolean => {
+    const pathname = window.location.pathname;
+    const hash = window.location.hash;
+    const href = window.location.href;
+    return (
+      pathname.startsWith("/tsp/activate") ||
+      pathname.includes("activate") ||
+      hash.includes("activate") ||
+      href.includes("/tsp/activate") ||
+      href.includes("activate")
+    );
+  };
+
+  const [portalToken, setPortalToken] = useState<string | null>(() => {
+    if (isTspActivationUrl()) {
+      return null;
+    }
+    const params = new URLSearchParams(window.location.search);
+    return params.get("token") || null;
+  });
+
   const [secureVerifyToken, setSecureVerifyToken] = useState<string | null>(() => {
+    if (isTspActivationUrl()) {
+      return null;
+    }
     const pathname = window.location.pathname;
     if (pathname.startsWith("/documents/verify/")) {
       return pathname.substring("/documents/verify/".length);
@@ -95,8 +147,33 @@ export default function App() {
     return params.get("dispatchToken") || params.get("secureToken") || null;
   });
 
+  const [activateToken, setActivateToken] = useState<string | null>(() => {
+    if (isTspActivationUrl()) {
+      const params = new URLSearchParams(window.location.search);
+      let token = params.get("token");
+      if (token) return token;
+
+      const parts = window.location.href.split("?");
+      if (parts.length > 1) {
+        const queryParams = new URLSearchParams(parts[1].split("#")[0]);
+        token = queryParams.get("token");
+        if (token) return token;
+      }
+      if (window.location.hash.includes("?")) {
+        const hashParts = window.location.hash.split("?");
+        const hashParams = new URLSearchParams(hashParts[1]);
+        token = hashParams.get("token");
+        if (token) return token;
+      }
+    }
+    return null;
+  });
+
   // Synchronous route parsing and navigation guards
   const [currentHash, setCurrentHash] = useState<string>(() => {
+    if (isTspActivationUrl()) {
+      return "";
+    }
     if (!window.location.hash) {
       window.location.hash = "#/landing";
     }
@@ -104,6 +181,9 @@ export default function App() {
   });
 
   useEffect(() => {
+    if (isTspActivationUrl()) {
+      return;
+    }
     const handleHashChange = () => {
       setCurrentHash(window.location.hash || "#/landing");
     };
@@ -114,6 +194,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (isTspActivationUrl()) {
+      return;
+    }
     const normalized = currentHash.replace("#", "");
     const isAuthenticated = !!session?.isAuthenticated;
 
@@ -144,6 +227,59 @@ export default function App() {
   useEffect(() => {
     console.log("[RENDER COMPLETED] Dashboard viewport successfully mounted and redrawn.");
   });
+
+  // G) Forensic Logs for Activation Startup
+  useEffect(() => {
+    if (isTspActivationUrl()) {
+      console.log("=== FORENSIC ACTIVATION STARTUP TRACE ===");
+      console.log(`[FORENSIC] Pathname: "${window.location.pathname}"`);
+      console.log(`[FORENSIC] Hash: "${window.location.hash}"`);
+      console.log(`[FORENSIC] Querystring: "${window.location.search}"`);
+      console.log(`[FORENSIC] Detected Route: TSP_ACTIVATION_FLOW`);
+      console.log(`[FORENSIC] activateToken value: "${activateToken || "(none)"}"`);
+      console.log(`[FORENSIC] portalToken value: "${portalToken || "(bypassed)"}"`);
+      console.log(`[FORENSIC] secureVerifyToken value: "${secureVerifyToken || "(bypassed)"}"`);
+      console.log("==========================================");
+    }
+  }, [activateToken, portalToken, secureVerifyToken]);
+
+  const checkBackendHealth = () => {
+    const healthUrl = `${API_BASE_URL}/api/health`;
+    fetch(healthUrl)
+      .then(res => {
+        if (!res.ok) {
+          throw new Error(`HTTP status ${res.status}`);
+        }
+        return res.json();
+      })
+      .then(data => {
+        if (data.status === "degraded") {
+          console.log(`\nBackend Reachability:\nDEGRADED`);
+        } else {
+          console.log(`\nBackend Reachability:\nONLINE`);
+        }
+        console.log(`[SYS] Backend API database status:`, data.database);
+        setHealthStatus({
+          checked: true,
+          reachable: true,
+          error: null,
+          startupMode: data.mode || "Standard",
+          lastCheckpoint: "Express Listening"
+        });
+        setShowDiagnosticScreen(false);
+      })
+      .catch(err => {
+        console.log(`\nBackend Reachability:\nOFFLINE`);
+        console.error(`[SYS] Backend Reachability Check FAILED: Unreachable at ${healthUrl}:`, err.message || err);
+        setHealthStatus({
+          checked: true,
+          reachable: false,
+          error: err.message || String(err),
+          startupMode: "Unknown",
+          lastCheckpoint: "Database Verification"
+        });
+      });
+  };
 
   // Startup diagnostics once on application boot (STEP 5 & 6) and Cache Versioning (Phase 7)
   useEffect(() => {
@@ -179,26 +315,25 @@ export default function App() {
     }
 
     // Verify backend reachability on boot
-    const healthUrl = `${API_BASE_URL}/api/health`;
-    fetch(healthUrl)
-      .then(res => {
-        if (!res.ok) {
-          throw new Error(`HTTP status ${res.status}`);
+    checkBackendHealth();
+
+    const timer = setTimeout(() => {
+      setHealthStatus(prev => {
+        if (!prev || !prev.reachable) {
+          setShowDiagnosticScreen(true);
         }
-        return res.json();
-      })
-      .then(data => {
-        console.log(`\nBackend Reachability:\nONLINE`);
-        console.log(`[SYS] Backend API database status:`, data.database);
-      })
-      .catch(err => {
-        console.log(`\nBackend Reachability:\nOFFLINE`);
-        console.error(`[SYS] Backend Reachability Check FAILED: Unreachable at ${healthUrl}:`, err.message || err);
+        return prev;
       });
+    }, 15000);
+
+    return () => clearTimeout(timer);
   }, []);
 
   // Load active memory caches from browser on launch
   useEffect(() => {
+    if (isTspActivationUrl()) {
+      return;
+    }
     const urlParams = new URLSearchParams(window.location.search);
     const token = urlParams.get("token");
     if (token) {
@@ -262,6 +397,9 @@ export default function App() {
   }, [session, isLiveSynced]);
 
   const fetchBeneficiaries = async () => {
+    if (!session?.isAuthenticated || session.role === "TRAINEE") {
+      return;
+    }
     try {
       const res = await authFetch("/api/beneficiaries");
       if (res.ok) {
@@ -337,6 +475,9 @@ export default function App() {
   };
 
   const fetchAuditLogs = async () => {
+    if (!session?.isAuthenticated || (session.role !== "SUPER_ADMIN" && session.role !== "FED")) {
+      return;
+    }
     try {
       const res = await authFetch("/api/audit-logs");
       if (res.ok) {
@@ -585,6 +726,69 @@ export default function App() {
     );
   }
 
+  // Diagnostic Screen Fallback
+  if (showDiagnosticScreen && (!healthStatus || !healthStatus.reachable)) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 antialiased font-sans flex-col text-center">
+        <div className="bg-slate-900 border border-amber-950/80 max-w-md w-full p-8 rounded-xl shadow-2xl space-y-6 relative overflow-hidden text-left">
+          <div className="absolute top-0 inset-x-0 h-[2px] bg-amber-500" />
+          <div className="mx-auto h-16 w-16 bg-amber-500/10 text-amber-500 rounded-full flex items-center justify-center shadow-lg border border-amber-500/20">
+            <Cpu className="w-8 h-8 animate-pulse" />
+          </div>
+          <div className="space-y-3 text-center">
+            <h1 className="text-xl font-bold font-display text-slate-100 tracking-tight">System Connection Status</h1>
+            <p className="text-slate-400 text-sm leading-relaxed">
+              We are having trouble communicating with the API backend. It might be warming up from a cold start or executing database schema optimization.
+            </p>
+          </div>
+          
+          <div className="bg-slate-950/60 p-4 rounded-lg font-mono text-[11px] text-slate-300 space-y-2 border border-slate-800">
+            <div><span className="text-slate-500 font-semibold text-xs">Backend Reachable:</span> <span className={healthStatus?.reachable ? "text-emerald-400" : "text-rose-400 font-semibold"}>{healthStatus?.reachable ? "YES" : "NO"}</span></div>
+            <div><span className="text-slate-500 font-semibold text-xs">Health Endpoint Status:</span> <span className="text-amber-400">{healthStatus?.error ? `FAIL (${healthStatus.error})` : (healthStatus?.reachable ? "ONLINE" : "OFFLINE")}</span></div>
+            <div><span className="text-slate-500 font-semibold text-xs">Startup Mode:</span> <span className="text-blue-400">{healthStatus?.startupMode || "Standard (Warming Up)"}</span></div>
+            <div><span className="text-slate-500 font-semibold text-xs">Last Successful Checkpoint:</span> <span className="text-purple-400">{healthStatus?.lastCheckpoint || "PostgreSQL initDb Handshake"}</span></div>
+          </div>
+
+          <button
+            onClick={() => {
+              setHealthStatus(null);
+              setShowDiagnosticScreen(false);
+              checkBackendHealth();
+              // Reset 15 second timer
+              setTimeout(() => {
+                setHealthStatus(prev => {
+                  if (!prev || !prev.reachable) {
+                    setShowDiagnosticScreen(true);
+                  }
+                  return prev;
+                });
+              }, 15000);
+            }}
+            className="w-full flex items-center justify-center px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-sm rounded-lg transition duration-200 cursor-pointer shadow-lg"
+          >
+            Retry Connection Handshake
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Render TSP Activation and Password Setup Flow if activateToken is supplied
+  if (activateToken) {
+    return (
+      <TspActivationFlow 
+        token={activateToken} 
+        onClose={() => {
+          setActivateToken(null);
+          window.history.pushState({}, "", "/");
+        }} 
+        onActivationSuccess={(sessionData) => {
+          setSession(sessionData);
+        }}
+      />
+    );
+  }
+
   // Render Public Response Portal if a secure token is supplied, bypassing logins
   if (portalToken) {
     return (
@@ -610,6 +814,235 @@ export default function App() {
 
   const normalizedHash = currentHash || "#/";
   const isAuthenticated = !!session?.isAuthenticated;
+
+  // Render TSP Onboarding/Profile Completion Flow if user has logged in but profile is still incomplete
+  if (isAuthenticated && session?.role === "TSP" && session?.profile_completed === false) {
+    return (
+      <TspActivationFlow 
+        onClose={() => {}} 
+        onActivationSuccess={(sessionData) => {
+          setSession(sessionData);
+        }}
+      />
+    );
+  }
+
+  // Render Federal Super Admin views if the logged in user is a FED authority and is authenticated
+  if (isAuthenticated && session?.role === "FED") {
+    const path = normalizedHash.replace("#", "");
+    let fedChild: React.ReactNode = null;
+
+    if (path === "/federal/dashboard" || path === "federal/dashboard" || path === "" || path === "/") {
+      fedChild = <FederalDashboard />;
+    } else if (path === "/federal/analytics" || path === "federal/analytics") {
+      fedChild = <ExecutiveMAndECenter session={session} showToast={showToast} onRefreshRoot={fetchBeneficiaries} />;
+    } else if (path === "/federal/monitoring" || path === "federal/monitoring") {
+      fedChild = <ExecutiveMAndECenter session={session} showToast={showToast} onRefreshRoot={fetchBeneficiaries} />;
+    } else if (path === "/federal/organizations" || path === "federal/organizations") {
+      fedChild = <FedOrganizationsWorkspace />;
+    } else if (path === "/federal/accreditation" || path === "federal/accreditation") {
+      fedChild = <QualityAccreditationCenter session={session} showToast={showToast} onRefreshRoot={fetchBeneficiaries} />;
+    } else if (path === "/federal/eoi" || path === "federal/eoi") {
+      fedChild = <EOIWorkspace />;
+    } else if (path === "/federal/compliance" || path === "federal/compliance" || path === "/federal/eligibility" || path === "federal/eligibility") {
+      fedChild = (
+        <React.Suspense fallback={<SkeletonLoader label="Loading Eligibility & Compliance Center..." />}>
+          <EligibilityCenter beneficiaries={beneficiaries} session={session} onRefresh={fetchBeneficiaries} />
+        </React.Suspense>
+      );
+    } else if (path === "/federal/programmes" || path === "federal/programmes" || path === "/federal/programs" || path === "federal/programs") {
+      fedChild = <ProgrammesPage />;
+    } else if (path === "/federal/curriculum" || path === "federal/curriculum") {
+      fedChild = (
+        <div className="p-6 max-w-7xl mx-auto space-y-6 text-left">
+          <div className="bg-white border border-slate-200 rounded-xl p-8 max-w-2xl mx-auto space-y-6 shadow-xs mt-6 animate-in fade-in duration-200">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-indigo-50 text-indigo-700 rounded-lg">
+                <Sliders className="w-6 h-6 text-indigo-600" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-800 tracking-tight">Curriculum &amp; Educational Resources</h3>
+                <p className="text-xs text-slate-450 font-semibold">National Occupational Standards (NOS) digital curricula</p>
+              </div>
+            </div>
+            <p className="text-xs text-slate-550 leading-relaxed">
+              The TVET Board is in process of digitizing and indexing standard curricula and syllabus logs directly to the 
+              registries. All course modules, materials, and digital assets are managed directly in the <strong>Skills Registry</strong>.
+            </p>
+            <div className="border border-slate-100 rounded-lg p-4 bg-slate-50/50 flex flex-col gap-3">
+              <span className="font-bold text-[10px] uppercase text-slate-450 tracking-wider">Active Standard Curricula</span>
+              <ul className="text-xs space-y-2 list-disc list-inside text-slate-600 font-medium">
+                <li>National Vocational Certificate in Agricultural Extension Services (v2.1)</li>
+                <li>Bricklaying, Masonry, and Tile Laying Curriculum Standard (v1.4)</li>
+                <li>Domestic and Industrial Solar Installation Curriculum Series (v3.0)</li>
+                <li>Mobile and Network Engineering Core Curriculum Guide (v1.0)</li>
+              </ul>
+            </div>
+            <button
+               onClick={() => { window.location.hash = "#/federal/skills-registry"; }}
+               className="px-4 py-2 bg-slate-900 border border-slate-950 text-white hover:bg-slate-800 rounded-lg font-bold text-xs cursor-pointer transition-colors"
+            >
+              Go to Skills Registry
+            </button>
+          </div>
+        </div>
+      );
+    } else if (path === "/federal/skills-registry" || path === "federal/skills-registry") {
+      fedChild = <SkillsRegistry />;
+    } else if (path === "/federal/sector-registry" || path === "federal/sector-registry") {
+      fedChild = <SectorRegistry />;
+    } else if (path === "/federal/admissions" || path === "federal/admissions") {
+      fedChild = <AdmissionsWorkspace session={session} onSelectCandidate={() => {}} />;
+    } else if (path === "/federal/beneficiaries" || path === "federal/beneficiaries") {
+      fedChild = (
+        <BeneficiaryList 
+          beneficiaries={beneficiaries}
+          customFields={customFields}
+          onAddBeneficiary={handleAddBeneficiary}
+          onUpdateBeneficiary={handleUpdateBeneficiary}
+          onTriggerBiometrics={(b) => setCaptureTarget(b)}
+          onDownloadCSV={handleDownloadCSV}
+          viewMode={registryViewMode}
+          onViewModeChange={(v) => setRegistryViewMode(v)}
+          tempCreatedPhoto={tempCreatedPhoto}
+          onClearTempPhoto={() => setTempCreatedPhoto(null)}
+          selectedBeneficiary={selectedBeneficiary}
+          onSelectBeneficiary={handleSelectBeneficiary}
+          onDeleteBeneficiary={handleDeleteBeneficiary}
+          session={session}
+          subTabMode={subTabMode}
+          admissionsSubTab={admissionsSubTab}
+          initialDetailsTab="overview"
+        />
+      );
+    } else if (path === "/federal/attendance" || path === "federal/attendance") {
+      fedChild = (
+        <React.Suspense fallback={<SkeletonLoader label="Loading Attendance Ecosystem..." />}>
+          <TraineeOperationsView session={session} showToast={showToast} />
+        </React.Suspense>
+      );
+    } else if (path === "/federal/assessments" || path === "federal/assessments") {
+      fedChild = <AssessmentsPage />;
+    } else if (path === "/federal/graduation" || path === "federal/graduation") {
+      fedChild = <GraduationPage />;
+    } else if (path === "/federal/internship" || path === "federal/internship") {
+      fedChild = <InternshipPage />;
+    } else if (path === "/federal/employment" || path === "federal/employment") {
+      fedChild = <TrainingOutcomes session={session} toast={showToast} />;
+    } else if (path === "/federal/documents" || path === "federal/documents") {
+      fedChild = <DocumentsCenter />;
+    } else if (path === "/federal/communications" || path === "federal/communications") {
+      fedChild = <BulkCommunications session={session} />;
+    } else if (path === "/federal/reports" || path === "federal/reports") {
+      fedChild = (
+        <React.Suspense fallback={<SkeletonLoader label="Loading Reports..." />}>
+          <ReportsWorkspace beneficiaries={beneficiaries} onRefreshRoot={fetchBeneficiaries} />
+        </React.Suspense>
+      );
+    } else if (path === "/federal/audits" || path === "federal/audits" || path === "/federal/audit-center" || path === "federal/audit-center") {
+      fedChild = (
+        <React.Suspense fallback={<SkeletonLoader label="Loading Audits..." />}>
+          <AuditTrail logs={auditLogs} />
+        </React.Suspense>
+      );
+    } else if (path === "/federal/system-status" || path === "federal/system-status") {
+      fedChild = <SystemStatusDashboard />;
+    } else if (path === "/federal/email-center" || path === "federal/email-center" || path === "/federal/email-audit" || path === "federal/email-audit") {
+      fedChild = <EmailDeliverySystem />;
+    } else if (path === "/federal/restoration" || path === "federal/restoration" || path === "/federal/restoration-center" || path === "federal/restoration-center") {
+      fedChild = <RestorationCenter />;
+    } else if (path === "/federal/cohorts" || path === "federal/cohorts") {
+      fedChild = <CohortsPage />;
+    } else if (path === "/federal/batches" || path === "federal/batches") {
+      fedChild = <BatchesPage />;
+    } else if (path === "/federal/trainers" || path === "federal/trainers") {
+      fedChild = <TrainersPage />;
+    } else if (path === "/federal/tsps" || path === "federal/tsps" || path === "/federal/states" || path === "federal/states") {
+      fedChild = <ExecutiveMAndECenter session={session} showToast={showToast} onRefreshRoot={fetchBeneficiaries} />;
+    } else if (path === "/federal/custom-fields" || path === "federal/custom-fields") {
+      fedChild = (
+        <CustomSchemaBuilder 
+          fields={customFields}
+          onAddField={handleAddCustomField}
+          onRemoveField={handleRemoveCustomField}
+        />
+      );
+    } else if (path === "/federal/settings" || path === "federal/settings") {
+      fedChild = (
+        <React.Suspense fallback={<SkeletonLoader label="Loading Settings..." />}>
+          <SettingsWorkspace session={session} />
+        </React.Suspense>
+      );
+    } else if (path === "/federal/permissions" || path === "federal/permissions" || path === "/federal/users" || path === "federal/users") {
+      fedChild = (
+        <React.Suspense fallback={<SkeletonLoader label="Loading Identity & Access Manager..." />}>
+          <IAMWorkspace />
+        </React.Suspense>
+      );
+    } else {
+      fedChild = <FederalDashboard />;
+    }
+
+    return (
+      <LocationProvider session={session}>
+        <FederalLayout
+          activePath={path}
+          onNavigate={(newPath) => {
+            window.location.hash = `#${newPath}`;
+          }}
+          session={session}
+          handleLogout={handleLogout}
+        >
+          {fedChild}
+        </FederalLayout>
+      </LocationProvider>
+    );
+  }
+
+  // Render State Administrator views if logged in and authenticated
+  if (isAuthenticated && session?.role === "STA") {
+    const path = normalizedHash.replace("#", "");
+    let staChild: React.ReactNode = null;
+
+    if (path === "/state/cohorts" || path === "state/cohorts") {
+      staChild = <CohortsPage />;
+    } else if (path === "/state/batches" || path === "state/batches") {
+      staChild = <BatchesPage />;
+    } else if (path === "/state/trainers" || path === "state/trainers") {
+      staChild = <TrainersPage />;
+    } else if (path === "/state/graduation" || path === "state/graduation") {
+      staChild = <GraduationPage />;
+    } else if (path === "/state/reports" || path === "state/reports") {
+      staChild = (
+        <React.Suspense fallback={<SkeletonLoader label="Loading State Reports..." />}>
+          <ReportsWorkspace beneficiaries={beneficiaries} onRefreshRoot={fetchBeneficiaries} />
+        </React.Suspense>
+      );
+    } else if (path === "/state/audits" || path === "state/audits") {
+      staChild = (
+        <React.Suspense fallback={<SkeletonLoader label="Loading Audits..." />}>
+          <AuditTrail logs={auditLogs} />
+        </React.Suspense>
+      );
+    } else {
+      staChild = <FederalDashboard />; // Reused FederalDashboard automatically filters on database-level due to current State Admin RLS!
+    }
+
+    return (
+      <LocationProvider session={session}>
+        <StateLayout
+          activePath={path}
+          onNavigate={(newPath) => {
+            window.location.hash = `#${newPath}`;
+          }}
+          session={session}
+          handleLogout={handleLogout}
+        >
+          {staChild}
+        </StateLayout>
+      </LocationProvider>
+    );
+  }
 
   // Determine core route template to render
   if (normalizedHash.startsWith("#/verify/certificate") || normalizedHash.includes("verify/certificate") || normalizedHash.includes("verify-certificate")) {
@@ -778,7 +1211,7 @@ export default function App() {
 
           {activeTab === "album" && (
             <React.Suspense fallback={<SkeletonLoader label="Loading Reports..." />}>
-              <ReportsWorkspace beneficiaries={beneficiaries} />
+              <ReportsWorkspace beneficiaries={beneficiaries} session={session} />
             </React.Suspense>
           )}
 
@@ -867,6 +1300,30 @@ export default function App() {
 
           {activeTab === "communications" && (
             <BulkCommunications session={session} />
+          )}
+
+          {activeTab === "locations" && (
+            <LocationsWorkspace session={session} />
+          )}
+
+          {activeTab === "tsp-profile" && (
+            <TspProfileComponent />
+          )}
+
+          {activeTab === "organizations" && (
+            <FedOrganizationsWorkspace />
+          )}
+
+          {activeTab === "system-status" && (
+            <SystemStatusDashboard />
+          )}
+
+          {activeTab === "restoration-center" && (
+            <RestorationCenter />
+          )}
+
+          {activeTab === "email-audit" && (
+            <EmailDeliverySystem />
           )}
 
           {activeTab === "audits" && (

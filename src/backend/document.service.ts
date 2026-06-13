@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { DbRepo } from "./db";
+import { DbRepo, executeQuery } from "./db";
 import { PdfService } from "./pdf.service";
 import { CloudinaryService } from "./cloudinary.service";
 import { EmailService } from "./email.service";
@@ -244,15 +244,13 @@ export class DocumentService {
     }
 
     // 1. Locate the document record
-    const pool = (global as any)._pgPool;
     let doc: GeneratedDocument | null = null;
 
-    if (pool) {
-      try {
-        const res = await pool.query(
-          "SELECT id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at, verification_code, verification_status, verification_date, email_delivery_status FROM generated_documents WHERE id = $1",
-          [documentId]
-        );
+    try {
+      const res = await executeQuery(
+        "SELECT id, beneficiary_id, document_type, version, pdf_url, docx_url, generated_by, created_at, verification_code, verification_status, verification_date, email_delivery_status FROM generated_documents WHERE id = $1",
+        [documentId]
+      );
         if (res.rows.length > 0) {
           const r = res.rows[0];
           doc = {
@@ -273,7 +271,6 @@ export class DocumentService {
       } catch (e) {
         console.error("[DocumentService] Failed to load generated document of id:", documentId, e);
       }
-    }
 
     // Fallback if postgres is offline
     if (!doc) {

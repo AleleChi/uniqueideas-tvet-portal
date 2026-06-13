@@ -282,6 +282,7 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
   }
 
   if (validationError) {
+    const isExpired = validationError.toLowerCase().includes("expire");
     return (
       <div className="h-screen w-screen flex flex-col justify-center items-center bg-slate-900 text-white font-sans px-6">
         <div className="max-w-md w-full text-center space-y-6 bg-slate-950 p-8 border border-rose-950 rounded-2xl shadow-2xl">
@@ -290,15 +291,15 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
           </div>
           <div className="space-y-2">
             <h2 className="text-lg font-bold font-sans text-rose-400 uppercase tracking-wide">
-              Token Gateway Lockout
+              {isExpired ? "Activation Link Expired" : "Activation Link Invalid"}
             </h2>
             <p className="text-slate-400 text-xs leading-relaxed">
-              {validationError}
+              {isExpired ? (
+                "This activation link has expired. Request a new activation email."
+              ) : (
+                "This activation link is invalid. Please contact your programme administrator."
+              )}
             </p>
-          </div>
-          <div className="p-4 bg-slate-900 border border-slate-800 rounded-lg text-left text-[11px] font-mono text-slate-500">
-            <strong>System Report Code:</strong> ADM_AUTH_VERIFY_LOCK_STALE_HMAC<br />
-            Please contact Unique Technology coordination desks manually for re-enlistments in the cohort registry.
           </div>
         </div>
       </div>

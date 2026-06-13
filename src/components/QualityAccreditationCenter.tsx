@@ -8,7 +8,7 @@ import {
   ShieldCheck, BarChart3, Users, Award, Briefcase, ClipboardCheck, 
   AlertTriangle, ArrowRight, Search, FileText, CheckCircle2, AlertCircle, 
   Building, Settings, RefreshCw, X, ChevronRight, Clock, MapPin, 
-  Calendar, HelpCircle, Activity, Download, Check, Edit3, UserCheck, ShieldAlert
+  Calendar, HelpCircle, Activity, Download, Check, Edit3, UserCheck, ShieldAlert, CheckSquare, Building2
 } from "lucide-react";
 import { authFetch, downloadWithAuth } from "../utils/authFetch";
 
@@ -20,8 +20,89 @@ interface QualityAccreditationCenterProps {
 
 export function QualityAccreditationCenter({ session, showToast, onRefreshRoot }: QualityAccreditationCenterProps) {
   const [loading, setLoading] = useState(true);
-  const [activeSubTab, setActiveSubTab] = useState<"interventions" | "qa-score" | "accreditation" | "cohorts" | "donor-kpis" | "actions">("interventions");
+  const [activeSubTab, setActiveSubTab] = useState<"interventions" | "qa-score" | "accreditation" | "cohorts" | "donor-kpis" | "actions" | "tsp-registry">("interventions");
   const [dashboardData, setDashboardData] = useState<any>(null);
+
+  // TSP Identity Provisioning States (Task 017B)
+  const [tsps, setTsps] = useState<any[]>([]);
+  const [loadingTsps, setLoadingTsps] = useState(false);
+  const [tspStates, setTspStates] = useState<any[]>([]);
+  const [tspLgas, setTspLgas] = useState<any[]>([]);
+  const [loadingTspLgas, setLoadingTspLgas] = useState(false);
+  const [showOnboardModal, setShowOnboardModal] = useState(false);
+  const [onboardingForm, setOnboardingForm] = useState({
+    name: "",
+    state_id: "",
+    lga: "",
+    contact_person: "",
+    contact_email: "",
+    contact_phone: ""
+  });
+  const [submittingOnboard, setSubmittingOnboard] = useState(false);
+  const [onboardSuccessData, setOnboardSuccessData] = useState<any | null>(null);
+  const [suspendingTsp, setSuspendingTsp] = useState<any | null>(null);
+  const [suspensionReason, setSuspensionReason] = useState("");
+  const [submittingSuspense, setSubmittingSuspense] = useState(false);
+  const [tspRosterSearch, setTspRosterSearch] = useState("");
+  const [statusFilterTsp, setStatusFilterTsp] = useState("ALL");
+
+  const fetchTspsRoster = async () => {
+    try {
+      setLoadingTsps(true);
+      const response = await authFetch("/api/fed/tsps/registry");
+      if (response.ok) {
+        setTsps(await response.json());
+      }
+    } catch (err: any) {
+      console.error("Failed to load TSP roster:", err);
+    } finally {
+      setLoadingTsps(false);
+    }
+  };
+
+  const loadTspStates = async () => {
+    try {
+      const res = await authFetch("/api/locations/states");
+      if (res.ok) {
+        setTspStates(await res.json());
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  useEffect(() => {
+    if (activeSubTab === "tsp-registry") {
+      fetchTspsRoster();
+      loadTspStates();
+    }
+  }, [activeSubTab]);
+
+  useEffect(() => {
+    if (onboardingForm.state_id) {
+      const selectedStateObj = tspStates.find(s => String(s.id) === String(onboardingForm.state_id));
+      if (selectedStateObj) {
+        const loadLgasForState = async () => {
+          try {
+             setLoadingTspLgas(true);
+             const res = await authFetch(`/api/reference/lgas/${encodeURIComponent(selectedStateObj.name)}`);
+             if (res.ok) {
+               setTspLgas(await res.json());
+             }
+          } catch (err) {
+             console.error(err);
+          } finally {
+             setLoadingTspLgas(false);
+          }
+        };
+        loadLgasForState();
+      } else {
+        setTspLgas([]);
+      }
+    } else {
+      setTspLgas([]);
+    }
+  }, [onboardingForm.state_id, tspStates]);
 
   // Intervention workbench filters
   const [riskFilter, setRiskFilter] = useState("ALL");
@@ -294,6 +375,18 @@ export function QualityAccreditationCenter({ session, showToast, onRefreshRoot }
         >
           <Settings className="w-3.5 h-3.5" />
           <span>Executive Action Center</span>
+        </button>
+
+        <button
+          onClick={() => setActiveSubTab("tsp-registry")}
+          className={`px-4 py-2 rounded-lg text-xs font-display font-medium tracking-wide transition flex items-center gap-2 cursor-pointer ${
+            activeSubTab === "tsp-registry"
+              ? "bg-slate-900 text-white"
+              : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
+          }`}
+        >
+          <Building2 className="w-3.5 h-3.5" />
+          <span>TSP Provisioning Registry</span>
         </button>
       </div>
 
@@ -1048,7 +1141,7 @@ export function QualityAccreditationCenter({ session, showToast, onRefreshRoot }
                   </span>
                   <h4 className="text-xs font-bold text-slate-800 pt-1">Generate Center Accreditation Report</h4>
                   <p className="text-[11px] text-slate-400 leading-normal">
-                    Evaluate and refresh accreditation readiness matrices for New World Access center.
+                    Evaluate and refresh accreditation readiness matrices for Unique Technology Nig. Ltd center.
                   </p>
                 </div>
                 <button
@@ -1248,6 +1341,650 @@ export function QualityAccreditationCenter({ session, showToast, onRefreshRoot }
               >
                 Mark as Resolved
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODULE 7: TSP PROVISIONING REGISTRY (Task 017B) */}
+      {activeSubTab === "tsp-registry" && (
+        <div className="space-y-6 animate-in fade-in duration-200">
+
+          {/* OPERATIONAL STATISTICS (Task 018A) */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="bg-white border border-slate-200/80 p-4 rounded-xl shadow-xs">
+              <span className="text-[10px] text-slate-400 font-bold tracking-wider uppercase block mb-1">Total Operators</span>
+              <p className="font-display text-2xl font-bold text-slate-800">{tsps.length}</p>
+            </div>
+            <div className="bg-white border border-slate-200/80 p-4 rounded-xl shadow-xs">
+              <span className="text-[10px] text-slate-400 font-bold tracking-wider uppercase block mb-1">Active Dashboards</span>
+              <p className="font-display text-2xl font-bold text-emerald-600">
+                {tsps.filter(t => (t.account_status || (t.is_active ? "ACTIVE" : "DEACTIVATED")) === "ACTIVE").length}
+              </p>
+            </div>
+            <div className="bg-white border border-slate-200/80 p-4 rounded-xl shadow-xs">
+              <span className="text-[10px] text-slate-400 font-bold tracking-wider uppercase block mb-1">Pending Activation</span>
+              <p className="font-display text-2xl font-bold text-amber-600">
+                {tsps.filter(t => (t.account_status || (t.is_active ? "ACTIVE" : "DEACTIVATED")) === "PENDING_ACTIVATION").length}
+              </p>
+            </div>
+            <div className="bg-white border border-slate-200/80 p-4 rounded-xl shadow-xs">
+              <span className="text-[10px] text-slate-400 font-bold tracking-wider uppercase block mb-1">Suspended Operators</span>
+              <p className="font-display text-2xl font-bold text-rose-600">
+                {tsps.filter(t => (t.account_status || (t.is_active ? "ACTIVE" : "DEACTIVATED")) === "SUSPENDED").length}
+              </p>
+            </div>
+          </div>
+          
+          {/* ACTION RIBBON */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 bg-white border border-slate-200/80 p-4 rounded-xl shadow-2xs">
+            <div className="flex flex-1 items-center gap-3">
+              <div className="relative flex-1 max-w-sm">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                  <Search className="w-4 h-4" />
+                </div>
+                <input
+                  type="text"
+                  placeholder="Query national code, location, or name..."
+                  className="bg-white border border-slate-200 text-slate-800 rounded-lg block w-full pl-9 pr-3 py-2 text-xs font-medium outline-hidden focus:border-slate-400"
+                  value={tspRosterSearch}
+                  onChange={(e) => setTspRosterSearch(e.target.value)}
+                />
+              </div>
+
+              <select
+                className="bg-white border border-slate-200 text-slate-700 rounded-lg px-3 py-2 text-xs font-medium outline-hidden"
+                value={statusFilterTsp}
+                onChange={(e) => setStatusFilterTsp(e.target.value)}
+              >
+                <option value="ALL">All Status States</option>
+                <option value="ACTIVE">Active Dashboard Only</option>
+                <option value="PENDING_ACTIVATION">Pending Invitations</option>
+                <option value="SUSPENDED">Suspended Organizations</option>
+              </select>
+            </div>
+
+            {session?.role === "FED" && (
+              <button
+                onClick={() => {
+                  setOnboardSuccessData(null);
+                  setShowOnboardModal(true);
+                }}
+                className="bg-slate-900 text-white rounded-lg px-4 py-2 text-xs font-medium flex items-center justify-center gap-2 hover:bg-slate-800 transition cursor-pointer"
+              >
+                <Building className="w-3.5 h-3.5" />
+                <span>Onboard Training Provider</span>
+              </button>
+            )}
+          </div>
+
+          {/* TABLE ROSTER */}
+          <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xs">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-slate-50/60 border-b border-slate-100 text-slate-500 text-[10px] font-bold tracking-wider uppercase">
+                    <th className="p-4">Training Service Provider</th>
+                    <th className="p-4">Assigned Region</th>
+                    <th className="p-4">Accreditation Info</th>
+                    <th className="p-4">Administrative Account</th>
+                    <th className="p-4">Status & Completion</th>
+                    <th className="p-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-xs font-medium text-slate-700">
+                  {loadingTsps ? (
+                    <tr>
+                      <td colSpan={6} className="p-8 text-center text-slate-400">
+                        <RefreshCw className="w-5 h-5 animate-spin mx-auto text-indigo-600 mb-2" />
+                        <span>Querying national TSP registry databases...</span>
+                      </td>
+                    </tr>
+                  ) : tsps.filter(t => {
+                    // Filter Search Query
+                    const q = tspRosterSearch.toLowerCase().trim();
+                    if (q) {
+                      const matchName = (t.name || "").toLowerCase().includes(q);
+                      const matchCode = (t.tsp_code || t.code || "").toLowerCase().includes(q);
+                      const matchLga = (t.lga || "").toLowerCase().includes(q);
+                      const matchState = (t.state || "").toLowerCase().includes(q);
+                      if (!matchName && !matchCode && !matchLga && !matchState) return false;
+                    }
+
+                    // Filter Status State
+                    if (statusFilterTsp !== "ALL") {
+                      const stat = t.account_status || (t.is_active ? "ACTIVE" : "DEACTIVATED");
+                      if (stat !== statusFilterTsp) return false;
+                    }
+
+                    return true;
+                  }).length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="p-8 text-center text-slate-400 font-display">
+                        No registered Training Service Providers match the applied constraints.
+                      </td>
+                    </tr>
+                  ) : tsps.filter(t => {
+                    const q = tspRosterSearch.toLowerCase().trim();
+                    if (q) {
+                      const matchName = (t.name || "").toLowerCase().includes(q);
+                      const matchCode = (t.tsp_code || t.code || "").toLowerCase().includes(q);
+                      const matchLga = (t.lga || "").toLowerCase().includes(q);
+                      const matchState = (t.state || "").toLowerCase().includes(q);
+                      if (!matchName && !matchCode && !matchLga && !matchState) return false;
+                    }
+                    if (statusFilterTsp !== "ALL") {
+                      const stat = t.account_status || (t.is_active ? "ACTIVE" : "DEACTIVATED");
+                      if (stat !== statusFilterTsp) return false;
+                    }
+                    return true;
+                  }).map((item, index) => {
+                    const status = item.account_status || (item.is_active ? "ACTIVE" : "DEACTIVATED");
+                    return (
+                      <tr key={index} className="hover:bg-slate-50/45 transition">
+                        <td className="p-4">
+                          <div>
+                            <p className="font-bold text-slate-900">{item.name}</p>
+                            <span className="font-mono text-[10px] text-slate-400 font-semibold uppercase mt-0.5 block">
+                              ID: {item.tsp_code || item.code}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="p-4">
+                          <div className="flex items-center gap-1.5 text-slate-600">
+                            <MapPin className="w-3.5 h-3.5 text-slate-400" />
+                            <span>
+                              {item.lga}, {item.state} State
+                            </span>
+                          </div>
+                        </td>
+                        <td className="p-4">
+                          <div>
+                            <p className="font-semibold text-slate-800">{item.accreditation_number || "NBTE-PENDING"}</p>
+                            <span className="text-[10px] text-slate-400 mt-0.5 block">
+                              Accreditation: <span className="font-medium text-indigo-600">{item.accreditation_status || "PROVISIONAL"}</span>
+                            </span>
+                          </div>
+                        </td>
+                        <td className="p-4">
+                          <div>
+                            <p className="font-semibold text-slate-800 leading-normal">{item.contact_person}</p>
+                            <span className="font-mono text-[10px] text-slate-405 block mt-0.5 select-all">{item.contact_email}</span>
+                            <span className="text-[10px] text-slate-400 block mt-0.5">{item.contact_phone}</span>
+                          </div>
+                        </td>
+                        <td className="p-4">
+                          <div className="space-y-1.5">
+                            {/* Account status */}
+                            <div>
+                              {status === "ACTIVE" && (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-emerald-50 text-emerald-700 px-2.5 py-0.5 rounded-full">
+                                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                                  Active Dashboard
+                                </span>
+                              )}
+                              {status === "PENDING_ACTIVATION" && (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-amber-50 text-amber-700 px-2.5 py-0.5 rounded-full">
+                                  <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
+                                  Pending Activation
+                                </span>
+                              )}
+                              {status === "SUSPENDED" && (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-rose-50 text-rose-700 px-2.5 py-0.5 rounded-full">
+                                  <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
+                                  Suspended
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Profile Completion */}
+                            <div>
+                              {item.profile_completed ? (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-medium text-slate-500">
+                                  <CheckSquare className="w-3 h-3 text-emerald-500" />
+                                  Profile Completed
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-medium text-slate-405">
+                                  <AlertCircle className="w-3 h-3 text-amber-500" />
+                                  Form Incomplete
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                        <td className="p-4 text-right">
+                          <div className="flex items-center justify-end gap-1.5">
+                            {session?.role === "FED" && (
+                              <>
+                                {status === "PENDING_ACTIVATION" && (
+                                  <button
+                                    onClick={async () => {
+                                      try {
+                                        showToast("Regenerating deployment keys...", "info");
+                                        const res = await authFetch(`/api/fed/tsps/${item.id}/resend-activation`, { method: "POST" });
+                                        if (res.ok) {
+                                          const ret = await res.json();
+                                          showToast("Invitation credentials successfully reissued.", "success");
+                                          fetchTspsRoster();
+                                          setOnboardSuccessData({
+                                            name: item.name,
+                                            code: item.tsp_code || item.code,
+                                            email: item.contact_email,
+                                            token: ret.activationToken
+                                          });
+                                          setShowOnboardModal(true);
+                                        } else {
+                                          const err = await res.json();
+                                          showToast(err.error || "Failed to reissue token.", "error");
+                                        }
+                                      } catch (err: any) {
+                                        showToast(err.message, "error");
+                                      }
+                                    }}
+                                    className="px-2.5 py-1 text-[10px] bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-md font-bold transition cursor-pointer"
+                                    title="Resend activation credentials invitation"
+                                  >
+                                    Reissue Link
+                                  </button>
+                                )}
+
+                                {status === "ACTIVE" && (
+                                  <div className="flex gap-1.5 inline-flex">
+                                    <button
+                                      onClick={() => setSuspendingTsp(item)}
+                                      className="px-2.5 py-1 text-[10px] bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-200 rounded-md font-bold transition cursor-pointer"
+                                      title="Suspend national operator access"
+                                    >
+                                      Suspend
+                                    </button>
+                                    <button
+                                      onClick={async () => {
+                                        if (!window.confirm(`Are you sure you want to reset administrator access for "${item.name}"? This will invalidate all active sessions and reissue a secure activation link.`)) return;
+                                        try {
+                                          const res = await authFetch(`/api/tsp/reset-access`, {
+                                            method: "POST",
+                                            headers: { "Content-Type": "application/json" },
+                                            body: JSON.stringify({ id: item.id })
+                                          });
+                                          if (res.ok) {
+                                            const data = await res.json();
+                                            showToast(`Administrative credentials reset successfully for ${item.name}.`, "success");
+                                            if (data.activationToken) {
+                                              console.log(`[TEST MODE] Reissue Token: ${data.activationToken}`);
+                                            }
+                                            fetchTspsRoster();
+                                          } else {
+                                            const err = await res.json();
+                                            showToast(err.error, "error");
+                                          }
+                                        } catch (err: any) {
+                                          showToast(err.message, "error");
+                                        }
+                                      }}
+                                      className="px-2.5 py-1 text-[10px] bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 rounded-md font-bold transition cursor-pointer"
+                                      title="Revoke past administrator passwords and re-key onboarding access"
+                                    >
+                                      Reset Access
+                                    </button>
+                                  </div>
+                                )}
+
+                                {status === "SUSPENDED" && (
+                                  <button
+                                    onClick={async () => {
+                                      try {
+                                        const res = await authFetch(`/api/fed/tsps/${item.id}/reactivate`, { method: "POST" });
+                                        if (res.ok) {
+                                          showToast(`Operator "${item.name}" reactivated successfully.`, "success");
+                                          fetchTspsRoster();
+                                        } else {
+                                          const err = await res.json();
+                                          showToast(err.error, "error");
+                                        }
+                                      } catch (err: any) {
+                                        showToast(err.message, "error");
+                                      }
+                                    }}
+                                    className="px-2.5 py-1 text-[10px] bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-md font-bold transition cursor-pointer"
+                                    title="Reactivate operators panel"
+                                  >
+                                    Reactivate
+                                  </button>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ONBOARD MODAL CONTAINER (FED ROLE CHANNELS) */}
+      {showOnboardModal && (
+        <div className="fixed inset-0 bg-slate-950/60 flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
+          <div className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-8 max-w-lg w-full shadow-2xl relative overflow-hidden animate-in zoom-in-95 duration-205 text-left">
+            
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-6">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-indigo-50 text-indigo-700 rounded-lg">
+                  <Building className="w-5 h-5 text-indigo-600" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-800 font-display tracking-tight">
+                    Onboard Training Service Provider
+                  </h3>
+                  <p className="text-[11px] text-slate-450 mt-0.5">Register corporate legal entities below</p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowOnboardModal(false);
+                  setOnboardSuccessData(null);
+                }}
+                className="p-1 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {onboardSuccessData ? (
+              <div className="space-y-6">
+                <div className="rounded-xl bg-emerald-50 border border-emerald-100 p-4 space-y-2">
+                  <div className="flex gap-2 text-emerald-850">
+                    <CheckSquare className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
+                    <p className="text-xs font-bold tracking-tight">Onboarding Dispatch Completed</p>
+                  </div>
+                  <p className="text-xs text-slate-600 leading-normal">
+                    TSP has been successfully registered. Inside production, an automated onboarding link has been dispatched to <strong>{onboardSuccessData.email}</strong>.
+                  </p>
+                </div>
+
+                <div className="bg-slate-50 border border-slate-150 p-4 rounded-xl space-y-3 font-mono text-[11px]">
+                  <div>
+                    <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider">Enterprise Legal Name:</span>
+                    <span className="font-bold text-slate-800">{onboardSuccessData.name}</span>
+                  </div>
+                  <div>
+                    <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider">National ID Code:</span>
+                    <span className="font-bold text-slate-800">{onboardSuccessData.code}</span>
+                  </div>
+                  <div>
+                    <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider">Direct Sandbox Activation URL:</span>
+                    <div className="flex items-center gap-2 mt-1">
+                      <input
+                        type="text"
+                        readOnly
+                        value={`${window.location.origin}/tsp/activate?token=${onboardSuccessData.token}`}
+                        className="bg-white border border-slate-200 rounded px-2.5 py-1 flex-1 text-[10px] outline-hidden select-all"
+                      />
+                      <button
+                        onClick={() => {
+                          const url = `${window.location.origin}/tsp/activate?token=${onboardSuccessData.token}`;
+                          navigator.clipboard.writeText(url);
+                          showToast("Direct bypass invitation link copied!", "success");
+                        }}
+                        className="p-1.5 border border-slate-250 bg-white rounded flex items-center hover:bg-slate-50 cursor-pointer"
+                        title="Copy Activation Link"
+                      >
+                        <Download className="w-3.5 h-3.5 text-slate-500" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => {
+                    setShowOnboardModal(false);
+                    setOnboardSuccessData(null);
+                  }}
+                  className="w-full bg-slate-900 text-white rounded-lg py-2.5 text-xs font-semibold hover:bg-slate-800 transition shadow-sm cursor-pointer"
+                >
+                  Return to Active Registry
+                </button>
+              </div>
+            ) : (
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  try {
+                    setSubmittingOnboard(true);
+                    const res = await authFetch("/api/fed/tsps", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify(onboardingForm)
+                    });
+
+                    if (res.ok) {
+                      const data = await res.json();
+                      showToast("TSP successfully enrolled into system registry.", "success");
+                      setOnboardSuccessData({
+                        name: onboardingForm.name,
+                        code: data.tspCode,
+                        email: onboardingForm.contact_email,
+                        token: data.activationToken
+                      });
+                      fetchTspsRoster();
+                      // Clear form
+                      setOnboardingForm({
+                        name: "",
+                        state_id: "",
+                        lga: "",
+                        contact_person: "",
+                        contact_email: "",
+                        contact_phone: ""
+                      });
+                    } else {
+                      const err = await res.json();
+                      showToast(err.error || "Failed to provision Training Service Provider.", "error");
+                    }
+                  } catch (err: any) {
+                    showToast(err.message, "error");
+                  } finally {
+                    setSubmittingOnboard(false);
+                  }
+                }}
+                className="space-y-4"
+              >
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 animate-pulse">
+                    Organization Name (Legal entity) *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="E.g. Unique Technology Nig. LTD"
+                    className="border border-slate-200 bg-white text-slate-800 rounded-lg block w-full px-3 py-2 text-xs font-medium outline-hidden"
+                    value={onboardingForm.name}
+                    onChange={(e) => setOnboardingForm(prev => ({ ...prev, name: e.target.value }))}
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                      Assigned State *
+                    </label>
+                    <select
+                      required
+                      className="border border-slate-200 bg-white text-slate-700 rounded-lg block w-full px-3 py-2 text-xs font-medium outline-hidden"
+                      value={onboardingForm.state_id}
+                      onChange={(e) => setOnboardingForm(prev => ({ ...prev, state_id: e.target.value, lga: "" }))}
+                    >
+                      <option value="">Select State</option>
+                      {tspStates.map((s, i) => (
+                        <option key={i} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                      Assigned LGA *
+                    </label>
+                    <select
+                      required
+                      className="border border-slate-200 bg-white text-slate-700 rounded-lg block w-full px-3 py-2 text-xs font-medium outline-hidden disabled:opacity-50"
+                      value={onboardingForm.lga}
+                      onChange={(e) => setOnboardingForm(prev => ({ ...prev, lga: e.target.value }))}
+                      disabled={!onboardingForm.state_id || loadingTspLgas}
+                    >
+                      <option value="">{loadingTspLgas ? "Loading LGAs..." : "Select LGA"}</option>
+                      {tspLgas.map((l, i) => (
+                        <option key={i} value={l.name}>{l.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                    Administrator Contact Person (Admin Name) *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="E.g. Engr. Yusuf Mohammed"
+                    className="border border-slate-200 bg-white text-slate-800 rounded-lg block w-full px-3 py-2 text-xs font-medium outline-hidden"
+                    value={onboardingForm.contact_person}
+                    onChange={(e) => setOnboardingForm(prev => ({ ...prev, contact_person: e.target.value }))}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                    Primary Contact Email Address *
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    placeholder="E.g. info@uniquetech.com"
+                    className="border border-slate-200 bg-white text-slate-800 rounded-lg block w-full px-3 py-2 text-xs font-medium outline-hidden"
+                    value={onboardingForm.contact_email}
+                    onChange={(e) => setOnboardingForm(prev => ({ ...prev, contact_email: e.target.value }))}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                    Primary Contact Phone Number *
+                  </label>
+                  <input
+                    type="tel"
+                    required
+                    placeholder="E.g. +234 803 123 4567"
+                    className="border border-slate-200 bg-white text-slate-800 rounded-lg block w-full px-3 py-2 text-xs font-medium outline-hidden"
+                    value={onboardingForm.contact_phone}
+                    onChange={(e) => setOnboardingForm(prev => ({ ...prev, contact_phone: e.target.value }))}
+                  />
+                </div>
+
+                <div className="border-t border-slate-100 pt-5 mt-2">
+                  <button
+                    type="submit"
+                    disabled={submittingOnboard}
+                    className="w-full bg-slate-900 text-white rounded-lg py-2.5 text-xs font-semibold hover:bg-slate-800 transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                  >
+                    {submittingOnboard ? (
+                      <>
+                        <div className="animate-spin h-3.5 w-3.5 border-2 border-white border-t-transparent rounded-full" />
+                        <span>Verifying administrative entities...</span>
+                      </>
+                    ) : (
+                      <>
+                        <ShieldCheck className="w-4 h-4 text-white" />
+                        <span>Onboard TSP & Disperse Invitation Link</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
+
+          </div>
+        </div>
+      )}
+
+      {/* SUSPEND DIALOG */}
+      {suspendingTsp && (
+        <div className="fixed inset-0 bg-slate-950/60 flex items-center justify-center p-4 z-50 animate-in fade-in duration-100">
+          <div className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-8 max-w-md w-full shadow-2xl relative overflow-hidden animate-in zoom-in-95 duration-105 text-left">
+            <div className="flex items-center gap-2.5 border-b border-slate-100 pb-4 mb-5">
+              <div className="p-2 bg-rose-50 text-rose-700 rounded-lg">
+                <ShieldAlert className="w-5 h-5 text-rose-600" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-800 font-display">Suspend Training Provider</h3>
+                <p className="text-[11px] text-slate-450 mt-0.5">Restrict access privileges for safety</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-normal mb-4">
+              You are suspending the national registration access for <strong>{suspendingTsp.name}</strong>. This forces current active panels of their admins to disconnect.
+            </p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                  Suspension Reason (Mandatory Description) *
+                </label>
+                <textarea
+                  required
+                  placeholder="Identify regulatory violation or general trigger reasons..."
+                  className="w-full bg-white border border-slate-200 rounded-lg p-3 text-xs h-24 resize-none outline-hidden text-slate-800 font-medium"
+                  value={suspensionReason}
+                  onChange={(e) => setSuspensionReason(e.target.value)}
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-3 pt-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSuspendingTsp(null);
+                    setSuspensionReason("");
+                  }}
+                  className="px-4 py-2 border border-slate-200 hover:bg-slate-50 text-slate-700 font-semibold text-xs rounded-lg flex-1 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={!suspensionReason || submittingSuspense}
+                  onClick={async () => {
+                    try {
+                      setSubmittingSuspense(true);
+                      const res = await authFetch(`/api/fed/tsps/${suspendingTsp.id}/suspend`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ reason: suspensionReason })
+                      });
+                      if (res.ok) {
+                        showToast(`TSP Operator "${suspendingTsp.name}" suspended successfully.`, "success");
+                        setSuspendingTsp(null);
+                        setSuspensionReason("");
+                        fetchTspsRoster();
+                      } else {
+                        const err = await res.json();
+                        showToast(err.error, "error");
+                      }
+                    } catch (err: any) {
+                      showToast(err.message, "error");
+                    } finally {
+                      setSubmittingSuspense(false);
+                    }
+                  }}
+                  className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white font-semibold text-xs rounded-lg flex-1 cursor-pointer disabled:opacity-50"
+                >
+                  {submittingSuspense ? "Processing..." : "Confirm Suspension"}
+                </button>
+              </div>
             </div>
           </div>
         </div>

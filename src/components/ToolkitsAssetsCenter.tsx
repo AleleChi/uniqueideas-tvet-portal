@@ -674,7 +674,7 @@ export function ToolkitsAssetsCenter({ session, showToast }: ToolkitsAssetsCente
               <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Toolkits & Asset Management Center</h1>
               <p className="text-xs text-slate-500 flex items-center gap-1.5 mt-0.5">
                 <Landmark className="w-3.5 h-3.5 text-slate-400" />
-                New World Access Training Institute • Digital Skill Tracks Active • Owerri Sector
+                Unique Technology Nig. Ltd • Digital Skill Tracks Active • Owerri Sector
               </p>
             </div>
           </div>

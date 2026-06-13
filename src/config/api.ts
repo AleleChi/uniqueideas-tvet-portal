@@ -41,6 +41,11 @@ export const getEnvironmentType = (): string => {
 };
 
 const getApiBaseUrl = (): string => {
+  // If running in the browser during an AI Studio preview, always default to the same origin's local container server.
+  if (typeof window !== "undefined" && isAiStudioPreview()) {
+    return window.location.origin;
+  }
+
   // 1. VITE_API_URL
   const envApiUrl = typeof import.meta !== "undefined" && ((import.meta as any).env?.VITE_API_URL || (import.meta as any).env?.VITE_API_BASE_URL);
   if (envApiUrl && envApiUrl.trim() !== "") {

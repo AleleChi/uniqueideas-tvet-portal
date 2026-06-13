@@ -7,6 +7,7 @@ import React, { useState, useEffect } from "react";
 import { Camera, Upload, AlertCircle, Sparkles, Trash2, Check, ArrowRight, ShieldCheck } from "lucide-react";
 import { Beneficiary, Gender, ProgramStatus, CustomField } from "../types";
 import { useNotification } from "./NotificationContext";
+import { authFetch } from "../utils/authFetch";
 
 interface NewEnrollmentFormProps {
   key?: string | number;
@@ -78,6 +79,75 @@ export function NewEnrollmentForm({
   // Operational states
   const [ninVerified, setNinVerified] = useState(!!beneficiary);
   const [verifyingNin, setVerifyingNin] = useState(false);
+
+  // National Location Infrastructure States (Task 017-C)
+  const [dbStates, setDbStates] = useState<any[]>([]);
+  const [dbLgas, setDbLgas] = useState<any[]>([]);
+  const [dbTrainingCenters, setDbTrainingCenters] = useState<any[]>([]);
+  
+  const [selectedStateId, setSelectedStateId] = useState<string>(() => {
+    // If beneficiary already has explicit state_id (UUID), use it
+    if (beneficiary && (beneficiary as any).state_id) {
+      return (beneficiary as any).state_id;
+    }
+    return "";
+  });
+  
+  const [selectedLgaId, setSelectedLgaId] = useState<string>(() => {
+    if (beneficiary && (beneficiary as any).lga_id) {
+      return (beneficiary as any).lga_id;
+    }
+    return "";
+  });
+  
+  const [selectedTcId, setSelectedTcId] = useState<string>(() => {
+    if (beneficiary && (beneficiary as any).training_center_id) {
+      return (beneficiary as any).training_center_id;
+    }
+    return "";
+  });
+
+  useEffect(() => {
+    // Fetch system-wide states
+    authFetch("/api/locations/states")
+      .then(res => res.json())
+      .then(data => {
+        setDbStates(data);
+        // If we don't have selectedStateId but have state name string, sync them
+        if (state && !selectedStateId) {
+          const match = data.find((st: any) => st.name.toLowerCase() === state.toLowerCase() || st.state_code === state);
+          if (match) setSelectedStateId(match.id);
+        }
+      })
+      .catch(err => console.error("Error fetching states: ", err));
+
+    // Fetch system-wide training centers
+    authFetch("/api/training-centers")
+      .then(res => res.json())
+      .then(data => {
+        setDbTrainingCenters(data);
+      })
+      .catch(err => console.error("Error fetching centers: ", err));
+  }, []);
+
+  useEffect(() => {
+    if (selectedStateId) {
+      // Fetch corresponding state LGAs
+      authFetch(`/api/locations/states/${selectedStateId}/lgas`)
+        .then(res => res.json())
+        .then(data => {
+          setDbLgas(data);
+          // If we don't have selectedLgaId but have city or LGA details, sync them
+          if (city && !selectedLgaId) {
+            const match = data.find((lg: any) => lg.name.toLowerCase() === city.toLowerCase() || city.toLowerCase().includes(lg.name.toLowerCase()));
+            if (match) setSelectedLgaId(match.id);
+          }
+        })
+        .catch(err => console.error("Error fetching state lgas: ", err));
+    } else {
+      setDbLgas([]);
+    }
+  }, [selectedStateId]);
 
   // Core Validator Function
   const validateField = (name: string, value: string): string => {
@@ -348,7 +418,10 @@ export function NewEnrollmentForm({
         bankSortCode,
         bankAccountNumber,
         educationQualification,
-        dateOfBirth
+        dateOfBirth,
+        state_id: selectedStateId || null,
+        lga_id: selectedLgaId || null,
+        training_center_id: selectedTcId || null
       });
     } catch (err: any) {
       showToast(err.message || "An exception occurred while saving beneficiary profile.", "error");
@@ -558,32 +631,100 @@ export function NewEnrollmentForm({
                 <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">State of Origin</label>
                 <select
                   value={state}
-                  onChange={(e) => setState(e.target.value)}
+                  onChange={(e) => {
+                    const selectedVal = e.target.value;
+                    setState(selectedVal);
+                    const match = dbStates.find(st => st.name === selectedVal || st.state_code === selectedVal);
+                    if (match) {
+                      setSelectedStateId(match.id);
+                      setSelectedLgaId("");
+                      setSelectedTcId("");
+                    }
+                  }}
                   className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition cursor-pointer font-semibold"
                 >
-                  {statesOfNigeria.map(st => (
-                    <option key={st} value={st}>{st}</option>
-                  ))}
+                  {dbStates.length > 0 ? (
+                    dbStates.map(st => (
+                      <option key={st.id} value={st.name}>{st.name}</option>
+                    ))
+                  ) : (
+                    statesOfNigeria.map(st => (
+                      <option key={st} value={st}>{st}</option>
+                    ))
+                  )}
                 </select>
               </div>
 
               {/* City / Town */}
               <div className="space-y-1.5 text-left font-sans">
-                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">City / Town (Training Hub)</label>
-                <input 
-                  type="text" 
-                  placeholder="Owerri"
-                  value={city}
-                  onChange={(e) => handleFieldChange("city", e.target.value, setCity)}
-                  onBlur={() => handleFieldBlur("city", city)}
-                  className={inputClass("city")}
-                />
+                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Local Govt Area (LGA)</label>
+                {dbLgas.length > 0 ? (
+                  <select
+                    value={selectedLgaId}
+                    onChange={(e) => {
+                      const lgaId = e.target.value;
+                      setSelectedLgaId(lgaId);
+                      const match = dbLgas.find(lg => lg.id === lgaId);
+                      if (match) {
+                        setCity(match.name);
+                        // Update in custom fields too if present
+                        setCustomFieldValues(prev => ({
+                          ...prev,
+                          "Local Government Area (LGA)": match.name
+                        }));
+                      }
+                    }}
+                    className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2 px-3 text-slate-800 text-xs focus:outline-none transition cursor-pointer font-semibold"
+                  >
+                    <option value="">-- Dropdown Selection --</option>
+                    {dbLgas.map(lg => (
+                      <option key={lg.id} value={lg.id}>{lg.name}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input 
+                    type="text" 
+                    placeholder="Owerri"
+                    value={city}
+                    onChange={(e) => handleFieldChange("city", e.target.value, setCity)}
+                    onBlur={() => handleFieldBlur("city", city)}
+                    className={inputClass("city")}
+                  />
+                )}
                 {errors.city && touched.city && (
                   <p className="text-[10px] text-rose-500 font-medium flex items-center gap-1 mt-1">
                     <AlertCircle className="w-3 h-3 flex-shrink-0" />
                     <span>{errors.city}</span>
                   </p>
                 )}
+              </div>
+
+              {/* Training Center Facility */}
+              <div className="space-y-1.5 md:col-span-2 text-left font-sans">
+                <label className="text-[10px] font-bold font-mono text-indigo-500 uppercase">Accredited Training Center Facility</label>
+                <select
+                  value={selectedTcId}
+                  onChange={(e) => {
+                    const centerId = e.target.value;
+                    setSelectedTcId(centerId);
+                    const match = dbTrainingCenters.find(tc => tc.id === centerId);
+                    if (match) {
+                      setCustomFieldValues(prev => ({
+                        ...prev,
+                        "Training Location Hub": match.center_name
+                      }));
+                    }
+                  }}
+                  className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-600 rounded-lg py-2.5 px-3 text-slate-800 text-xs focus:outline-none transition cursor-pointer font-semibold border-indigo-200"
+                >
+                  <option value="">-- Assign Accredited Training Facility --</option>
+                  {dbTrainingCenters
+                    .filter(tc => !selectedStateId || tc.state_id === selectedStateId)
+                    .map(tc => (
+                      <option key={tc.id} value={tc.id}>{tc.center_name} ({tc.lga_name || "LGA"})</option>
+                    ))
+                  }
+                </select>
               </div>
 
               {/* Contact Address */}

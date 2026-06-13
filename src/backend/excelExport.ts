@@ -1,5 +1,5 @@
 import ExcelJS from "exceljs";
-import { getPgPool } from "./db.js";
+import { getPgPool, executeQuery } from "./db.js";
 
 /**
  * Generates the official Government Annex 9 Audit & Verification Spreadsheet.
@@ -19,7 +19,7 @@ export async function generateAnnex9Workbook(): Promise<ExcelJS.Workbook> {
 
   // --- FETCH MASTER DATA FROM SINGLE SOURCE OF TRUTH ---
   // Active Trainees (Beneficiaries with specific training statuses)
-  const traineesRes = await pool.query(`
+  const traineesRes = await executeQuery(`
     SELECT 
       b.id as beneficiary_id,
       COALESCE(tp.tvet_id, 'ID-TVE-26-' || SUBSTRING(b.id, 1, 6)) as tvet_id,
@@ -50,7 +50,7 @@ export async function generateAnnex9Workbook(): Promise<ExcelJS.Workbook> {
   const trainees = traineesRes.rows;
 
   // Portal Monitoring Data
-  const portalRes = await pool.query(`
+  const portalRes = await executeQuery(`
     SELECT 
       pm.beneficiary_id,
       pm.still_on_portal,
@@ -63,7 +63,7 @@ export async function generateAnnex9Workbook(): Promise<ExcelJS.Workbook> {
   const portalMap = new Map(portalRes.rows.map(row => [row.beneficiary_id, row]));
 
   // Attendance Aggregates
-  const attRes = await pool.query(`
+  const attRes = await executeQuery(`
     SELECT 
       beneficiary_id,
       COUNT(CASE WHEN status IN ('PRESENT', 'LATE') THEN 1 END) as present_days,

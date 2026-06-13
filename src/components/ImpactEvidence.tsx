@@ -416,7 +416,7 @@ export default function ImpactEvidence({ session, showToast }: ImpactEvidencePro
         <div>
           <div className="flex items-center gap-2">
             <ClipboardCheck className="w-6 h-6 text-indigo-600" />
-            <span className="text-xs uppercase font-bold tracking-widest text-indigo-500 font-mono">New World Access</span>
+            <span className="text-xs uppercase font-bold tracking-widest text-indigo-500 font-mono">Unique Technology Nig. Ltd</span>
           </div>
           <h1 className="text-2xl font-sans font-bold text-gray-900 tracking-tight mt-1">
             Impact Evidence & Verification Center
@@ -765,7 +765,7 @@ export default function ImpactEvidence({ session, showToast }: ImpactEvidencePro
                     </h2>
                     <div className="flex flex-wrap text-xs text-gray-500 gap-x-4 gap-y-1">
                       <span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5 text-gray-400" /> Owerri, Imo State</span>
-                      <span className="flex items-center gap-1"><User className="w-3.5 h-3.5 text-gray-400" /> TSP: {gradProfile.profile.tsp || "New World Access"}</span>
+                      <span className="flex items-center gap-1"><User className="w-3.5 h-3.5 text-gray-400" /> TSP: {gradProfile.profile.tsp || "Unique Technology Nig. Ltd"}</span>
                       <span className="font-mono text-[11px] text-gray-400">{gradProfile.profile.id}</span>
                     </div>
                   </div>

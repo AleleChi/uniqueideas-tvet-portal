@@ -18,10 +18,11 @@ import { AdmissionController } from "./src/backend/admission.controller";
 import { CertificationController } from "./src/backend/certification.controller";
 import { AdmissionService } from "./src/backend/admission.service";
 import { EmailService } from "./src/backend/email.service";
-import { initDb, DbRepo, getDynamicEligibility, calculateAge, getPgPool } from "./src/backend/db";
+import { initDb, DbRepo, getDynamicEligibility, calculateAge, getPgPool, executeQuery, startupWarnings, loadJsonState, saveJsonState } from "./src/backend/db";
 import { DocumentDeliveryService, EmailDispatchService } from "./src/backend/documentDelivery.service";
 import { generateAnnex9Workbook } from "./src/backend/excelExport";
-import { requireAuth, requireRole, JWT_SECRET, AuthenticatedRequest } from "./src/backend/auth.middleware";
+import { requireAuth, requireRole, requireRoleOrPermission, JWT_SECRET, AuthenticatedRequest, authenticate, requestStorage } from "./src/backend/auth.middleware";
+import { tenantContextMiddleware } from "./src/backend/tenant.middleware";
 import { PdfService } from "./src/backend/pdf.service";
 import { CloudinaryService } from "./src/backend/cloudinary.service";
 import { DocumentService } from "./src/backend/document.service";
@@ -31,6 +32,28 @@ import ExcelJS from "exceljs";
 import { LifecycleDependencyService } from "./src/backend/governance-dependency";
 import { CampaignAudienceService } from "./src/backend/campaign.service";
 import { EmailCampaignQueue, activeCampaignWorkers } from "./src/backend/queue";
+import { NIGERIAN_STATES_AND_LGAS } from "./src/utils/nigerianLgasData";
+import { NIGERIAN_ZONES } from "./src/utils/nigerianStates";
+
+console.log("[BOOT] server.ts loaded");
+
+const FED_ROLES = ["FED", "FED_SUPER_ADMIN", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "FEDERAL_ME_OFFICER"];
+const STA_ROLES = ["STA", "STATE_ADMIN", "STATE_COORDINATOR"];
+const TSP_ROLES = ["TSP", "TSP_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"];
+const ALL_ADMIN_ROLES = ["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES];
+
+const memoizedStates = NIGERIAN_ZONES.reduce((acc: any[], zone) => {
+  zone.states.forEach(state => {
+    let cleanCode = state.toUpperCase().substring(0, 3).replace(/ /g, "");
+    if (state.toLowerCase().includes("fct")) cleanCode = "FCT";
+    acc.push({
+      name: state,
+      code: cleanCode,
+      geopoliticalZone: zone.name
+    });
+  });
+  return acc;
+}, []).sort((a, b) => a.name.localeCompare(b.name));
 
 /**
  * Utility to build proper, clean, and sanitized filename based on Trainee name and document type
@@ -211,9 +234,36 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.use(cookieParser());
 
+// Request storage async context middleware
+app.use((req, res, next) => {
+  const store = new Proxy({ dbClient: undefined, user: undefined, req }, {
+    get(target: any, prop: string | symbol) {
+      if (prop in target) {
+        return target[prop];
+      }
+      return (req as any)[prop];
+    },
+    set(target: any, prop: string | symbol, value: any) {
+      if (prop === "dbClient" || prop === "user" || prop === "req") {
+        target[prop] = value;
+      } else {
+        (req as any)[prop] = value;
+      }
+      return true;
+    }
+  });
+  requestStorage.run(store, () => next());
+});
+
+// Tenancy context execution middleware
+app.use(authenticate);
+app.use(tenantContextMiddleware);
+
 // Helper to log audit actions inside database
 async function logAction(username: string, action: string, details: string) {
-  const newLog: AuditLog = {
+  const req = requestStorage.getStore();
+
+  let enrichedLog: any = {
     id: "log_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
     timestamp: new Date().toISOString(),
     username,
@@ -221,7 +271,21 @@ async function logAction(username: string, action: string, details: string) {
     action,
     details
   };
-  await DbRepo.saveAuditLog(newLog);
+
+  if (req && req.user) {
+    enrichedLog.userId = req.user.id;
+    enrichedLog.effectiveRole = req.user.role || "Operations Manager";
+    enrichedLog.role = req.user.role || "Operations Manager";
+    enrichedLog.tenantId = req.user.tenantId;
+    enrichedLog.stateId = req.user.stateId;
+    enrichedLog.tspId = req.user.tspId;
+    enrichedLog.beneficiaryId = req.user.beneficiaryId;
+    enrichedLog.permissionUsed = req.auditPermission || null;
+  } else if (req) {
+    enrichedLog.permissionUsed = req.auditPermission || null;
+  }
+
+  await DbRepo.saveAuditLog(enrichedLog);
 }
 
 // REST API Endpoints
@@ -237,10 +301,13 @@ app.get("/api/health", async (req, res) => {
   } catch (err) {
     console.error("[Health] Database health check query failed:", err);
   }
+
+  const isDegraded = dbStatus === "disconnected";
   res.json({
-    status: "ok",
+    status: isDegraded ? "degraded" : "ok",
     database: dbStatus,
-    timestamp: Date.now()
+    timestamp: Date.now(),
+    ...(startupWarnings.length > 0 ? { startupWarnings } : {})
   });
 });
 
@@ -272,6 +339,21 @@ app.post("/api/auth/login", async (req, res) => {
     // Verify Password Hash using bcryptjs
     const isMatched = bcrypt.compareSync(password, user.password_hash);
     if (isMatched) {
+      if (user.tsp_id) {
+        const pool = getPgPool();
+        if (pool) {
+          const tspCheck = await pool.query("SELECT * FROM tsps WHERE id = $1", [user.tsp_id]);
+          if (tspCheck.rows.length > 0) {
+            const tspRow = tspCheck.rows[0];
+            const tspStatus = (tspRow.organization_status || tspRow.account_status || "").toUpperCase();
+            if (["PENDING_INVITATION", "INVITED", "SUSPENDED", "DEACTIVATED"].includes(tspStatus)) {
+              await logAction(normalizedEmail, "SECURITY_DENIED", `Access rejected: TSP organization with status ${tspStatus}`);
+              return res.status(403).json({ success: false, message: "Account access unavailable.", error: "Account access unavailable." });
+            }
+          }
+        }
+      }
+
       // Login Success: Reset security counters
       user.failed_login_attempts = 0;
       user.lockout_until = null;
@@ -279,15 +361,39 @@ app.post("/api/auth/login", async (req, res) => {
 
       // Generate Jwt Token containing user authorities
       const token = jwt.sign(
-        { id: user.id, email: user.email, role: user.role, beneficiaryId: user.beneficiary_id },
+        { 
+          id: user.id, 
+          email: user.email, 
+          role: user.role, 
+          beneficiaryId: user.beneficiary_id,
+          // Newly modernized claims (Task 005)
+          tenant_id: user.tenant_id,
+          tenant_tier: user.tenant_tier,
+          state_id: user.state_id,
+          tsp_id: user.tsp_id,
+          beneficiary_id: user.beneficiary_id,
+          tenantId: user.tenant_id,
+          tenantTier: user.tenant_tier,
+          stateId: user.state_id,
+          tspId: user.tsp_id
+        },
         JWT_SECRET,
         { expiresIn: "24h" }
       );
 
-      // Store in PostgreSQL user_sessions track list
+      // Store in PostgreSQL user_sessions track list (Task 006)
       const sessionId = "sess_" + crypto.randomBytes(16).toString("hex");
       const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-      await DbRepo.saveUserSession(sessionId, user.id, token, expiresAt);
+      await DbRepo.saveUserSession({
+        id: sessionId,
+        user_id: user.id,
+        token: token,
+        expires_at: expiresAt,
+        tenant_id: user.tenant_id,
+        tenant_tier: user.tenant_tier,
+        state_id: user.state_id,
+        tsp_id: user.tsp_id
+      });
 
       // Set cookie header with HttpOnly parameters
       res.cookie("token", token, {
@@ -305,7 +411,11 @@ app.post("/api/auth/login", async (req, res) => {
         email: user.email,
         role: user.role,
         token: token,
-        beneficiaryId: user.beneficiary_id || null
+        beneficiaryId: user.beneficiary_id || null,
+        tenantId: user.tenant_id || null,
+        tenantTier: user.tenant_tier || null,
+        stateId: user.state_id || null,
+        tspId: user.tsp_id || null
       });
     } else {
       // Incorrect password: increment lockout counter
@@ -362,11 +472,27 @@ app.get("/api/auth/session", async (req, res) => {
     }
     return res.json({
       isAuthenticated: true,
+      
+      // Modernized flat claims (Task 006)
+      id: session.user_id,
+      email: session.email,
+      role: session.role,
+      tenantId: session.tenant_id || null,
+      tenantTier: session.tenant_tier || null,
+      stateId: session.state_id || null,
+      tspId: session.tsp_id || null,
+      beneficiaryId: session.beneficiary_id || null,
+
+      // Nested user property for maximum backward-compatible robustness
       user: {
         id: session.user_id,
         email: session.email,
         role: session.role,
-        beneficiaryId: session.beneficiary_id || null
+        beneficiaryId: session.beneficiary_id || null,
+        tenantId: session.tenant_id || null,
+        tenantTier: session.tenant_tier || null,
+        stateId: session.state_id || null,
+        tspId: session.tsp_id || null
       }
     });
   } catch (err: any) {
@@ -391,9 +517,10 @@ app.post("/api/auth/forgot-password", async (req, res) => {
     }
 
     const resetToken = crypto.randomBytes(32).toString("hex");
-    const resetExpires = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour expiry
+    const tokenHash = crypto.createHash("sha256").update(resetToken).digest("hex");
+    const resetExpires = new Date(Date.now() + 15 * 60 * 1000).toISOString(); // 15-minute expiry
     
-    user.reset_token = resetToken;
+    user.reset_token = tokenHash;
     user.reset_token_expires = resetExpires;
     await DbRepo.updateUser(user);
 
@@ -414,7 +541,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
             <p style="margin: 25px 0;">
               <a href="${resetLink}" style="background-color: #248bf5; color: white; padding: 12px 24px; border-radius: 4px; text-decoration: none; font-weight: bold; display: inline-block;">Change Password</a>
             </p>
-            <p style="font-size: 13px; color: #666;">This recovery link expires in 60 minutes. If you did not make this request, ignore this notification.</p>
+            <p style="font-size: 13px; color: #666;">This recovery link expires in 15 minutes. If you did not make this request, ignore this notification.</p>
           </div>
         `
       });
@@ -422,9 +549,12 @@ app.post("/api/auth/forgot-password", async (req, res) => {
       console.log("[SECURITY] Mail dispatch failed (Resend not verified):", mailErr.message);
     }
 
+    await logAction(normalizedEmail, "SECURITY_PASSWORD_FORGOT", `Password reset request registered. Token generated with 15-minute expiry.`);
+    await logAction(normalizedEmail, "PASSWORD_RESET_REQUESTED", `Password reset request generated for: ${normalizedEmail}`);
+
     return res.json({ 
       success: true, 
-      message: "If the email is registered, a password reset link has been dispatched.",
+      message: "If the email is registered in our database, a password reset link has been dispatched.",
       token: resetToken // Included for instant integration testing
     });
   } catch (err: any) {
@@ -438,7 +568,8 @@ app.post("/api/auth/reset-password", async (req, res) => {
     if (!token || !password) {
       return res.status(400).json({ error: "Token and password are required" });
     }
-    const user = await DbRepo.getUserByResetToken(token);
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    const user = await DbRepo.getUserByResetToken(tokenHash);
     if (!user) {
       return res.status(400).json({ error: "Invalid or expired password reset authorization." });
     }
@@ -451,6 +582,7 @@ app.post("/api/auth/reset-password", async (req, res) => {
     await DbRepo.updateUser(user);
 
     await logAction(user.email, "SECURITY_PASSWORD_RESET", "Password successfully recovered and changed.");
+    await logAction(user.email, "PASSWORD_RESET_COMPLETED", `Password successfully recovered and changed for user: ${user.email}`);
 
     return res.json({ success: true, message: "Your account password has been updated securely. You may log in." });
   } catch (err: any) {
@@ -757,7 +889,7 @@ app.post("/api/admissions/:id/regenerate-reference", requireAuth, requireRole(["
 // ==========================================
 // ADMISSIONS REPORTING API ENDPOINTS
 // ==========================================
-app.get("/api/reports/admissions/funnel", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.get("/api/reports/admissions/funnel", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"], ["view_reports"]), async (req: AuthenticatedRequest, res) => {
   try {
     const data = await DbRepo.getAdmissionsFunnelReport();
     res.json({
@@ -773,7 +905,7 @@ app.get("/api/reports/admissions/funnel", requireAuth, requireRole(["SUPER_ADMIN
   }
 });
 
-app.get("/api/reports/admissions/tsp", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.get("/api/reports/admissions/tsp", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"], ["view_reports"]), async (req: AuthenticatedRequest, res) => {
   try {
     const data = await DbRepo.getTspPerformanceReport();
     res.json({
@@ -789,7 +921,7 @@ app.get("/api/reports/admissions/tsp", requireAuth, requireRole(["SUPER_ADMIN", 
   }
 });
 
-app.get("/api/reports/admissions/state", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.get("/api/reports/admissions/state", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"], ["view_reports"]), async (req: AuthenticatedRequest, res) => {
   try {
     const data = await DbRepo.getStatePerformanceReport();
     res.json({
@@ -805,7 +937,7 @@ app.get("/api/reports/admissions/state", requireAuth, requireRole(["SUPER_ADMIN"
   }
 });
 
-app.get("/api/reports/admissions/list", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.get("/api/reports/admissions/list", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"], ["view_reports"]), async (req: AuthenticatedRequest, res) => {
   try {
     // 1. Strict Query Parameters Validation
     const pageStr = req.query.page as string || "1";
@@ -1499,7 +1631,7 @@ function isValidTransition(oldStatus: string | undefined, newStatus: string): bo
   return true; // Default fallback for administrative updates
 }
 
-app.post("/api/admissions/transition-status", requireAuth, requireRole(["SUPER_ADMIN", "REVIEW_OFFICER", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.post("/api/admissions/transition-status", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", "REVIEW_OFFICER", "ADMIN_OFFICER"], ["review_admissions"]), async (req: AuthenticatedRequest, res) => {
   try {
     const { beneficiaryId, newStatus, reason, isUndo } = req.body;
     if (!beneficiaryId || !newStatus) {
@@ -1598,8 +1730,8 @@ app.post("/api/admissions/transition-status", requireAuth, requireRole(["SUPER_A
   }
 });
 
-app.post("/api/admissions/approve-acceptance", requireAuth, requireRole(["SUPER_ADMIN", "REVIEW_OFFICER"]), AdmissionController.approveAcceptance);
-app.post("/api/admissions/reject-acceptance", requireAuth, requireRole(["SUPER_ADMIN", "REVIEW_OFFICER"]), AdmissionController.rejectAcceptance);
+app.post("/api/admissions/approve-acceptance", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", "REVIEW_OFFICER"], ["approve_admissions"]), AdmissionController.approveAcceptance);
+app.post("/api/admissions/reject-acceptance", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", "REVIEW_OFFICER"], ["reject_admissions"]), AdmissionController.rejectAcceptance);
 
 // PDF Download Endpoint with application/pdf and .pdf extension
 app.get("/api/admissions/download-letter/:id", async (req, res) => {
@@ -1793,6 +1925,182 @@ app.get("/api/public/certificate/verify/:reference", async (req, res) => {
   } catch (err: any) {
     console.error("[Public Verify Endpoint Failed]:", err);
     return res.status(500).json({ error: err.message || "Failed sweeping verify registry indexes." });
+  }
+});
+
+// --- FEDERAL RESTORATION CENTER AND EMAIL SYSTEMS APIS ---
+app.get("/api/restoration/deleted-items", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFed) {
+      return res.status(403).json({ error: "Access denied. Only Federal Super Administrators can access the Restoration Center." });
+    }
+    const pool = getPgPool();
+    if (!pool) return res.json([]);
+    const result = await pool.query("SELECT * FROM restoration_center ORDER BY deleted_at DESC");
+    return res.json(result.rows);
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/restoration/add", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { original_id, original_module, deleted_reason, payload } = req.body;
+    if (!original_id || !original_module || !payload) {
+      return res.status(400).json({ error: "Missing required parameters (original_id, original_module, payload)." });
+    }
+    const pool = getPgPool();
+    if (!pool) return res.status(500).json({ error: "Database offline" });
+    await pool.query(`
+      INSERT INTO restoration_center (original_id, original_module, deleted_by, deleted_reason, payload)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (original_id) DO UPDATE 
+      SET deleted_by = $3, deleted_reason = $4, payload = $5, deleted_at = NOW()
+    `, [original_id, original_module, req.user!.email, deleted_reason || "Administrative Purge", JSON.stringify(payload)]);
+
+    await logAction(req.user!.email, "RESTORATION_ADDED", `Moved ${original_module} ID: ${original_id} to Restoration Center.`);
+    return res.json({ success: true, message: "Item moved to Restoration Center." });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/restoration/restore", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFed) {
+      return res.status(403).json({ error: "Only Federal users can restore items." });
+    }
+    const { id } = req.body;
+    if (!id) {
+      return res.status(400).json({ error: "ID is required." });
+    }
+    const pool = getPgPool();
+    if (!pool) return res.status(500).json({ error: "Database offline" });
+
+    const itemRes = await pool.query("SELECT * FROM restoration_center WHERE id = $1 OR original_id = $1", [id]);
+    if (itemRes.rows.length === 0) {
+      return res.status(404).json({ error: "Deleted record not found in Restoration Center." });
+    }
+
+    const item = itemRes.rows[0];
+    const original_id = item.original_id;
+    const module = item.original_module.toLowerCase();
+
+    // Perform database level restoration
+    if (module === "beneficiary") {
+      await pool.query("UPDATE beneficiaries SET deleted_at = NULL, beneficiary_status = 'ACTIVE' WHERE id = $1", [original_id]);
+    } else if (module === "tsp" || module === "organization") {
+      await pool.query("UPDATE tsps SET deleted_at = NULL, is_active = TRUE WHERE id = $1", [original_id]);
+    } else if (module === "user") {
+      await pool.query("UPDATE users SET deleted_at = NULL WHERE id = $1", [original_id]);
+    } else if (module === "document") {
+      await pool.query("UPDATE documents SET deleted_at = NULL WHERE id = $1", [original_id]);
+    } else if (module === "admission") {
+      await pool.query("UPDATE admissions SET deleted_at = NULL WHERE id = $1", [original_id]);
+    } else if (module === "attendance_logs") {
+      await pool.query("UPDATE attendance_logs SET deleted_at = NULL WHERE id = $1", [original_id]);
+    } else if (module === "cohort") {
+      await pool.query("UPDATE cohorts SET deleted_at = NULL, status = 'ACTIVE' WHERE id = $1", [original_id]);
+    } else if (module === "skill") {
+      await pool.query("UPDATE skills SET deleted_at = NULL WHERE id = $1", [original_id]);
+    } else if (module === "sector") {
+      await pool.query("UPDATE sectors SET deleted_at = NULL WHERE id = $1", [original_id]);
+    }
+
+    // Delete from restoration center
+    await pool.query("DELETE FROM restoration_center WHERE id = $1", [item.id]);
+
+    await logAction(req.user!.email, "RESTORATION_RESTORE", `Restored deleted ${item.original_module} ${original_id} successfully.`);
+
+    return res.json({ success: true, message: "Changes have been saved successfully." });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/restoration/permanent-delete", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const isSuperFed = req.user?.role === "SUPER_ADMIN" || req.user?.role === "FEDERAL_SUPER_ADMIN" || req.user?.role === "FED_SUPER_ADMIN";
+    if (!isSuperFed) {
+      return res.status(403).json({ error: "Unauthorized. Only Federal Super Administrators can permanently delete data records." });
+    }
+    const { id, typedConfirmation } = req.body;
+    if (!id) {
+      return res.status(400).json({ error: "ID is required." });
+    }
+    if (typedConfirmation !== "CONFIRM PERMANENT DELETE") {
+      return res.status(400).json({ error: "Mismatch typed confirmation signature." });
+    }
+
+    const pool = getPgPool();
+    if (!pool) return res.status(500).json({ error: "Database offline" });
+
+    const itemRes = await pool.query("SELECT * FROM restoration_center WHERE id = $1 OR original_id = $1", [id]);
+    if (itemRes.rows.length === 0) {
+      return res.status(404).json({ error: "Deleted record not found." });
+    }
+
+    const item = itemRes.rows[0];
+    const original_id = item.original_id;
+    const module = item.original_module.toLowerCase();
+
+    // Perform permanent delete completely
+    if (module === "beneficiary") {
+      await pool.query("DELETE FROM beneficiaries WHERE id = $1", [original_id]);
+    } else if (module === "tsp" || module === "organization") {
+      await pool.query("DELETE FROM tsps WHERE id = $1", [original_id]);
+    } else if (module === "user") {
+      await pool.query("DELETE FROM users WHERE id = $1", [original_id]);
+    } else if (module === "document") {
+      await pool.query("DELETE FROM documents WHERE id = $1", [original_id]);
+    } else if (module === "admission") {
+      await pool.query("DELETE FROM admissions WHERE id = $1", [original_id]);
+    } else if (module === "cohort") {
+      await pool.query("DELETE FROM cohorts WHERE id = $1", [original_id]);
+    } else if (module === "skill") {
+      await pool.query("DELETE FROM skills WHERE id = $1", [original_id]);
+    } else if (module === "sector") {
+      await pool.query("DELETE FROM sectors WHERE id = $1", [original_id]);
+    }
+
+    await pool.query("DELETE FROM restoration_center WHERE id = $1", [item.id]);
+
+    await logAction(req.user!.email, "RESTORATION_PERMANENT_DELETE", `Permanently purged record: ${item.original_module} ID: ${original_id}`);
+
+    return res.json({ success: true, message: "Item permanently deleted from platform records." });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// --- ENTERPRISE EMAIL DELIVERY SYSTEM ---
+app.get("/api/email/delivery-history", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const pool = getPgPool();
+    if (!pool) return res.json([]);
+    const result = await pool.query("SELECT * FROM email_logs ORDER BY date_sent DESC LIMIT 105");
+    return res.json(result.rows);
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/email/test-send", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { recipient, subject, body } = req.body;
+    if (!recipient || !subject) {
+      return res.status(400).json({ error: "Recipient and subject are required." });
+    }
+    const outcome = await EmailService.sendEmail({
+      recipient,
+      subject,
+      body: body || "This is a test email sent from the National TVET Portal Audit console."
+    });
+    return res.json({ success: outcome.success, delivery_status: outcome.success ? "SUCCESS" : "FAILED" });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
   }
 });
 
@@ -3413,7 +3721,7 @@ app.post("/api/evidence/field-verify", requireAuth, requireRole(["SUPER_ADMIN", 
 });
 
 // 6. Detailed graduate verification profile with evidence & score metrics
-app.get("/api/evidence/profile/:beneficiaryId", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req, res) => {
+app.get("/api/evidence/profile/:beneficiaryId", requireAuth, requireRole(ALL_ADMIN_ROLES), async (req, res) => {
   try {
     const { beneficiaryId } = req.params;
     const pool = getPgPool();
@@ -3456,7 +3764,7 @@ app.get("/api/evidence/profile/:beneficiaryId", requireAuth, requireRole(["SUPER
 });
 
 // 7. Dynamic Reports calculations endpoint
-app.get("/api/evidence/reports-summary", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req, res) => {
+app.get("/api/evidence/reports-summary", requireAuth, requireRole(ALL_ADMIN_ROLES), async (req, res) => {
   try {
     const pool = getPgPool();
     if (pool) {
@@ -3538,7 +3846,7 @@ app.get("/api/evidence/reports-summary", requireAuth, requireRole(["SUPER_ADMIN"
 });
 
 // 8. Custom CSV Exports for Impact Evidence Center
-app.get("/api/evidence/export-csv", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.get("/api/evidence/export-csv", requireAuth, requireRole(ALL_ADMIN_ROLES), async (req: AuthenticatedRequest, res) => {
   try {
     const { type = "evidence" } = req.query;
     const pool = getPgPool();
@@ -4308,7 +4616,7 @@ app.post("/api/trainees/import-csv", requireAuth, requireRole(["SUPER_ADMIN", "A
           phone, 
           gender, 
           state || "Imo State", 
-          tsp || "New World Access", 
+          tsp || "Unique Technology Nig. Ltd", 
           training_status?.toUpperCase() === "ACTIVE_TRAINING" ? "ACTIVE" : (training_status || "ACTIVE")
         ]);
       }
@@ -4338,7 +4646,7 @@ app.post("/api/trainees/import-csv", requireAuth, requireRole(["SUPER_ADMIN", "A
       `, [
         beneficiary_id, tvet_id, nin, bvn, bank_name, account_name, account_number,
         guardian_name, guardian_phone, education_level, employment_status, training_status || "ACTIVE_TRAINING",
-        r.sector || "DIGITAL SKILLS", skill || "Mobile Phone Repairs", state || "Imo State", tsp || "New World Access"
+        r.sector || "DIGITAL SKILLS", skill || "Mobile Phone Repairs", state || "Imo State", tsp || "Unique Technology Nig. Ltd"
       ]);
       count++;
     }
@@ -4914,6 +5222,1807 @@ app.get("/api/annex9/export", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OF
   }
 });
 
+// Helper functions for TSP Profiles (Phase 3 & 4)
+async function getTspProfile(tspId: string) {
+  const pool = getPgPool();
+  if (pool) {
+    try {
+      const result = await pool.query("SELECT * FROM tsps WHERE id = $1", [tspId]);
+      if (result.rows.length > 0) {
+        const row = result.rows[0];
+        return {
+          id: row.id,
+          name: row.name,
+          code: row.code,
+          contact_person: row.contact_person,
+          contact_email: row.contact_email,
+          contact_phone: row.contact_phone,
+          is_active: row.is_active,
+          state: row.state || "",
+          lga: row.lga || "",
+          physical_address: row.physical_address || "",
+          latitude: row.latitude ? parseFloat(row.latitude) : null,
+          longitude: row.longitude ? parseFloat(row.longitude) : null,
+          registration_number: row.registration_number || "",
+          accreditation_status: row.accreditation_status || "ACTIVE",
+          accreditation_number: row.accreditation_number || "",
+          accreditation_expiry: row.accreditation_expiry || "",
+          tsp_code: row.tsp_code || row.code || "",
+          account_status: row.account_status || (row.is_active ? "ACTIVE" : "DEACTIVATED"),
+          profile_completed: !!row.profile_completed,
+          activated_at: row.activated_at || null,
+          suspended_at: row.suspended_at || null,
+          suspension_reason: row.suspension_reason || "",
+          website: row.website || "",
+          secondary_contact: row.secondary_contact || "",
+          programme_manager: row.programme_manager || ""
+        };
+      }
+    } catch (e) {
+      console.error("[getTspProfile] DB error, falling back:", e);
+    }
+  }
+  
+  // Custom fallback seeded state in memory
+  return {
+    id: tspId,
+    name: "Unique Technology Nig. Ltd",
+    code: "UT-001",
+    contact_person: "Tom Okwa",
+    contact_email: "moh.yusuf@tvet.local",
+    contact_phone: "+234 803 123 4567",
+    is_active: true,
+    state: "Kano",
+    lga: "Gwale",
+    physical_address: "124 Bompai Road, Kano",
+    latitude: 12.0022,
+    longitude: 8.5920,
+    registration_number: "RC-199201",
+    accreditation_status: "ACTIVE",
+    accreditation_number: "NBTE/TVET/UT-001/2024",
+    accreditation_expiry: "2026-12-31",
+    programme_manager: "Tom Okwa"
+  };
+}
+
+async function saveTspProfile(tspId: string, updates: any) {
+  const pool = getPgPool();
+  if (pool) {
+    await pool.query(`
+      UPDATE tsps
+      SET 
+        name = $1,
+        contact_person = $2,
+        contact_email = $3,
+        contact_phone = $4,
+        state = $5,
+        lga = $6,
+        physical_address = $7,
+        latitude = $8,
+        longitude = $9,
+        registration_number = $10,
+        accreditation_status = $11,
+        accreditation_number = $12,
+        accreditation_expiry = $13,
+        programme_manager = $14,
+        updated_at = NOW()
+      WHERE id = $15
+    `, [
+      updates.name,
+      updates.contact_person || updates.contactPerson || "",
+      updates.contact_email || updates.contactEmail || "",
+      updates.contact_phone || updates.contactPhone || "",
+      updates.state || "",
+      updates.lga || "",
+      updates.physical_address || updates.physicalAddress || "",
+      updates.latitude === "" || updates.latitude === null || updates.latitude === undefined ? null : Number(updates.latitude),
+      updates.longitude === "" || updates.longitude === null || updates.longitude === undefined ? null : Number(updates.longitude),
+      updates.registration_number || updates.registrationNumber || "",
+      updates.accreditation_status || updates.accreditationStatus || "ACTIVE",
+      updates.accreditation_number || updates.accreditationNumber || "",
+      updates.accreditation_expiry || updates.accreditationExpiry || "",
+      updates.programme_manager || updates.programmeManager || "",
+      tspId
+    ]);
+  }
+  return true;
+}
+
+// Location Reference Metadata Endpoints (Phase 2 caching + < 20ms execution)
+app.get("/api/reference/states", requireAuth, async (req, res) => {
+  try {
+    res.json(memoizedStates);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/reference/lgas/:state", requireAuth, async (req, res) => {
+  try {
+    const rawState = req.params.state;
+    if (!rawState) {
+      return res.status(400).json({ error: "State parameter is required" });
+    }
+    const normalizedQuery = rawState.toLowerCase().trim();
+    
+    const matchedKey = Object.keys(NIGERIAN_STATES_AND_LGAS).find(k => {
+      let normK = k.toLowerCase().trim();
+      if (normK.includes("fct") && normalizedQuery.includes("fct")) return true;
+      return normK === normalizedQuery;
+    });
+
+    if (!matchedKey) {
+      return res.json([]);
+    }
+
+    const lgas = NIGERIAN_STATES_AND_LGAS[matchedKey].map(name => ({ name }));
+    res.json(lgas);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Authentication and Management endpoints for TSP Profiles (Phase 3 & 4)
+app.get("/api/tsps/profile", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    let tspId = req.user?.tspId;
+    
+    const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    const isSta = STA_ROLES.includes(req.user?.role || "");
+    
+    if ((isFed || isSta) && req.query.tspId) {
+      tspId = req.query.tspId as string;
+    }
+    
+    if (!tspId) {
+      const pool = getPgPool();
+      if (pool) {
+        const firstTspRes = await pool.query("SELECT id FROM tsps LIMIT 1");
+        if (firstTspRes.rows.length > 0) {
+          tspId = firstTspRes.rows[0].id;
+        }
+      }
+    }
+    
+    if (!tspId) {
+      tspId = "00000000-0000-0000-0000-000000000001";
+    }
+    
+    const profile: any = await getTspProfile(tspId);
+
+    // Also fetch any pending changes and audit history for this TSP
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const pendingRes = await pool.query(
+          "SELECT id, requested_by, requested_at, status, changes FROM tsp_profile_changes WHERE tsp_id = $1 AND status = 'PENDING' LIMIT 1",
+          [tspId]
+        );
+        if (pendingRes.rows.length > 0) {
+          profile.pending_change = pendingRes.rows[0];
+        }
+        
+        const historyRes = await pool.query(
+          "SELECT id, requested_by, requested_at, status, reviewed_by, reviewed_at, reject_reason FROM tsp_profile_changes WHERE tsp_id = $1 AND status != 'PENDING' ORDER BY requested_at DESC LIMIT 10",
+          [tspId]
+        );
+        profile.change_history = historyRes.rows;
+      } catch (err) {
+        console.error("Failed to query profile changes history:", err);
+      }
+    }
+    
+    res.json(profile);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/tsps/profile", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    let tspId = req.user?.tspId;
+    
+    const isSuper = req.user?.role === "SUPER_ADMIN" || req.user?.role === "FEDERAL_SUPER_ADMIN" || req.user?.role === "FED_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    const isTspAdmin = req.user?.role === "TSP_ADMIN" || req.user?.role === "TSP";
+    
+    if (isSuper && req.body.id) {
+      tspId = req.body.id;
+    }
+    
+    if (!tspId) {
+      return res.status(403).json({ error: "Unauthorized. You do not have permission to manage this organization profile." });
+    }
+    
+    const updates = req.body;
+    
+    if (isTspAdmin) {
+      const pool = getPgPool();
+      if (!pool) {
+        return res.status(500).json({ error: "Database offline" });
+      }
+      
+      await pool.query(
+        "INSERT INTO tsp_profile_changes (tsp_id, requested_by, status, changes) VALUES ($1, $2, 'PENDING', $3)",
+        [tspId, req.user?.email || "anonymous_tsp", JSON.stringify(updates)]
+      );
+      
+      if (req.user) {
+        await logAction(
+          req.user.email,
+          "TSP_PROFILE_CHANGE_REQUESTED",
+          `Submitted a profile change request for TSP ID: ${tspId}`
+        );
+      }
+      
+      res.json({ 
+        success: true, 
+        pendingApproval: true, 
+        message: "Your profile update request has been submitted to the Federal Administrator for review and approval." 
+      });
+    } else {
+      await saveTspProfile(tspId, updates);
+      
+      if (req.user) {
+        await logAction(
+          req.user.email,
+          "TSP_PROFILE_UPDATE",
+          `Updated profile information for TSP: ${updates.name || tspId}`
+        );
+      }
+      
+      res.json({ success: true, message: "Organization profile successfully updated." });
+    }
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET all profile change requests (Federal admins only)
+app.get("/api/fed/tsp-profile-changes", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFed) {
+      return res.status(403).json({ error: "Access denied. Restricted to Federal Administrators." });
+    }
+
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database offline" });
+    }
+
+    const result = await pool.query(`
+      SELECT pc.*, t.name AS tsp_name, t.code AS tsp_code, t.tsp_code AS tsp_national_code
+      FROM tsp_profile_changes pc
+      JOIN tsps t ON pc.tsp_id = t.id
+      ORDER BY pc.requested_at DESC
+    `);
+
+    res.json(result.rows);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Approve a profile change request (Federal admins only)
+app.post("/api/fed/tsp-profile-changes/:id/approve", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFed) {
+      return res.status(403).json({ error: "Access denied. Restricted to Federal Administrators." });
+    }
+
+    const changeId = req.params.id;
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database offline" });
+    }
+
+    const changeRes = await pool.query(
+      "SELECT * FROM tsp_profile_changes WHERE id = $1 AND status = 'PENDING'",
+      [changeId]
+    );
+
+    if (changeRes.rows.length === 0) {
+      return res.status(404).json({ error: "Pending profile change request not found." });
+    }
+
+    const changeReq = changeRes.rows[0];
+    const changes = typeof changeReq.changes === "string" ? JSON.parse(changeReq.changes) : changeReq.changes;
+
+    await saveTspProfile(changeReq.tsp_id, changes);
+
+    await pool.query(
+      "UPDATE tsp_profile_changes SET status = 'APPROVED', reviewed_by = $1, reviewed_at = NOW() WHERE id = $2",
+      [req.user?.email || "federal_admin", changeId]
+    );
+
+    await logAction(
+      req.user?.email || "federal_admin",
+      "TSP_PROFILE_CHANGE_APPROVED",
+      `Approved TSP profile changes for TSP ID ${changeReq.tsp_id}`
+    );
+
+    res.json({ success: true, message: "Profile update successfully approved and applied." });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Reject a profile change request (Federal admins only)
+app.post("/api/fed/tsp-profile-changes/:id/reject", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFed) {
+      return res.status(403).json({ error: "Access denied. Restricted to Federal Administrators." });
+    }
+
+    const changeId = req.params.id;
+    const { reject_reason } = req.body;
+    if (!reject_reason) {
+      return res.status(400).json({ error: "A rejection reason is required." });
+    }
+
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database offline" });
+    }
+
+    const changeRes = await pool.query(
+      "SELECT * FROM tsp_profile_changes WHERE id = $1 AND status = 'PENDING'",
+      [changeId]
+    );
+
+    if (changeRes.rows.length === 0) {
+      return res.status(404).json({ error: "Pending profile change request not found." });
+    }
+
+    const changeReq = changeRes.rows[0];
+
+    await pool.query(
+      "UPDATE tsp_profile_changes SET status = 'REJECTED', reviewed_by = $1, reviewed_at = NOW(), reject_reason = $2 WHERE id = $3",
+      [req.user?.email || "federal_admin", reject_reason, changeId]
+    );
+
+    await logAction(
+      req.user?.email || "federal_admin",
+      "TSP_PROFILE_CHANGE_REJECTED",
+      `Rejected TSP profile changes for TSP ID ${changeReq.tsp_id}. Reason: ${reject_reason}`
+    );
+
+    res.json({ success: true, message: "Profile update successfully rejected." });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// National TSP Identity, Activation & Onboarding Endpoints (Task 017B)
+
+// 1. FED registers a new TSP organization and creates its admin account
+app.post("/api/fed/tsps", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFed) {
+      return res.status(403).json({ error: "Unauthorized. Only Federal administrators can register new TSPs." });
+    }
+
+    const { name, state_id, lga, contact_person, contact_email, contact_phone } = req.body;
+    if (!name || !state_id || !lga || !contact_email || !contact_person || !contact_phone) {
+      return res.status(400).json({ error: "Missing required fields: name, state_id, lga, contact_person, contact_email, contact_phone." });
+    }
+
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database service offline" });
+    }
+
+    const normalizedEmail = contact_email.toLowerCase().trim();
+
+    // Ensure email is unique across all users
+    const existingUserRes = await pool.query("SELECT id FROM users WHERE email = $1", [normalizedEmail]);
+    if (existingUserRes.rows.length > 0) {
+      return res.status(400).json({ error: "An administrator account with this email already exists." });
+    }
+
+    // Get State information
+    const stateRes = await pool.query("SELECT name, code FROM states WHERE id = $1", [state_id]);
+    if (stateRes.rows.length === 0) {
+      return res.status(400).json({ error: "Selected state not found." });
+    }
+    const stateRow = stateRes.rows[0];
+    const stateName = stateRow.name;
+    const stateCode = (stateRow.code || stateName.substring(0, 3)).toUpperCase();
+
+    // Generate unique tsp_code: TVET-TSP-{STATECODE}-{SEQUENCE}
+    const countRes = await pool.query("SELECT COUNT(*) as count FROM tsps WHERE tsp_code LIKE $1", [`TVET-TSP-${stateCode}-%`]);
+    const nextSeq = parseInt(countRes.rows[0].count, 10) + 1;
+    const computedTspCode = `TVET-TSP-${stateCode}-${String(nextSeq).padStart(4, "0")}`;
+
+    // Provision a unique TSP tenant
+    const tenantRes = await pool.query(
+      "INSERT INTO tenants (name, domain, tier, is_active) VALUES ($1, $2, 'TSP', true) RETURNING id",
+      [name, `${normalizedEmail.split("@")[0]}.tvet.local`]
+    );
+    const tspTenantId = tenantRes.rows[0].id;
+
+    // Generate secure activation token and hash it (72h expiry)
+    const token = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+
+    // PHASE 1 LOGGING - Creation Trace
+    console.log("=== PHASE 1: TOKEN CREATION TRACE (POST /api/fed/tsps) ===");
+    console.log(`[CREATION] New TSP Name: "${name}"`);
+    console.log(`[CREATION] Generated raw token length: ${token.length}`);
+    console.log(`[CREATION] Generated SHA-256 hash: "${tokenHash}"`);
+    console.log(`[CREATION] activation_expires_at: ${expiresAt}`);
+
+    // Save TSP
+    const tspRes = await pool.query(`
+      INSERT INTO tsps (
+        tenant_id, state_id, name, code, tsp_code, contact_person, contact_email, contact_phone, 
+        is_active, state, lga, account_status, invitation_status, organization_status, profile_completed, 
+        activation_token_hash, activation_expires_at, created_by
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, $10, 'PENDING_ACTIVATION', 'INVITED', 'PENDING_INVITATION', false, $11, $12, $13)
+      RETURNING id, tsp_code
+    `, [
+      tspTenantId, state_id, name, `TSP-${stateCode}-${Date.now().toString().slice(-4)}`, 
+      computedTspCode, contact_person, normalizedEmail, contact_phone, 
+      stateName, lga, tokenHash, expiresAt, req.user.id
+    ]);
+
+    console.log(`[CREATION] Database insert completed. rowCount = ${tspRes.rowCount || tspRes.rows.length}`);
+    if (!tspRes.rows || tspRes.rows.length === 0) {
+      console.error("[CREATION ERROR] Affected row count on TSP insert is 0. Failing operation.");
+      return res.status(500).json({ error: "Failed to write TSP to database. Insertion returned 0 rows." });
+    }
+
+    const tspId = tspRes.rows[0].id;
+    const tspCode = tspRes.rows[0].tsp_code;
+
+    // PHASE 2 - DATABASE VERIFICATION
+    const verifyRes = await pool.query(`
+      SELECT
+        id,
+        name AS organization_name,
+        activation_token_hash,
+        activation_expires_at
+      FROM tsps
+      WHERE id = $1
+    `, [tspId]);
+
+    console.log("=== PHASE 2: DATABASE VERIFICATION ===");
+    if (verifyRes.rows.length === 0) {
+      console.error(`[VERIFY ERROR] New TSP with ID ${tspId} could not be retrieved from DB immediately after insertion.`);
+      return res.status(500).json({ error: `Database verification failed. Record not found immediately after insert.` });
+    }
+
+    const dbRow = verifyRes.rows[0];
+    console.log(`[VERIFY] id: ${dbRow.id}`);
+    console.log(`[VERIFY] organization_name (name alias): "${dbRow.organization_name}"`);
+    console.log(`[VERIFY] activation_token_hash in DB: "${dbRow.activation_token_hash}"`);
+    console.log(`[VERIFY] activation_expires_at in DB: ${dbRow.activation_expires_at}`);
+    
+    const dbExpiresTime = new Date(dbRow.activation_expires_at).getTime();
+    const nowTime = Date.now();
+    const isFuture = dbExpiresTime > nowTime;
+    console.log(`[VERIFY] is_future_expiry: ${isFuture} (Expires: ${dbRow.activation_expires_at}, Current: ${new Date(nowTime).toISOString()})`);
+    
+    // Obfuscating password for DB connection string telemetry logs
+    const dbUrl = process.env.DATABASE_URL || "pg://localhost:5432/ideas_tvet";
+    const maskedDbUrl = dbUrl.replace(/:([^:@]+)@/, ":[MASKED_PASSWORD]@");
+    console.log(`[ENVIRONMENT] Active Database Connection: ${maskedDbUrl}`);
+    console.log(`[ENVIRONMENT] Backend Base Url Origin: ${req.headers.origin || req.headers.host || "unknown"}`);
+    console.log("======================================");
+
+    if (!dbRow.activation_token_hash) {
+      return res.status(500).json({ error: "Database verification failed: activation_token_hash was not stored (is NULL or undefined)." });
+    }
+    if (!dbRow.activation_expires_at) {
+      return res.status(500).json({ error: "Database verification failed: activation_expires_at was not stored (is NULL or undefined)." });
+    }
+    if (!isFuture) {
+      return res.status(500).json({ error: `Database verification failed: activation_expires_at is already in the past or expired.` });
+    }
+
+    // Create primary administrator account (marked as must change password)
+    const tempPasswordHash = bcrypt.hashSync(crypto.randomBytes(16).toString("hex"), 10);
+    const userId = "usr_" + crypto.randomBytes(16).toString("hex");
+    await pool.query(`
+      INSERT INTO users (
+        id, email, password_hash, role, tenant_id, state_id, tsp_id, 
+        failed_login_attempts, must_change_password, is_primary_contact
+      ) VALUES ($1, $2, $3, 'TSP_ADMIN', $4, $5, $6, 0, true, true)
+    `, [userId, normalizedEmail, tempPasswordHash, tspTenantId, state_id, tspId]);
+
+    // Send activation email
+    const activationLink = buildPublicUrl(`/tsp/activate?token=${token}`, req);
+    let dispatchError: string | null = null;
+    try {
+      await EmailService.sendEmail({
+        recipient: normalizedEmail,
+        subject: "IDEAS-TVET Training Service Provider Activation",
+        body: `
+          <div style="font-family: sans-serif; max-width: 600px; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+            <h2 style="color: #1e3a8a; margin-top: 0;">Welcome to the IDEAS-TVET Platform</h2>
+            <p>Your organization, <strong>${name}</strong>, has been verified and registered on the National TVET platform.</p>
+            <p><strong>National TSP Identifier:</strong> <span style="font-family: monospace; font-weight: bold; background-color: #f1f5f9; padding: 2px 6px; border-radius: 4px;">${tspCode}</span></p>
+            <p>To finalize enrollment and access your administrative portal, click the link below to set your account password and configure your organizational details:</p>
+            <p style="margin: 24px 0;">
+              <a href="${activationLink}" style="background-color: #2563eb; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block;">Activate Organization Account</a>
+            </p>
+            <p style="font-size: 13px; color: #64748b;">This secure invocation credential remains valid for 72 hours. If your organization did not request registration, contact the Federal Project Management Office.</p>
+          </div>
+        `
+      });
+    } catch (mailErr: any) {
+      dispatchError = mailErr.message || "Failed during SMTP transaction";
+      console.log("[Onboarding] Mail dispatch failed:", mailErr.message);
+    }
+
+    // Capture requester client details for activation audit log
+    const ip = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1");
+    const userAgent = String(req.headers["user-agent"] || "");
+    const sandbox = !process.env.RESEND_API_KEY;
+    const tokenTruncated = token.substring(0, 10) + "...";
+
+    await pool.query(`
+      INSERT INTO activation_audit_logs (
+        tsp_id, tsp_name, contact_email, action, token_truncated, token_hash, status, ip_address, user_agent, sandbox_mode, error_message
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    `, [
+      tspId, name, normalizedEmail, "REGISTER_DISPATCH", tokenTruncated, tokenHash, 
+      dispatchError ? "EMAIL_FAILED" : "SUCCESS", ip, userAgent, sandbox, dispatchError
+    ]);
+
+    // Capture Audit Trace
+    await logAction(
+      req.user.email,
+      "TSP_CREATED",
+      `FED registered TSP organization name: ${name} (National Identifier: ${tspCode}). Metadata: tspId=${tspId}`
+    );
+    await logAction(
+      req.user.email,
+      "TSP_INVITATION_SENT",
+      `TSP organization invitation successfully sent to: ${normalizedEmail}. ID: ${tspId}`
+    );
+
+    res.json({
+      success: true,
+      sandbox: !process.env.RESEND_API_KEY,
+      message: "Organization registration successful. Activation dispatch completed.",
+      tspId,
+      tspCode,
+      activationToken: token
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// App endpoint to retrieve full activation audit logs for administrative monitors
+app.get("/api/fed/activation-logs", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFed) {
+      return res.status(403).json({ error: "Access denied. Action restricted to Federal managers." });
+    }
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database offline" });
+    }
+    const result = await pool.query("SELECT * FROM activation_audit_logs ORDER BY created_at DESC LIMIT 100");
+    res.json(result.rows);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 2. FED reissues/resends activation for a TSP
+app.post("/api/fed/tsps/:id/resend-activation", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFed) {
+      return res.status(403).json({ error: "Unauthorized. Only Federal administrators can reissue activations." });
+    }
+
+    const { id } = req.params;
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database offline" });
+    }
+
+    const result = await pool.query("SELECT * FROM tsps WHERE id = $1", [id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "TSP not found." });
+    }
+    const tsp = result.rows[0];
+
+    // Generate secure activation token and hash it (72h expiry)
+    const token = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+
+    // PHASE 1 LOGGING - Reissue Creation Trace
+    console.log("=== PHASE 1: TOKEN CREATION TRACE (POST /api/fed/tsps/:id/resend-activation) ===");
+    console.log(`[REISSUE_CREATION] TSP ID: "${id}"`);
+    console.log(`[REISSUE_CREATION] Generated raw token length: ${token.length}`);
+    console.log(`[REISSUE_CREATION] Generated SHA-256 hash: "${tokenHash}"`);
+    console.log(`[REISSUE_CREATION] activation_expires_at: ${expiresAt}`);
+
+    const updateRes = await pool.query(`
+      UPDATE tsps
+      SET 
+        activation_token_hash = $1,
+        activation_expires_at = $2,
+        account_status = 'PENDING_ACTIVATION',
+        updated_at = NOW()
+      WHERE id = $3
+    `, [tokenHash, expiresAt, id]);
+
+    console.log(`[REISSUE_CREATION] Database update completed. rowCount = ${updateRes.rowCount}`);
+    if (updateRes.rowCount === 0) {
+      console.error("[REISSUE_CREATION ERROR] Affected row count on TSP update is 0. Failing operation.");
+      return res.status(500).json({ error: "Failed to update TSP activation settings. Record not modified." });
+    }
+
+    // PHASE 2 - DATABASE VERIFICATION
+    const verifyRes = await pool.query(`
+      SELECT
+        id,
+        name AS organization_name,
+        activation_token_hash,
+        activation_expires_at
+      FROM tsps
+      WHERE id = $1
+    `, [id]);
+
+    console.log("=== PHASE 2: DATABASE VERIFICATION ===");
+    if (verifyRes.rows.length === 0) {
+      console.error(`[VERIFY ERROR] TSP with ID ${id} could not be retrieved from DB immediately after update.`);
+      return res.status(500).json({ error: `Database verification failed. Record not found immediately after update.` });
+    }
+
+    const dbRow = verifyRes.rows[0];
+    console.log(`[VERIFY] id: ${dbRow.id}`);
+    console.log(`[VERIFY] organization_name (name alias): "${dbRow.organization_name}"`);
+    console.log(`[VERIFY] activation_token_hash in DB: "${dbRow.activation_token_hash}"`);
+    console.log(`[VERIFY] activation_expires_at in DB: ${dbRow.activation_expires_at}`);
+    
+    const dbExpiresTime = new Date(dbRow.activation_expires_at).getTime();
+    const nowTime = Date.now();
+    const isFuture = dbExpiresTime > nowTime;
+    console.log(`[VERIFY] is_future_expiry: ${isFuture} (Expires: ${dbRow.activation_expires_at}, Current: ${new Date(nowTime).toISOString()})`);
+    
+    // Obfuscating password for DB connection string telemetry logs
+    const dbUrl = process.env.DATABASE_URL || "pg://localhost:5432/ideas_tvet";
+    const maskedDbUrl = dbUrl.replace(/:([^:@]+)@/, ":[MASKED_PASSWORD]@");
+    console.log(`[ENVIRONMENT] Active Database Connection: ${maskedDbUrl}`);
+    console.log(`[ENVIRONMENT] Backend Base Url Origin: ${req.headers.origin || req.headers.host || "unknown"}`);
+    console.log("======================================");
+
+    if (!dbRow.activation_token_hash) {
+      return res.status(500).json({ error: "Database verification failed: activation_token_hash was not stored (is NULL or undefined)." });
+    }
+    if (!dbRow.activation_expires_at) {
+      return res.status(500).json({ error: "Database verification failed: activation_expires_at was not stored (is NULL or undefined)." });
+    }
+    if (!isFuture) {
+      return res.status(500).json({ error: `Database verification failed: activation_expires_at is already in the past or expired.` });
+    }
+
+    const activationLink = buildPublicUrl(`/tsp/activate?token=${token}`, req);
+    let dispatchError: string | null = null;
+    try {
+      await EmailService.sendEmail({
+        recipient: tsp.contact_email,
+        subject: "IDEAS-TVET Training Service Provider Activation (Reissued)",
+        body: `
+          <div style="font-family: sans-serif; max-width: 600px; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+            <h2 style="color: #1e3a8a; margin-top: 0;">Organization Onboarding Key Reissued</h2>
+            <p>A new secure activation link has been reissued for your organization, <strong>${tsp.name}</strong>.</p>
+            <p><strong>National TSP ID:</strong> <span style="font-family: monospace; font-weight: bold;">${tsp.tsp_code || tsp.code}</span></p>
+            <p>Please click the link below to initialize credentials:</p>
+            <p style="margin: 24px 0;">
+              <a href="${activationLink}" style="background-color: #2563eb; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block;">Activate Account</a>
+            </p>
+            <p style="font-size: 13px; color: #64748b;">This link is active for 72 hours.</p>
+          </div>
+        `
+      });
+    } catch (mailErr: any) {
+      dispatchError = mailErr.message || "Failed during SMTP transaction";
+      console.log("[Onboarding] Reissued email dispatch failed:", mailErr.message);
+    }
+
+    // Capture requester client details for audit trace
+    const ip = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1");
+    const userAgent = String(req.headers["user-agent"] || "");
+    const sandbox = !process.env.RESEND_API_KEY;
+    const tokenTruncated = token.substring(0, 10) + "...";
+
+    await pool.query(`
+      INSERT INTO activation_audit_logs (
+        tsp_id, tsp_name, contact_email, action, token_truncated, token_hash, status, ip_address, user_agent, sandbox_mode, error_message
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    `, [
+      tsp.id, tsp.name, tsp.contact_email, "REISSUE_DISPATCH", tokenTruncated, tokenHash, 
+      dispatchError ? "EMAIL_FAILED" : "SUCCESS", ip, userAgent, sandbox, dispatchError
+    ]);
+
+    await logAction(
+      req.user.email,
+      "TSP_ACTIVATION_RESENT",
+      `FED reissued/resent activation link for TSP: ${tsp.name}. ID: ${id}`
+    );
+    await logAction(
+      req.user.email,
+      "TSP_INVITATION_RESENT",
+      `TSP invitation successfully resent for organization: ${tsp.name}. ID: ${id}`
+    );
+
+    res.json({
+      success: true,
+      sandbox: !process.env.RESEND_API_KEY,
+      message: "Success. New invitation credential reissued and dispatched.",
+      activationToken: token
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 3. FED suspends TSP
+app.post("/api/fed/tsps/:id/suspend", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFed) {
+      return res.status(403).json({ error: "Unauthorized. Action restricted to Federal managers." });
+    }
+
+    const { id } = req.params;
+    const { reason } = req.body;
+    if (!reason) {
+      return res.status(400).json({ error: "A valid suspension reason must be provided." });
+    }
+
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database offline" });
+    }
+
+    const result = await pool.query("SELECT * FROM tsps WHERE id = $1", [id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "TSP organization registration profile not found." });
+    }
+    const tsp = result.rows[0];
+
+    await pool.query(`
+      UPDATE tsps
+      SET 
+        account_status = 'SUSPENDED',
+        invitation_status = 'SUSPENDED',
+        organization_status = 'SUSPENDED',
+        suspended_at = NOW(),
+        suspension_reason = $1,
+        is_active = false,
+        updated_at = NOW()
+      WHERE id = $2
+    `, [reason, id]);
+
+    // Force terminate active admin sessions
+    await pool.query(`
+      DELETE FROM user_sessions 
+      WHERE user_id IN (SELECT id FROM users WHERE tsp_id = $1)
+    `, [id]);
+
+    await logAction(
+      req.user.email,
+      "TSP_SUSPENDED",
+      `FED suspended TSP: ${tsp.name}. Reason: ${reason}. ID: ${id}`
+    );
+
+    res.json({ success: true, message: "TSP organization registration suspended." });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 4. FED reactivates suspended TSP
+app.post("/api/fed/tsps/:id/reactivate", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFed) {
+      return res.status(403).json({ error: "Unauthorized. Action restricted to Federal managers." });
+    }
+
+    const { id } = req.params;
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database offline" });
+    }
+
+    const result = await pool.query("SELECT * FROM tsps WHERE id = $1", [id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "TSP profile not found." });
+    }
+    const tsp = result.rows[0];
+
+    const targetStatus = tsp.profile_completed ? "ACTIVE" : "PENDING_ACTIVATION";
+    const targetInvStatus = tsp.profile_completed ? "ACTIVE" : "INVITED";
+    const targetOrgStatus = tsp.profile_completed ? "ACTIVE" : "PENDING_INVITATION";
+
+    await pool.query(`
+      UPDATE tsps
+      SET 
+        account_status = $1,
+        invitation_status = $2,
+        organization_status = $3,
+        suspended_at = NULL,
+        suspension_reason = NULL,
+        is_active = true,
+        updated_at = NOW()
+      WHERE id = $4
+    `, [targetStatus, targetInvStatus, targetOrgStatus, id]);
+
+    await logAction(
+      req.user.email,
+      "TSP_REACTIVATED",
+      `FED reactivated TSP: ${tsp.name}. ID: ${id}`
+    );
+
+    res.json({ success: true, message: "TSP organization registration reactivated successfully." });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 5. Public / Candidate TSP activation check with comprehensive forensic audit logging
+app.post("/api/tsp/activate", async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) {
+      console.error("=== PHASE 3: ACTIVATION VALIDATION TRACE (FAILED) ===");
+      console.error("[VALIDATE ERROR] Token reference was not supplied in the body.");
+      return res.status(400).json({ error: "Token reference is required." });
+    }
+
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database service offline" });
+    }
+
+    const ip = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1");
+    const userAgent = String(req.headers["user-agent"] || "");
+    const sandbox = !process.env.RESEND_API_KEY;
+    const tokenTruncated = token.substring(0, 10) + "...";
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
+    console.log("=== PHASE 3: ACTIVATION VALIDATION TRACE (POST /api/tsp/activate) ===");
+    console.log(`[VALIDATE] Received raw token: "${token}"`);
+    console.log(`[VALIDATE] Computed SHA-256 hash: "${tokenHash}"`);
+
+    // Forensic Step 1: Does token exist at all in database?
+    const selectRes = await pool.query("SELECT * FROM tsps WHERE activation_token_hash = $1", [tokenHash]);
+    const matchedCount = selectRes.rows.length;
+    console.log(`[VALIDATE] Database lookup result row count: ${matchedCount}`);
+
+    if (matchedCount === 0) {
+      console.log(`[VALIDATE OUTCOME] FAILED: Invalid token hash not found in tsps table.`);
+      console.log("==================================================");
+
+      // Log invalid token validation attempt
+      await pool.query(`
+        INSERT INTO activation_audit_logs (
+          tsp_id, tsp_name, contact_email, action, token_truncated, token_hash, status, ip_address, user_agent, sandbox_mode, error_message
+        ) VALUES (NULL, NULL, NULL, 'VALIDATE', $1, $2, 'INVALID_TOKEN', $3, $4, $5, 'No matching token hash found in DB.')
+      `, [tokenTruncated, tokenHash, ip, userAgent, sandbox]);
+
+      return res.status(400).json({ error: "The activation link is unrecognized or invalid." });
+    }
+
+    const tsp = selectRes.rows[0];
+    console.log(`[VALIDATE] Matched TSP ID: "${tsp.id}"`);
+    console.log(`[VALIDATE] Matched TSP Name: "${tsp.name}"`);
+    console.log(`[VALIDATE] Expiration timestamp in database: ${tsp.activation_expires_at}`);
+    console.log(`[VALIDATE] Current timestamp on server: ${new Date().toISOString()}`);
+
+    // Forensic Step 2: Has token expired?
+    const expirationTime = new Date(tsp.activation_expires_at).getTime();
+    const currentTime = Date.now();
+    const hasExpired = expirationTime <= currentTime;
+
+    if (hasExpired) {
+      console.log(`[VALIDATE OUTCOME] FAILED: Token has expired (db: ${tsp.activation_expires_at}, current: ${new Date(currentTime).toISOString()})`);
+      console.log("==================================================");
+
+      await pool.query(`
+        INSERT INTO activation_audit_logs (
+          tsp_id, tsp_name, contact_email, action, token_truncated, token_hash, status, ip_address, user_agent, sandbox_mode, error_message
+        ) VALUES ($1, $2, $3, 'VALIDATE', $4, $5, 'EXPIRED_TOKEN', $6, $7, $8, $9)
+      `, [
+        tsp.id, tsp.name, tsp.contact_email, tokenTruncated, tokenHash, ip, userAgent, sandbox, 
+        `Token expired at ${tsp.activation_expires_at} (current local simulated: ${new Date().toISOString()})`
+      ]);
+
+      return res.status(400).json({ error: "The activation token link has expired. Please request a new activation email." });
+    }
+
+    // Forensic Step 3: Check current account status
+    console.log(`[VALIDATE] Matched TSP Account Status: "${tsp.account_status}"`);
+    if (tsp.account_status !== "PENDING_ACTIVATION" && tsp.account_status !== "PENDING") {
+      console.log(`[VALIDATE OUTCOME] FAILED: TSP status is already resolved / active (current status: ${tsp.account_status}).`);
+      console.log("==================================================");
+
+      await pool.query(`
+        INSERT INTO activation_audit_logs (
+          tsp_id, tsp_name, contact_email, action, token_truncated, token_hash, status, ip_address, user_agent, sandbox_mode, error_message
+        ) VALUES ($1, $2, $3, 'VALIDATE', $4, $5, 'WRONG_STATUS', $6, $7, $8, $9)
+      `, [
+        tsp.id, tsp.name, tsp.contact_email, tokenTruncated, tokenHash, ip, userAgent, sandbox, 
+        `TSP is already active or in another state (current status: ${tsp.account_status}). Activation blocked.`
+      ]);
+
+      return res.status(400).json({ error: `Onboarding cannot be completed because this account is already ${tsp.account_status}.` });
+    }
+
+    console.log("[VALIDATE OUTCOME] SUCCESS: Token matches perfectly, token is active and account remains pending.");
+    console.log("==================================================");
+
+    // Log successful token validation check
+    await pool.query(`
+      INSERT INTO activation_audit_logs (
+        tsp_id, tsp_name, contact_email, action, token_truncated, token_hash, status, ip_address, user_agent, sandbox_mode, error_message
+      ) VALUES ($1, $2, $3, 'VALIDATE', $4, $5, 'SUCCESS', $6, $7, $8, NULL)
+    `, [tsp.id, tsp.name, tsp.contact_email, tokenTruncated, tokenHash, ip, userAgent, sandbox]);
+
+    res.json({
+      success: true,
+      name: tsp.name,
+      email: tsp.contact_email,
+      tsp_code: tsp.tsp_code || tsp.code
+    });
+  } catch (e: any) {
+    console.error(`[VALIDATE ERROR] Exception encountered during activation check: ${e.message}`);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 6. Set Password during initial activation with detailed telemetry audit logs
+app.post("/api/tsp/set-password", async (req, res) => {
+  try {
+    const { token, password } = req.body;
+    if (!token || !password) {
+      return res.status(400).json({ error: "Security key and password input are mandatory." });
+    }
+
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database offline" });
+    }
+
+    const ip = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1");
+    const userAgent = String(req.headers["user-agent"] || "");
+    const sandbox = !process.env.RESEND_API_KEY;
+    const tokenTruncated = token.substring(0, 10) + "...";
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
+    const tspRes = await pool.query("SELECT * FROM tsps WHERE activation_token_hash = $1", [tokenHash]);
+    if (tspRes.rows.length === 0) {
+      await pool.query(`
+        INSERT INTO activation_audit_logs (
+          tsp_id, tsp_name, contact_email, action, token_truncated, token_hash, status, ip_address, user_agent, sandbox_mode, error_message
+        ) VALUES (NULL, NULL, NULL, 'PASSWORD_SET', $1, $2, 'INVALID_TOKEN', $3, $4, $5, 'No matching token hash for password creation.')
+      `, [tokenTruncated, tokenHash, ip, userAgent, sandbox]);
+
+      return res.status(400).json({ error: "Authentication activation key invalid or expired." });
+    }
+
+    const tsp = tspRes.rows[0];
+
+    const hasExpired = new Date(tsp.activation_expires_at).getTime() <= Date.now();
+    if (hasExpired) {
+      await pool.query(`
+        INSERT INTO activation_audit_logs (
+          tsp_id, tsp_name, contact_email, action, token_truncated, token_hash, status, ip_address, user_agent, sandbox_mode, error_message
+        ) VALUES ($1, $2, $3, 'PASSWORD_SET', $4, $5, 'EXPIRED_TOKEN', $6, $7, $8, 'Token expired at activation save.')
+      `, [tsp.id, tsp.name, tsp.contact_email, tokenTruncated, tokenHash, ip, userAgent, sandbox]);
+
+      return res.status(400).json({ error: "Authentication activation key link has expired." });
+    }
+
+    if (tsp.account_status !== "PENDING_ACTIVATION" && tsp.account_status !== "PENDING") {
+      await pool.query(`
+        INSERT INTO activation_audit_logs (
+          tsp_id, tsp_name, contact_email, action, token_truncated, token_hash, status, ip_address, user_agent, sandbox_mode, error_message
+        ) VALUES ($1, $2, $3, 'PASSWORD_SET', $4, $5, 'WRONG_STATUS', $6, $7, $8, 'Cannot set password on non-pending account.')
+      `, [tsp.id, tsp.name, tsp.contact_email, tokenTruncated, tokenHash, ip, userAgent, sandbox]);
+
+      return res.status(400).json({ error: "Onboarding registry is closed." });
+    }
+
+    const userRes = await pool.query("SELECT * FROM users WHERE tsp_id = $1 AND role = 'TSP_ADMIN'", [tsp.id]);
+    if (userRes.rows.length === 0) {
+      await pool.query(`
+        INSERT INTO activation_audit_logs (
+          tsp_id, tsp_name, contact_email, action, token_truncated, token_hash, status, ip_address, user_agent, sandbox_mode, error_message
+        ) VALUES ($1, $2, $3, 'PASSWORD_SET', $4, $5, 'USER_NOT_FOUND', $6, $7, $8, 'No associated TSP_ADMIN user records found.')
+      `, [tsp.id, tsp.name, tsp.contact_email, tokenTruncated, tokenHash, ip, userAgent, sandbox]);
+
+      return res.status(404).json({ error: "Default primary admin user map not found." });
+    }
+    const user = userRes.rows[0];
+
+    const hashedCheck = bcrypt.hashSync(password, 10);
+
+    // Update user: must_change_password is now false, reset login counters
+    await pool.query(`
+      UPDATE users
+      SET 
+        password_hash = $1,
+        must_change_password = false,
+        updated_at = NOW()
+      WHERE id = $2
+    `, [hashedCheck, user.id]);
+
+    // Track active invitation activation timestamp and mark account ACTIVE
+    await pool.query(`
+      UPDATE tsps
+      SET 
+        activated_at = NOW(),
+        activation_token_hash = NULL,
+        activation_expires_at = NULL,
+        account_status = 'ACTIVE',
+        updated_at = NOW()
+      WHERE id = $1
+    `, [tsp.id]);
+
+    // Log beautiful audit success
+    await pool.query(`
+      INSERT INTO activation_audit_logs (
+        tsp_id, tsp_name, contact_email, action, token_truncated, token_hash, status, ip_address, user_agent, sandbox_mode, error_message
+      ) VALUES ($1, $2, $3, 'PASSWORD_SET', $4, $5, 'SUCCESS', $6, $7, $8, NULL)
+    `, [tsp.id, tsp.name, tsp.contact_email, tokenTruncated, tokenHash, ip, userAgent, sandbox]);
+
+    await logAction(
+      user.email,
+      "TSP_ACTIVATED",
+      `TSP administrative credentials initialized successfully: ${tsp.name}. ID: ${tsp.id}`
+    );
+
+    // Generate JWT token automatically (auto log in!)
+    const sessionToken = jwt.sign(
+      { 
+        id: user.id, 
+        email: user.email, 
+        role: user.role, 
+        tenant_id: user.tenant_id,
+        state_id: user.state_id,
+        tsp_id: user.tsp_id,
+        tenantId: user.tenant_id,
+        stateId: user.state_id,
+        tspId: user.tsp_id,
+        tenantTier: "TSP"
+      },
+      JWT_SECRET,
+      { expiresIn: "24h" }
+    );
+
+    const sessionId = "sess_" + crypto.randomBytes(16).toString("hex");
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    await DbRepo.saveUserSession({
+      id: sessionId,
+      user_id: user.id,
+      token: sessionToken,
+      expires_at: expiresAt,
+      tenant_id: user.tenant_id,
+      tenant_tier: "TSP",
+      state_id: user.state_id,
+      tsp_id: user.tsp_id
+    });
+
+    res.cookie("token", sessionToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+      maxAge: 24 * 60 * 60 * 1000
+    });
+
+    res.json({
+      success: true,
+      message: "Credentials set. Auto-signed active credential session.",
+      token: sessionToken,
+      role: user.role,
+      email: user.email,
+      tspId: tsp.id,
+      tenantId: user.tenant_id,
+      stateId: tsp.state_id,
+      profile_completed: false
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 7. Complete TSP Onboarding Profile
+app.post("/api/tsp/complete-profile", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    if (req.user?.role !== "TSP_ADMIN") {
+      return res.status(403).json({ error: "Forbidden. Access restricted to TSP primary contacts." });
+    }
+
+    const { 
+      organization_name, state, lga, physical_address, contact_email, contact_phone, 
+      nbte_accreditation_number, accreditation_status,
+      // Optional/Extended fields 
+      latitude, longitude, website, secondary_contact 
+    } = req.body;
+
+    if (!organization_name || !state || !lga || !physical_address || !contact_email || !contact_phone || !nbte_accreditation_number || !accreditation_status) {
+      return res.status(400).json({ error: "Missing mandatory configuration profile fields." });
+    }
+
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database offline" });
+    }
+
+    const tspId = req.user.tspId;
+    if (!tspId) {
+      return res.status(400).json({ error: "User session tenant trace is empty." });
+    }
+
+    const calLat = latitude === "" || latitude === null || latitude === undefined ? null : Number(latitude);
+    const calLng = longitude === "" || longitude === null || longitude === undefined ? null : Number(longitude);
+
+    await pool.query(`
+      UPDATE tsps
+      SET 
+        name = $1,
+        state = $2,
+        lga = $3,
+        physical_address = $4,
+        contact_email = $5,
+        contact_phone = $6,
+        accreditation_number = $7,
+        accreditation_status = $8,
+        latitude = $9,
+        longitude = $10,
+        website = $11,
+        secondary_contact = $12,
+        account_status = 'ACTIVE',
+        invitation_status = 'ACTIVE',
+        organization_status = 'ACTIVE',
+        profile_completed = true,
+        updated_at = NOW()
+      WHERE id = $13
+    `, [
+      organization_name, state, lga, physical_address, contact_email, contact_phone, 
+      nbte_accreditation_number, accreditation_status, calLat, calLng, 
+      website || "", secondary_contact || "", tspId
+    ]);
+
+    await logAction(
+      req.user.email,
+      "TSP_PROFILE_COMPLETED",
+      `TSP: ${organization_name} finished mandatory onboarding. ID: ${tspId}`
+    );
+
+    res.json({
+      success: true,
+      message: "National configuration profile generated. Core gateway access unlocked."
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Added endpoints for full TSP Identity Lifecycle and System Observability (Phase 4 stabilization)
+app.post("/api/tsp/invitations", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFed) {
+      return res.status(403).json({ error: "Unauthorized. Only Federal administrators can register new TSPs." });
+    }
+
+    const { name, state_id, lga, contact_person, contact_email, contact_phone, simulateFailure } = req.body;
+    if (!name || !state_id || !lga || !contact_email || !contact_person || !contact_phone) {
+      return res.status(400).json({ error: "Missing required fields: name, state_id, lga, contact_person, contact_email, contact_phone." });
+    }
+
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database service offline" });
+    }
+
+    const normalizedEmail = contact_email.toLowerCase().trim();
+
+    // Ensure email is unique across all users
+    const existingUserRes = await pool.query("SELECT id FROM users WHERE email = $1", [normalizedEmail]);
+    if (existingUserRes.rows.length > 0) {
+      return res.status(400).json({ error: "An administrator account with this email already exists." });
+    }
+
+    // Get State information
+    const stateRes = await pool.query("SELECT name, code FROM states WHERE id = $1", [state_id]);
+    if (stateRes.rows.length === 0) {
+      return res.status(400).json({ error: "Selected state not found." });
+    }
+    const stateRow = stateRes.rows[0];
+    const stateName = stateRow.name;
+    const stateCode = (stateRow.code || stateName.substring(0, 3)).toUpperCase();
+
+    // Generate unique tsp_code: TVET-TSP-{STATECODE}-{SEQUENCE}
+    const countRes = await pool.query("SELECT COUNT(*) as count FROM tsps WHERE tsp_code LIKE $1", [`TVET-TSP-${stateCode}-%`]);
+    const nextSeq = parseInt(countRes.rows[0].count, 10) + 1;
+    const computedTspCode = `TVET-TSP-${stateCode}-${String(nextSeq).padStart(4, "0")}`;
+
+    // Provision a unique TSP tenant
+    const tenantRes = await pool.query(
+      "INSERT INTO tenants (name, domain, tier, is_active) VALUES ($1, $2, 'TSP', true) RETURNING id",
+      [name, `${normalizedEmail.split("@")[0]}.tvet.local`]
+    );
+    const tspTenantId = tenantRes.rows[0].id;
+
+    // Generate secure activation token and hash it (72h expiry)
+    const token = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+
+    // Save TSP
+    const tspRes = await pool.query(`
+      INSERT INTO tsps (
+        tenant_id, state_id, name, code, tsp_code, contact_person, contact_email, contact_phone, 
+        is_active, state, lga, account_status, invitation_status, organization_status, profile_completed, 
+        activation_token_hash, activation_expires_at, created_by
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, $10, 'PENDING_ACTIVATION', 'INVITED', 'PENDING_INVITATION', false, $11, $12, $13)
+      RETURNING id, tsp_code
+    `, [
+      tspTenantId, state_id, name, `TSP-${stateCode}-${Date.now().toString().slice(-4)}`, 
+      computedTspCode, contact_person, normalizedEmail, contact_phone, 
+      stateName, lga, tokenHash, expiresAt, req.user.id
+    ]);
+    const tspId = tspRes.rows[0].id;
+    const tspCode = tspRes.rows[0].tsp_code;
+
+    // Create primary administrator account (marked as must change password)
+    const tempPasswordHash = bcrypt.hashSync(crypto.randomBytes(16).toString("hex"), 10);
+    const userId = "usr_" + crypto.randomBytes(16).toString("hex");
+    await pool.query(`
+      INSERT INTO users (
+        id, email, password_hash, role, tenant_id, state_id, tsp_id, 
+        failed_login_attempts, must_change_password, is_primary_contact
+      ) VALUES ($1, $2, $3, 'TSP_ADMIN', $4, $5, $6, 0, true, true)
+    `, [userId, normalizedEmail, tempPasswordHash, tspTenantId, state_id, tspId]);
+
+    // Send activation email
+    const activationLink = buildPublicUrl(`/tsp/activate?token=${token}`, req);
+    let deliverySuccess = true;
+    let mailError = "";
+
+    if (simulateFailure === true) {
+      deliverySuccess = false;
+      mailError = "Simulated delivery timeout due to SMTP route congestion";
+    } else {
+      try {
+        const mailOutcome = await EmailService.sendEmail({
+          recipient: normalizedEmail,
+          subject: "IDEAS-TVET Training Service Provider Activation",
+          body: `
+            <div style="font-family: sans-serif; max-width: 600px; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+              <h2 style="color: #1e3a8a; margin-top: 0;">Welcome to the IDEAS-TVET Platform</h2>
+              <p>Your organization, <strong>${name}</strong>, has been verified and registered on the National TVET platform.</p>
+              <p><strong>National TSP Identifier:</strong> <span style="font-family: monospace; font-weight: bold; background-color: #f1f5f9; padding: 2px 6px; border-radius: 4px;">${tspCode}</span></p>
+              <p>To finalize enrollment and access your administrative portal, click the link below to set your account password and configure your organizational details:</p>
+              <p style="margin: 24px 0;">
+                <a href="${activationLink}" style="background-color: #2563eb; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block;">Activate Organization Account</a>
+              </p>
+              <p style="font-size: 13px; color: #64748b;">This secure invocation credential remains valid for 72 hours.</p>
+            </div>
+          `
+        });
+        if (!mailOutcome.success) {
+          deliverySuccess = false;
+          mailError = "SMTP mail transport rejected dispatch";
+        }
+      } catch (err: any) {
+        deliverySuccess = false;
+        mailError = err.message || String(err);
+      }
+    }
+
+    // Insert to email logs
+    await EmailService.logTestEmail(
+      normalizedEmail,
+      deliverySuccess ? "success" : "failed",
+      deliverySuccess ? { message: "Dispatched" } : null,
+      deliverySuccess ? null : { message: mailError }
+    );
+
+    // Capture Audit Trace with detailed metadata
+    await logAction(
+      req.user.email,
+      "TSP_CREATED",
+      `FED registered TSP organization name: ${name} (National Identifier: ${tspCode}). Metadata: tspId=${tspId}, delivery_status=${deliverySuccess ? "SUCCESS" : "FAILED"}, delivery_attempts=1, last_attempt=${new Date().toISOString()}, last_failure_reason=${deliverySuccess ? "none" : mailError}`
+    );
+
+    res.json({
+      success: true,
+      delivery_success: deliverySuccess,
+      message: deliverySuccess 
+        ? "Invitation sent successfully." 
+        : "Invitation created successfully. However, email delivery could not be confirmed.",
+      tspId,
+      tspCode,
+      activationToken: token,
+      activationLink
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/tsp/resend-invitation", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFed) {
+      return res.status(403).json({ error: "Unauthorized. Only Federal administrators can reissue activations." });
+    }
+
+    const { id, simulateFailure } = req.body;
+    if (!id) {
+      return res.status(400).json({ error: "TSP ID is required." });
+    }
+
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database offline" });
+    }
+
+    const result = await pool.query("SELECT * FROM tsps WHERE id = $1", [id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "TSP not found." });
+    }
+    const tsp = result.rows[0];
+
+    // Generate secure activation token and hash it (72h expiry)
+    const token = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+
+    await pool.query(`
+      UPDATE tsps
+      SET 
+        activation_token_hash = $1,
+        activation_expires_at = $2,
+        account_status = 'PENDING_ACTIVATION',
+        invitation_status = 'INVITED',
+        organization_status = 'PENDING_INVITATION',
+        updated_at = NOW()
+      WHERE id = $3
+    `, [tokenHash, expiresAt, id]);
+
+    const activationLink = buildPublicUrl(`/tsp/activate?token=${token}`, req);
+    let deliverySuccess = true;
+    let mailError = "";
+
+    if (simulateFailure === true) {
+      deliverySuccess = false;
+      mailError = "Simulated delivery timeout due to SMTP route congestion";
+    } else {
+      try {
+        const mailOutcome = await EmailService.sendEmail({
+          recipient: tsp.contact_email,
+          subject: "IDEAS-TVET Training Service Provider Activation (Reissued)",
+          body: `
+            <div style="font-family: sans-serif; max-width: 600px; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+              <h2 style="color: #1e3a8a; margin-top: 0;">Organization Onboarding Key Reissued</h2>
+              <p>A new secure activation link has been reissued for your organization, <strong>${tsp.name}</strong>.</p>
+              <p><strong>National TSP ID:</strong> <span style="font-family: monospace; font-weight: bold;">${tsp.tsp_code || tsp.code}</span></p>
+              <p>Please click the link below to initialize credentials:</p>
+              <p style="margin: 24px 0;">
+                <a href="${activationLink}" style="background-color: #2563eb; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block;">Activate Account</a>
+              </p>
+              <p style="font-size: 13px; color: #64748b;">This link is active for 72 hours.</p>
+            </div>
+          `
+        });
+        if (!mailOutcome.success) {
+          deliverySuccess = false;
+          mailError = "SMTP mail transport rejected dispatch";
+        }
+      } catch (err: any) {
+        deliverySuccess = false;
+        mailError = err.message || String(err);
+      }
+    }
+
+    // Insert to email logs
+    await EmailService.logTestEmail(
+      tsp.contact_email,
+      deliverySuccess ? "success" : "failed",
+      deliverySuccess ? { message: "Dispatched Reissue" } : null,
+      deliverySuccess ? null : { message: mailError }
+    );
+
+    await logAction(
+      req.user.email,
+      "TSP_ACTIVATION_RESENT",
+      `FED reissued/resent activation link for TSP: ${tsp.name}. ID: ${id}. Metadata: delivery_status=${deliverySuccess ? "SUCCESS" : "FAILED"}, delivery_attempts=1, last_attempt=${new Date().toISOString()}, last_failure_reason=${deliverySuccess ? "none" : mailError}`
+    );
+
+    res.json({
+      success: true,
+      delivery_success: deliverySuccess,
+      message: deliverySuccess 
+        ? "Success. New invitation credential reissued and dispatched."
+        : "Invitation reissued successfully. However, email delivery could not be confirmed.",
+      activationToken: token,
+      activationLink
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/tsp/reset-access", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFed) {
+      return res.status(403).json({ error: "Unauthorized. Action restricted to Federal managers." });
+    }
+
+    const { id } = req.body;
+    if (!id) {
+       return res.status(400).json({ error: "TSP ID is required." });
+    }
+
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database offline" });
+    }
+
+    const result = await pool.query("SELECT * FROM tsps WHERE id = $1", [id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "TSP profile not found." });
+    }
+    const tsp = result.rows[0];
+
+    // Generate secure token and update activation details
+    const token = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+
+    await pool.query(`
+      UPDATE tsps
+      SET 
+        activation_token_hash = $1,
+        activation_expires_at = $2,
+        account_status = 'PENDING_ACTIVATION',
+        invitation_status = 'INVITED',
+        organization_status = 'PENDING_INVITATION',
+        updated_at = NOW()
+      WHERE id = $3
+    `, [tokenHash, expiresAt, id]);
+
+    // Force expire admin password
+    await pool.query(`
+      UPDATE users
+      SET must_change_password = true, updated_at = NOW()
+      WHERE tsp_id = $1 AND role = 'TSP_ADMIN'
+    `, [id]);
+
+    // Invalidate sessions
+    await pool.query(`
+      DELETE FROM user_sessions 
+      WHERE user_id IN (SELECT id FROM users WHERE tsp_id = $1)
+    `, [id]);
+
+    const resetLink = buildPublicUrl(`/tsp/activate?token=${token}`, req);
+    try {
+      await EmailService.sendEmail({
+        recipient: tsp.contact_email,
+        subject: "IDEAS-TVET TSP Administrative Access Reset",
+        body: `
+          <div style="font-family: sans-serif; max-width: 600px; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+            <h2 style="color: #1e3a8a; margin-top: 0;">Administrative Access Reset</h2>
+            <p>An administrator access reset has been initiated for <strong>${tsp.name}</strong> by the Federal Program Office.</p>
+            <p>Your previous password has been suspended and a new credentials setup is required.</p>
+            <p>Please click the button below to reactivate your administrative access and set a new password:</p>
+            <p style="margin: 24px 0;">
+              <a href="${resetLink}" style="background-color: #ef4444; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block;">Re-activate Access</a>
+            </p>
+            <p style="font-size: 13px; color: #64748b;">This secure reactivation link remains active for 72 hours.</p>
+          </div>
+        `
+      });
+    } catch (mailErr: any) {
+      console.log("[Onboarding] Access reset email dispatch failed:", mailErr.message);
+    }
+
+    await logAction(
+      req.user.email,
+      "TSP_ACCESS_RESET",
+      `FED reset administrator access for TSP: ${tsp.name}. ID: ${id}`
+    );
+
+    res.json({
+      success: true,
+      message: "TSP administrator access credentials reset, session invalidated, and reactivation link dispatched.",
+      activationToken: token
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/system/status", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFed) {
+       return res.status(403).json({ error: "Unauthorized. Access restricted to Federal administrators." });
+    }
+
+    const pool = getPgPool();
+    let dbStatus = "unhealthy";
+    let activeTspsCount = 0;
+    let pendingInvitesCount = 0;
+    let totalBeneficiaries = 0;
+    let totalAuditLogs = 0;
+
+    if (pool) {
+      try {
+        await pool.query("SELECT 1");
+        dbStatus = "healthy";
+
+        const tspCounts = await pool.query(`
+          SELECT 
+            COUNT(CASE WHEN account_status = 'ACTIVE' THEN 1 END)::int as active_count,
+            COUNT(CASE WHEN account_status = 'PENDING_ACTIVATION' THEN 1 END)::int as pending_count
+          FROM tsps
+        `);
+        activeTspsCount = tspCounts.rows[0]?.active_count || 0;
+        pendingInvitesCount = tspCounts.rows[0]?.pending_count || 0;
+
+        const benCount = await pool.query("SELECT COUNT(*)::int as count FROM beneficiaries");
+        totalBeneficiaries = benCount.rows[0]?.count || 0;
+
+        const auditCount = await pool.query("SELECT COUNT(*)::int as count FROM audit_logs");
+        totalAuditLogs = auditCount.rows[0]?.count || 0;
+      } catch (dbErr) {
+        console.error("[System Status Endpoint] Database query error:", dbErr);
+      }
+    } else {
+      dbStatus = "healthy (fallback)";
+    }
+
+    const response = {
+      status: "online",
+      environment: process.env.NODE_ENV || "development",
+      uptime: process.uptime(),
+      memory: process.memoryUsage(),
+      database: {
+        status: dbStatus,
+        active_tsps: activeTspsCount,
+        pending_invitations: pendingInvitesCount,
+        total_beneficiaries: totalBeneficiaries,
+        total_audit_logs: totalAuditLogs
+      }
+    };
+
+    res.json(response);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 8. Shared Registry listing endpoint for FED and STA
+app.get("/api/fed/tsps/registry", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    const isSta = STA_ROLES.includes(req.user?.role || "");
+
+    if (!isFed && !isSta) {
+      return res.status(403).json({ error: "Unauthorized registry viewing request." });
+    }
+
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database offline" });
+    }
+
+    let query = `
+      SELECT t.*, s.name as state_name, s.code as state_code
+      FROM tsps t
+      LEFT JOIN states s ON t.state_id = s.id
+      WHERE t.deleted_at IS NULL
+    `;
+    const params: any[] = [];
+
+    // If State Coordinator, apply state isolation layer
+    if (isSta) {
+      const stateId = req.user.stateId;
+      if (!stateId) {
+        return res.json([]);
+      }
+      params.push(stateId);
+      query += ` AND t.state_id = $${params.length}`;
+    }
+
+    query += ` ORDER BY t.created_at DESC`;
+
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Bulk management operations for TSPs (Phase 5 compliance)
+app.post("/api/fed/tsps/bulk", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFed) {
+      return res.status(403).json({ error: "Unauthorized. Action restricted to Federal managers." });
+    }
+
+    const { action, ids, reason } = req.body;
+    if (!action || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: "Invalid parameters. Specify 'action' and a non-empty list of 'ids'." });
+    }
+
+    if (action === "suspend" && !reason) {
+      return res.status(400).json({ error: "A valid suspension reason must be provided." });
+    }
+
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database offline" });
+    }
+
+    const results = [];
+    let successCount = 0;
+    let failureCount = 0;
+
+    for (const id of ids) {
+      try {
+        const tspRes = await pool.query("SELECT * FROM tsps WHERE id = $1", [id]);
+        if (tspRes.rows.length === 0) {
+          results.push({ id, success: false, error: "TSP organization not found." });
+          failureCount++;
+          continue;
+        }
+        const tsp = tspRes.rows[0];
+
+        if (action === "suspend") {
+          await pool.query(`
+            UPDATE tsps
+            SET 
+              account_status = 'SUSPENDED',
+              invitation_status = 'SUSPENDED',
+              organization_status = 'SUSPENDED',
+              suspended_at = NOW(),
+              suspension_reason = $1,
+              is_active = false,
+              updated_at = NOW()
+            WHERE id = $2
+          `, [reason, id]);
+
+          // Force terminate active admin sessions
+          await pool.query(`
+            DELETE FROM user_sessions 
+            WHERE user_id IN (SELECT id FROM users WHERE tsp_id = $1)
+          `, [id]);
+
+          await logAction(
+            req.user.email,
+            "TSP_SUSPENDED",
+            `FED suspended (Bulk) TSP: ${tsp.name}. Reason: ${reason}. ID: ${id}`
+          );
+
+          results.push({ id, name: tsp.name, success: true });
+          successCount++;
+
+        } else if (action === "reactivate") {
+          const targetStatus = tsp.profile_completed ? "ACTIVE" : "PENDING_ACTIVATION";
+          const targetInvStatus = tsp.profile_completed ? "ACTIVE" : "INVITED";
+          const targetOrgStatus = tsp.profile_completed ? "ACTIVE" : "PENDING_INVITATION";
+
+          await pool.query(`
+            UPDATE tsps
+            SET 
+              account_status = $1,
+              invitation_status = $2,
+              organization_status = $3,
+              suspended_at = NULL,
+              suspension_reason = NULL,
+              is_active = true,
+              updated_at = NOW()
+            WHERE id = $4
+          `, [targetStatus, targetInvStatus, targetOrgStatus, id]);
+
+          await logAction(
+            req.user.email,
+            "TSP_REACTIVATED",
+            `FED reactivated (Bulk) TSP: ${tsp.name}. ID: ${id}`
+          );
+
+          results.push({ id, name: tsp.name, success: true });
+          successCount++;
+
+        } else if (action === "resend-activation") {
+          // Generate secure activation token and hash it (72h expiry)
+          const token = crypto.randomBytes(32).toString("hex");
+          const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+          const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+
+          await pool.query(`
+            UPDATE tsps
+            SET 
+              activation_token_hash = $1,
+              activation_expires_at = $2,
+              account_status = 'PENDING_ACTIVATION',
+              invitation_status = 'INVITED',
+              organization_status = 'PENDING_INVITATION',
+              updated_at = NOW()
+            WHERE id = $3
+          `, [tokenHash, expiresAt, id]);
+
+          const activationLink = buildPublicUrl(`/tsp/activate?token=${token}`, req);
+          try {
+            await EmailService.sendEmail({
+              recipient: tsp.contact_email,
+              subject: "IDEAS-TVET Training Service Provider Activation (Bulk Reissued)",
+              body: `
+                <div style="font-family: sans-serif; max-width: 600px; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+                  <h2 style="color: #1e3a8a; margin-top: 0;">Organization Onboarding Key Reissued</h2>
+                  <p>A new secure activation link has been reissued for your organization, <strong>${tsp.name}</strong>.</p>
+                  <p><strong>National TSP ID:</strong> <span style="font-family: monospace; font-weight: bold;">${tsp.tsp_code || tsp.code}</span></p>
+                  <p>Please click the link below to initialize credentials:</p>
+                  <p style="margin: 24px 0;">
+                    <a href="${activationLink}" style="background-color: #2563eb; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block;">Activate Account</a>
+                  </p>
+                  <p style="font-size: 13px; color: #64748b;">This link is active for 72 hours.</p>
+                </div>
+              `
+            });
+          } catch (mailErr: any) {
+            console.log("[Onboarding] Bulk reissued email dispatch failed:", mailErr.message);
+          }
+
+          await logAction(
+            req.user.email,
+            "TSP_ACTIVATION_RESENT",
+            `FED reissued/resent activation link (Bulk) for TSP: ${tsp.name}. ID: ${id}`
+          );
+
+          results.push({ id, name: tsp.name, success: true });
+          successCount++;
+        } else {
+          results.push({ id, success: false, error: `Invalid bulk action: ${action}` });
+          failureCount++;
+        }
+      } catch (err: any) {
+        results.push({ id, success: false, error: err.message });
+        failureCount++;
+      }
+    }
+
+    res.json({
+      success: true,
+      summary: {
+        total: ids.length,
+        successCount: successCount,
+        failCount: failureCount,
+        sandbox: !process.env.RESEND_API_KEY,
+        results
+      }
+    });
+
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Training programs / batches resources
 app.get("/api/training-programs", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
   try {
@@ -4965,11 +7074,32 @@ app.post("/api/upload-asset", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OF
 });
 
 // Beneficiary management resource
-app.get("/api/beneficiaries", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req, res) => {
+app.get("/api/beneficiaries", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "STATE_COORDINATOR", "STATE_REVIEW_OFFICER", "STATE_M_E_OFFICER", "TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER", "SYSTEM_AUDITOR", "REPORT_VIEWER", "HELPDESK_AGENT", "MIGRATION_ADMIN", "FED", "STA", "TSP"]), async (req: AuthenticatedRequest, res) => {
   try {
     const includePhoto = req.query.includePhoto === "true";
     const includeDetails = req.query.includeDetails === "true";
-    const beneficiaries = await DbRepo.getBeneficiaries({ includePhoto, includeDetails });
+
+    const user = req.user;
+    let tenantId: string | undefined;
+    let stateId: string | undefined;
+    let tspId: string | undefined;
+    let beneficiaryId: string | undefined;
+
+    if (user && user.role !== "SUPER_ADMIN") {
+      tenantId = user.tenantId;
+      stateId = user.stateId;
+      tspId = user.tspId;
+      beneficiaryId = user.beneficiaryId;
+    }
+
+    const beneficiaries = await DbRepo.getBeneficiaries({ 
+      includePhoto, 
+      includeDetails,
+      tenantId,
+      stateId,
+      tspId,
+      beneficiaryId
+    });
     res.json(beneficiaries);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -5113,6 +7243,96 @@ app.get("/api/diagnostics/dob", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_
       missingDobBeneficiaryIds: missingIds,
       malformedDobBeneficiaryDetails: malformedDetails
     });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// System & Tenant Diagnostics for observability and multi-tenancy verification
+app.get("/api/system/tenant-health", requireAuth, requireRole(["SUPER_ADMIN"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const start = Date.now();
+    const pool = getPgPool();
+    
+    let dbStatus = "unhealthy";
+    let activeTenantInfo = "Unassigned / System Wide";
+    let tenantContextStatus = "healthy";
+    let auditPipelineStatus = "healthy";
+    let latencyMs = 0;
+
+    if (pool) {
+      try {
+        // Probe database with short timeout or simple test
+        await pool.query("SELECT 1");
+        dbStatus = "healthy";
+        latencyMs = Date.now() - start;
+
+        // Count tenants to verify multi-tenant isolation model is operational
+        const tenantRes = await pool.query("SELECT COUNT(*) as count FROM tenants");
+        const count = tenantRes.rows[0]?.count || "0";
+        activeTenantInfo = `Multi-tenant model active: ${count} registered tenants.`;
+      } catch (dbErr: any) {
+        console.error("[Tenant Health Endpoint] Database probe hit an error:", dbErr);
+        dbStatus = "unhealthy";
+        tenantContextStatus = "unhealthy";
+      }
+
+      try {
+        // Verify audit pipeline table writable & log count
+        const auditProbe = await pool.query("SELECT COUNT(*) as count FROM audit_logs");
+        const auditCount = auditProbe.rows[0]?.count || "0";
+        if (parseInt(auditCount, 10) >= 0) {
+          auditPipelineStatus = "healthy";
+        }
+      } catch (auditErr: any) {
+        console.error("[Tenant Health Endpoint] Audit probe hit an error:", auditErr);
+        auditPipelineStatus = "unhealthy";
+      }
+    } else {
+      // In-memory fallback
+      dbStatus = "healthy";
+      activeTenantInfo = "In-memory mock tenants active.";
+    }
+
+    res.json({
+      database: dbStatus,
+      tenantContext: tenantContextStatus,
+      auditPipeline: auditPipelineStatus,
+      activeTenant: activeTenantInfo,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/debug/rls-context", async (req: AuthenticatedRequest, res) => {
+  if (process.env.NODE_ENV === "production") {
+    return res.status(403).json({ error: "Access Denied. Dev only route." });
+  }
+  res.json({
+    tenantId: req.user?.tenantId || null,
+    tenantTier: req.user?.tenantTier || null,
+    stateId: req.user?.stateId || null,
+    tspId: req.user?.tspId || null,
+    role: req.user?.role || null
+  });
+});
+
+app.get("/api/debug/current-tenant", async (req: AuthenticatedRequest, res) => {
+  if (process.env.NODE_ENV === "production") {
+    return res.status(403).json({ error: "Access Denied. Dev only route." });
+  }
+  try {
+    const dbRes = await executeQuery(`
+      SELECT
+        current_setting('app.current_tenant_id', true) AS "app.current_tenant_id",
+        current_setting('app.current_tenant_tier', true) AS "app.current_setting_tenant_tier",
+        current_setting('app.current_state_id', true) AS "app.current_state_id",
+        current_setting('app.current_tsp_id', true) AS "app.current_tsp_id",
+        current_setting('app.current_user_role', true) AS "app.current_user_role"
+    `);
+    res.json(dbRes.rows[0]);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -5297,6 +7517,23 @@ app.delete("/api/beneficiaries/:id", requireAuth, requireRole(["SUPER_ADMIN"]), 
   try {
     const target = await DbRepo.getBeneficiaryById(req.params.id);
     if (target) {
+      // Archive to Restoration Center ledger before setting deleted_at
+      const pool = getPgPool();
+      if (pool) {
+        await pool.query(`
+          INSERT INTO restoration_center (original_id, original_module, deleted_by, deleted_reason, payload)
+          VALUES ($1, $2, $3, $4, $5)
+          ON CONFLICT (original_id) DO UPDATE 
+          SET deleted_by = $3, deleted_reason = $4, payload = $5, deleted_at = NOW()
+        `, [
+          target.id, 
+          "Beneficiary", 
+          req.user!.email, 
+          `Administrative profile soft deletion of ${target.firstName} ${target.lastName}`, 
+          JSON.stringify(target)
+        ]);
+      }
+
       await DbRepo.deleteBeneficiary(req.params.id);
       await logAction(req.user!.email, "BENEFICIARY_DELETE", `Soft deleted beneficiary registration ${target.firstName} ${target.lastName} (ID: ${target.id})`);
       return res.json({ success: true, deleted: target });
@@ -6663,9 +8900,37 @@ app.post("/api/public/documents/verify/:token/track-download", async (req, res) 
 });
 
 // Audit Logging Fetch
-app.get("/api/audit-logs", requireAuth, requireRole(["SUPER_ADMIN"]), async (req, res) => {
+app.get("/api/audit-logs", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", ...FED_ROLES], ["audit_logs_access"]), async (req: AuthenticatedRequest, res) => {
   try {
-    const auditLogs = await DbRepo.getAuditLogs();
+    const limit = parseInt(req.query.limit as string || "100", 10);
+    const offset = parseInt(req.query.offset as string || "0", 10);
+    const startDate = req.query.startDate as string | undefined;
+    const endDate = req.query.endDate as string | undefined;
+    const tenantIdToken = req.query.tenantId as string | undefined;
+    const permissionUsed = req.query.permissionUsed as string | undefined;
+
+    const user = req.user;
+    let authTenantId = tenantIdToken;
+    let authStateId: string | undefined;
+    let authTspId: string | undefined;
+
+    // Enforce tenancy isolation
+    if (user && user.role !== "SUPER_ADMIN") {
+      authTenantId = user.tenantId;
+      authStateId = user.stateId;
+      authTspId = user.tspId;
+    }
+
+    const auditLogs = await DbRepo.getAuditLogs({
+      limit,
+      offset,
+      startDate,
+      endDate,
+      tenantId: authTenantId,
+      stateId: authStateId,
+      tspId: authTspId,
+      permissionUsed
+    });
     res.json(auditLogs);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -7232,19 +9497,19 @@ app.get("/api/executive-m-and-e/dashboard-stats", requireAuth, async (req, res) 
       }
     });
 
-    // Ensure "New World Access" is always included gracefully under success criteria demands
-    if (!tCounts["New World Access"]) {
-      tCounts["New World Access"] = { total: 0, grads: 0, certified: 0, employed: 0, scoreSum: 0, counts: 0 };
+    // Ensure "Unique Technology Nig. Ltd" is always included gracefully under success criteria demands
+    if (!tCounts["Unique Technology Nig. Ltd"]) {
+      tCounts["Unique Technology Nig. Ltd"] = { total: 0, grads: 0, certified: 0, employed: 0, scoreSum: 0, counts: 0 };
     }
 
     const tspRanking = Object.keys(tCounts).map((tsp) => {
       const item = tCounts[tsp];
-      const isNewWorld = tsp === "New World Access";
+      const isUniqueTech = tsp === "Unique Technology Nig. Ltd";
 
-      const completionRate = item.total > 0 ? (item.grads / item.total) * 100 : isNewWorld ? 93.4 : 85.0;
-      const certificationRate = item.grads > 0 ? (item.certified / item.grads) * 100 : isNewWorld ? 90.5 : 82.0;
-      const employmentRate = item.grads > 0 ? (item.employed / item.grads) * 100 : isNewWorld ? 81.0 : 70.0;
-      const impactScore = item.counts > 0 ? (item.scoreSum / item.counts) : isNewWorld ? 89.4 : 72.0;
+      const completionRate = item.total > 0 ? (item.grads / item.total) * 100 : isUniqueTech ? 93.4 : 85.0;
+      const certificationRate = item.grads > 0 ? (item.certified / item.grads) * 100 : isUniqueTech ? 90.5 : 82.0;
+      const employmentRate = item.grads > 0 ? (item.employed / item.grads) * 100 : isUniqueTech ? 81.0 : 70.0;
+      const impactScore = item.counts > 0 ? (item.scoreSum / item.counts) : isUniqueTech ? 89.4 : 72.0;
 
       return {
         tspName: tsp,
@@ -7844,7 +10109,7 @@ app.get("/api/quality-accreditation/dashboard", requireAuth, async (req, res) =>
         evidenceScore
       },
       accreditation: {
-        provider: "New World Access",
+        provider: "Unique Technology Nig. Ltd",
         location: "Owerri, Imo State",
         tracks: ["Computer Hardware Repairs", "Mobile Phone Repairs"],
         readinessScore: 88,
@@ -8000,8 +10265,8 @@ app.get("/api/quality-accreditation/report", requireAuth, async (req: Authentica
       titleStr = "ACCREDITATION READINESS AUDIT REPORT";
       headers = ["No.", "Provider", "Location", "Accredited Track", "Trainer Readiness (%)", "Facility Readiness (%)", "Equipment Readiness (%)", "Readiness Assessment"];
       rows = [
-        [1, "New World Access", "Owerri, Imo State", "Computer Hardware Repairs", "92%", "88%", "85%", "NEAR READY"],
-        [2, "New World Access", "Owerri, Imo State", "Mobile Phone Repairs", "90%", "85%", "80%", "NEAR READY"]
+        [1, "Unique Technology Nig. Ltd", "Owerri, Imo State", "Computer Hardware Repairs", "92%", "88%", "85%", "NEAR READY"],
+        [2, "Unique Technology Nig. Ltd", "Owerri, Imo State", "Mobile Phone Repairs", "90%", "85%", "80%", "NEAR READY"]
       ];
     } else if (type === "intervention") {
       titleStr = "INTERVENTION CASES SCRUTINY";
@@ -10350,11 +12615,1122 @@ app.post("/api/export/album/word", requireAuth, requireRole(["SUPER_ADMIN", "ADM
   }
 });
 
+// --- COHORTS BACKEND ---
+app.get("/api/cohorts", requireAuth, async (req: any, res) => {
+  try {
+    const tenantId = FED_ROLES.includes(req.user.role) ? req.query.tenantId : req.user.tenantId;
+    const search = req.query.search;
+    const page = parseInt((req.query.page as string) || "1");
+    const pageSize = parseInt((req.query.pageSize as string) || "10");
+    
+    const result = await DbRepo.getCohorts({ tenantId, search, page, pageSize });
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/cohorts", requireAuth, async (req: any, res) => {
+  try {
+    if (!FED_ROLES.includes(req.user.role) && !STA_ROLES.includes(req.user.role)) {
+      return res.status(433).json({ error: "Access denied. Only FED and STA administrators can create cohorts." });
+    }
+    const data = {
+      ...req.body,
+      tenantId: FED_ROLES.includes(req.user.role) ? req.body.tenantId : req.user.tenantId,
+      createdBy: req.user.id
+    };
+    if (!data.name || !data.cohortYear) {
+      return res.status(400).json({ error: "Name and cohortYear are required." });
+    }
+    const cohort = await DbRepo.saveCohort(data);
+    res.status(201).json(cohort);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put("/api/cohorts/:id", requireAuth, async (req: any, res) => {
+  try {
+    if (!FED_ROLES.includes(req.user.role) && !STA_ROLES.includes(req.user.role)) {
+      return res.status(433).json({ error: "Access denied." });
+    }
+    const updated = await DbRepo.updateCohort(req.params.id, {
+      ...req.body,
+      updatedBy: req.user.id
+    });
+    res.json(updated);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/cohorts/:id", requireAuth, async (req: any, res) => {
+  try {
+    if (!FED_ROLES.includes(req.user.role) && !STA_ROLES.includes(req.user.role)) {
+      return res.status(433).json({ error: "Access denied." });
+    }
+    const success = await DbRepo.deleteCohort(req.params.id);
+    res.json({ success });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// --- TRAINING BATCHES BACKEND ---
+app.get("/api/training-batches", requireAuth, async (req: any, res) => {
+  try {
+    const tenantId = FED_ROLES.includes(req.user.role) ? req.query.tenantId : req.user.tenantId;
+    const tspId = TSP_ROLES.includes(req.user.role) ? req.user.tspId : req.query.tspId;
+    const cohortId = req.query.cohortId;
+    const page = parseInt((req.query.page as string) || "1");
+    const pageSize = parseInt((req.query.pageSize as string) || "10");
+
+    const result = await DbRepo.getTrainingBatches({ tenantId, tspId, cohortId, page, pageSize });
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/training-batches", requireAuth, async (req: any, res) => {
+  try {
+    if (!FED_ROLES.includes(req.user.role) && !STA_ROLES.includes(req.user.role) && !TSP_ROLES.includes(req.user.role)) {
+      return res.status(433).json({ error: "Access denied." });
+    }
+    const data = {
+      ...req.body,
+      tenantId: FED_ROLES.includes(req.user.role) ? (req.body.tenantId || req.user.tenantId) : req.user.tenantId,
+      tspId: TSP_ROLES.includes(req.user.role) ? req.user.tspId : (req.body.tspId || req.user.tspId),
+      createdBy: req.user.id
+    };
+    if (!data.tspId || !data.cohortId || !data.trainingProgramId || !data.batchNumber || !data.startDate || !data.endDate) {
+      return res.status(400).json({ error: "Required fields: tspId, cohortId, trainingProgramId, batchNumber, startDate, endDate" });
+    }
+    const batch = await DbRepo.saveTrainingBatch(data);
+    res.status(201).json(batch);
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.put("/api/training-batches/:id", requireAuth, async (req: any, res) => {
+  try {
+    const data = {
+      ...req.body,
+      id: req.params.id,
+      tenantId: FED_ROLES.includes(req.user.role) ? (req.body.tenantId || req.user.tenantId) : req.user.tenantId,
+      tspId: TSP_ROLES.includes(req.user.role) ? req.user.tspId : (req.body.tspId || req.user.tspId),
+      createdBy: req.user.id
+    };
+    const batch = await DbRepo.saveTrainingBatch(data);
+    res.json(batch);
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete("/api/training-batches/:id", requireAuth, async (req: any, res) => {
+  try {
+    const success = await DbRepo.deleteTrainingBatch(req.params.id);
+    res.json({ success });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post("/api/training-batches/:id/assign", requireAuth, async (req: any, res) => {
+  try {
+    const traineeIds = req.body.traineeIds;
+    if (!Array.isArray(traineeIds)) {
+      return res.status(400).json({ error: "traineeIds must be an array of strings" });
+    }
+    const success = await DbRepo.assignTraineesToBatch(req.params.id, traineeIds, req.user.id);
+    res.json({ success });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post("/api/training-batches/:id/remove", requireAuth, async (req: any, res) => {
+  try {
+    const traineeIds = req.body.traineeIds;
+    if (!Array.isArray(traineeIds)) {
+      return res.status(400).json({ error: "traineeIds must be an array of strings" });
+    }
+    const success = await DbRepo.removeTraineesFromBatch(req.params.id, traineeIds, req.user.id);
+    res.json({ success });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// --- TRAINERS BACKEND ---
+app.get("/api/trainers", requireAuth, async (req: any, res) => {
+  try {
+    const tenantId = FED_ROLES.includes(req.user.role) ? req.query.tenantId : req.user.tenantId;
+    const tspId = TSP_ROLES.includes(req.user.role) ? req.user.tspId : req.query.tspId;
+    const status = req.query.status;
+    const page = parseInt((req.query.page as string) || "1");
+    const pageSize = parseInt((req.query.pageSize as string) || "10");
+
+    const result = await DbRepo.getTrainers({ tenantId, tspId, status, page, pageSize });
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/trainers", requireAuth, async (req: any, res) => {
+  try {
+    const data = {
+      ...req.body,
+      tenantId: FED_ROLES.includes(req.user.role) ? (req.body.tenantId || req.user.tenantId) : req.user.tenantId,
+      tspId: TSP_ROLES.includes(req.user.role) ? req.user.tspId : (req.body.tspId || req.user.tspId),
+      createdBy: req.user.id
+    };
+    if (!data.firstName || !data.lastName) {
+      return res.status(400).json({ error: "firstName and lastName are required" });
+    }
+    const trainer = await DbRepo.saveTrainer(data);
+    res.status(201).json(trainer);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put("/api/trainers/:id", requireAuth, async (req: any, res) => {
+  try {
+    const updated = await DbRepo.updateTrainer(req.params.id, req.body);
+    res.json(updated);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// --- ASSESSMENTS BACKEND ---
+app.get("/api/assessments", requireAuth, async (req: any, res) => {
+  try {
+    const tenantId = FED_ROLES.includes(req.user.role) ? req.query.tenantId : req.user.tenantId;
+    const beneficiaryId = req.user.role === "TRAINEE" ? req.user.beneficiaryId : req.query.beneficiaryId;
+    const trainerId = req.query.trainerId;
+    const page = parseInt((req.query.page as string) || "1");
+    const pageSize = parseInt((req.query.pageSize as string) || "10");
+
+    const result = await DbRepo.getAssessments({ tenantId, beneficiaryId, trainerId, page, pageSize });
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/assessments", requireAuth, async (req: any, res) => {
+  try {
+    const data = {
+      ...req.body,
+      tenantId: FED_ROLES.includes(req.user.role) ? (req.body.tenantId || req.user.tenantId) : req.user.tenantId,
+      createdBy: req.user.id
+    };
+    if (!data.beneficiaryId || !data.trainerId || !data.assessmentName) {
+      return res.status(400).json({ error: "Required fields: beneficiaryId, trainerId, assessmentName" });
+    }
+    const assessment = await DbRepo.saveAssessment(data);
+    res.status(201).json(assessment);
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.put("/api/assessments/:id", requireAuth, async (req: any, res) => {
+  try {
+    const updated = await DbRepo.updateAssessment(req.params.id, req.body);
+    res.json(updated);
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// --- GRADUATION BACKEND ---
+app.get("/api/graduation/clearances", requireAuth, async (req: any, res) => {
+  try {
+    const tenantId = FED_ROLES.includes(req.user.role) ? req.query.tenantId : req.user.tenantId;
+    const beneficiaryId = req.user.role === "TRAINEE" ? req.user.beneficiaryId : req.query.beneficiaryId;
+    const page = parseInt((req.query.page as string) || "1");
+    const pageSize = parseInt((req.query.pageSize as string) || "10");
+
+    const result = await DbRepo.getGraduationClearances({ tenantId, beneficiaryId, page, pageSize });
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/graduation/clear/single", requireAuth, async (req: any, res) => {
+  try {
+    if (!FED_ROLES.includes(req.user.role) && !STA_ROLES.includes(req.user.role) && !TSP_ROLES.includes(req.user.role)) {
+      return res.status(433).json({ error: "Access denied. Only authorized administrators can issue clearances." });
+    }
+    const beneficiaryId = req.body.beneficiaryId;
+    if (!beneficiaryId) {
+      return res.status(400).json({ error: "beneficiaryId is required" });
+    }
+    const clearance = await DbRepo.saveGraduationClearance({
+      beneficiaryId,
+      clearedBy: req.user.id,
+      ceremonyEventName: req.body.ceremonyEventName,
+      tenantId: req.user.tenantId
+    });
+    res.status(201).json(clearance);
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post("/api/graduation/clear/bulk", requireAuth, async (req: any, res) => {
+  try {
+    if (!FED_ROLES.includes(req.user.role) && !STA_ROLES.includes(req.user.role) && !TSP_ROLES.includes(req.user.role)) {
+      return res.status(433).json({ error: "Access denied." });
+    }
+    const beneficiaryIds = req.body.beneficiaryIds;
+    if (!Array.isArray(beneficiaryIds) || beneficiaryIds.length === 0) {
+      return res.status(400).json({ error: "beneficiaryIds must be a non-empty array" });
+    }
+    await DbRepo.bulkGraduationClearance(beneficiaryIds, req.user.id, req.body.ceremonyEventName);
+    await DbRepo.saveAuditLog(req.user.id || req.user.email || "system", "BULK_GRADUATION_CLEAR", `Approved bulk graduation for candidate IDs: ${beneficiaryIds.join(", ")}`);
+    res.json({ success: true, message: "Cleared all eligible candidates successfully." });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post("/api/graduation/revoke", requireAuth, async (req: any, res) => {
+  try {
+    if (!FED_ROLES.includes(req.user.role) && !STA_ROLES.includes(req.user.role) && !TSP_ROLES.includes(req.user.role)) {
+      return res.status(433).json({ error: "Access denied. Only authorized administrators can revoke clearances." });
+    }
+    const beneficiaryId = req.body.beneficiaryId;
+    if (!beneficiaryId) {
+      return res.status(400).json({ error: "beneficiaryId is required" });
+    }
+
+    // execute revoke queries
+    const { executeQuery } = require("./src/backend/db");
+    await executeQuery(`DELETE FROM graduation_clearances WHERE beneficiary_id = $1`, [beneficiaryId]);
+    await executeQuery(`UPDATE beneficiaries SET beneficiary_status = 'TRAINEE', certification_status = 'PENDING', certificate_issued_at = NULL, certificate_issued_by = NULL WHERE id = $1`, [beneficiaryId]);
+    await DbRepo.saveAuditLog(req.user.id || req.user.email || "system", "GRADUATION_REVOKE", `Revoked graduation clearance and decertified trainee ID: ${beneficiaryId}`);
+
+    res.json({ success: true, message: "Graduation clearance suspended and trainee status reverted successfully." });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ==========================================
+// --- NATIONAL GOVERNANCE REGISTRIES (EOI, SKILLS, SECTORS) ---
+// ==========================================
+
+// Get Sectors
+app.get("/api/sectors", requireAuth, async (req: any, res) => {
+  try {
+    const isFedUser = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFedUser) {
+      return res.status(433).json({ error: "Access denied. Federal administration required." });
+    }
+
+    const pool = getPgPool();
+    if (pool) {
+      const dbRes = await pool.query("SELECT * FROM sectors ORDER BY sector_name ASC");
+      return res.json(dbRes.rows);
+    } else {
+      const state = loadJsonState();
+      const sectorsList = (state.sectors || []).sort((a: any, b: any) => 
+        (a.sectorName || a.sector_name || "").localeCompare(b.sectorName || b.sector_name || "")
+      );
+      return res.json(sectorsList);
+    }
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Create / Update Sector
+app.post("/api/sectors", requireAuth, async (req: any, res) => {
+  try {
+    const isFedUser = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFedUser) {
+      return res.status(433).json({ error: "Access denied. Federal administration required." });
+    }
+
+    const { id, sectorCode, sectorName, description, status } = req.body;
+    if (!sectorCode || !sectorName) {
+      return res.status(400).json({ error: "sectorCode and sectorName are required" });
+    }
+
+    const targetId = id || `sec_${Math.random().toString(36).substr(2, 9)}`;
+    const pool = getPgPool();
+    const actionType = id ? "UPDATE_SECTOR" : "CREATE_SECTOR";
+    const details = id 
+      ? `Updated sector ${sectorName} (${sectorCode})` 
+      : `Created sector ${sectorName} (${sectorCode})`;
+
+    if (pool) {
+      if (id) {
+        await pool.query(
+          `UPDATE sectors SET sector_code = $1, sector_name = $2, description = $3, status = $4, updated_at = NOW() WHERE id = $5`,
+          [sectorCode, sectorName, description, status || "ACTIVE", targetId]
+        );
+      } else {
+        await pool.query(
+          `INSERT INTO sectors (id, sector_code, sector_name, description, status) VALUES ($1, $2, $3, $4, $5)`,
+          [targetId, sectorCode, sectorName, description, status || "ACTIVE"]
+        );
+      }
+    } else {
+      const state = loadJsonState();
+      if (!state.sectors) state.sectors = [];
+      const index = state.sectors.findIndex((s: any) => s.id === targetId);
+      const sectorObj = {
+        id: targetId,
+        sectorCode,
+        sector_code: sectorCode,
+        sectorName,
+        sector_name: sectorName,
+        description,
+        status: status || "ACTIVE",
+        created_at: index >= 0 ? state.sectors[index].created_at : new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+      if (index >= 0) {
+        state.sectors[index] = sectorObj;
+      } else {
+        state.sectors.push(sectorObj);
+      }
+      saveJsonState(state);
+    }
+
+    await DbRepo.saveAuditLog(req.user.email || req.user.id || "system", actionType, details);
+    res.json({ success: true, id: targetId });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Delete Sector (or change status to ARCHIVED)
+app.delete("/api/sectors/:id", requireAuth, async (req: any, res) => {
+  try {
+    const isFedUser = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFedUser) {
+      return res.status(433).json({ error: "Access denied. Federal administration required." });
+    }
+
+    const { id } = req.params;
+    const pool = getPgPool();
+
+    if (pool) {
+      await pool.query(`UPDATE sectors SET status = 'ARCHIVED', updated_at = NOW() WHERE id = $1`, [id]);
+    } else {
+      const state = loadJsonState();
+      if (state.sectors) {
+        const index = state.sectors.findIndex((s: any) => s.id === id);
+        if (index >= 0) {
+          state.sectors[index].status = 'ARCHIVED';
+          state.sectors[index].updated_at = new Date().toISOString();
+          saveJsonState(state);
+        }
+      }
+    }
+
+    await DbRepo.saveAuditLog(req.user.email || req.user.id || "system", "ARCHIVE_SECTOR", `Archived sector ${id}`);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get Skills
+app.get("/api/skills", requireAuth, async (req: any, res) => {
+  try {
+    const isFedUser = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFedUser) {
+      return res.status(433).json({ error: "Access denied. Federal administration required." });
+    }
+
+    const pool = getPgPool();
+    if (pool) {
+      const dbRes = await pool.query(
+        `SELECT s.*, sec.sector_name as "sectorName" FROM skills s LEFT JOIN sectors sec ON s.sector_id = sec.id ORDER BY s.skill_name ASC`
+      );
+      return res.json(dbRes.rows);
+    } else {
+      const state = loadJsonState();
+      const skillsList = (state.skills || []).map((s: any) => {
+        const sector = (state.sectors || []).find((sec: any) => sec.id === s.sectorId || sec.id === s.sector_id);
+        return {
+          ...s,
+          sectorName: sector ? (sector.sectorName || sector.sector_name) : ""
+        };
+      }).sort((a: any, b: any) => (a.skillName || a.skill_name || "").localeCompare(b.skillName || b.skill_name || ""));
+      return res.json(skillsList);
+    }
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Create / Update Skill
+app.post("/api/skills", requireAuth, async (req: any, res) => {
+  try {
+    const isFedUser = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFedUser) {
+      return res.status(433).json({ error: "Access denied. Federal administration required." });
+    }
+
+    const {
+      id,
+      skillCode,
+      skillName,
+      sectorId,
+      description,
+      durationWeeks,
+      certificationType,
+      assessmentMethod,
+      equipmentRequirements,
+      curriculumVersion,
+      status
+    } = req.body;
+
+    if (!skillCode || !skillName || !sectorId) {
+      return res.status(400).json({ error: "skillCode, skillName, and sectorId are required" });
+    }
+
+    const targetId = id || `sk_${Math.random().toString(36).substr(2, 9)}`;
+    const pool = getPgPool();
+    const actionType = id ? "UPDATE_SKILL" : "CREATE_SKILL";
+    const details = id 
+      ? `Updated skill ${skillName} (${skillCode})` 
+      : `Created skill ${skillName} (${skillCode})`;
+
+    if (pool) {
+      if (id) {
+        await pool.query(
+          `UPDATE skills SET skill_code = $1, skill_name = $2, sector_id = $3, description = $4, duration_weeks = $5, certification_type = $6, assessment_method = $7, equipment_requirements = $8, curriculum_version = $9, status = $10, updated_at = NOW() WHERE id = $11`,
+          [
+            skillCode,
+            skillName,
+            sectorId,
+            description,
+            durationWeeks || 12,
+            certificationType,
+            assessmentMethod,
+            equipmentRequirements,
+            curriculumVersion || "1.0",
+            status || "ACTIVE",
+            targetId
+          ]
+        );
+      } else {
+        await pool.query(
+          `INSERT INTO skills (id, skill_code, skill_name, sector_id, description, duration_weeks, certification_type, assessment_method, equipment_requirements, curriculum_version, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          [
+            targetId,
+            skillCode,
+            skillName,
+            sectorId,
+            description,
+            durationWeeks || 12,
+            certificationType,
+            assessmentMethod,
+            equipmentRequirements,
+            curriculumVersion || "1.0",
+            status || "ACTIVE"
+          ]
+        );
+      }
+    } else {
+      const state = loadJsonState();
+      if (!state.skills) state.skills = [];
+      const index = state.skills.findIndex((s: any) => s.id === targetId);
+      const skillObj = {
+        id: targetId,
+        skillCode,
+        skill_code: skillCode,
+        skillName,
+        skill_name: skillName,
+        sectorId,
+        sector_id: sectorId,
+        description,
+        durationWeeks: durationWeeks || 12,
+        duration_weeks: durationWeeks || 12,
+        certificationType,
+        certification_type: certificationType,
+        assessmentMethod,
+        assessment_method: assessmentMethod,
+        equipmentRequirements,
+        equipment_requirements: equipmentRequirements,
+        curriculumVersion: curriculumVersion || "1.0",
+        curriculum_version: curriculumVersion || "1.0",
+        status: status || "ACTIVE",
+        created_at: index >= 0 ? state.skills[index].created_at : new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+      if (index >= 0) {
+        state.skills[index] = skillObj;
+      } else {
+        state.skills.push(skillObj);
+      }
+      saveJsonState(state);
+    }
+
+    await DbRepo.saveAuditLog(req.user.email || req.user.id || "system", actionType, details);
+    res.json({ success: true, id: targetId });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Delete / Archive Skill
+app.delete("/api/skills/:id", requireAuth, async (req: any, res) => {
+  try {
+    const isFedUser = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFedUser) {
+      return res.status(433).json({ error: "Access denied. Federal administration required." });
+    }
+
+    const { id } = req.params;
+    const pool = getPgPool();
+
+    if (pool) {
+      await pool.query(`UPDATE skills SET status = 'ARCHIVED', updated_at = NOW() WHERE id = $1`, [id]);
+    } else {
+      const state = loadJsonState();
+      if (state.skills) {
+        const index = state.skills.findIndex((s: any) => s.id === id);
+        if (index >= 0) {
+          state.skills[index].status = 'ARCHIVED';
+          state.skills[index].updated_at = new Date().toISOString();
+          saveJsonState(state);
+        }
+      }
+    }
+
+    await DbRepo.saveAuditLog(req.user.email || req.user.id || "system", "ARCHIVE_SKILL", `Archived skill ${id}`);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Restore Skill
+app.post("/api/skills/:id/restore", requireAuth, async (req: any, res) => {
+  try {
+    const isFedUser = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFedUser) {
+      return res.status(433).json({ error: "Access denied. Federal administration required." });
+    }
+
+    const { id } = req.params;
+    const pool = getPgPool();
+
+    if (pool) {
+      await pool.query(`UPDATE skills SET status = 'ACTIVE', updated_at = NOW() WHERE id = $1`, [id]);
+    } else {
+      const state = loadJsonState();
+      if (state.skills) {
+        const index = state.skills.findIndex((s: any) => s.id === id);
+        if (index >= 0) {
+          state.skills[index].status = 'ACTIVE';
+          state.skills[index].updated_at = new Date().toISOString();
+          saveJsonState(state);
+        }
+      }
+    }
+
+    await DbRepo.saveAuditLog(req.user.email || req.user.id || "system", "RESTORE_SKILL", `Restored skill ${id}`);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get EOI Applications
+app.get("/api/eoi", requireAuth, async (req: any, res) => {
+  try {
+    const isFedUser = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFedUser) {
+      return res.status(433).json({ error: "Access denied. Federal administration required." });
+    }
+
+    const pool = getPgPool();
+    if (pool) {
+      const dbRes = await pool.query(
+        `SELECT * FROM eoi_applications ORDER BY submission_date DESC`
+      );
+      return res.json(dbRes.rows);
+    } else {
+      const state = loadJsonState();
+      const eoiList = (state.eoiApplications || []).sort((a: any, b: any) => 
+        new Date(b.submissionDate || b.submission_date || 0).getTime() - 
+        new Date(a.submissionDate || a.submission_date || 0).getTime()
+      );
+      return res.json(eoiList);
+    }
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Create EOI Application
+app.post("/api/eoi", requireAuth, async (req: any, res) => {
+  try {
+    const {
+      organizationName,
+      contactPerson,
+      email,
+      phone,
+      state,
+      sector,
+      skillArea,
+      yearsOfExperience,
+      nbteStatus
+    } = req.body;
+
+    if (!organizationName || !contactPerson || !email || !phone || !state || !sector || !skillArea) {
+      return res.status(400).json({ error: "Missing required fields for EOI submission" });
+    }
+
+    const targetId = `eoi_${Math.random().toString(36).substr(2, 9)}`;
+    const randomSuffix = Math.floor(1000 + Math.random() * 9000);
+    const applicationCode = `EOI-2026-${randomSuffix}`;
+    const pool = getPgPool();
+
+    if (pool) {
+      await pool.query(
+        `INSERT INTO eoi_applications (id, application_code, organization_name, contact_person, email, phone, state, sector, skill_area, years_of_experience, nbte_status, application_status, submission_date) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'SUBMITTED', NOW())`,
+        [
+          targetId,
+          applicationCode,
+          organizationName,
+          contactPerson,
+          email,
+          phone,
+          state,
+          sector,
+          skillArea,
+          yearsOfExperience || 0,
+          nbteStatus || "NOT_ACCREDITED"
+        ]
+      );
+    } else {
+      const stateData = loadJsonState();
+      if (!stateData.eoiApplications) stateData.eoiApplications = [];
+      stateData.eoiApplications.push({
+        id: targetId,
+        applicationCode,
+        application_code: applicationCode,
+        organizationName,
+        organization_name: organizationName,
+        contactPerson,
+        contact_person: contactPerson,
+        email,
+        phone,
+        state,
+        sector,
+        skillArea,
+        skill_area: skillArea,
+        yearsOfExperience: yearsOfExperience || 0,
+        years_of_experience: yearsOfExperience || 0,
+        nbteStatus: nbteStatus || "NOT_ACCREDITED",
+        nbte_status: nbteStatus || "NOT_ACCREDITED",
+        applicationStatus: "SUBMITTED",
+        application_status: "SUBMITTED",
+        submissionDate: new Date().toISOString(),
+        submission_date: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      });
+      saveJsonState(stateData);
+    }
+
+    await DbRepo.saveAuditLog(req.user.email || req.user.id || "system", "EOI_SUBMITTED", `Submitted Expression of Interest for ${organizationName} (Code: ${applicationCode})`);
+    res.json({ success: true, id: targetId, applicationCode });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Evaluate EOI Application (Status transitions + Audit logs)
+app.put("/api/eoi/:id/evaluate", requireAuth, async (req: any, res) => {
+  try {
+    const isFedUser = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
+    if (!isFedUser) {
+      return res.status(433).json({ error: "Access denied. Federal administration required." });
+    }
+
+    const { id } = req.params;
+    const { evaluationScore, recommendation, remarks, applicationStatus } = req.body;
+
+    if (!applicationStatus) {
+      return res.status(400).json({ error: "applicationStatus is required" });
+    }
+
+    const reviewerName = req.user.email || req.user.id || "Federal Review Officer";
+    const pool = getPgPool();
+
+    // Map status update to audit event types
+    const auditActions: Record<string, string> = {
+      SUBMITTED: "EOI_SUBMITTED",
+      UNDER_REVIEW: "EOI_REVIEWED",
+      SHORTLISTED: "EOI_SHORTLISTED",
+      REJECTED: "EOI_REJECTED",
+      APPROVED: "EOI_APPROVED",
+      INVITED_TO_NEXT_PHASE: "EOI_INVITED"
+    };
+
+    const actionType = auditActions[applicationStatus] || "EOI_REVIEWED";
+    const details = `Evaluated EOI application ID ${id}. Set score to ${evaluationScore || 0}% and status to ${applicationStatus}.`;
+
+    if (pool) {
+      await pool.query(
+        `UPDATE eoi_applications SET evaluation_score = $1, recommendation = $2, remarks = $3, application_status = $4, reviewed_by = $5, review_date = NOW(), updated_at = NOW() WHERE id = $6`,
+        [
+          evaluationScore || 0,
+          recommendation || "",
+          remarks || "",
+          applicationStatus,
+          reviewerName,
+          id
+        ]
+      );
+    } else {
+      const stateData = loadJsonState();
+      if (stateData.eoiApplications) {
+        const index = stateData.eoiApplications.findIndex((e: any) => e.id === id);
+        if (index >= 0) {
+          stateData.eoiApplications[index] = {
+            ...stateData.eoiApplications[index],
+            evaluationScore: evaluationScore || 0,
+            evaluation_score: evaluationScore || 0,
+            recommendation: recommendation || "",
+            remarks: remarks || "",
+            applicationStatus,
+            application_status: applicationStatus,
+            reviewedBy: reviewerName,
+            reviewed_by: reviewerName,
+            reviewDate: new Date().toISOString(),
+            review_date: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          };
+          saveJsonState(stateData);
+        }
+      }
+    }
+
+    await DbRepo.saveAuditLog(req.user.email || req.user.id || "system", actionType, details);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// --- FED DASHBOARD ENDPOINTS ---
+app.get("/api/dashboard/summary", requireAuth, async (req: any, res) => {
+  try {
+    if (!ALL_ADMIN_ROLES.includes(req.user.role)) {
+      return res.status(433).json({ error: "Access denied. Administrative role context required." });
+    }
+    const [cohorts, batches, trainers, assessments, graduation] = await Promise.all([
+      DbRepo.getCohortDashboardStats(),
+      DbRepo.getBatchDashboardStats(),
+      DbRepo.getTrainerDashboardStats(),
+      DbRepo.getAssessmentDashboardStats(),
+      DbRepo.getGraduationDashboardStats()
+    ]);
+    await DbRepo.saveAuditLog(req.user.email || req.user.id || "system", "GENERATE_DASHBOARD_STATS", "Generated dashboard summary statistics");
+    res.json({
+      cohorts,
+      batches,
+      trainers,
+      assessments,
+      graduation
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/dashboard/cohorts", requireAuth, async (req: any, res) => {
+  try {
+    if (!ALL_ADMIN_ROLES.includes(req.user.role)) {
+      return res.status(433).json({ error: "Access denied. Administrative role context required." });
+    }
+    const stats = await DbRepo.getCohortDashboardStats();
+    await DbRepo.saveAuditLog(req.user.email || req.user.id || "system", "GENERATE_DASHBOARD_STATS", "Generated cohort dashboard statistics");
+    res.json(stats);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/dashboard/batches", requireAuth, async (req: any, res) => {
+  try {
+    if (!ALL_ADMIN_ROLES.includes(req.user.role)) {
+      return res.status(433).json({ error: "Access denied. Administrative role context required." });
+    }
+    const stats = await DbRepo.getBatchDashboardStats();
+    await DbRepo.saveAuditLog(req.user.email || req.user.id || "system", "GENERATE_DASHBOARD_STATS", "Generated batch dashboard statistics");
+    res.json(stats);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/dashboard/trainers", requireAuth, async (req: any, res) => {
+  try {
+    if (!ALL_ADMIN_ROLES.includes(req.user.role)) {
+      return res.status(433).json({ error: "Access denied. Administrative role context required." });
+    }
+    const stats = await DbRepo.getTrainerDashboardStats();
+    await DbRepo.saveAuditLog(req.user.email || req.user.id || "system", "GENERATE_DASHBOARD_STATS", "Generated trainer dashboard statistics");
+    res.json(stats);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/dashboard/assessments", requireAuth, async (req: any, res) => {
+  try {
+    if (!ALL_ADMIN_ROLES.includes(req.user.role)) {
+      return res.status(433).json({ error: "Access denied. Administrative role context required." });
+    }
+    const stats = await DbRepo.getAssessmentDashboardStats();
+    await DbRepo.saveAuditLog(req.user.email || req.user.id || "system", "GENERATE_DASHBOARD_STATS", "Generated assessment dashboard statistics");
+    res.json(stats);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/dashboard/graduation", requireAuth, async (req: any, res) => {
+  try {
+    if (!ALL_ADMIN_ROLES.includes(req.user.role)) {
+      return res.status(433).json({ error: "Access denied. Administrative role context required." });
+    }
+    const stats = await DbRepo.getGraduationDashboardStats();
+    await DbRepo.saveAuditLog(req.user.email || req.user.id || "system", "GENERATE_DASHBOARD_STATS", "Generated graduation dashboard statistics");
+    res.json(stats);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// --- LOCATION INFRASTRUCTURE & TRAINING CENTERS API (Task 017-C) ---
+app.get("/api/locations/states", requireAuth, async (req: any, res) => {
+  try {
+    const r = await executeQuery(`
+      SELECT id, name, code as state_code, geopolitical_zone
+      FROM states
+      WHERE deleted_at IS NULL
+      ORDER BY name ASC
+    `);
+    res.json(r.rows);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/locations/states/:stateId/lgas", requireAuth, async (req: any, res) => {
+  try {
+    const { stateId } = req.params;
+    const r = await executeQuery(`
+      SELECT id, state_id, name, code
+      FROM local_governments
+      WHERE state_id = $1
+      ORDER BY name ASC
+    `, [stateId]);
+    res.json(r.rows);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/training-centers", requireAuth, async (req: any, res) => {
+  try {
+    const { status, q } = req.query;
+    let sql = `
+      SELECT tc.id, tc.tenant_id, tc.state_id, tc.lga_id, tc.center_name, tc.address, tc.latitude, tc.longitude, tc.status, tc.created_at,
+             s.name as state_name, lg.name as lga_name, t.name as tenant_name
+      FROM training_centers tc
+      LEFT JOIN states s ON s.id = tc.state_id
+      LEFT JOIN local_governments lg ON lg.id = tc.lga_id
+      LEFT JOIN tenants t ON t.id = tc.tenant_id
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+    if (status) {
+      params.push(status);
+      sql += ` AND tc.status = $${params.length}`;
+    }
+    if (q) {
+      params.push(`%${q}%`);
+      sql += ` AND (tc.center_name ILIKE $${params.length} OR tc.address ILIKE $${params.length})`;
+    }
+    sql += ` ORDER BY tc.center_name ASC`;
+    
+    const r = await executeQuery(sql, params);
+    res.json(r.rows);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/training-centers/:id", requireAuth, async (req: any, res) => {
+  try {
+    const { id } = req.params;
+    const r = await executeQuery(`
+      SELECT tc.id, tc.tenant_id, tc.state_id, tc.lga_id, tc.center_name, tc.address, tc.latitude, tc.longitude, tc.status, tc.created_at,
+             s.name as state_name, lg.name as lga_name, t.name as tenant_name
+      FROM training_centers tc
+      LEFT JOIN states s ON s.id = tc.state_id
+      LEFT JOIN local_governments lg ON lg.id = tc.lga_id
+      LEFT JOIN tenants t ON t.id = tc.tenant_id
+      WHERE tc.id = $1
+    `, [id]);
+    if (r.rows.length === 0) {
+      return res.status(404).json({ error: "Training center not found" });
+    }
+    res.json(r.rows[0]);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/training-centers", requireAuth, async (req: any, res) => {
+  try {
+    const { tenant_id, state_id, lga_id, center_name, address, latitude, longitude, status } = req.body;
+    
+    const resolvedStateId = (req.user.tenantTier === "STA" || req.user.role === "STA") ? req.user.stateId : state_id;
+    const resolvedTenantId = (req.user.tenantTier === "TSP" || req.user.role === "TSP") ? req.user.tenantId : tenant_id;
+
+    if (!resolvedStateId || !lga_id || !center_name) {
+      return res.status(400).json({ error: "Missing required fields: state_id, lga_id, center_name are required" });
+    }
+
+    const r = await executeQuery(`
+      INSERT INTO training_centers (tenant_id, state_id, lga_id, center_name, address, latitude, longitude, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING *
+    `, [
+      resolvedTenantId || null,
+      resolvedStateId,
+      lga_id,
+      center_name,
+      address || "",
+      latitude ? Number(latitude) : null,
+      longitude ? Number(longitude) : null,
+      status || "ACTIVE"
+    ]);
+
+    await DbRepo.saveAuditLog(
+      req.user.email || req.user.id || "system",
+      "CREATE_TRAINING_CENTER",
+      `Created training center: ${center_name} (ID: ${r.rows[0].id})`
+    );
+
+    res.status(201).json(r.rows[0]);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put("/api/training-centers/:id", requireAuth, async (req: any, res) => {
+  try {
+    const { id } = req.params;
+    const { tenant_id, state_id, lga_id, center_name, address, latitude, longitude, status } = req.body;
+
+    const existingRes = await executeQuery(`SELECT * FROM training_centers WHERE id = $1`, [id]);
+    if (existingRes.rows.length === 0) {
+      return res.status(404).json({ error: "Training center not found" });
+    }
+    const center = existingRes.rows[0];
+
+    const resolvedStateId = (req.user.tenantTier === "STA" || req.user.role === "STA") ? req.user.stateId : (state_id || center.state_id);
+    const resolvedTenantId = (req.user.tenantTier === "TSP" || req.user.role === "TSP") ? req.user.tenantId : (tenant_id === undefined ? center.tenant_id : tenant_id);
+
+    const r = await executeQuery(`
+      UPDATE training_centers
+      SET tenant_id = $1,
+          state_id = $2,
+          lga_id = $3,
+          center_name = $4,
+          address = $5,
+          latitude = $6,
+          longitude = $7,
+          status = $8
+      WHERE id = $9
+      RETURNING *
+    `, [
+      resolvedTenantId || null,
+      resolvedStateId,
+      lga_id || center.lga_id,
+      center_name || center.center_name,
+      address !== undefined ? address : center.address,
+      latitude !== undefined ? (latitude ? Number(latitude) : null) : center.latitude,
+      longitude !== undefined ? (longitude ? Number(longitude) : null) : center.longitude,
+      status || center.status,
+      id
+    ]);
+
+    await DbRepo.saveAuditLog(
+      req.user.email || req.user.id || "system",
+      "UPDATE_TRAINING_CENTER",
+      `Updated training center ID: ${id} (${center_name || center.center_name})`
+    );
+
+    res.json(r.rows[0]);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/training-centers/:id", requireAuth, async (req: any, res) => {
+  try {
+    const { id } = req.params;
+    
+    const existingRes = await executeQuery(`SELECT * FROM training_centers WHERE id = $1`, [id]);
+    if (existingRes.rows.length === 0) {
+      return res.status(404).json({ error: "Training center not found" });
+    }
+    const center = existingRes.rows[0];
+
+    await executeQuery(`DELETE FROM training_centers WHERE id = $1`, [id]);
+
+    await DbRepo.saveAuditLog(
+      req.user.email || req.user.id || "system",
+      "DELETE_TRAINING_CENTER",
+      `Deleted training center ID: ${id} (${center.center_name})`
+    );
+
+    res.json({ message: "Training center removed successfully" });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Server boot with Vite middleware
 async function startServer() {
+  console.log("[BOOT] startServer entered");
+  
+  // Custom safe mode check
+  const isSafeMode = process.env.SAFE_MODE === "true";
+  if (isSafeMode) {
+    console.log("[BOOT] !!! SAFE_MODE ACTIVE !!! Skipping heavy processes.");
+  }
+
   // Gracefully initialize PostgreSQL schema and run migrations
   try {
+    console.log("[BOOT] initDb starting");
     await initDb();
+    console.log("[BOOT] initDb completed");
     
     // Add temporary backend diagnostics to match requirements
     const pool = getPgPool();
@@ -10377,22 +13753,50 @@ async function startServer() {
     console.error("[SYS] Database setup failure during bootstrap lifecycle:", err);
   }
 
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
+  // Global Error Handler to guarantee JSON response for API/middleware failures
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error("[GLOBAL ERROR HANDLER]", err);
+    res.status(err.status || 500).json({
+      error: err.message || "Internal Server Error",
+      details: process.env.NODE_ENV !== "production" ? err.stack : undefined
     });
-    app.use(vite.middlewares);
+  });
+
+  // Check if we should bypass Vite completely for debugging/isolation (e.g. BYPASS_VITE=true)
+  if (process.env.BYPASS_VITE === "true") {
+    console.log("[BOOT] BYPASS_VITE is active. Skipping Vite/static frontend registration and serving live status at '/'");
+    app.get("/", (req, res) => {
+      res.json({ status: "express_alive", timestamp: new Date().toISOString() });
+    });
+  } else if (process.env.NODE_ENV !== "production") {
+    console.log("[BOOT] Vite middleware registration starting");
+    try {
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+      });
+      app.use(vite.middlewares);
+      console.log("[BOOT] Vite middleware registration completed");
+    } catch (vErr: any) {
+      console.error("[BOOT] Vite middleware registration failed! Falling back to simple express routing.", vErr);
+      app.get("/", (req, res) => {
+        res.status(500).json({ status: "express_alive_vite_failed", error: vErr.message });
+      });
+    }
   } else {
+    console.log("[BOOT] Static asset registration starting");
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
+    console.log("[BOOT] Static asset registration completed");
   }
 
+  console.log("[BOOT] app.listen reached");
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`[SYS] Server running on http://localhost:${PORT}`);
+    console.log("[BOOT] Express Listening");
   });
 }
 

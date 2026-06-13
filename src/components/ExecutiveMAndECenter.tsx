@@ -505,17 +505,17 @@ export function ExecutiveMAndECenter({ session, showToast, onRefreshRoot }: Exec
                 {tspRankings
                   .filter((t: any) => t.tspName.toLowerCase().includes(tspSearch.toLowerCase()))
                   .map((row: any, idx: number) => {
-                    // New World Access / unique colors
-                    const isNewWorld = row.tspName === "New World Access";
+                    // Unique Technology / unique colors
+                    const isUniqueTech = row.tspName === "Unique Technology Nig. Ltd";
                     return (
-                      <tr key={`tsp-rank-${idx}`} className={`hover:bg-slate-50/40 ${isNewWorld ? "bg-amber-50/20" : ""}`}>
+                      <tr key={`tsp-rank-${idx}`} className={`hover:bg-slate-50/40 ${isUniqueTech ? "bg-amber-50/20" : ""}`}>
                         <td className="p-3 text-center font-mono font-bold text-slate-500">{idx + 1}</td>
                         <td className="p-3">
                           <div className="flex items-center gap-2">
-                            <Building className={`w-3.5 h-3.5 ${isNewWorld ? "text-amber-600" : "text-slate-400"}`} />
+                            <Building className={`w-3.5 h-3.5 ${isUniqueTech ? "text-amber-600" : "text-slate-400"}`} />
                             <div className="font-semibold text-slate-800">
                               <span>{row.tspName}</span>
-                              {isNewWorld && (
+                              {isUniqueTech && (
                                 <span className="ml-1.5 text-[8.5px] uppercase font-mono text-amber-700 bg-amber-100 font-bold px-1.5 py-0.5 rounded leading-none">
                                   AUDITED TARGET
                                 </span>

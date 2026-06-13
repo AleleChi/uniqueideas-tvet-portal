@@ -14,6 +14,7 @@ import { DocumentType, Beneficiary } from "../types";
 import { buildSanitizedFilename } from "./pdfTraceAudit";
 import JSZip from "jszip";
 import { buildPublicUrl } from "../config/api";
+import { AuthenticatedRequest } from "./auth.middleware";
 
 
 export class AdmissionController {
@@ -273,6 +274,21 @@ export class AdmissionController {
       const tsp = req.query.tsp as string || "all";
       const state = req.query.state as string || "all";
 
+      const authReq = req as AuthenticatedRequest;
+      const user = authReq.user;
+      
+      let tenantId: string | undefined;
+      let stateId: string | undefined;
+      let tspId: string | undefined;
+      let beneficiaryId: string | undefined;
+
+      if (user && user.role !== "SUPER_ADMIN") {
+        tenantId = user.tenantId;
+        stateId = user.stateId;
+        tspId = user.tspId;
+        beneficiaryId = user.beneficiaryId;
+      }
+
       const listPayload = await DbRepo.getAdmissionsPaged({
         page,
         pageSize,
@@ -280,7 +296,11 @@ export class AdmissionController {
         status,
         sector,
         tsp,
-        state
+        state,
+        tenantId,
+        stateId,
+        tspId,
+        beneficiaryId
       });
 
       return res.status(200).json(listPayload);

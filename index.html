@@ -94,7 +94,7 @@
             selectedAddress: '0x5a0b54d5dc17e0aadc383d2db43b0a0d3e029c4c'
           };
 
-          // Use Object.defineProperty to support third-party dynamic assignment of window.ethereum
+          // Securely assign window.ethereum to bypass browser extension redefinition crashes
           var _safeProvider = _mockProvider;
           if (typeof Proxy !== 'undefined') {
             _safeProvider = new Proxy(_mockProvider, {
@@ -118,24 +118,23 @@
             });
           }
 
-          Object.defineProperty(window, 'ethereum', {
-            get: function() {
-              return _safeProvider;
-            },
-            set: function(val) {
-              if (val !== _mockProvider && val !== _safeProvider) {
-                _realEthereum = val;
-              }
-            },
-            configurable: true,
-            enumerable: true
-          });
-
-          window.web3 = {
-            get currentProvider() {
-              return window.ethereum;
+          try {
+            if (!window.ethereum) {
+              window.ethereum = _safeProvider;
             }
-          };
+          } catch (err) {
+            console.warn('[SHIELD] Unable to set window.ethereum safely:', err);
+          }
+
+          try {
+            window.web3 = {
+              get currentProvider() {
+                return window.ethereum;
+              }
+            };
+          } catch (err) {
+            console.warn('[SHIELD] Unable to define window.web3 safely:', err);
+          }
         }
 
         // 1. window.onerror interceptor
