@@ -50,6 +50,9 @@ interface CertificationCenterProps {
 }
 
 export function CertificationCenter({ session, onRefreshRoot }: CertificationCenterProps) {
+  const role = session?.role?.toUpperCase() || "";
+  const isFed = ["FED", "FED_SUPER_ADMIN", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "FEDERAL_ME_OFFICER", "SUPER_ADMIN", "FEDS"].includes(role);
+
   const [trainees, setTrainees] = useState<Trainee[]>([]);
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -393,7 +396,7 @@ export function CertificationCenter({ session, onRefreshRoot }: CertificationCen
                     setSelectedIds([]);
                   }}
                 >
-                  <option value="ALL">All States</option>
+                  <option value="ALL">All Statuses</option>
                   <option value="ELIGIBLE">Eligible Candidates</option>
                   <option value="CERTIFICATION_PENDING">Pending Review</option>
                   <option value="CERTIFIED">Certified Profiles</option>
@@ -401,16 +404,26 @@ export function CertificationCenter({ session, onRefreshRoot }: CertificationCen
                   <option value="ALUMNI">Alumni Registry</option>
                 </select>
 
-                <select 
-                  className="bg-transparent border border-slate-200 rounded-lg p-1.5 text-xs outline-none focus:border-indigo-500 max-w-[200px]"
-                  value={tspFilter}
-                  onChange={(e) => setSearch("")}
-                >
-                  <option value="ALL">All TSPs</option>
-                  {tsps.map(p => (
-                    <option key={p} value={p}>{p}</option>
-                  ))}
-                </select>
+                {isFed ? (
+                  <select 
+                    className="bg-transparent border border-slate-200 rounded-lg p-1.5 text-xs outline-none focus:border-indigo-500 max-w-[200px]"
+                    value={tspFilter}
+                    onChange={(e) => {
+                      setTspFilter(e.target.value);
+                      setSearch("");
+                    }}
+                  >
+                    <option value="ALL">All TSPs</option>
+                    {tsps.map(p => (
+                      <option key={p} value={p}>{p}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="bg-slate-100 border border-slate-200 rounded-lg py-1.5 px-2 text-xs font-semibold font-mono text-slate-600 flex items-center gap-1.5 max-w-[200px]">
+                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Assigned TSP:</span>
+                    <span className="truncate max-w-[120px]">{session?.tspId ? "Assigned Provider" : "Unique Technology Nig. Ltd"}</span>
+                  </div>
+                )}
               </div>
 
             </div>

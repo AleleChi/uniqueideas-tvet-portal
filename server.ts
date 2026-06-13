@@ -7311,7 +7311,11 @@ app.get("/api/beneficiaries", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OF
       if (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP")) {
         if (!tspId) tspId = "00000000-0000-0000-0000-000000000001";
         if (!stateId) stateId = "state_imo_id_default";
-        if (!tenantId) tenantId = "tsp_tenant_default";
+        // Do not set tenantId for TSP roles so that it does not restrict by the tenant_id in the db which might be the state coordinator's tenant
+        tenantId = undefined;
+      } else if (STA_ROLES.includes(user.role) || user.role.startsWith("STA")) {
+        // Do not set tenantId for STA roles as they are scoped by stateId
+        tenantId = undefined;
       }
     }
 
@@ -7449,7 +7453,9 @@ app.get("/api/diagnostics/dob", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_
       if (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP")) {
         if (!tspId) tspId = "00000000-0000-0000-0000-000000000001";
         if (!stateId) stateId = "state_imo_id_default";
-        if (!tenantId) tenantId = "tsp_tenant_default";
+        tenantId = undefined;
+      } else if (STA_ROLES.includes(user.role) || user.role.startsWith("STA")) {
+        tenantId = undefined;
       }
     }
 
@@ -9348,7 +9354,9 @@ app.get("/api/executive-m-and-e/dashboard-stats", requireAuth, async (req, res) 
       if (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP")) {
         if (!tspId) tspId = "00000000-0000-0000-0000-000000000001";
         if (!stateId) stateId = "state_imo_id_default";
-        if (!tenantId) tenantId = "tsp_tenant_default";
+        tenantId = undefined;
+      } else if (STA_ROLES.includes(user.role) || user.role.startsWith("STA")) {
+        tenantId = undefined;
       }
     }
 
@@ -11190,7 +11198,9 @@ app.get("/api/export/csv", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFIC
       if (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP")) {
         if (!tspId) tspId = "00000000-0000-0000-0000-000000000001";
         if (!stateId) stateId = "state_imo_id_default";
-        if (!tenantId) tenantId = "tsp_tenant_default";
+        tenantId = undefined;
+      } else if (STA_ROLES.includes(user.role) || user.role.startsWith("STA")) {
+        tenantId = undefined;
       }
     }
 
@@ -11253,7 +11263,9 @@ app.get("/api/export/excel", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFF
       if (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP")) {
         if (!tspId) tspId = "00000000-0000-0000-0000-000000000001";
         if (!stateId) stateId = "state_imo_id_default";
-        if (!tenantId) tenantId = "tsp_tenant_default";
+        tenantId = undefined;
+      } else if (STA_ROLES.includes(user.role) || user.role.startsWith("STA")) {
+        tenantId = undefined;
       }
     }
 
