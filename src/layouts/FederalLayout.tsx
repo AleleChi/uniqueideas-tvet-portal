@@ -64,6 +64,7 @@ export function FederalLayout({
       items: [
         { label: "Admissions", path: "/federal/admissions", icon: Users },
         { label: "Beneficiaries", path: "/federal/beneficiaries", icon: UserCheck },
+        { label: "Eligible Beneficiaries", path: "/federal/eligible-beneficiaries", icon: FileCheck },
         { label: "Attendance", path: "/federal/attendance", icon: Calendar },
         { label: "Assessments", path: "/federal/assessments", icon: FileCheck }
       ]

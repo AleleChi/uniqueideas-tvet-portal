@@ -47,6 +47,7 @@ import { FedOrganizationsWorkspace } from "./components/FedOrganizationsWorkspac
 import { SystemStatusDashboard } from "./components/SystemStatusDashboard";
 import RestorationCenter from "./components/RestorationCenter";
 import EmailDeliverySystem from "./components/EmailDeliverySystem";
+import EligibleBeneficiariesWorkspace from "./components/EligibleBeneficiariesWorkspace";
 
 import { FederalLayout } from "./layouts/FederalLayout";
 import { StateLayout } from "./layouts/StateLayout";
@@ -79,7 +80,7 @@ export default function App() {
       return null;
     }
   });
-  const [activeTab, setActiveTab] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility" | "trainee-operations" | "certification" | "outcomes" | "evidence" | "toolkits" | "executive-m-and-e" | "quality-accreditation" | "communications" | "locations" | "tsp-profile" | "organizations" | "system-status" | "restoration-center" | "email-audit">("dashboard");
+  const [activeTab, setActiveTab ] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility" | "trainee-operations" | "certification" | "outcomes" | "evidence" | "toolkits" | "executive-m-and-e" | "quality-accreditation" | "communications" | "locations" | "tsp-profile" | "organizations" | "system-status" | "restoration-center" | "email-audit" | "eligible-beneficiaries">("dashboard");
   const [admissionsSubTab, setAdmissionsSubTab] = useState<"dashboard" | "letters" | "forms" | "acceptance" | "dispatches">("dashboard");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [registryViewMode, setRegistryViewMode] = useState<"list" | "details" | "create">("list");
@@ -893,6 +894,8 @@ export default function App() {
       fedChild = <SectorRegistry />;
     } else if (path === "/federal/admissions" || path === "federal/admissions") {
       fedChild = <AdmissionsWorkspace session={session} onSelectCandidate={() => {}} />;
+    } else if (path === "/federal/eligible-beneficiaries" || path === "federal/eligible-beneficiaries") {
+      fedChild = <EligibleBeneficiariesWorkspace session={session} onRefreshRoot={fetchBeneficiaries} />;
     } else if (path === "/federal/beneficiaries" || path === "federal/beneficiaries") {
       fedChild = (
         <BeneficiaryList 
@@ -1213,6 +1216,13 @@ export default function App() {
             <React.Suspense fallback={<SkeletonLoader label="Loading Reports..." />}>
               <ReportsWorkspace beneficiaries={beneficiaries} session={session} />
             </React.Suspense>
+          )}
+
+          {activeTab === "eligible-beneficiaries" && (
+            <EligibleBeneficiariesWorkspace 
+              session={session} 
+              onRefreshRoot={fetchBeneficiaries} 
+            />
           )}
 
           {activeTab === "eligibility" && (

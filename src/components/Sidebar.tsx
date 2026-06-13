@@ -7,7 +7,7 @@ import React from "react";
 import { 
   Users, Image as ImageIcon, Sliders, ShieldCheck, LogOut, 
   Settings, Landmark, Cpu, LayoutDashboard, History, Check, X, FileCheck, UserCheck, Award, FileText,
-  TrendingUp, ClipboardCheck, Briefcase, BarChart3, Wallet, Mail, Database
+  TrendingUp, ClipboardCheck, Briefcase, BarChart3, Wallet, Mail, Database, CheckSquare
 } from "lucide-react";
 
 interface SidebarProps {
@@ -191,6 +191,21 @@ export const Sidebar = React.memo(function Sidebar({
               >
                 <ShieldCheck className="w-3.5 h-3.5 text-inherit" />
                 <span>Acceptance Desk</span>
+              </button>
+
+              <button 
+                onClick={() => {
+                  setActiveTab("eligible-beneficiaries");
+                  setIsSidebarOpen(false);
+                }}
+                className={`w-full py-2 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+                  activeTab === "eligible-beneficiaries"
+                    ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                    : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+                }`}
+              >
+                <CheckSquare className="w-3.5 h-3.5 text-inherit" />
+                <span>Eligible Beneficiaries</span>
               </button>
             </div>
           </div>
