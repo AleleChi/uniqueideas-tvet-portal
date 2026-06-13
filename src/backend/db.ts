@@ -1771,25 +1771,70 @@ export async function initDb(): Promise<void> {
     // Bootstrap national sectors
     await pool.query(`
       INSERT INTO sectors (id, sector_code, sector_name, description, status) VALUES
-      ('s1', 'AGR', 'Agriculture', 'Agricultural and farming skill development', 'ACTIVE'),
-      ('s2', 'CON', 'Construction', 'Civil work, masonry and modern construction infrastructure', 'ACTIVE'),
-      ('s3', 'ICT', 'ICT', 'Information and communications technology, digital systems', 'ACTIVE'),
-      ('s4', 'MAN', 'Manufacturing', 'Industrial manufacturing and product assembly', 'ACTIVE'),
-      ('s5', 'CRE', 'Creative Industry', 'Multimedia, digital design and creative crafts', 'ACTIVE'),
-      ('s6', 'AUT', 'Automotive', 'Vehicle diagnostics, auto-mechanics and assembly', 'ACTIVE'),
-      ('s7', 'REN', 'Renewable Energy', 'Solar installation, wind systems and clean technologies', 'ACTIVE'),
-      ('s8', 'HEA', 'Healthcare', 'Medical systems technology and healthcare support', 'ACTIVE'),
-      ('s9', 'HOS', 'Hospitality', 'Culinary arts, tourism and hospitality services', 'ACTIVE'),
-      ('s10', 'FAS', 'Fashion', 'Textile manufacturing, tailoring and apparel design', 'ACTIVE')
-      ON CONFLICT (id) DO NOTHING;
+      ('s1', 'AGR', 'AGRICULTURE', 'Agricultural and farming skill development', 'ACTIVE'),
+      ('s2', 'CON', 'BUILDING CONSTRUCTION', 'Civil work, masonry and modern construction infrastructure', 'ACTIVE'),
+      ('s3', 'ICT', 'DIGITAL SKILLS', 'Information and communications technology, digital systems', 'ACTIVE'),
+      ('s4', 'ENG', 'ENGINEERING SERVICES', 'Furniture, upholstery, woodwork, and metal fabrication services', 'ACTIVE'),
+      ('s5', 'CRE', 'HOSPITALITY, LEISURE, TOURISM & CREATIVE SERVICES', 'Catering, culinary, fashion design and leather works', 'ACTIVE'),
+      ('s6', 'AUT', 'AUTOMOBILE SKILLS', 'Automobile diagnostics, repairs and mechanics', 'ACTIVE'),
+      ('s7', 'REN', 'RENEWABLE ENERGY', 'Solar installation, wind systems and clean technologies', 'ACTIVE'),
+      ('s8', 'COS', 'BEAUTY COSMETOLOGY', 'Cosmetology, beauty, makeup and wig making', 'ACTIVE'),
+      ('s9', 'CHD', 'CHILDCARE', 'Early child education and baby care support', 'ACTIVE'),
+      ('s10', 'EDU', 'EDUCATION', 'Technical teachers training and pedagogy', 'ACTIVE')
+      ON CONFLICT (id) DO UPDATE SET
+        sector_code = EXCLUDED.sector_code,
+        sector_name = EXCLUDED.sector_name,
+        description = EXCLUDED.description;
     `);
 
     // Bootstrap standard skills
     await pool.query(`
-      INSERT INTO skills (id, skill_code, skill_name, sector_id, description, duration_weeks, certification_type, assessment_method, equipment_requirements, curriculum_version, status) VALUES
-      ('sk1', 'SK-COM-REP', 'Computer Hardware and Cell Phone Repairs', 's3', 'Micro-soldering, circuits diagnostic and operating system installation', 12, 'NBTE Modular', 'Practical, Examination', 'Multimeter, Heat guns, Screwdrivers', '2.1', 'ACTIVE'),
-      ('sk2', 'SK-SOL-INS', 'Solar Photovoltaic Panel Installation', 's7', 'Photovoltaic cells routing, inverter battery chemistry, panel diagnostics', 10, 'NBTE Modular', 'Continuous Assessment, Practical', 'Clamps, crimping tool, safety harness', '1.0', 'ACTIVE')
-      ON CONFLICT (id) DO NOTHING;
+      INSERT INTO skills (id, skill_code, skill_name, sector_id, description, duration_weeks, lot_number, duration_months, status) VALUES
+      ('sk_agr_1', 'SK-AGR-01', 'Fisheries / Aquaculture', 's1', 'Fish breeding, pond management and harvesting', 24, 'LOT 1', 6, 'ACTIVE'),
+      ('sk_agr_2', 'SK-AGR-02', 'Livestock Farming (Poultry)', 's1', 'Poultry management, feed production and disease control', 24, 'LOT 2', 6, 'ACTIVE'),
+      ('sk_agr_3', 'SK-AGR-03', 'Livestock Farming (Bee Keeping)', 's1', 'Beekeeping, apiary set up and honey extraction', 24, 'LOT 2', 6, 'ACTIVE'),
+      ('sk_agr_4', 'SK-AGR-04', 'Livestock Farming (Animal Husbandry)', 's1', 'Ruminant breeding, animal healthcare and housing', 24, 'LOT 2', 6, 'ACTIVE'),
+      ('sk_agr_5', 'SK-AGR-05', 'Crop Production & Processing', 's1', 'Land cultivation, crop planting, preservation and processing', 24, 'LOT 3', 6, 'ACTIVE'),
+      ('sk_agr_6', 'SK-AGR-06', 'Mechanized Agriculture (Operations)', 's1', 'Tractor operation, implement calibration and farming machinery usage', 24, 'LOT 3', 6, 'ACTIVE'),
+      ('sk_agr_7', 'SK-AGR-07', 'Mechanized Agriculture (Mechanics)', 's1', 'Advanced repair of tractors, generators and agricultural equipment', 48, 'LOT 3A', 12, 'ACTIVE'),
+      ('sk1', 'SK-COM-REP', 'Computer Hardware & Cell Phone Repairs', 's3', 'Micro-soldering, circuits diagnostic and operating system installation', 24, 'LOT 4', 6, 'ACTIVE'),
+      ('sk_ict_2', 'SK-ICT-02', 'Network System Installation', 's3', 'Cabling, routing, switch setup and signal configurations', 24, 'LOT 4', 6, 'ACTIVE'),
+      ('sk_ict_3', 'SK-ICT-03', 'Creative Media (Digital Media Production)', 's3', 'Photography, videography, lighting and audio post-processing', 24, 'LOT 5', 6, 'ACTIVE'),
+      ('sk_cre_1', 'SK-CRE-01', 'Baking & Confectionery', 's5', 'Oven operations, pastry dough management, decorating and confectioneries', 24, 'LOT 6', 6, 'ACTIVE'),
+      ('sk_cre_2', 'SK-CRE-02', 'Catering / Hospitality Management', 's5', 'Food preparation, hygiene standards, lodging and catering systems', 24, 'LOT 6', 6, 'ACTIVE'),
+      ('sk_cre_3', 'SK-CRE-03', 'Leather Works', 's5', 'Shoe, bag and belt design, tanning and stitching craft', 24, 'LOT 7', 6, 'ACTIVE'),
+      ('sk_cre_4', 'SK-CRE-04', 'Fashion Design & Garment Making', 's5', 'Apparel sketch, fabric cutting, industrial stitching and tailoring', 48, 'LOT 8', 12, 'ACTIVE'),
+      ('sk_con_1', 'SK-CON-01', 'Painting, Decoration & Interior Finishes', 's2', 'Surface preparation, texturing, wallpaper application and interior styling', 24, 'LOT 9', 6, 'ACTIVE'),
+      ('sk_con_2', 'SK-CON-02', 'Floor Cladding, Tiling & Interlocking', 's2', 'Levelling, tile layout selection, interlocking paving blocks installation', 24, 'LOT 9', 6, 'ACTIVE'),
+      ('sk_con_3', 'SK-CON-03', 'Plumbing & Pipe Fittings', 's2', 'Water distribution layouts, sanitary fixtures and drainage flow plumbing', 24, 'LOT 9', 6, 'ACTIVE'),
+      ('sk_con_4', 'SK-CON-04', 'Bricklaying, Blocklaying & Concreting (BBC)', 's2', 'Masonry blocks routing, bonding mixtures and concrete casting', 24, 'LOT 9', 6, 'ACTIVE'),
+      ('sk2', 'SK-SOL-INS', 'Solar Panel / Inverter Installation & Maintenance', 's7', 'Photovoltaic cells routing, inverter battery chemistry, panel diagnostics', 24, 'LOT 10', 6, 'ACTIVE'),
+      ('sk_ren_2', 'SK-REN-02', 'Automobile CNG Conversion & Maintenance', 's7', 'CNG fuel kits extraction, pressure systems, calibration and safety', 24, 'LOT 11', 6, 'ACTIVE'),
+      ('sk_eng_1', 'SK-ENG-01', 'Furniture & Upholstery', 's4', 'Ergonomic foam padding, leather fabrics, spring assembly and carpentry', 24, 'LOT 12', 6, 'ACTIVE'),
+      ('sk_eng_2', 'SK-ENG-02', 'Woodwork, Carpentry & Joinery', 's4', 'Structural timber layouts, joints, roof carcass and cabinetry', 24, 'LOT 12', 6, 'ACTIVE'),
+      ('sk_eng_3', 'SK-ENG-03', 'Welding & Fabrication', 's4', 'Arc welding, gas cutting, structural iron welding and metal fabrication', 24, 'LOT 13', 6, 'ACTIVE'),
+      ('sk_eng_4', 'SK-ENG-04', 'Electrical Installation & Maintenance', 's4', 'Conduit wiring, circuit breaker layouts and industrial phase maintenance', 24, 'LOT 14', 6, 'ACTIVE'),
+      ('sk_eng_5', 'SK-ENG-05', 'Refrigeration & Air Conditioning', 's4', 'Compressor systems, refrigerant flow, AC repair and thermodynamic maintenance', 24, 'LOT 14', 6, 'ACTIVE'),
+      ('sk_aut_1', 'SK-AUT-01', 'Motorcycle & Tricycle Repairs', 's6', 'Two/three wheeler engine diagnostics, gear transmissions, and brakes', 24, 'LOT 15', 6, 'ACTIVE'),
+      ('sk_aut_2', 'SK-AUT-02', 'Vulcanizing & Tire Repairs', 's6', 'Tire balancing, alignment, pneumatic chamber seals and vulcanizing', 24, 'LOT 15', 6, 'ACTIVE'),
+      ('sk_aut_3', 'SK-AUT-03', 'Automobile Mechanics', 's6', 'Engine overhaul, transmission system assembly and hydraulic brakes', 24, 'LOT 15', 6, 'ACTIVE'),
+      ('sk_aut_4', 'SK-AUT-04', 'Auto Body Works (Panel Beating)', 's6', 'Dent pulling, gas cutting welding, metal chassis alignment and auto spray painting', 48, 'LOT 15A', 12, 'ACTIVE'),
+      ('sk_cos_1', 'SK-COS-01', 'Hair Styling', 's8', 'Braiding, relaxing, texturing, hair weaving and custom hair styling', 24, 'LOT 16', 6, 'ACTIVE'),
+      ('sk_cos_2', 'SK-COS-02', 'Make-Up', 's8', 'Cosmetics matching, contouring, bridal makeups and facial treatment', 24, 'LOT 16', 6, 'ACTIVE'),
+      ('sk_cos_3', 'SK-COS-03', 'Gele Tying', 's8', 'Traditional head-ties, layered pleating and customizable gele art', 24, 'LOT 16', 6, 'ACTIVE'),
+      ('sk_cos_4', 'SK-COS-04', 'Bead Making', 's8', 'Bead threading, jewelry designs, wireworks and souvenir accessory designs', 24, 'LOT 17', 6, 'ACTIVE'),
+      ('sk_cos_5', 'SK-COS-05', 'Wig Making', 's8', 'Weft creation, closure ventilation, custom ventilating and wig care', 24, 'LOT 17', 6, 'ACTIVE'),
+      ('sk_cos_6', 'SK-COS-06', 'Perfume Making', 's8', 'Fragrance extraction, essential oil formulations and perfume bottling', 24, 'LOT 17', 6, 'ACTIVE'),
+      ('sk_chd_1', 'SK-CHD-01', 'Early Child Education & Development', 's9', 'Pedagogical play, child nursing safety, cognitive growth development support', 24, 'LOT 18', 6, 'ACTIVE'),
+      ('sk_edu_1', 'SK-EDU-01', 'Technical Teachers Training', 's10', 'Vocational instruction modeling, syllabus formulation and technical pedagogy', 24, 'LOT 19', 6, 'ACTIVE')
+      ON CONFLICT (id) DO UPDATE SET
+        skill_code = EXCLUDED.skill_code,
+        skill_name = EXCLUDED.skill_name,
+        sector_id = EXCLUDED.sector_id,
+        description = EXCLUDED.description,
+        duration_weeks = EXCLUDED.duration_weeks,
+        lot_number = EXCLUDED.lot_number,
+        duration_months = EXCLUDED.duration_months;
     `);
 
     // Ensure the ID generation sequence exists and is synchronized
@@ -2569,25 +2614,87 @@ export function loadJsonState(): {
       if (!data.graduateToolkits) {
         data.graduateToolkits = [];
       }
-      if (!data.sectors || data.sectors.length === 0) {
+      // Maintain state consistency: Upgrade the sectors/skills automatically if they don't match the 10 sectors and 37 skills
+      const hasLegacySectors = !data.sectors || data.sectors.length !== 10 || data.sectors.some((s: any) => s.sectorName === "Agriculture" || s.sectorName === "ICT");
+      const hasLegacySkills = !data.skills || data.skills.length !== 37;
+
+      if (hasLegacySectors) {
         data.sectors = [
-          { id: "s1", sectorCode: "AGR", sectorName: "Agriculture", description: "Agricultural and farming skill development", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-          { id: "s2", sectorCode: "CON", sectorName: "Construction", description: "Civil work, masonry and modern construction infrastructure", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-          { id: "s3", sectorCode: "ICT", sectorName: "ICT", description: "Information and communications technology, digital systems", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-          { id: "s4", sectorCode: "MAN", sectorName: "Manufacturing", description: "Industrial manufacturing and product assembly", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-          { id: "s5", sectorCode: "CRE", sectorName: "Creative Industry", description: "Multimedia, digital design and creative crafts", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-          { id: "s6", sectorCode: "AUT", sectorName: "Automotive", description: "Vehicle diagnostics, auto-mechanics and assembly", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-          { id: "s7", sectorCode: "REN", sectorName: "Renewable Energy", description: "Solar installation, wind systems and clean technologies", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-          { id: "s8", sectorCode: "HEA", sectorName: "Healthcare", description: "Medical systems technology and healthcare support", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-          { id: "s9", sectorCode: "HOS", sectorName: "Hospitality", description: "Culinary arts, tourism and hospitality services", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-          { id: "s10", sectorCode: "FAS", sectorName: "Fashion", description: "Textile manufacturing, tailoring and apparel design", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
+          { id: "s1", sectorCode: "AGR", sector_code: "AGR", sectorName: "AGRICULTURE", sector_name: "AGRICULTURE", description: "Agricultural and farming skill development", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "s2", sectorCode: "CON", sector_code: "CON", sectorName: "BUILDING CONSTRUCTION", sector_name: "BUILDING CONSTRUCTION", description: "Civil work, masonry and modern construction infrastructure", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "s3", sectorCode: "ICT", sector_code: "ICT", sectorName: "DIGITAL SKILLS", sector_name: "DIGITAL SKILLS", description: "Information and communications technology, digital systems", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "s4", sectorCode: "ENG", sector_code: "ENG", sectorName: "ENGINEERING SERVICES", sector_name: "ENGINEERING SERVICES", description: "Furniture, upholstery, woodwork, and metal fabrication services", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "s5", sectorCode: "CRE", sector_code: "CRE", sectorName: "HOSPITALITY, LEISURE, TOURISM & CREATIVE SERVICES", sector_name: "HOSPITALITY, LEISURE, TOURISM & CREATIVE SERVICES", description: "Catering, culinary, fashion design and leather works", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "s6", sectorCode: "AUT", sector_code: "AUT", sectorName: "AUTOMOBILE SKILLS", sector_name: "AUTOMOBILE SKILLS", description: "Automobile diagnostics, repairs and mechanics", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "s7", sectorCode: "REN", sector_code: "REN", sectorName: "RENEWABLE ENERGY", sector_name: "RENEWABLE ENERGY", description: "Solar installation, wind systems and clean technologies", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "s8", sectorCode: "COS", sector_code: "COS", sectorName: "BEAUTY COSMETOLOGY", sector_name: "BEAUTY COSMETOLOGY", description: "Cosmetology, beauty, makeup and wig making", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "s9", sectorCode: "CHD", sector_code: "CHD", sectorName: "CHILDCARE", sector_name: "CHILDCARE", description: "Early child education and baby care support", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "s10", sectorCode: "EDU", sector_code: "EDU", sectorName: "EDUCATION", sector_name: "EDUCATION", description: "Technical teachers training and pedagogy", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
         ];
       }
-      if (!data.skills || data.skills.length === 0) {
+      if (hasLegacySkills) {
         data.skills = [
-          { id: "sk1", skillCode: "SK-COM-REP", skillName: "Computer Hardware and Cell Phone Repairs", sectorId: "s3", description: "Micro-soldering, circuits diagnostic and operating system installation", durationWeeks: 12, certificationType: "NBTE Modular", assessmentMethod: "Practical, Examination", equipmentRequirements: "Multimeter, Heat guns, Screwdrivers", curriculumVersion: "2.1", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-          { id: "sk2", skillCode: "SK-SOL-INS", skillName: "Solar Photovoltaic Panel Installation", sectorId: "s7", description: "Photovoltaic cells routing, inverter battery chemistry, panel diagnostics", durationWeeks: 10, certificationType: "NBTE Modular", assessmentMethod: "Continuous Assessment, Practical", equipmentRequirements: "Clamps, crimping tool, safety harness", curriculumVersion: "1.0", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
+          // s1: AGRICULTURE
+          { id: "sk_agr_1", skillCode: "SK-AGR-01", skill_code: "SK-AGR-01", skillName: "Fisheries / Aquaculture", skill_name: "Fisheries / Aquaculture", sectorId: "s1", sector_id: "s1", description: "Fish breeding, pond management and harvesting", lotNumber: "LOT 1", lot_number: "LOT 1", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_agr_2", skillCode: "SK-AGR-02", skill_code: "SK-AGR-02", skillName: "Livestock Farming (Poultry)", skill_name: "Livestock Farming (Poultry)", sectorId: "s1", sector_id: "s1", description: "Poultry management, feed production and disease control", lotNumber: "LOT 2", lot_number: "LOT 2", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_agr_3", skillCode: "SK-AGR-03", skill_code: "SK-AGR-03", skillName: "Livestock Farming (Bee Keeping)", skill_name: "Livestock Farming (Bee Keeping)", sectorId: "s1", sector_id: "s1", description: "Beekeeping, apiary set up and honey extraction", lotNumber: "LOT 2", lot_number: "LOT 2", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_agr_4", skillCode: "SK-AGR-04", skill_code: "SK-AGR-04", skillName: "Livestock Farming (Animal Husbandry)", skill_name: "Livestock Farming (Animal Husbandry)", sectorId: "s1", sector_id: "s1", description: "Ruminant breeding, animal healthcare and housing", lotNumber: "LOT 2", lot_number: "LOT 2", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_agr_5", skillCode: "SK-AGR-05", skill_code: "SK-AGR-05", skillName: "Crop Production & Processing", skill_name: "Crop Production & Processing", sectorId: "s1", sector_id: "s1", description: "Land cultivation, crop planting, preservation and processing", lotNumber: "LOT 3", lot_number: "LOT 3", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_agr_6", skillCode: "SK-AGR-06", skill_code: "SK-AGR-06", skillName: "Mechanized Agriculture (Operations)", skill_name: "Mechanized Agriculture (Operations)", sectorId: "s1", sector_id: "s1", description: "Tractor operation, implement calibration and farming machinery usage", lotNumber: "LOT 3", lot_number: "LOT 3", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_agr_7", skillCode: "SK-AGR-07", skill_code: "SK-AGR-07", skillName: "Mechanized Agriculture (Mechanics)", skill_name: "Mechanized Agriculture (Mechanics)", sectorId: "s1", sector_id: "s1", description: "Advanced repair of tractors, generators and agricultural equipment", lotNumber: "LOT 3A", lot_number: "LOT 3A", durationMonths: 12, duration_months: 12, durationWeeks: 48, duration_weeks: 48, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+
+          // s3: DIGITAL SKILLS (sk1 preserves Computer Hardware and Cell Phone Repairs)
+          { id: "sk1", skillCode: "SK-COM-REP", skill_code: "SK-COM-REP", skillName: "Computer Hardware & Cell Phone Repairs", skill_name: "Computer Hardware & Cell Phone Repairs", sectorId: "s3", sector_id: "s3", description: "Micro-soldering, circuits diagnostic and operating system installation", lotNumber: "LOT 4", lot_number: "LOT 4", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_ict_2", skillCode: "SK-ICT-02", skill_code: "SK-ICT-02", skillName: "Network System Installation", skill_name: "Network System Installation", sectorId: "s3", sector_id: "s3", description: "Cabling, routing, switch setup and signal configurations", lotNumber: "LOT 4", lot_number: "LOT 4", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_ict_3", skillCode: "SK-ICT-03", skill_code: "SK-ICT-03", skillName: "Creative Media (Digital Media Production)", skill_name: "Creative Media (Digital Media Production)", sectorId: "s3", sector_id: "s3", description: "Photography, videography, lighting and audio post-processing", lotNumber: "LOT 5", lot_number: "LOT 5", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+
+          // s5: HOSPITALITY, LEISURE, TOURISM & CREATIVE SERVICES
+          { id: "sk_cre_1", skillCode: "SK-CRE-01", skill_code: "SK-CRE-01", skillName: "Baking & Confectionery", skill_name: "Baking & Confectionery", sectorId: "s5", sector_id: "s5", description: "Oven operations, pastry dough management, decorating and confectioneries", lotNumber: "LOT 6", lot_number: "LOT 6", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_cre_2", skillCode: "SK-CRE-02", skill_code: "SK-CRE-02", skillName: "Catering / Hospitality Management", skill_name: "Catering / Hospitality Management", sectorId: "s5", sector_id: "s5", description: "Food preparation, hygiene standards, lodging and catering systems", lotNumber: "LOT 6", lot_number: "LOT 6", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_cre_3", skillCode: "SK-CRE-03", skill_code: "SK-CRE-03", skillName: "Leather Works", skill_name: "Leather Works", sectorId: "s5", sector_id: "s5", description: "Shoe, bag and belt design, tanning and stitching craft", lotNumber: "LOT 7", lot_number: "LOT 7", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_cre_4", skillCode: "SK-CRE-04", skill_code: "SK-CRE-04", skillName: "Fashion Design & Garment Making", skill_name: "Fashion Design & Garment Making", sectorId: "s5", sector_id: "s5", description: "Apparel sketch, fabric cutting, industrial stitching and tailoring", lotNumber: "LOT 8", lot_number: "LOT 8", durationMonths: 12, duration_months: 12, durationWeeks: 48, duration_weeks: 48, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+
+          // s2: BUILDING CONSTRUCTION
+          { id: "sk_con_1", skillCode: "SK-CON-01", skill_code: "SK-CON-01", skillName: "Painting, Decoration & Interior Finishes", skill_name: "Painting, Decoration & Interior Finishes", sectorId: "s2", sector_id: "s2", description: "Surface preparation, texturing, wallpaper application and interior styling", lotNumber: "LOT 9", lot_number: "LOT 9", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_con_2", skillCode: "SK-CON-02", skill_code: "SK-CON-02", skillName: "Floor Cladding, Tiling & Interlocking", skill_name: "Floor Cladding, Tiling & Interlocking", sectorId: "s2", sector_id: "s2", description: "Levelling, tile layout selection, interlocking paving blocks installation", lotNumber: "LOT 9", lot_number: "LOT 9", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_con_3", skillCode: "SK-CON-03", skill_code: "SK-CON-03", skillName: "Plumbing & Pipe Fittings", skill_name: "Plumbing & Pipe Fittings", sectorId: "s2", sector_id: "s2", description: "Water distribution layouts, sanitary fixtures and drainage flow plumbing", lotNumber: "LOT 9", lot_number: "LOT 9", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_con_4", skillCode: "SK-CON-04", skill_code: "SK-CON-04", skillName: "Bricklaying, Blocklaying & Concreting (BBC)", skill_name: "Bricklaying, Blocklaying & Concreting (BBC)", sectorId: "s2", sector_id: "s2", description: "Masonry blocks routing, bonding mixtures and concrete casting", lotNumber: "LOT 9", lot_number: "LOT 9", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+
+          // s7: RENEWABLE ENERGY (sk2 preserves Solar Photovoltaic Panel Installation)
+          { id: "sk2", skillCode: "SK-SOL-INS", skill_code: "SK-SOL-INS", skillName: "Solar Panel / Inverter Installation & Maintenance", skill_name: "Solar Panel / Inverter Installation & Maintenance", sectorId: "s7", sector_id: "s7", description: "Photovoltaic cells routing, inverter battery chemistry, panel diagnostics", lotNumber: "LOT 10", lot_number: "LOT 10", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_ren_2", skillCode: "SK-REN-02", skill_code: "SK-REN-02", skillName: "Automobile CNG Conversion & Maintenance", skill_name: "Automobile CNG Conversion & Maintenance", sectorId: "s7", sector_id: "s7", description: "CNG fuel kits extraction, pressure systems, calibration and safety", lotNumber: "LOT 11", lot_number: "LOT 11", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+
+          // s4: ENGINEERING SERVICES
+          { id: "sk_eng_1", skillCode: "SK-ENG-01", skill_code: "SK-ENG-01", skillName: "Furniture & Upholstery", skill_name: "Furniture & Upholstery", sectorId: "s4", sector_id: "s4", description: "Ergonomic foam padding, leather fabrics, spring assembly and carpentry", lotNumber: "LOT 12", lot_number: "LOT 12", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_eng_2", skillCode: "SK-ENG-02", skill_code: "SK-ENG-02", skillName: "Woodwork, Carpentry & Joinery", skill_name: "Woodwork, Carpentry & Joinery", sectorId: "s4", sector_id: "s4", description: "Structural timber layouts, joints, roof carcass and cabinetry", lotNumber: "LOT 12", lot_number: "LOT 12", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_eng_3", skillCode: "SK-ENG-03", skill_code: "SK-ENG-03", skillName: "Welding & Fabrication", skill_name: "Welding & Fabrication", sectorId: "s4", sector_id: "s4", description: "Arc welding, gas cutting, structural iron welding and metal fabrication", lotNumber: "LOT 13", lot_number: "LOT 13", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_eng_4", skillCode: "SK-ENG-04", skill_code: "SK-ENG-04", skillName: "Electrical Installation & Maintenance", skill_name: "Electrical Installation & Maintenance", sectorId: "s4", sector_id: "s4", description: "Conduit wiring, circuit breaker layouts and industrial phase maintenance", lotNumber: "LOT 14", lot_number: "LOT 14", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_eng_5", skillCode: "SK-ENG-05", skill_code: "SK-ENG-05", skillName: "Refrigeration & Air Conditioning", skill_name: "Refrigeration & Air Conditioning", sectorId: "s4", sector_id: "s4", description: "Compressor systems, refrigerant flow, AC repair and thermodynamic maintenance", lotNumber: "LOT 14", lot_number: "LOT 14", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+
+          // s6: AUTOMOBILE SKILLS
+          { id: "sk_aut_1", skillCode: "SK-AUT-01", skill_code: "SK-AUT-01", skillName: "Motorcycle & Tricycle Repairs", skill_name: "Motorcycle & Tricycle Repairs", sectorId: "s6", sector_id: "s6", description: "Two/three wheeler engine diagnostics, gear transmissions, and brakes", lotNumber: "LOT 15", lot_number: "LOT 15", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_aut_2", skillCode: "SK-AUT-02", skill_code: "SK-AUT-02", skillName: "Vulcanizing & Tire Repairs", skill_name: "Vulcanizing & Tire Repairs", sectorId: "s6", sector_id: "s6", description: "Tire balancing, alignment, pneumatic chamber seals and vulcanizing", lotNumber: "LOT 15", lot_number: "LOT 15", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_aut_3", skillCode: "SK-AUT-03", skill_code: "SK-AUT-03", skillName: "Automobile Mechanics", skill_name: "Automobile Mechanics", sectorId: "s6", sector_id: "s6", description: "Engine overhaul, transmission system assembly and hydraulic brakes", lotNumber: "LOT 15", lot_number: "LOT 15", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_aut_4", skillCode: "SK-AUT-04", skill_code: "SK-AUT-04", skillName: "Auto Body Works (Panel Beating)", skill_name: "Auto Body Works (Panel Beating)", sectorId: "s6", sector_id: "s6", description: "Dent pulling, gas cutting welding, metal chassis alignment and auto spray painting", lotNumber: "LOT 15A", lot_number: "LOT 15A", durationMonths: 12, duration_months: 12, durationWeeks: 48, duration_weeks: 48, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+
+          // s8: BEAUTY COSMETOLOGY
+          { id: "sk_cos_1", skillCode: "SK-COS-01", skill_code: "SK-COS-01", skillName: "Hair Styling", skill_name: "Hair Styling", sectorId: "s8", sector_id: "s8", description: "Braiding, relaxing, texturing, hair weaving and custom hair styling", lotNumber: "LOT 16", lot_number: "LOT 16", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_cos_2", skillCode: "SK-COS-02", skill_code: "SK-COS-02", skillName: "Make-Up", skill_name: "Make-Up", sectorId: "s8", sector_id: "s8", description: "Cosmetics matching, contouring, bridal makeups and facial treatment", lotNumber: "LOT 16", lot_number: "LOT 16", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_cos_3", skillCode: "SK-COS-03", skill_code: "SK-COS-03", skillName: "Gele Tying", skill_name: "Gele Tying", sectorId: "s8", sector_id: "s8", description: "Traditional head-ties, layered pleating and customizable gele art", lotNumber: "LOT 16", lot_number: "LOT 16", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_cos_4", skillCode: "SK-COS-04", skill_code: "SK-COS-04", skillName: "Bead Making", skill_name: "Bead Making", sectorId: "s8", sector_id: "s8", description: "Bead threading, jewelry designs, wireworks and souvenir accessory designs", lotNumber: "LOT 17", lot_number: "LOT 17", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_cos_5", skillCode: "SK-COS-05", skill_code: "SK-COS-05", skillName: "Wig Making", skill_name: "Wig Making", sectorId: "s8", sector_id: "s8", description: "Weft creation, closure ventilation, custom ventilating and wig care", lotNumber: "LOT 17", lot_number: "LOT 17", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { id: "sk_cos_6", skillCode: "SK-COS-06", skill_code: "SK-COS-06", skillName: "Perfume Making", skill_name: "Perfume Making", sectorId: "s8", sector_id: "s8", description: "Fragrance extraction, essential oil formulations and perfume bottling", lotNumber: "LOT 17", lot_number: "LOT 17", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+
+          // s9: CHILDCARE
+          { id: "sk_chd_1", skillCode: "SK-CHD-01", skill_code: "SK-CHD-01", skillName: "Early Child Education & Development", skill_name: "Early Child Education & Development", sectorId: "s9", sector_id: "s9", description: "Pedagogical play, child nursing safety, cognitive growth development support", lotNumber: "LOT 18", lot_number: "LOT 18", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+
+          // s10: EDUCATION
+          { id: "sk_edu_1", skillCode: "SK-EDU-01", skill_code: "SK-EDU-01", skillName: "Technical Teachers Training", skill_name: "Technical Teachers Training", sectorId: "s10", sector_id: "s10", description: "Vocational instruction modeling, syllabus formulation and technical pedagogy", lotNumber: "LOT 19", lot_number: "LOT 19", durationMonths: 6, duration_months: 6, durationWeeks: 24, duration_weeks: 24, status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
         ];
+      }
+
+      if (hasLegacySectors || hasLegacySkills) {
+        fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), "utf-8");
       }
       if (!data.eoiApplications) {
         data.eoiApplications = [];
