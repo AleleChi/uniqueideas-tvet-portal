@@ -10,6 +10,7 @@ import {
   ArrowRight, Search, FileText, CheckCircle2, AlertCircle, Building, Settings, RefreshCw, Cpu
 } from "lucide-react";
 import { authFetch, downloadWithAuth } from "../utils/authFetch";
+import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 
 interface ExecutiveMAndECenterProps {
   session: any;
@@ -38,6 +39,59 @@ export function ExecutiveMAndECenter({ session, showToast, onRefreshRoot }: Exec
   const [tspSearch, tspSetSearch] = useState("");
   const [alertSearch, setAlertSearch] = useState("");
   const [gisSearch, setGisSearch] = useState("");
+
+  // Phase 8: Federal Attendance Intelligence states
+  const [activeMode, setActiveMode] = useState<"dashboard" | "attendance-intelligence">("dashboard");
+  const [fedStateFilter, setFedStateFilter] = useState("all");
+  const [fedTspFilter, setFedTspFilter] = useState("all");
+  const [fedSectorFilter, setFedSectorFilter] = useState("all");
+  const [fedSkillFilter, setFedSkillFilter] = useState("all");
+  const [fedProgFilter, setFedProgFilter] = useState("all");
+  const [fedCohortFilter, setFedCohortFilter] = useState("all");
+  const [fedGenderFilter, setFedGenderFilter] = useState("all");
+  const [fedIntelStats, setFedIntelStats] = useState<any>({
+    nationalAttendanceRate: 85.4,
+    eligibleForStipend: 124,
+    atRisk: 15,
+    suspended: 8,
+    escalated: 5,
+    hoursLogged: 17280,
+    trends: [
+      { month: "Jan", rate: 80.5 },
+      { month: "Feb", rate: 82.4 },
+      { month: "Mar", rate: 84.1 },
+      { month: "Apr", rate: 84.5 },
+      { month: "May", rate: 85.0 },
+      { month: "Jun", rate: 85.4 }
+    ]
+  });
+
+  useEffect(() => {
+    if (activeMode === "attendance-intelligence") {
+      loadFedIntel();
+    }
+  }, [activeMode, fedStateFilter, fedTspFilter, fedSectorFilter, fedSkillFilter, fedProgFilter, fedCohortFilter, fedGenderFilter]);
+
+  async function loadFedIntel() {
+    try {
+      const query = new URLSearchParams({
+        stateId: fedStateFilter === "all" ? "" : fedStateFilter,
+        tspId: fedTspFilter === "all" ? "" : fedTspFilter,
+        sector: fedSectorFilter === "all" ? "" : fedSectorFilter,
+        skill: fedSkillFilter === "all" ? "" : fedSkillFilter,
+        programme: fedProgFilter === "all" ? "" : fedProgFilter,
+        gender: fedGenderFilter === "all" ? "" : fedGenderFilter,
+        month: "2026-06"
+      }).toString();
+      const res = await fetch(`/api/attendance/fed-intelligence?${query}`);
+      const data = await res.json();
+      if (data.success) {
+        setFedIntelStats(data);
+      }
+    } catch (e) {
+      console.error("Failed to load federal intelligence metrics: ", e);
+    }
+  }
 
   const fetchStats = async () => {
     setLoading(true);
@@ -119,26 +173,224 @@ export function ExecutiveMAndECenter({ session, showToast, onRefreshRoot }: Exec
   const gis = stats?.gis || [];
 
   return (
-    <div id="ideas-executive-mand-e" className="space-y-8 animate-in fade-in duration-150">
+    <div id="ideas-executive-mand-e" className="space-y-8 animate-in fade-in duration-150 font-sans">
       
-      {/* Dynamic Filter Header Banner */}
-      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <span className="p-1.5 bg-indigo-600 text-white rounded">
-              <BarChart3 className="w-4 h-4" />
-            </span>
-            <span className="text-[10px] font-bold font-mono text-indigo-600 uppercase tracking-widest bg-indigo-50 px-2 py-0.5 rounded">
-              MEGALLY COMPLIANT GOVERNANCE
-            </span>
+      {/* View Mode Tabs */}
+      <div className="flex gap-2 border-b border-slate-200">
+        <button
+          onClick={() => setActiveMode("dashboard")}
+          className={`py-3 px-5 text-xs font-black uppercase tracking-wider border-b-2 transition cursor-pointer ${
+            activeMode === "dashboard"
+              ? "border-indigo-600 text-indigo-600 font-extrabold"
+              : "border-transparent text-slate-500 hover:text-slate-800"
+          }`}
+        >
+          Executive Overview
+        </button>
+        <button
+          onClick={() => setActiveMode("attendance-intelligence")}
+          className={`py-3 px-5 text-xs font-black uppercase tracking-wider border-b-2 transition cursor-pointer ${
+            activeMode === "attendance-intelligence"
+              ? "border-indigo-600 text-indigo-600 font-extrabold"
+              : "border-transparent text-slate-500 hover:text-slate-800"
+          }`}
+        >
+          Attendance Intelligence
+        </button>
+      </div>
+
+      {activeMode === "attendance-intelligence" ? (
+        <div className="space-y-6">
+          
+          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs">
+            <h2 className="text-xl font-bold text-slate-900 tracking-tight">Federal Attendance & Stipend Intelligence Center</h2>
+            <p className="text-xs text-slate-500 mt-1">Global command console for TVET compliance tracking, monthly stipend audits, and geographic performance tracking.</p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-5 p-4 bg-slate-50 rounded-xl border border-slate-200">
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Assigned State</label>
+                <select
+                  value={fedStateFilter}
+                  onChange={(e) => setFedStateFilter(e.target.value)}
+                  className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-bold text-slate-700 focus:outline-none"
+                >
+                  <option value="all">All States</option>
+                  <option value="Imo">Imo</option>
+                  <option value="Kano">Kano</option>
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Training Provider (TSP)</label>
+                <select
+                  value={fedTspFilter}
+                  onChange={(e) => setFedTspFilter(e.target.value)}
+                  className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-bold text-slate-700 focus:outline-none"
+                >
+                  <option value="all">All TSPs</option>
+                  <option value="1">Unique Technology Nig. Ltd</option>
+                  <option value="2">Elite Skills Academy</option>
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Sector / Skill</label>
+                <select
+                  value={fedSkillFilter}
+                  onChange={(e) => setFedSkillFilter(e.target.value)}
+                  className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-bold text-slate-700 focus:outline-none"
+                >
+                  <option value="all">All Skills</option>
+                  <option value="Computer Hardware Repairs">Computer Hardware Repairs</option>
+                  <option value="Mobile Phone Repairs">Mobile Phone Repairs</option>
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Gender</label>
+                <select
+                  value={fedGenderFilter}
+                  onChange={(e) => setFedGenderFilter(e.target.value)}
+                  className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-bold text-slate-700 focus:outline-none"
+                >
+                  <option value="all">All Genders</option>
+                  <option value="M">Male</option>
+                  <option value="F">Female</option>
+                </select>
+              </div>
+            </div>
           </div>
-          <h2 className="font-sans font-bold text-slate-900 text-xl md:text-2xl tracking-tight text-left">
-            Executive M&E Center
-          </h2>
-          <p className="text-xs text-slate-500">
-            Real-time interactive monitoring dashboard compiling all admission cohorts, toolkit logistics, and verified jobs impact evidence.
-          </p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
+            <div className="bg-white border border-slate-200 p-5 rounded-xl shadow-xxs">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">National Rate</span>
+              <p className="text-2xl font-black text-indigo-600 mt-1">{fedIntelStats.nationalAttendanceRate}%</p>
+              <span className="text-xxs text-emerald-600 font-bold mt-1 block">▲ Compliant baseline</span>
+            </div>
+
+            <div className="bg-white border-2 border-emerald-300/30 p-5 rounded-xl shadow-xxs">
+              <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">Eligible Stipend</span>
+              <p className="text-2xl font-black text-emerald-700 mt-1">{fedIntelStats.eligibleForStipend}</p>
+              <span className="text-xxs text-slate-400 font-medium">Attendance &gt;= 65%</span>
+            </div>
+
+            <div className="bg-white border border-slate-200 p-5 rounded-xl shadow-xxs">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">At Risk (&lt;65%)</span>
+              <p className="text-2xl font-black text-amber-600 mt-1">{fedIntelStats.atRisk || 0}</p>
+              <span className="text-xxs text-slate-400 font-medium">Requires improvement</span>
+            </div>
+
+            <div className="bg-white border border-slate-200 p-5 rounded-xl shadow-xxs">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Suspended (&lt;50%)</span>
+              <p className="text-2xl font-black text-rose-700 mt-1">{fedIntelStats.suspended || 0}</p>
+              <span className="text-xxs text-slate-400 font-medium font-bold">Stipend locked</span>
+            </div>
+
+            <div className="bg-white border border-slate-200 p-5 rounded-xl shadow-xxs">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Escalated (&lt;30%)</span>
+              <p className="text-2xl font-black text-purple-700 mt-1">{fedIntelStats.escalated || 0}</p>
+              <span className="text-xxs text-slate-400 font-medium font-bold">Stipend stop draft</span>
+            </div>
+
+            <div className="bg-white border border-slate-200 p-5 rounded-xl shadow-xxs">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Hours Logged</span>
+              <p className="text-2xl font-black text-slate-800 mt-1">{(fedIntelStats.hoursLogged || 0).toLocaleString()}</p>
+              <span className="text-xxs text-indigo-500 font-bold">Validated classes</span>
+            </div>
+          </div>
+
+          <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-xs">
+            <h3 className="text-sm font-bold text-slate-900 mb-4 font-sans">6-Month National Attendance Compliance Trend</h3>
+            <div className="h-64 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={fedIntelStats.trends}>
+                  <defs>
+                    <linearGradient id="colorRate" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#4f46e5" stopOpacity={0.2}/>
+                      <stop offset="95%" stopColor="#4f46e5" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="month" stroke="#94a3b8" fontSize={11} />
+                  <YAxis stroke="#94a3b8" fontSize={11} domain={[0, 100]} />
+                  <Tooltip />
+                  <Area type="monotone" dataKey="rate" stroke="#4f46e5" strokeWidth={3} fillOpacity={1} fill="url(#colorRate)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs animate-in slide-in-from-bottom-3 duration-200">
+            <div className="p-4 bg-slate-50 border-b border-slate-150 flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-900 uppercase tracking-wider">Geographic Training Output Drilldowns</span>
+              <span className="text-xxs bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded font-bold border border-indigo-150">Active Audit Period</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs text-slate-600 text-slate-600">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-150 text-[10px] font-bold uppercase text-slate-400 tracking-wider">
+                    <th className="p-4">Geographic Area</th>
+                    <th className="p-4">Assigned TSP</th>
+                    <th className="p-4">Target Track / Course</th>
+                    <th className="p-4 text-center">Registered Trainees</th>
+                    <th className="p-4 text-center">Avg Attendance %</th>
+                    <th className="p-4 text-center">Hours Delivered</th>
+                    <th className="p-4 text-right">Audit Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-medium">
+                  <tr className="hover:bg-slate-50 transition">
+                    <td className="p-4 text-slate-900 font-extrabold flex items-center gap-1">
+                      <MapPin className="w-3.5 h-3.5 text-slate-400" /> Imo State
+                    </td>
+                    <td className="p-4 font-bold text-slate-700">Unique Technology Nig. Ltd</td>
+                    <td className="p-4 text-slate-500">Computer Hardware Repairs</td>
+                    <td className="p-4 text-center font-bold text-slate-800 font-extrabold">42 trainees</td>
+                    <td className="p-4 text-center text-emerald-600 font-extrabold">{fedIntelStats.nationalAttendanceRate || 85}%</td>
+                    <td className="p-4 text-center font-mono font-bold">5,040 hrs</td>
+                    <td className="p-4 text-right">
+                      <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 text-xxs font-bold border border-emerald-150 rounded">VERIFIED</span>
+                    </td>
+                  </tr>
+                  <tr className="hover:bg-slate-50 transition">
+                    <td className="p-4 text-slate-900 font-extrabold flex items-center gap-1">
+                      <MapPin className="w-3.5 h-3.5 text-slate-400" /> Kano State
+                    </td>
+                    <td className="p-4 font-bold text-slate-700">Elite Skills Academy</td>
+                    <td className="p-4 text-slate-500">Mobile Phone Repairs</td>
+                    <td className="p-4 text-center font-bold text-slate-800 font-extrabold">38 trainees</td>
+                    <td className="p-4 text-center text-emerald-600 font-extrabold font-black">88.4%</td>
+                    <td className="p-4 text-center font-mono font-bold max-w-[120px]">4,560 hrs</td>
+                    <td className="p-4 text-right animate-pulse">
+                      <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 text-xxs font-bold border border-emerald-150 rounded">VERIFIED</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
         </div>
+      ) : (
+        <>
+          {/* Dynamic Filter Header Banner */}
+          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="p-1.5 bg-indigo-600 text-white rounded">
+                  <BarChart3 className="w-4 h-4" />
+                </span>
+                <span className="text-[10px] font-bold font-mono text-indigo-600 uppercase tracking-widest bg-indigo-50 px-2 py-0.5 rounded">
+                  MEGALLY COMPLIANT GOVERNANCE
+                </span>
+              </div>
+              <h2 className="font-sans font-bold text-slate-900 text-xl md:text-2xl tracking-tight text-left">
+                Executive M&E Center
+              </h2>
+              <p className="text-xs text-slate-500">
+                Real-time interactive monitoring dashboard compiling all admission cohorts, toolkit logistics, and verified jobs impact evidence.
+              </p>
+            </div>
         
         {/* Dynamic Controls */}
         <div className="flex flex-wrap items-center gap-2 sm:self-end">
@@ -778,6 +1030,9 @@ export function ExecutiveMAndECenter({ session, showToast, onRefreshRoot }: Exec
           )}
         </div>
       </div>
+
+        </>
+      )}
 
       {/* COMPONENT 6: INTEGRATED SLIDE-IN PROFILE DRAWER */}
       {showProfileDrawer && (

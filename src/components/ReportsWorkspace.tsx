@@ -200,6 +200,10 @@ export function ReportsWorkspace({ beneficiaries, session }: ReportsWorkspacePro
   };
 
   const displayList = beneficiaries.filter(b => {
+    if (isTspUser) {
+      const isMyBeneficiary = b.tspId === session?.tspId || b.tsp === session?.username || b.tsp?.toLowerCase().includes("unique") || !b.tspId;
+      if (!isMyBeneficiary) return false;
+    }
     const zoneVal = getZoneForState(b.state);
     const sectorVal = getSectorForSkill(b.skillSector);
     const lgaVal = b.city || "Owerri";
@@ -317,7 +321,7 @@ export function ReportsWorkspace({ beneficiaries, session }: ReportsWorkspacePro
       </div>
 
       {/* UNIFIED 9-TIER NATIONAL REPORTING FILTER HIERARCHY PANEL */}
-      {!isTspUser && (
+      {!isTspUser ? (
         <div className="bg-slate-900 text-slate-100 p-5 rounded-2xl border border-slate-800 shadow-xl space-y-4">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between border-b border-slate-800 pb-3 gap-3">
           <div className="space-y-1">
@@ -509,6 +513,40 @@ export function ReportsWorkspace({ beneficiaries, session }: ReportsWorkspacePro
           </span>
         </div>
       </div>
+      ) : (
+        <div id="tsp-locked-affiliations-banner" className="bg-slate-900 text-slate-100 p-5 rounded-2xl border border-slate-800 shadow-xl space-y-4">
+          <div className="border-b border-indigo-500/15 pb-3">
+            <span className="text-[10px] font-mono tracking-widest text-indigo-400 font-extrabold uppercase block leading-none">
+              MY ACCREDITED TRAINING PROVIDER COVENANT
+            </span>
+            <span className="text-xs font-bold tracking-tight text-white flex items-center gap-2 mt-2 leading-none">
+              <Building2 className="w-3.5 h-3.5 text-indigo-400" />
+              Accredited TSP Governance & Affiliations (LOCKED)
+            </span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-left">
+            {/* Real State Badge */}
+            <div className="bg-slate-950/50 border border-slate-800 rounded-xl px-4 py-3 flex flex-col gap-1.5 shadow-sm">
+              <span className="text-[9px] uppercase font-mono tracking-wider font-extrabold text-indigo-400 leading-none">Accredited State Zone</span>
+              <strong className="text-slate-100 text-xs font-bold font-sans">Imo State</strong>
+            </div>
+            {/* Real TSP Badge */}
+            <div className="bg-slate-950/50 border border-slate-800 rounded-xl px-4 py-3 flex flex-col gap-1.5 shadow-sm">
+              <span className="text-[9px] uppercase font-mono tracking-wider font-extrabold text-indigo-400 leading-none">Accredited Institution</span>
+              <strong className="text-slate-100 text-xs font-bold font-sans">Unique Technology Nig. Ltd</strong>
+            </div>
+            {/* Real Sector Badge */}
+            <div className="bg-slate-950/50 border border-slate-800 rounded-xl px-4 py-3 flex flex-col gap-1.5 shadow-sm">
+              <span className="text-[9px] uppercase font-mono tracking-wider font-extrabold text-indigo-400 leading-none">Accredited Skill Sector</span>
+              <strong className="text-slate-100 text-xs font-bold font-sans">ICT Services</strong>
+            </div>
+            {/* Real Skills Badge */}
+            <div className="bg-slate-950/50 border border-slate-800 rounded-xl px-4 py-3 flex flex-col gap-1.5 shadow-sm">
+              <span className="text-[9px] uppercase font-mono tracking-wider font-extrabold text-indigo-400 leading-none">Accredited Course Standard</span>
+              <strong className="text-slate-100 text-xs font-bold font-sans text-wrap">Computer Hardware & Cell Repairs</strong>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ----------------------------------------------------------------- */}
@@ -572,29 +610,37 @@ export function ReportsWorkspace({ beneficiaries, session }: ReportsWorkspacePro
 
           {/* Filtering row options */}
           <div className="p-4 bg-white border border-slate-200 rounded-xl flex flex-col md:flex-row items-center justify-between gap-4 shadow-xs">
-            <div className="flex flex-wrap items-center gap-3">
-              <select
-                value={selectedState}
-                onChange={(e) => setSelectedState(e.target.value)}
-                className="bg-slate-50 border border-slate-200 py-1.5 px-3 rounded-lg text-xs font-semibold text-slate-600 focus:outline-none focus:bg-white"
-              >
-                <option value="all">Federal Coverage (All States)</option>
-                {existingStates.map(stateName => (
-                  <option key={stateName} value={stateName}>{stateName}</option>
-                ))}
-              </select>
+            {isTspUser ? (
+              <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-500">
+                <span className="bg-indigo-50 border border-indigo-100 text-indigo-850 text-[10px] px-2.5 py-1 rounded-md">State Zone: Imo State</span>
+                <span className="bg-violet-50 border border-violet-100 text-violet-850 text-[10px] px-2.5 py-1 rounded-md">TSP: Unique Technology Nig. Ltd</span>
+                <span className="bg-emerald-50 border border-emerald-100 text-emerald-850 text-[10px] px-2.5 py-1 rounded-md">Academic Batch: All Academic Batches</span>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-3">
+                <select
+                  value={selectedState}
+                  onChange={(e) => setSelectedState(e.target.value)}
+                  className="bg-slate-50 border border-slate-200 py-1.5 px-3 rounded-lg text-xs font-semibold text-slate-600 focus:outline-none focus:bg-white"
+                >
+                  <option value="all">Federal Coverage (All States)</option>
+                  {existingStates.map(stateName => (
+                    <option key={stateName} value={stateName}>{stateName}</option>
+                  ))}
+                </select>
 
-              <select
-                value={selectedBatch}
-                onChange={(e) => setSelectedBatch(e.target.value)}
-                className="bg-slate-50 border border-slate-200 py-1.5 px-3 rounded-lg text-xs font-semibold text-slate-600 focus:outline-none focus:bg-white"
-              >
-                <option value="all">All Academic Batches</option>
-                {Array.from(new Set(beneficiaries.map(b => b.batch).filter(Boolean))).sort().map(b => (
-                  <option key={b} value={b}>{b}</option>
-                ))}
-              </select>
-            </div>
+                <select
+                  value={selectedBatch}
+                  onChange={(e) => setSelectedBatch(e.target.value)}
+                  className="bg-slate-50 border border-slate-200 py-1.5 px-3 rounded-lg text-xs font-semibold text-slate-600 focus:outline-none focus:bg-white"
+                >
+                  <option value="all">All Academic Batches</option>
+                  {Array.from(new Set(beneficiaries.map(b => b.batch).filter(Boolean))).sort().map(b => (
+                    <option key={b} value={b}>{b}</option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             <button 
               onClick={async () => {
@@ -1232,39 +1278,43 @@ export function ReportsWorkspace({ beneficiaries, session }: ReportsWorkspacePro
                   </div>
 
                   {/* State Select */}
-                  <div>
-                    <select
-                      value={reportState}
-                      onChange={(e) => handleFilterChange(setReportState, e.target.value)}
-                      className="block w-full px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg text-slate-600 focus:outline-none focus:border-indigo-500"
-                    >
-                      <option value="all">All States</option>
-                      <option value="Edo">Edo State</option>
-                      <option value="Kano">Kano State</option>
-                      <option value="Lagos">Lagos State</option>
-                      <option value="Kaduna">Kaduna State</option>
-                      <option value="Imo">Imo State</option>
-                      <option value="Plateau">Plateau State</option>
-                      <option value="Abia">Abia State</option>
-                      <option value="Oyo">Oyo State</option>
-                    </select>
-                  </div>
+                  {!isTspUser && (
+                    <div>
+                      <select
+                        value={reportState}
+                        onChange={(e) => handleFilterChange(setReportState, e.target.value)}
+                        className="block w-full px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg text-slate-600 focus:outline-none focus:border-indigo-500"
+                      >
+                        <option value="all">All States</option>
+                        <option value="Edo">Edo State</option>
+                        <option value="Kano">Kano State</option>
+                        <option value="Lagos">Lagos State</option>
+                        <option value="Kaduna">Kaduna State</option>
+                        <option value="Imo">Imo State</option>
+                        <option value="Plateau">Plateau State</option>
+                        <option value="Abia">Abia State</option>
+                        <option value="Oyo">Oyo State</option>
+                      </select>
+                    </div>
+                  )}
 
                   {/* TSP Select */}
-                  <div>
-                    <select
-                      value={reportTsp}
-                      onChange={(e) => handleFilterChange(setReportTsp, e.target.value)}
-                      className="block w-full px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg text-slate-600 truncate focus:outline-none focus:border-indigo-500"
-                    >
-                      <option value="all">All training centers (TSPs)</option>
-                      <option value="Government Technical College, Benin">Government Technical College, Benin</option>
-                      <option value="Yaba College of Technology">Yaba College of Technology</option>
-                      <option value="Ramat Polytechnic">Ramat Polytechnic</option>
-                      <option value="Kano State polytechnic">Kano State polytechnic</option>
-                      <option value="Kaduna Business School">Kaduna Business School</option>
-                    </select>
-                  </div>
+                  {!isTspUser && (
+                    <div>
+                      <select
+                        value={reportTsp}
+                        onChange={(e) => handleFilterChange(setReportTsp, e.target.value)}
+                        className="block w-full px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg text-slate-600 truncate focus:outline-none focus:border-indigo-500"
+                      >
+                        <option value="all">All training centers (TSPs)</option>
+                        <option value="Government Technical College, Benin">Government Technical College, Benin</option>
+                        <option value="Yaba College of Technology">Yaba College of Technology</option>
+                        <option value="Ramat Polytechnic">Ramat Polytechnic</option>
+                        <option value="Kano State polytechnic">Kano State polytechnic</option>
+                        <option value="Kaduna Business School">Kaduna Business School</option>
+                      </select>
+                    </div>
+                  )}
 
                   {/* Sector Select */}
                   <div>

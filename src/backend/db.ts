@@ -941,6 +941,25 @@ const SCHEMA_DDL = `
   );
   CREATE INDEX IF NOT EXISTS idx_graduation_beneficiary ON graduation_clearances(beneficiary_id);
 
+  -- Stipend Compliance Snapshots Table (Phase 4)
+  CREATE TABLE IF NOT EXISTS stipend_compliance_snapshots (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    beneficiary_id VARCHAR(50) NOT NULL REFERENCES beneficiaries(id) ON DELETE CASCADE,
+    attendance_percentage NUMERIC(5, 2) NOT NULL,
+    present_days INT NOT NULL,
+    absent_days INT NOT NULL,
+    late_days INT NOT NULL,
+    total_hours NUMERIC(6, 2) NOT NULL,
+    expected_days INT NOT NULL,
+    stipend_status VARCHAR(50) NOT NULL,
+    stipend_reason TEXT,
+    month_identifier VARCHAR(20) NOT NULL,
+    evaluated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (beneficiary_id, month_identifier)
+  );
+  CREATE INDEX IF NOT EXISTS idx_stipend_compliance_beneficiary ON stipend_compliance_snapshots(beneficiary_id);
+  CREATE INDEX IF NOT EXISTS idx_stipend_compliance_month ON stipend_compliance_snapshots(month_identifier);
+
   -- Training batch assignments table
   CREATE TABLE IF NOT EXISTS training_batch_assignments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -10191,6 +10210,118 @@ export class DbRepo {
       cleared,
       pending
     };
+  }
+
+  static async computeAndSaveStipendCompliance(beneficiaryId: string, monthStr: string): Promise<any> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) return null;
+    try {
+      const attRes = await executeQuery(
+        `SELECT status, hours_logged, attendance_date 
+         FROM trainee_attendance 
+         WHERE beneficiary_id = $1 AND TO_CHAR(attendance_date, 'YYYY-MM') = $2`,
+        [beneficiaryId, monthStr]
+      );
+      
+      const rows = attRes.rows;
+      let present_days = 0;
+      let late_days = 0;
+      let absent_days = 0;
+      let total_hours = 0;
+      
+      for (const r of rows) {
+        const status = (r.status || "").toUpperCase();
+        total_hours += parseFloat(r.hours_logged) || 0;
+        if (status === "PRESENT" || status === "HOLIDAY" || status === "FIELDWORK") {
+          present_days++;
+        } else if (status === "LATE") {
+          late_days++;
+          present_days++;
+        } else if (status === "ABSENT") {
+          absent_days++;
+        }
+      }
+      
+      // Compute expected training days in month
+      const totalTrainingDaysRes = await executeQuery(
+        `SELECT COUNT(DISTINCT attendance_date)::int as count 
+         FROM trainee_attendance 
+         WHERE TO_CHAR(attendance_date, 'YYYY-MM') = $1`,
+        [monthStr]
+      );
+      let expected_days = totalTrainingDaysRes.rows[0]?.count || 0;
+      if (expected_days === 0) {
+        expected_days = Math.max(rows.length, 20);
+      }
+      
+      const attendance_percentage = expected_days > 0 
+        ? parseFloat(((present_days / expected_days) * 100).toFixed(1)) 
+        : 0.0;
+        
+      let stipend_status = "ELIGIBLE";
+      let stipend_reason = "Compliant class attendance logged.";
+      
+      if (attendance_percentage < 30) {
+        stipend_status = "ESCALATED";
+        stipend_reason = "Critical: Attendance is below 30%. Immediate escalation active.";
+      } else if (attendance_percentage < 50) {
+        stipend_status = "SUSPENDED";
+        stipend_reason = "Non-compliant: Attendance is below 50%. Stipend suspended.";
+      } else if (attendance_percentage < 65) {
+        stipend_status = "AT_RISK";
+        stipend_reason = "Warning: Attendance is below 65%. Candidate is currently at risk.";
+      }
+      
+      await executeQuery(
+        `INSERT INTO stipend_compliance_snapshots (
+          beneficiary_id, attendance_percentage, present_days, absent_days, late_days, 
+          total_hours, expected_days, stipend_status, stipend_reason, month_identifier
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (beneficiary_id, month_identifier) DO UPDATE SET
+          attendance_percentage = EXCLUDED.attendance_percentage,
+          present_days = EXCLUDED.present_days,
+          absent_days = EXCLUDED.absent_days,
+          late_days = EXCLUDED.late_days,
+          total_hours = EXCLUDED.total_hours,
+          expected_days = EXCLUDED.expected_days,
+          stipend_status = EXCLUDED.stipend_status,
+          stipend_reason = EXCLUDED.stipend_reason,
+          evaluated_at = CURRENT_TIMESTAMP`,
+        [
+          beneficiaryId, attendance_percentage, present_days, absent_days, late_days,
+          total_hours, expected_days, stipend_status, stipend_reason, monthStr
+        ]
+      );
+      
+      return {
+        attendance_percentage,
+        present_days,
+        absent_days,
+        late_days,
+        total_hours,
+        expected_days,
+        stipend_status,
+        stipend_reason
+      };
+    } catch (err) {
+      console.error("[DB Repo] computeAndSaveStipendCompliance error:", err);
+      return null;
+    }
+  }
+
+  static async getComplianceHistory(beneficiaryId: string): Promise<any[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) return [];
+    try {
+      const res = await executeQuery(
+        `SELECT * FROM stipend_compliance_snapshots WHERE beneficiary_id = $1 ORDER BY month_identifier DESC`,
+        [beneficiaryId]
+      );
+      return res.rows;
+    } catch (err) {
+      console.error("[DB Repo] getComplianceHistory error:", err);
+      return [];
+    }
   }
 }
 

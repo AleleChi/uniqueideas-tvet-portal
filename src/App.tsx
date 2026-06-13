@@ -48,6 +48,7 @@ import { SystemStatusDashboard } from "./components/SystemStatusDashboard";
 import RestorationCenter from "./components/RestorationCenter";
 import EmailDeliverySystem from "./components/EmailDeliverySystem";
 import EligibleBeneficiariesWorkspace from "./components/EligibleBeneficiariesWorkspace";
+import TspAttendanceCenter from "./components/TspAttendanceCenter";
 
 import { FederalLayout } from "./layouts/FederalLayout";
 import { StateLayout } from "./layouts/StateLayout";
@@ -80,7 +81,7 @@ export default function App() {
       return null;
     }
   });
-  const [activeTab, setActiveTab ] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility" | "trainee-operations" | "certification" | "outcomes" | "evidence" | "toolkits" | "executive-m-and-e" | "quality-accreditation" | "communications" | "locations" | "tsp-profile" | "organizations" | "system-status" | "restoration-center" | "email-audit" | "eligible-beneficiaries">("dashboard");
+  const [activeTab, setActiveTab ] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility" | "trainee-operations" | "certification" | "outcomes" | "evidence" | "toolkits" | "executive-m-and-e" | "quality-accreditation" | "communications" | "locations" | "tsp-profile" | "organizations" | "system-status" | "restoration-center" | "email-audit" | "eligible-beneficiaries" | "attendance-center">("dashboard");
   const [admissionsSubTab, setAdmissionsSubTab] = useState<"dashboard" | "letters" | "forms" | "acceptance" | "dispatches">("dashboard");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [registryViewMode, setRegistryViewMode] = useState<"list" | "details" | "create">("list");
@@ -1372,6 +1373,13 @@ export default function App() {
 
           {activeTab === "locations" && (
             <LocationsWorkspace session={session} />
+          )}
+
+          {activeTab === "attendance-center" && (
+            <TspAttendanceCenter 
+              session={session} 
+              showToast={showToast} 
+            />
           )}
 
           {activeTab === "tsp-profile" && (
