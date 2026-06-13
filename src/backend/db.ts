@@ -3578,6 +3578,23 @@ export class DbRepo {
     const pool = getPgPool();
     if (!pool || !isPgActive) {
       let state = loadJsonState().beneficiaries as Beneficiary[];
+      
+      // Auto-map empty fields for Unique Technology Nig. Ltd beneficiaries in JSON fallback
+      state = state.map(b => {
+        const mapped = { ...b };
+        if (!mapped.tsp) {
+          mapped.tsp = "Unique Technology Nig. Ltd";
+        }
+        if (mapped.tsp === "Unique Technology Nig. Ltd") {
+          if (!mapped.tspId) mapped.tspId = "00000000-0000-0000-0000-000000000001";
+          if (!mapped.stateId) mapped.stateId = "state_imo_id_default";
+          if (!mapped.tenantId) mapped.tenantId = "tsp_tenant_default";
+          if (!mapped.state) mapped.state = "Imo";
+          if (!mapped.city) mapped.city = "Owerri Municipal";
+        }
+        return mapped;
+      });
+
       if (options?.tenantId) {
         state = state.filter(b => b.tenantId === options.tenantId);
       }
@@ -3638,6 +3655,7 @@ export class DbRepo {
                b.eligibility_override, b.eligibility_override_reason, b.eligibility_override_by, b.eligibility_override_at,
                b.certification_status, b.certificate_number, b.certificate_issued_at, b.certificate_issued_by, b.graduation_batch, b.alumni_status, b.certificate_reference, b.certificate_verification_code, b.certificate_download_count, b.certificate_last_downloaded_at, b.alumni_employment_status, b.alumni_entrepreneur_status, b.alumni_business_name, b.alumni_current_employer,
                b.created_at, b.updated_at,
+               b.tenant_id as "tenantId", b.state_id as "stateId", b.tsp_id as "tspId",
                adm.admission_status, adm.admission_ref, adm.admission_form_ref, adm.admission_letter_generated_at, 
                adm.admission_letter_sent_at, adm.admission_form_completed, adm.admission_form_status, 
                adm.training_progress, adm.admission_form_generated_at, adm.admission_form_confirmed_at,
@@ -3714,6 +3732,9 @@ export class DbRepo {
 
         const beneficiary: Beneficiary = {
           id: row.id,
+          tenantId: row.tenantId || undefined,
+          stateId: row.stateId || undefined,
+          tspId: row.tspId || undefined,
           photo: row.photo || "",
           hasPhoto: row.has_photo,
           firstName: row.first_name,
@@ -3846,7 +3867,8 @@ export class DbRepo {
                 beneficiary_status, status_reason, status_changed_at, status_changed_by, is_archived,
                 eligibility_override, eligibility_override_reason, eligibility_override_by, eligibility_override_at,
                 certification_status, certificate_number, certificate_issued_at, certificate_issued_by, graduation_batch, alumni_status, certificate_reference, certificate_verification_code, certificate_download_count, certificate_last_downloaded_at, alumni_employment_status, alumni_entrepreneur_status, alumni_business_name, alumni_current_employer,
-                created_at, updated_at, token_version, workflow_version
+                created_at, updated_at, token_version, workflow_version,
+                tenant_id as "tenantId", state_id as "stateId", tsp_id as "tspId"
          FROM beneficiaries
          WHERE id = $1 AND deleted_at IS NULL`,
         [id]
@@ -3919,6 +3941,9 @@ export class DbRepo {
 
       const beneficiary: Beneficiary = {
         id: row.id,
+        tenantId: row.tenantId || undefined,
+        stateId: row.stateId || undefined,
+        tspId: row.tspId || undefined,
         photo: row.photo || "",
         hasPhoto: !!row.photo,
         firstName: row.first_name,
@@ -4618,6 +4643,19 @@ export class DbRepo {
           tenant_id: "55555555-5555-5555-5555-555555555555",
           tenant_tier: "STA",
           state_id: "66666666-6666-6666-6666-666666666666",
+          failed_login_attempts: 0
+        };
+      }
+      if (normalizedEmail === "tsp.admin@tvet.local") {
+        return {
+          id: "user_tsp",
+          email: normalizedEmail,
+          password_hash: bcrypt.hashSync("ChangeMe123!", 10),
+          role: "TSP_ADMIN",
+          tenant_id: "tsp_tenant_default",
+          tenant_tier: "TSP",
+          state_id: "state_imo_id_default",
+          tsp_id: "00000000-0000-0000-0000-000000000001",
           failed_login_attempts: 0
         };
       }
@@ -5712,7 +5750,11 @@ export class DbRepo {
   /**
    * Fetch aggregated statistics for admissions
    */
-  static async getAdmissionsStats(): Promise<{
+  static async getAdmissionsStats(options?: {
+    tenantId?: string;
+    stateId?: string;
+    tspId?: string;
+  }): Promise<{
     summary: { total: number; pending: number; underReview: number; admitted: number; rejected: number };
     bySector: { [key: string]: number };
     byProgram: { [key: string]: number };
@@ -5732,7 +5774,17 @@ export class DbRepo {
     if (!pool || !isPgActive) {
       // In JSON simulation, scan in memory
       const state = loadJsonState();
-      const beneficiariesList = state.beneficiaries as Beneficiary[];
+      let beneficiariesList = state.beneficiaries as Beneficiary[];
+      
+      if (options?.tenantId) {
+        beneficiariesList = beneficiariesList.filter(b => b.tenantId === options.tenantId);
+      }
+      if (options?.stateId) {
+        beneficiariesList = beneficiariesList.filter(b => b.stateId === options.stateId);
+      }
+      if (options?.tspId) {
+        beneficiariesList = beneficiariesList.filter(b => b.tspId === options.tspId);
+      }
       
       const summary = { total: 0, pending: 0, underReview: 0, admitted: 0, rejected: 0 };
       const bySector: { [key: string]: number } = {};
@@ -5788,14 +5840,34 @@ export class DbRepo {
     }
 
     try {
+      let whereClause = "WHERE b.deleted_at IS NULL ";
+      const params: any[] = [];
+      let paramCount = 1;
+
+      if (options?.tenantId) {
+        whereClause += `AND b.tenant_id = $${paramCount} `;
+        params.push(options.tenantId);
+        paramCount++;
+      }
+      if (options?.stateId) {
+        whereClause += `AND b.state_id = $${paramCount} `;
+        params.push(options.stateId);
+        paramCount++;
+      }
+      if (options?.tspId) {
+        whereClause += `AND b.tsp_id = $${paramCount} `;
+        params.push(options.tspId);
+        paramCount++;
+      }
+
       // Direct high-efficiency groupings in Postgres
       const summaryRes = await executeQuery(`
         SELECT COALESCE(adm.admission_status, 'Pending') as status, COUNT(*) as count
          FROM beneficiaries b
          LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
-         WHERE b.deleted_at IS NULL
+         ${whereClause}
          GROUP BY COALESCE(adm.admission_status, 'Pending')
-      `);
+      `, params);
 
       const summary = { total: 0, pending: 0, underReview: 0, admitted: 0, rejected: 0 };
       for (const r of summaryRes.rows) {
@@ -5816,8 +5888,10 @@ export class DbRepo {
 
       const sectorRes = await executeQuery(`
         SELECT b.skill_sector, COUNT(*) as count 
-         FROM beneficiaries b WHERE b.deleted_at IS NULL GROUP BY b.skill_sector
-      `);
+         FROM beneficiaries b 
+         ${whereClause} 
+         GROUP BY b.skill_sector
+      `, params);
       const bySector: { [key: string]: number } = {};
       for (const r of sectorRes.rows) {
         bySector[r.skill_sector || "Computer Repairs"] = parseInt(r.count, 10);
@@ -5825,8 +5899,10 @@ export class DbRepo {
 
       const programRes = await executeQuery(`
         SELECT b.program, COUNT(*) as count 
-         FROM beneficiaries b WHERE b.deleted_at IS NULL GROUP BY b.program
-      `);
+         FROM beneficiaries b 
+         ${whereClause} 
+         GROUP BY b.program
+      `, params);
       const byProgram: { [key: string]: number } = {};
       for (const r of programRes.rows) {
         byProgram[r.program || "IDEAS-TVET"] = parseInt(r.count, 10);
@@ -5834,8 +5910,10 @@ export class DbRepo {
 
       const tspRes = await executeQuery(`
         SELECT b.tsp, COUNT(*) as count 
-         FROM beneficiaries b WHERE b.deleted_at IS NULL GROUP BY b.tsp
-      `);
+         FROM beneficiaries b 
+         ${whereClause} 
+         GROUP BY b.tsp
+      `, params);
       const byTsp: { [key: string]: number } = {};
       for (const r of tspRes.rows) {
         byTsp[r.tsp || "Unique Tech"] = parseInt(r.count, 10);
@@ -5843,8 +5921,10 @@ export class DbRepo {
 
       const stateRes = await executeQuery(`
         SELECT b.state, COUNT(*) as count 
-         FROM beneficiaries b WHERE b.deleted_at IS NULL GROUP BY b.state
-      `);
+         FROM beneficiaries b 
+         ${whereClause} 
+         GROUP BY b.state
+      `, params);
       const byState: { [key: string]: number } = {};
       for (const r of stateRes.rows) {
         const name = (r.state || "Unassigned").replace(" State", "");
@@ -5853,8 +5933,10 @@ export class DbRepo {
 
       const lgaRes = await executeQuery(`
         SELECT b.city, COUNT(*) as count 
-         FROM beneficiaries b WHERE b.deleted_at IS NULL GROUP BY b.city
-      `);
+         FROM beneficiaries b 
+         ${whereClause} 
+         GROUP BY b.city
+      `, params);
       const byLga: { [key: string]: number } = {};
       for (const r of lgaRes.rows) {
         byLga[r.city || "Owerri Central"] = parseInt(r.count, 10);
@@ -5865,9 +5947,9 @@ export class DbRepo {
         SELECT COALESCE(adm.acceptance_letter_status, 'NOT_SUBMITTED') as status, COUNT(*) as count
         FROM beneficiaries b
         LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
-        WHERE b.deleted_at IS NULL
+        ${whereClause}
         GROUP BY COALESCE(adm.acceptance_letter_status, 'NOT_SUBMITTED')
-      `);
+      `, params);
       const acceptanceSummary = { NOT_SUBMITTED: 0, SUBMITTED: 0, UNDER_VERIFICATION: 0, ACCEPTED: 0, REJECTED: 0 } as any;
       for (const r of accLetterRes.rows) {
         const rawStatus = String(r.status || "NOT_SUBMITTED").toUpperCase().replace(" ", "_");
@@ -5881,13 +5963,14 @@ export class DbRepo {
       // Fetch admission form stats
       const formStatsRes = await executeQuery(`
         SELECT 
-          COUNT(CASE WHEN admission_form_pdf_url IS NOT NULL OR admission_form_generated_at IS NOT NULL THEN 1 END) as generated,
-          COUNT(CASE WHEN admission_form_viewed_at IS NOT NULL THEN 1 END) as viewed,
-          COUNT(CASE WHEN admission_form_confirmed_at IS NOT NULL THEN 1 END) as confirmed,
-          COUNT(CASE WHEN (admission_form_pdf_url IS NOT NULL OR admission_form_generated_at IS NOT NULL) AND admission_form_confirmed_at IS NULL THEN 1 END) as pending
-        FROM admissions
-        WHERE deleted_at IS NULL
-      `);
+          COUNT(CASE WHEN adm.admission_form_pdf_url IS NOT NULL OR adm.admission_form_generated_at IS NOT NULL THEN 1 END) as generated,
+          COUNT(CASE WHEN adm.admission_form_viewed_at IS NOT NULL THEN 1 END) as viewed,
+          COUNT(CASE WHEN adm.admission_form_confirmed_at IS NOT NULL THEN 1 END) as confirmed,
+          COUNT(CASE WHEN (adm.admission_form_pdf_url IS NOT NULL OR adm.admission_form_generated_at IS NOT NULL) AND adm.admission_form_confirmed_at IS NULL THEN 1 END) as pending
+        FROM admissions adm
+        JOIN beneficiaries b ON adm.beneficiary_id = b.id
+        ${whereClause} AND adm.deleted_at IS NULL
+      `, params);
       const formRow = formStatsRes.rows[0] || {};
       const admissionFormSummary = {
         generated: parseInt(formRow.generated || "0", 10),
@@ -6566,6 +6649,9 @@ export class DbRepo {
     sortBy?: string;
     sortOrder?: "ASC" | "DESC";
     systemContext?: boolean;
+    tenantId?: string;
+    stateId?: string;
+    tspId?: string;
   }): Promise<{
     rows: Array<{
       id: string;
@@ -6598,6 +6684,16 @@ export class DbRepo {
     if (!pool || !isPgActive) {
       const stateData = loadJsonState();
       let list = (stateData.beneficiaries || []) as Beneficiary[];
+
+      if (options.tenantId) {
+        list = list.filter(b => b.tenantId === options.tenantId);
+      }
+      if (options.stateId) {
+        list = list.filter(b => b.stateId === options.stateId);
+      }
+      if (options.tspId) {
+        list = list.filter(b => b.tspId === options.tspId);
+      }
 
       // Filter in memory matching base query criteria
       if (search) {
@@ -6721,6 +6817,24 @@ export class DbRepo {
       if (tspFilter !== "all") {
         queryWhere += `AND b.tsp = $${paramCount} `;
         params.push(tspFilter);
+        paramCount++;
+      }
+
+      if (options?.tenantId) {
+        queryWhere += `AND b.tenant_id = $${paramCount} `;
+        params.push(options.tenantId);
+        paramCount++;
+      }
+
+      if (options?.stateId) {
+        queryWhere += `AND b.state_id = $${paramCount} `;
+        params.push(options.stateId);
+        paramCount++;
+      }
+
+      if (options?.tspId) {
+        queryWhere += `AND b.tsp_id = $${paramCount} `;
+        params.push(options.tspId);
         paramCount++;
       }
 
@@ -7518,6 +7632,9 @@ export class DbRepo {
     date?: string;
     page?: number;
     limit?: number;
+    tenantId?: string;
+    stateId?: string;
+    tspId?: string;
   }): Promise<{ attendance: any[]; total: number }> {
     const pool = getPgPool();
     if (!pool || !isPgActive) return { attendance: [], total: 0 };
@@ -7542,6 +7659,24 @@ export class DbRepo {
     if (date) {
       whereClause += ` AND ta.attendance_date = $${valIndex}`;
       values.push(date);
+      valIndex++;
+    }
+
+    if (params.tenantId) {
+      whereClause += ` AND b.tenant_id = $${valIndex}`;
+      values.push(params.tenantId);
+      valIndex++;
+    }
+
+    if (params.stateId) {
+      whereClause += ` AND b.state_id = $${valIndex}`;
+      values.push(params.stateId);
+      valIndex++;
+    }
+
+    if (params.tspId) {
+      whereClause += ` AND b.tsp_id = $${valIndex}`;
+      values.push(params.tspId);
       valIndex++;
     }
 
@@ -7656,7 +7791,7 @@ export class DbRepo {
     }
   }
 
-  static async getAttendanceStats(dateStr?: string): Promise<any> {
+  static async getAttendanceStats(dateStr?: string, options?: { tenantId?: string, stateId?: string, tspId?: string }): Promise<any> {
     const pool = getPgPool();
     if (!pool || !isPgActive) {
       return {
@@ -7673,17 +7808,51 @@ export class DbRepo {
     }
     const targetDate = dateStr || new Date().toISOString().split("T")[0];
     try {
-      const activeTraineesRes = await executeQuery(`
-        SELECT COUNT(*) as count FROM beneficiaries WHERE status IN ('ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI') AND deleted_at IS NULL
-      `);
+      let activeQuery = `SELECT COUNT(*) as count FROM beneficiaries WHERE status IN ('ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI') AND deleted_at IS NULL`;
+      const activeParams: any[] = [];
+      let activeIndex = 1;
+
+      if (options?.tenantId) {
+        activeQuery += ` AND tenant_id = $${activeIndex++}`;
+        activeParams.push(options.tenantId);
+      }
+      if (options?.stateId) {
+        activeQuery += ` AND state_id = $${activeIndex++}`;
+        activeParams.push(options.stateId);
+      }
+      if (options?.tspId) {
+        activeQuery += ` AND tsp_id = $${activeIndex++}`;
+        activeParams.push(options.tspId);
+      }
+
+      const activeTraineesRes = await executeQuery(activeQuery, activeParams);
       const totalTrainees = parseInt(activeTraineesRes.rows[0].count, 10);
 
-      const statsRes = await executeQuery(`
-        SELECT status, COUNT(*) as count
-        FROM trainee_attendance
-        WHERE attendance_date = $1
-        GROUP BY status
-      `, [targetDate]);
+      let statsQuery = `
+        SELECT ta.status, COUNT(*) as count
+        FROM trainee_attendance ta
+        JOIN beneficiaries b ON ta.beneficiary_id = b.id
+        WHERE ta.attendance_date = $1 AND b.deleted_at IS NULL
+      `;
+      const statsParams: any[] = [targetDate];
+      let statsIndex = 2;
+
+      if (options?.tenantId) {
+        statsQuery += ` AND b.tenant_id = $${statsIndex++}`;
+        statsParams.push(options.tenantId);
+      }
+      if (options?.stateId) {
+        statsQuery += ` AND b.state_id = $${statsIndex++}`;
+        statsParams.push(options.stateId);
+      }
+      if (options?.tspId) {
+        statsQuery += ` AND b.tsp_id = $${statsIndex++}`;
+        statsParams.push(options.tspId);
+      }
+
+      statsQuery += ` GROUP BY ta.status`;
+
+      const statsRes = await executeQuery(statsQuery, statsParams);
 
       let presentNum = 0;
       let absentNum = 0;
@@ -7697,11 +7866,29 @@ export class DbRepo {
         else if (row.status === "EXCUSED") excusedNum = parseInt(row.count, 10);
       }
 
-      const bioRes = await executeQuery(`
+      let bioQuery = `
         SELECT COUNT(*) as count
-        FROM trainee_attendance
-        WHERE attendance_date = $1 AND attendance_source = 'BIOMETRIC'
-      `, [targetDate]);
+        FROM trainee_attendance ta
+        JOIN beneficiaries b ON ta.beneficiary_id = b.id
+        WHERE ta.attendance_date = $1 AND ta.attendance_source = 'BIOMETRIC' AND b.deleted_at IS NULL
+      `;
+      const bioParams: any[] = [targetDate];
+      let bioIndex = 2;
+
+      if (options?.tenantId) {
+        bioQuery += ` AND b.tenant_id = $${bioIndex++}`;
+        bioParams.push(options.tenantId);
+      }
+      if (options?.stateId) {
+        bioQuery += ` AND b.state_id = $${bioIndex++}`;
+        bioParams.push(options.stateId);
+      }
+      if (options?.tspId) {
+        bioQuery += ` AND b.tsp_id = $${bioIndex++}`;
+        bioParams.push(options.tspId);
+      }
+
+      const bioRes = await executeQuery(bioQuery, bioParams);
       const biometricCount = parseInt(bioRes.rows[0].count, 10);
 
       // Fetch portal active count

@@ -1250,27 +1250,84 @@ export default function App() {
           )}
 
           {activeTab === "executive-m-and-e" && (
-            <ExecutiveMAndECenter
-              session={session}
-              showToast={showToast}
-              onRefreshRoot={fetchBeneficiaries}
-            />
+            (() => {
+              const FED_ROLES_LIST = ["FED", "FED_SUPER_ADMIN", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "FEDERAL_ME_OFFICER"];
+              const isFedUser = session?.role === "SUPER_ADMIN" || FED_ROLES_LIST.includes(session?.role || "");
+              if (!isFedUser) {
+                return (
+                  <div className="p-8 bg-white rounded-xl shadow-sm border border-slate-200 text-center max-w-lg mx-auto my-12">
+                    <div className="w-12 h-12 bg-rose-50 rounded-full flex items-center justify-center mx-auto text-rose-500 mb-4 border border-rose-100">
+                      <ShieldCheck className="w-6 h-6" />
+                    </div>
+                    <h3 className="text-base font-bold text-slate-900 mb-1">Access Restrained</h3>
+                    <p className="text-xs text-slate-500 leading-relaxed max-w-sm mx-auto">
+                      This governance workspace is isolated to Federal Programme Managers and System Auditors.
+                    </p>
+                  </div>
+                );
+              }
+              return (
+                <ExecutiveMAndECenter
+                  session={session}
+                  showToast={showToast}
+                  onRefreshRoot={fetchBeneficiaries}
+                />
+              );
+            })()
           )}
 
           {activeTab === "quality-accreditation" && (
-            <QualityAccreditationCenter
-              session={session}
-              showToast={showToast}
-              onRefreshRoot={fetchBeneficiaries}
-            />
+            (() => {
+              const FED_ROLES_LIST = ["FED", "FED_SUPER_ADMIN", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "FEDERAL_ME_OFFICER"];
+              const isFedUser = session?.role === "SUPER_ADMIN" || FED_ROLES_LIST.includes(session?.role || "");
+              if (!isFedUser) {
+                return (
+                  <div className="p-8 bg-white rounded-xl shadow-sm border border-slate-200 text-center max-w-lg mx-auto my-12">
+                    <div className="w-12 h-12 bg-rose-50 rounded-full flex items-center justify-center mx-auto text-rose-500 mb-4 border border-rose-100">
+                      <ShieldCheck className="w-6 h-6" />
+                    </div>
+                    <h3 className="text-base font-bold text-slate-900 mb-1">Access Restrained</h3>
+                    <p className="text-xs text-slate-500 leading-relaxed max-w-sm mx-auto">
+                      This governance workspace is isolated to Federal Programme Managers and System Auditors.
+                    </p>
+                  </div>
+                );
+              }
+              return (
+                <QualityAccreditationCenter
+                  session={session}
+                  showToast={showToast}
+                  onRefreshRoot={fetchBeneficiaries}
+                />
+              );
+            })()
           )}
 
           {activeTab === "financials-roi" && (
-            <FinancialsRoiCenter
-              session={session}
-              showToast={showToast}
-              onRefreshRoot={fetchBeneficiaries}
-            />
+            (() => {
+              const FED_ROLES_LIST = ["FED", "FED_SUPER_ADMIN", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "FEDERAL_ME_OFFICER"];
+              const isFedUser = session?.role === "SUPER_ADMIN" || FED_ROLES_LIST.includes(session?.role || "");
+              if (!isFedUser) {
+                return (
+                  <div className="p-8 bg-white rounded-xl shadow-sm border border-slate-200 text-center max-w-lg mx-auto my-12">
+                    <div className="w-12 h-12 bg-rose-50 rounded-full flex items-center justify-center mx-auto text-rose-500 mb-4 border border-rose-100">
+                      <ShieldCheck className="w-6 h-6" />
+                    </div>
+                    <h3 className="text-base font-bold text-slate-900 mb-1">Access Restrained</h3>
+                    <p className="text-xs text-slate-500 leading-relaxed max-w-sm mx-auto">
+                      This governance workspace is isolated to Federal Programme Managers and System Auditors.
+                    </p>
+                  </div>
+                );
+              }
+              return (
+                <FinancialsRoiCenter
+                  session={session}
+                  showToast={showToast}
+                  onRefreshRoot={fetchBeneficiaries}
+                />
+              );
+            })()
           )}
 
           {activeTab === "toolkits" && (

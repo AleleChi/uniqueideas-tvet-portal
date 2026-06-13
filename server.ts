@@ -42,6 +42,38 @@ const STA_ROLES = ["STA", "STATE_ADMIN", "STATE_COORDINATOR"];
 const TSP_ROLES = ["TSP", "TSP_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"];
 const ALL_ADMIN_ROLES = ["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES];
 
+async function checkBeneficiaryAccess(user: any, beneficiaryId: string): Promise<boolean> {
+  if (!user) return false;
+  const isFederal = user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role);
+  if (isFederal) return true;
+  
+  if (user.role === "TRAINEE") {
+    return user.beneficiaryId === beneficiaryId;
+  }
+  
+  const b = await DbRepo.getBeneficiaryById(beneficiaryId);
+  if (!b) return false;
+  
+  let userTspId = user.tspId;
+  let userStateId = user.stateId;
+
+  if (TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"))) {
+    if (!userTspId) userTspId = "00000000-0000-0000-0000-000000000001";
+    if (!userStateId) userStateId = "state_imo_id_default";
+  }
+
+  const bTspId = b.tspId || "00000000-0000-0000-0000-000000000001";
+  const bStateId = b.stateId || "state_imo_id_default";
+
+  if (userTspId && bTspId !== userTspId) {
+    return false;
+  }
+  if (userStateId && bStateId !== userStateId) {
+    return false;
+  }
+  return true;
+}
+
 const memoizedStates = NIGERIAN_ZONES.reduce((acc: any[], zone) => {
   zone.states.forEach(state => {
     let cleanCode = state.toUpperCase().substring(0, 3).replace(/ /g, "");
@@ -1753,11 +1785,16 @@ app.get("/api/admissions/download-letter/:id", async (req, res) => {
 });
 
 // Unified PDF and MS Word Document Generator Download Endpoint
-app.get("/api/documents/download/:id/:type", async (req, res) => {
+app.get("/api/documents/download/:id/:type", requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const { id, type } = req.params;
     const format = req.query.format || "pdf"; // "pdf" or "word"
     const inline = req.query.inline === "true";
+
+    const hasAccess = await checkBeneficiaryAccess(req.user, id);
+    if (!hasAccess && id !== "SAMPLE-0001") {
+      return res.status(403).send("Access Denied: Tenant isolation active.");
+    }
 
     let beneficiary = await DbRepo.getBeneficiaryById(id);
     if (!beneficiary && id === "SAMPLE-0001") {
@@ -4290,8 +4327,25 @@ app.get("/api/toolkits/export-excel", requireAuth, async (req, res) => {
 
 app.get("/api/attendance/stats", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
   try {
+    const authReq = req as AuthenticatedRequest;
+    const user = authReq.user;
+    let tenantIdStr: string | undefined;
+    let stateIdStr: string | undefined;
+    let tspIdStr: string | undefined;
+
+    const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+    if (user && !isFederal) {
+      tenantIdStr = user.tenantId;
+      stateIdStr = user.stateId;
+      tspIdStr = user.tspId;
+    }
+
     const date = req.query.date as string;
-    const stats = await DbRepo.getAttendanceStats(date);
+    const stats = await DbRepo.getAttendanceStats(date, {
+      tenantId: tenantIdStr,
+      stateId: stateIdStr,
+      tspId: tspIdStr
+    });
     res.json(stats);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -4300,6 +4354,19 @@ app.get("/api/attendance/stats", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN
 
 app.get("/api/attendance", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
   try {
+    const authReq = req as AuthenticatedRequest;
+    const user = authReq.user;
+    let tenantIdStr: string | undefined;
+    let stateIdStr: string | undefined;
+    let tspIdStr: string | undefined;
+
+    const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+    if (user && !isFederal) {
+      tenantIdStr = user.tenantId;
+      stateIdStr = user.stateId;
+      tspIdStr = user.tspId;
+    }
+
     const { search, date, page, limit } = req.query;
     const parsedPage = parseInt(page as string, 10) || 1;
     const parsedLimit = parseInt(limit as string, 10) || 20;
@@ -4308,7 +4375,10 @@ app.get("/api/attendance", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFIC
       search: search as string,
       date: date as string,
       page: parsedPage,
-      limit: parsedLimit
+      limit: parsedLimit,
+      tenantId: tenantIdStr,
+      stateId: stateIdStr,
+      tspId: tspIdStr
     });
     res.json(data);
   } catch (err: any) {
@@ -4321,6 +4391,11 @@ app.post("/api/attendance", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFI
     const { beneficiary_id, attendance_date, status, check_in_time, check_out_time, attendance_source } = req.body;
     if (!beneficiary_id || !attendance_date || !status) {
       return res.status(400).json({ error: "Missing required parameters: beneficiary_id, attendance_date, status" });
+    }
+
+    const hasAccess = await checkBeneficiaryAccess(req.user, beneficiary_id);
+    if (!hasAccess) {
+      return res.status(403).json({ error: "Access Denied: Tenant isolation active." });
     }
 
     const original = await DbRepo.getTraineeProfileByBeneficiaryId(beneficiary_id);
@@ -4369,6 +4444,11 @@ app.post("/api/portal-monitoring/:beneficiaryId", requireAuth, requireRole(["SUP
     const { beneficiaryId } = req.params;
     const { still_on_portal, still_attending, remarks } = req.body;
 
+    const hasAccess = await checkBeneficiaryAccess(req.user, beneficiaryId);
+    if (!hasAccess) {
+      return res.status(403).json({ error: "Access Denied: Tenant isolation active." });
+    }
+
     const original = await DbRepo.getTraineeProfileByBeneficiaryId(beneficiaryId);
     const name = original ? `${original.first_name} ${original.last_name}` : beneficiaryId;
 
@@ -4412,6 +4492,9 @@ app.post("/api/attendance/import-csv", requireAuth, requireRole(["SUPER_ADMIN", 
       if (tpRes.rows.length === 0) continue;
 
       const beneficiary_id = tpRes.rows[0].beneficiary_id;
+      const hasAccess = await checkBeneficiaryAccess(req.user, beneficiary_id);
+      if (!hasAccess) continue;
+
       await DbRepo.saveTraineeAttendance({
         beneficiary_id,
         attendance_date: date,
@@ -7218,11 +7301,18 @@ app.get("/api/beneficiaries", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OF
     let tspId: string | undefined;
     let beneficiaryId: string | undefined;
 
-    if (user && user.role !== "SUPER_ADMIN") {
+    if (user && user.role !== "SUPER_ADMIN" && !FED_ROLES.includes(user.role)) {
       tenantId = user.tenantId;
       stateId = user.stateId;
       tspId = user.tspId;
       beneficiaryId = user.beneficiaryId;
+      
+      // Auto-assign pilot TSP parameters for TSP role sessions if empty/missing
+      if (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP")) {
+        if (!tspId) tspId = "00000000-0000-0000-0000-000000000001";
+        if (!stateId) stateId = "state_imo_id_default";
+        if (!tenantId) tenantId = "tsp_tenant_default";
+      }
     }
 
     const beneficiaries = await DbRepo.getBeneficiaries({ 
@@ -7243,17 +7333,25 @@ app.get("/api/beneficiaries/:id", requireAuth, async (req: AuthenticatedRequest,
   try {
     const { id } = req.params;
     
-    // In-depth Authorization boundary: Trainees are locked out of other beneficiaries profiles
-    if (req.user!.role === "TRAINEE" && req.user!.beneficiaryId !== id) {
-      return res.status(403).json({ error: "Access Denied. A trainee candidate can only access their personal profile." });
+    const b = await DbRepo.getBeneficiaryById(id);
+    if (!b) {
+      return res.status(404).json({ error: "Beneficiary record not found" });
     }
 
-    const b = await DbRepo.getBeneficiaryById(id);
-    if (b) {
-      res.json(b);
-    } else {
-      res.status(404).json({ error: "Beneficiary record not found" });
+    const isFederal = req.user && (req.user.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user.role));
+    if (req.user && !isFederal) {
+      if (req.user.role === "TRAINEE" && req.user.beneficiaryId !== id) {
+        return res.status(403).json({ error: "Access Denied. A trainee candidate can only access their personal profile." });
+      }
+      if (req.user.tspId && b.tspId && b.tspId !== req.user.tspId) {
+        return res.status(403).json({ error: "Access Denied: Tenant isolation active. This beneficiary belongs to another organization." });
+      }
+      if (req.user.stateId && b.stateId && b.stateId !== req.user.stateId) {
+        return res.status(403).json({ error: "Access Denied: State division active. This beneficiary belongs to another state." });
+      }
     }
+
+    res.json(b);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -7262,8 +7360,9 @@ app.get("/api/beneficiaries/:id", requireAuth, async (req: AuthenticatedRequest,
 app.get("/api/beneficiaries/:id/photo", requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const { id } = req.params;
-    if (req.user!.role === "TRAINEE" && req.user!.beneficiaryId !== id) {
-      return res.status(403).json({ error: "Access Denied." });
+    const hasAccess = await checkBeneficiaryAccess(req.user, id);
+    if (!hasAccess) {
+      return res.status(403).json({ error: "Access Denied: Tenant isolation active." });
     }
     const photo = await DbRepo.getBeneficiaryPhotoOnly(id);
     res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=3600");
@@ -7321,9 +7420,10 @@ app.get("/api/beneficiaries/:id/photo/raw", async (req: AuthenticatedRequest, re
       return serveRawPhoto(id, res);
     }
 
-    return requireAuth(req, res, () => {
-      if (req.user!.role === "TRAINEE" && req.user!.beneficiaryId !== id) {
-        return res.status(403).json({ error: "Access Denied. You are forbidden from retrieving other candidate photos." });
+    return requireAuth(req, res, async () => {
+      const hasAccess = await checkBeneficiaryAccess(req.user, id);
+      if (!hasAccess) {
+        return res.status(403).json({ error: "Access Denied: Tenant isolation active." });
       }
       return serveRawPhoto(id, res);
     });
@@ -7335,7 +7435,25 @@ app.get("/api/beneficiaries/:id/photo/raw", async (req: AuthenticatedRequest, re
 // DOB Data Integrity Audit and Diagnostics Tooling
 app.get("/api/diagnostics/dob", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
   try {
-    const beneficiaries = await DbRepo.getBeneficiaries({ includePhoto: false });
+    let tenantId: string | undefined;
+    let stateId: string | undefined;
+    let tspId: string | undefined;
+
+    const user = req.user;
+    const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+    if (user && !isFederal) {
+      tenantId = user.tenantId;
+      stateId = user.stateId;
+      tspId = user.tspId;
+
+      if (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP")) {
+        if (!tspId) tspId = "00000000-0000-0000-0000-000000000001";
+        if (!stateId) stateId = "state_imo_id_default";
+        if (!tenantId) tenantId = "tsp_tenant_default";
+      }
+    }
+
+    const beneficiaries = await DbRepo.getBeneficiaries({ includePhoto: false, tenantId, stateId, tspId });
     
     let total = beneficiaries.length;
     let missingCount = 0;
@@ -8115,6 +8233,10 @@ app.post("/api/admissions/bulk-lifecycle-status", requireAuth, async (req: Authe
 // Fetch generated document history for a beneficiary
 app.get("/api/documents/:beneficiaryId/history", requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
+    const hasAccess = await checkBeneficiaryAccess(req.user, req.params.beneficiaryId);
+    if (!hasAccess) {
+      return res.status(403).json({ error: "Access Denied: Tenant isolation active." });
+    }
     const history = await DocumentService.getDocumentHistory(req.params.beneficiaryId);
     res.json(history);
   } catch (e: any) {
@@ -8125,6 +8247,10 @@ app.get("/api/documents/:beneficiaryId/history", requireAuth, async (req: Authen
 // Fetch workflow status history timeline for a beneficiary
 app.get("/api/beneficiaries/:id/workflow-history", requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
+    const hasAccess = await checkBeneficiaryAccess(req.user, req.params.id);
+    if (!hasAccess) {
+      return res.status(403).json({ error: "Access Denied: Tenant isolation active." });
+    }
     const history = await DbRepo.getWorkflowHistory(req.params.id);
     res.json(history);
   } catch (e: any) {
@@ -8138,6 +8264,11 @@ app.post("/api/documents/generate", requireAuth, requireRole(["SUPER_ADMIN", "AD
     const { beneficiaryId, documentType, regenerate } = req.body;
     if (!beneficiaryId || !documentType) {
       return res.status(400).json({ error: "beneficiaryId and documentType are required fields." });
+    }
+
+    const hasAccess = await checkBeneficiaryAccess(req.user, beneficiaryId);
+    if (!hasAccess) {
+      return res.status(403).json({ error: "Access Denied: Tenant isolation active." });
     }
 
     const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
@@ -8173,6 +8304,16 @@ app.post("/api/documents/email", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN
       return res.status(400).json({ error: "documentId is a required field." });
     }
 
+    const docRes = await executeQuery("SELECT beneficiary_id FROM generated_documents WHERE id = $1", [documentId]);
+    if (docRes.rows.length === 0) {
+      return res.status(404).json({ error: "Document record not found" });
+    }
+    const bId = docRes.rows[0].beneficiary_id;
+    const hasAccess = await checkBeneficiaryAccess(req.user, bId);
+    if (!hasAccess) {
+      return res.status(403).json({ error: "Access Denied: Tenant isolation active." });
+    }
+
     const outcome = await DocumentService.sendDocumentEmail(documentId, recipientEmail);
     res.json(outcome);
   } catch (e: any) {
@@ -8203,9 +8344,13 @@ app.post("/api/documents/track", async (req, res) => {
 });
 
 // Fetch delivery logs for a given beneficiary
-app.get("/api/documents/delivery-logs/:beneficiaryId", requireAuth, async (req, res) => {
+app.get("/api/documents/delivery-logs/:beneficiaryId", requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const { beneficiaryId } = req.params;
+    const hasAccess = await checkBeneficiaryAccess(req.user, beneficiaryId);
+    if (!hasAccess) {
+      return res.status(403).json({ error: "Access Denied: Tenant isolation active." });
+    }
     const logs = await DbRepo.getDeliveryLogs(beneficiaryId);
     res.json(logs);
   } catch (err: any) {
@@ -9188,7 +9333,26 @@ function calculateExecutiveImpactScore(
 app.get("/api/executive-m-and-e/dashboard-stats", requireAuth, async (req, res) => {
   try {
     const pool = getPgPool();
-    const beneficiaries = await DbRepo.getBeneficiaries({ includeDetails: true });
+
+    let tenantId: string | undefined;
+    let stateId: string | undefined;
+    let tspId: string | undefined;
+
+    const user = (req as any).user;
+    const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+    if (user && !isFederal) {
+      tenantId = user.tenantId;
+      stateId = user.stateId;
+      tspId = user.tspId;
+
+      if (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP")) {
+        if (!tspId) tspId = "00000000-0000-0000-0000-000000000001";
+        if (!stateId) stateId = "state_imo_id_default";
+        if (!tenantId) tenantId = "tsp_tenant_default";
+      }
+    }
+
+    const beneficiaries = await DbRepo.getBeneficiaries({ includeDetails: true, tenantId, stateId, tspId });
     const toolkits = await DbRepo.getGraduateToolkits();
 
     // Fall back or PG extraction
@@ -11011,7 +11175,26 @@ app.get("/api/executive-m-and-e/export-report", requireAuth, async (req, res) =>
 app.get("/api/export/csv", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
   try {
     const customFields = await DbRepo.getCustomFields();
-    const beneficiaries = await DbRepo.getBeneficiaries();
+
+    let tenantId: string | undefined;
+    let stateId: string | undefined;
+    let tspId: string | undefined;
+
+    const user = req.user;
+    const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+    if (user && !isFederal) {
+      tenantId = user.tenantId;
+      stateId = user.stateId;
+      tspId = user.tspId;
+
+      if (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP")) {
+        if (!tspId) tspId = "00000000-0000-0000-0000-000000000001";
+        if (!stateId) stateId = "state_imo_id_default";
+        if (!tenantId) tenantId = "tsp_tenant_default";
+      }
+    }
+
+    const beneficiaries = await DbRepo.getBeneficiaries({ tenantId, stateId, tspId });
 
     await logAction(req.user!.email, "EXCEL_EXPORT", "Triggered bulk beneficiary spreadsheet export in CSV format");
 
@@ -11055,7 +11238,26 @@ app.get("/api/export/csv", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFIC
 app.get("/api/export/excel", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
   try {
     const { state, batch } = req.query;
-    const beneficiaries = await DbRepo.getBeneficiaries({ includePhoto: false });
+
+    let tenantId: string | undefined;
+    let stateId: string | undefined;
+    let tspId: string | undefined;
+
+    const user = req.user;
+    const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+    if (user && !isFederal) {
+      tenantId = user.tenantId;
+      stateId = user.stateId;
+      tspId = user.tspId;
+
+      if (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP")) {
+        if (!tspId) tspId = "00000000-0000-0000-0000-000000000001";
+        if (!stateId) stateId = "state_imo_id_default";
+        if (!tenantId) tenantId = "tsp_tenant_default";
+      }
+    }
+
+    const beneficiaries = await DbRepo.getBeneficiaries({ includePhoto: false, tenantId, stateId, tspId });
 
     await logAction(req.user!.email, "EXCEL_EXPORT", `Triggered bulk beneficiary spreadsheet export in Excel format for State: ${state}, Batch: ${batch}`);
 

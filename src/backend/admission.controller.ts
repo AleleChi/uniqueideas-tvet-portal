@@ -252,7 +252,33 @@ export class AdmissionController {
    */
   static async getAdmissionsStats(req: Request, res: Response) {
     try {
-      const stats = await DbRepo.getAdmissionsStats();
+      const authReq = req as AuthenticatedRequest;
+      const user = authReq.user;
+      
+      let tenantId: string | undefined;
+      let stateId: string | undefined;
+      let tspId: string | undefined;
+
+      const FED_ROLES = ["FED", "FED_SUPER_ADMIN", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "FEDERAL_ME_OFFICER"];
+      const TSP_ROLES = ["TSP", "TSP_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"];
+      const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+      if (user && !isFederal) {
+        tenantId = user.tenantId;
+        stateId = user.stateId;
+        tspId = user.tspId;
+
+        if (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP")) {
+          if (!tspId) tspId = "00000000-0000-0000-0000-000000000001";
+          if (!stateId) stateId = "state_imo_id_default";
+          if (!tenantId) tenantId = "tsp_tenant_default";
+        }
+      }
+
+      const stats = await DbRepo.getAdmissionsStats({
+        tenantId,
+        stateId,
+        tspId
+      });
       return res.status(200).json(stats);
     } catch (err: any) {
       console.error("[AdmissionController] getAdmissionsStats failed:", err);
@@ -282,11 +308,20 @@ export class AdmissionController {
       let tspId: string | undefined;
       let beneficiaryId: string | undefined;
 
-      if (user && user.role !== "SUPER_ADMIN") {
+      const FED_ROLES = ["FED", "FED_SUPER_ADMIN", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "FEDERAL_ME_OFFICER"];
+      const TSP_ROLES = ["TSP", "TSP_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"];
+      const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+      if (user && !isFederal) {
         tenantId = user.tenantId;
         stateId = user.stateId;
         tspId = user.tspId;
         beneficiaryId = user.beneficiaryId;
+
+        if (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP")) {
+          if (!tspId) tspId = "00000000-0000-0000-0000-000000000001";
+          if (!stateId) stateId = "state_imo_id_default";
+          if (!tenantId) tenantId = "tsp_tenant_default";
+        }
       }
 
       const listPayload = await DbRepo.getAdmissionsPaged({

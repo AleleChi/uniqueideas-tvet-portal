@@ -10,6 +10,34 @@ import { CertificationEligibilityService } from "./certificationEligibility.serv
 import { CertificateNumberService } from "./certificateNumber.service";
 import { Beneficiary, ProgramStatus, DocumentType } from "../types";
 
+async function checkBeneficiaryAccess(user: any, beneficiaryId: string): Promise<boolean> {
+  if (!user) return false;
+  const FED_ROLES = ["FED", "FED_SUPER_ADMIN", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "FEDERAL_ME_OFFICER"];
+  const isFederal = user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role);
+  if (isFederal) return true;
+  
+  const b = await DbRepo.getBeneficiaryById(beneficiaryId);
+  if (!b) return false;
+  
+  let userTspId = user.tspId;
+  let userStateId = user.stateId;
+  if (!userTspId && (user.role && (user.role.startsWith("TSP") || ["ADMIN_OFFICER", "REVIEW_OFFICER"].includes(user.role)))) {
+    userTspId = "00000000-0000-0000-0000-000000000001";
+    userStateId = "state_imo_id_default";
+  }
+
+  const bTspId = b.tspId || "00000000-0000-0000-0000-000000000001";
+  const bStateId = b.stateId || "state_imo_id_default";
+
+  if (userTspId && bTspId !== userTspId) {
+    return false;
+  }
+  if (userStateId && bStateId !== userStateId) {
+    return false;
+  }
+  return true;
+}
+
 export class CertificationController {
   /**
    * GET /api/certification/stats
@@ -17,7 +45,28 @@ export class CertificationController {
    */
   static async getCertificationStats(req: Request, res: Response) {
     try {
-      const beneficiaries = await DbRepo.getBeneficiaries({ includePhoto: false });
+      const user = (req as any).user;
+      let tenantId: string | undefined;
+      let stateId: string | undefined;
+      let tspId: string | undefined;
+
+      const FED_ROLES = ["FED", "FED_SUPER_ADMIN", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "FEDERAL_ME_OFFICER"];
+      const TSP_ROLES = ["TSP", "TSP_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"];
+      
+      const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+      if (user && !isFederal) {
+        tenantId = user.tenantId;
+        stateId = user.stateId;
+        tspId = user.tspId;
+        
+        if (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP")) {
+          if (!tspId) tspId = "00000000-0000-0000-0000-000000000001";
+          if (!stateId) stateId = "state_imo_id_default";
+          if (!tenantId) tenantId = "tsp_tenant_default";
+        }
+      }
+
+      const beneficiaries = await DbRepo.getBeneficiaries({ includePhoto: false, tenantId, stateId, tspId });
 
       let eligibleCount = 0;
       let pendingCount = 0;
@@ -72,7 +121,28 @@ export class CertificationController {
    */
   static async getCertificationList(req: Request, res: Response) {
     try {
-      const list = await DbRepo.getBeneficiaries({ includePhoto: false });
+      const user = (req as any).user;
+      let tenantId: string | undefined;
+      let stateId: string | undefined;
+      let tspId: string | undefined;
+
+      const FED_ROLES = ["FED", "FED_SUPER_ADMIN", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "FEDERAL_ME_OFFICER"];
+      const TSP_ROLES = ["TSP", "TSP_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"];
+      
+      const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+      if (user && !isFederal) {
+        tenantId = user.tenantId;
+        stateId = user.stateId;
+        tspId = user.tspId;
+        
+        if (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP")) {
+          if (!tspId) tspId = "00000000-0000-0000-0000-000000000001";
+          if (!stateId) stateId = "state_imo_id_default";
+          if (!tenantId) tenantId = "tsp_tenant_default";
+        }
+      }
+
+      const list = await DbRepo.getBeneficiaries({ includePhoto: false, tenantId, stateId, tspId });
       
       const enriched = list.map(b => {
         const isEligible = CertificationEligibilityService.isEligibleForCertification(b);
@@ -106,6 +176,12 @@ export class CertificationController {
       const b = await DbRepo.getBeneficiaryById(id);
       if (!b) {
         return res.status(404).json({ error: "Trainee profile not found inside registry." });
+      }
+
+      const user = (req as any).user;
+      const hasAccess = await checkBeneficiaryAccess(user, id);
+      if (!hasAccess) {
+        return res.status(403).json({ error: "Access Denied: Tenant isolation active. Cannot transitions this candidate's status." });
       }
 
       const currentStatus = b.certificationStatus || "NONE";
@@ -254,6 +330,26 @@ export class CertificationController {
         return res.status(400).json({ error: "Missing target status state parameter." });
       }
 
+      const user = (req as any).user;
+      const FED_ROLES = ["FED", "FED_SUPER_ADMIN", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "FEDERAL_ME_OFFICER"];
+      const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+      
+      let allowedIds = [];
+      if (isFederal) {
+        allowedIds = ids;
+      } else {
+        for (const tid of ids) {
+          const hasAccess = await checkBeneficiaryAccess(user, tid);
+          if (hasAccess) {
+            allowedIds.push(tid);
+          }
+        }
+      }
+
+      if (allowedIds.length === 0) {
+        return res.status(403).json({ error: "Access Denied: Tenant isolation active. No authorized candidates selected." });
+      }
+
       const results = {
         successCount: 0,
         failedCount: 0,
@@ -262,8 +358,8 @@ export class CertificationController {
 
       // Process in small non-blocking chunks of 10 to protect memory allocation bounds
       const CHUNK_SIZE = 10;
-      for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
-        const chunk = ids.slice(i, i + CHUNK_SIZE);
+      for (let i = 0; i < allowedIds.length; i += CHUNK_SIZE) {
+        const chunk = allowedIds.slice(i, i + CHUNK_SIZE);
 
         await Promise.all(
           chunk.map(async (id) => {
@@ -391,6 +487,12 @@ export class CertificationController {
       const b = await DbRepo.getBeneficiaryById(id);
       if (!b) {
         return res.status(404).json({ error: "Alumni profile not found inside registry." });
+      }
+
+      const user = (req as any).user;
+      const hasAccess = await checkBeneficiaryAccess(user, id);
+      if (!hasAccess) {
+        return res.status(403).json({ error: "Access Denied: Tenant isolation active. Cannot update this alumni's profile." });
       }
 
       b.alumniEmploymentStatus = employmentStatus || "";

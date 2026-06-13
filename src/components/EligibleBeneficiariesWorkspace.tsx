@@ -20,7 +20,7 @@ import {
 } from "recharts";
 
 interface EligibleBeneficiariesWorkspaceProps {
-  session?: { username?: string; role?: string; email?: string; tenantId?: string; tspId?: string } | null;
+  session?: { username?: string; role?: string; email?: string; tenantId?: string; tspId?: string; stateId?: string; city?: string; } | null;
   onRefreshRoot?: () => void;
 }
 
@@ -638,27 +638,41 @@ export default function EligibleBeneficiariesWorkspace({
               {/* STATE */}
               <div>
                 <label className="text-[10px] font-bold text-slate-500 block mb-1">State Zone</label>
-                <select
-                  value={stateFilter}
-                  onChange={(e) => setStateFilter(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 text-xs py-1.5 px-2 rounded-lg text-slate-700 font-medium cursor-pointer"
-                >
-                  <option value="all">All States</option>
-                  {uniqueStates.map(st => <option key={st} value={st}>{st}</option>)}
-                </select>
+                {isFedUser ? (
+                  <select
+                    value={stateFilter}
+                    onChange={(e) => setStateFilter(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 text-xs py-1.5 px-2 rounded-lg text-slate-700 font-medium cursor-pointer"
+                  >
+                    <option value="all">All States</option>
+                    {uniqueStates.map(st => <option key={st} value={st}>{st}</option>)}
+                  </select>
+                ) : (
+                  <div className="w-full bg-slate-100 border border-slate-200 text-xs py-1.5 px-2 rounded-lg text-slate-600 font-medium font-mono flex items-center justify-between">
+                    <span>{session?.stateId === "state_imo_id_default" ? "Imo" : (session?.stateId || "Imo")}</span>
+                    <span className="text-[9px] font-bold tracking-wider text-slate-400 bg-white px-1 py-0.2 rounded border border-slate-200">Locked</span>
+                  </div>
+                )}
               </div>
 
               {/* LGA */}
               <div>
                 <label className="text-[10px] font-bold text-slate-500 block mb-1">LGA Region</label>
-                <select
-                  value={lgaFilter}
-                  onChange={(e) => setLgaFilter(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 text-xs py-1.5 px-2 rounded-lg text-slate-700 font-medium cursor-pointer"
-                >
-                  <option value="all">All LGAs</option>
-                  {uniqueLgas.map(lg => <option key={lg} value={lg}>{lg}</option>)}
-                </select>
+                {isFedUser ? (
+                  <select
+                    value={lgaFilter}
+                    onChange={(e) => setLgaFilter(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 text-xs py-1.5 px-2 rounded-lg text-slate-700 font-medium cursor-pointer"
+                  >
+                    <option value="all">All LGAs</option>
+                    {uniqueLgas.map(lg => <option key={lg} value={lg}>{lg}</option>)}
+                  </select>
+                ) : (
+                  <div className="w-full bg-slate-100 border border-slate-200 text-xs py-1.5 px-2 rounded-lg text-slate-600 font-medium font-mono flex items-center justify-between">
+                    <span>{session?.city || "Owerri Municipal"}</span>
+                    <span className="text-[9px] font-bold tracking-wider text-slate-400 bg-white px-1 py-0.2 rounded border border-slate-200">Locked</span>
+                  </div>
+                )}
               </div>
 
               {/* Sector */}
