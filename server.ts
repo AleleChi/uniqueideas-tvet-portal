@@ -6147,9 +6147,9 @@ app.post("/api/tsp/activate", async (req, res) => {
       return res.status(400).json({ error: "The activation token link has expired. Please request a new activation email." });
     }
 
-    // Forensic Step 3: Check current account status
+    // Forensic Step 3: Check current account status (allowing ACTIVE status as an onboarding recovery mechanism)
     console.log(`[VALIDATE] Matched TSP Account Status: "${tsp.account_status}"`);
-    if (tsp.account_status !== "PENDING_ACTIVATION" && tsp.account_status !== "PENDING") {
+    if (tsp.account_status !== "PENDING_ACTIVATION" && tsp.account_status !== "PENDING" && tsp.account_status !== "ACTIVE") {
       console.log(`[VALIDATE OUTCOME] FAILED: TSP status is already resolved / active (current status: ${tsp.account_status}).`);
       console.log("==================================================");
 
@@ -6159,7 +6159,7 @@ app.post("/api/tsp/activate", async (req, res) => {
         ) VALUES ($1, $2, $3, 'VALIDATE', $4, $5, 'WRONG_STATUS', $6, $7, $8, $9)
       `, [
         tsp.id, tsp.name, tsp.contact_email, tokenTruncated, tokenHash, ip, userAgent, sandbox, 
-        `TSP is already active or in another state (current status: ${tsp.account_status}). Activation blocked.`
+        `TSP is already resolved in status ${tsp.account_status}. Activation blocked.`
       ]);
 
       return res.status(400).json({ error: `Onboarding cannot be completed because this account is already ${tsp.account_status}.` });
@@ -6230,7 +6230,7 @@ app.post("/api/tsp/set-password", async (req, res) => {
       return res.status(400).json({ error: "Authentication activation key link has expired." });
     }
 
-    if (tsp.account_status !== "PENDING_ACTIVATION" && tsp.account_status !== "PENDING") {
+    if (tsp.account_status !== "PENDING_ACTIVATION" && tsp.account_status !== "PENDING" && tsp.account_status !== "ACTIVE") {
       await pool.query(`
         INSERT INTO activation_audit_logs (
           tsp_id, tsp_name, contact_email, action, token_truncated, token_hash, status, ip_address, user_agent, sandbox_mode, error_message
