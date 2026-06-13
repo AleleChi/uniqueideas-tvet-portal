@@ -18,6 +18,7 @@ interface ReportsWorkspaceProps {
 
 export function ReportsWorkspace({ beneficiaries, session }: ReportsWorkspaceProps) {
   const [activeReportTab, setActiveReportTab] = useState<"excel" | "album" | "pdf" | "admissions" | "locations">("excel");
+  const isTspUser = session?.role === "TSP" || (session?.role && session?.role.startsWith("TSP"));
 
   // Enterprise Unified National Reporting Filters Hierarchy State
   const [selectedZone, setSelectedZone] = useState("all");
@@ -273,46 +274,51 @@ export function ReportsWorkspace({ beneficiaries, session }: ReportsWorkspacePro
             Photo Album Registry
           </button>
 
-          <button
-            onClick={() => setActiveReportTab("pdf")}
-            className={`px-3.5 py-1.5 text-xs font-bold rounded-lg flex items-center gap-1.5 cursor-pointer transition ${
-              activeReportTab === "pdf"
-                ? "bg-white text-indigo-950 shadow-sm"
-                : "text-slate-500 hover:text-slate-800"
-            }`}
-          >
-            <FileText className="w-4 h-4 text-rose-500" />
-            Official PDF Preview
-          </button>
+          {!isTspUser && (
+            <>
+              <button
+                onClick={() => setActiveReportTab("pdf")}
+                className={`px-3.5 py-1.5 text-xs font-bold rounded-lg flex items-center gap-1.5 cursor-pointer transition ${
+                  activeReportTab === "pdf"
+                    ? "bg-white text-indigo-950 shadow-sm"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                <FileText className="w-4 h-4 text-rose-500" />
+                Official PDF Preview
+              </button>
 
-          <button
-            onClick={() => setActiveReportTab("admissions")}
-            className={`px-3.5 py-1.5 text-xs font-bold rounded-lg flex items-center gap-1.5 cursor-pointer transition ${
-              activeReportTab === "admissions"
-                ? "bg-white text-indigo-950 shadow-sm"
-                : "text-slate-500 hover:text-slate-800"
-            }`}
-          >
-            <Award className="w-4 h-4 text-amber-500" />
-            Admissions Progress Reports
-          </button>
+              <button
+                onClick={() => setActiveReportTab("admissions")}
+                className={`px-3.5 py-1.5 text-xs font-bold rounded-lg flex items-center gap-1.5 cursor-pointer transition ${
+                  activeReportTab === "admissions"
+                    ? "bg-white text-indigo-950 shadow-sm"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                <Award className="w-4 h-4 text-amber-500" />
+                Admissions Progress Reports
+              </button>
 
-          <button
-            onClick={() => setActiveReportTab("locations")}
-            className={`px-3.5 py-1.5 text-xs font-bold rounded-lg flex items-center gap-1.5 cursor-pointer transition ${
-              activeReportTab === "locations"
-                ? "bg-white text-indigo-950 shadow-sm"
-                : "text-slate-500 hover:text-slate-800"
-            }`}
-          >
-            <Landmark className="w-4 h-4 text-emerald-500" />
-            Locations & Oversight KPIs
-          </button>
+              <button
+                onClick={() => setActiveReportTab("locations")}
+                className={`px-3.5 py-1.5 text-xs font-bold rounded-lg flex items-center gap-1.5 cursor-pointer transition ${
+                  activeReportTab === "locations"
+                    ? "bg-white text-indigo-950 shadow-sm"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                <Landmark className="w-4 h-4 text-emerald-500" />
+                Locations & Oversight KPIs
+              </button>
+            </>
+          )}
         </div>
       </div>
 
       {/* UNIFIED 9-TIER NATIONAL REPORTING FILTER HIERARCHY PANEL */}
-      <div className="bg-slate-900 text-slate-100 p-5 rounded-2xl border border-slate-800 shadow-xl space-y-4">
+      {!isTspUser && (
+        <div className="bg-slate-900 text-slate-100 p-5 rounded-2xl border border-slate-800 shadow-xl space-y-4">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between border-b border-slate-800 pb-3 gap-3">
           <div className="space-y-1">
             <span className="text-[10px] font-mono tracking-widest text-indigo-400 font-bold uppercase block">
@@ -503,6 +509,7 @@ export function ReportsWorkspace({ beneficiaries, session }: ReportsWorkspacePro
           </span>
         </div>
       </div>
+      )}
 
       {/* ----------------------------------------------------------------- */}
       {/* VIEW A: EXCEL SPREADSHEET AUDIT PREVIEW (2.png) */}

@@ -1165,6 +1165,7 @@ export default function App() {
           {activeTab === "dashboard" && (
             <Dashboard 
               beneficiaries={beneficiaries} 
+              session={session}
               onSelectBeneficiary={(id) => {
                 const b = beneficiaries.find(x => x.id === id);
                 if (b) {

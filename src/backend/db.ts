@@ -91,7 +91,7 @@ export function getDynamicEligibility(b: any): { age: number | null; eligibility
 
 // Pool instance. Created lazily to avoid immediate connection errors if CONFIG is not yet specified.
 let pgPool: pg.Pool | null = null;
-let isPgActive = false;
+export let isPgActive = false;
 let healthCheckTimer: NodeJS.Timeout | null = null;
 
 function triggerBackgroundHealthCheck() {

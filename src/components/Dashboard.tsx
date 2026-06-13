@@ -11,10 +11,17 @@ interface DashboardProps {
   beneficiaries: Beneficiary[];
   onSelectBeneficiary: (id: string) => void;
   onNavigateToRegistryCreate: () => void;
+  session?: any;
 }
 
-export function Dashboard({ beneficiaries, onSelectBeneficiary, onNavigateToRegistryCreate }: DashboardProps) {
+export function Dashboard({ beneficiaries, onSelectBeneficiary, onNavigateToRegistryCreate, session }: DashboardProps) {
   const [timeframe, setTimeframe] = useState("Last 6 Months");
+
+  const isTspUser = session?.role === "TSP" || (session?.role && session?.role.startsWith("TSP"));
+  const title = isTspUser ? "Training Center Workspace" : "Governance Dashboard";
+  const subtitle = isTspUser 
+    ? "Accredited operator command center and local trainees metrics." 
+    : "Consolidated national reach metrics and audit trackers.";
 
   // Dynamic calculations from database
   const totalCount = beneficiaries.length;
@@ -106,8 +113,8 @@ export function Dashboard({ beneficiaries, onSelectBeneficiary, onNavigateToRegi
       {/* Dashboard Page Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-slate-200">
         <div>
-          <h2 className="text-xl font-bold text-slate-900 tracking-tight font-display">Governance Dashboard</h2>
-          <p className="text-xs text-slate-500">Consolidated national reach metrics and audit trackers.</p>
+          <h2 className="text-xl font-bold text-slate-900 tracking-tight font-display">{title}</h2>
+          <p className="text-xs text-slate-500">{subtitle}</p>
         </div>
         <button
           onClick={onNavigateToRegistryCreate}

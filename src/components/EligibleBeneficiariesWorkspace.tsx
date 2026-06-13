@@ -102,8 +102,13 @@ export default function EligibleBeneficiariesWorkspace({
       const includeDetails = "true";
       const response = await authFetch(`${API_BASE_URL}/api/beneficiaries?includePhoto=${includePhoto}&includeDetails=${includeDetails}`);
       
-      if (response && Array.isArray(response)) {
-        setBeneficiaries(response);
+      if (response && response.ok) {
+        const data = await response.json();
+        if (data && Array.isArray(data)) {
+          setBeneficiaries(data);
+        } else {
+          setBeneficiaries([]);
+        }
       } else {
         setBeneficiaries([]);
       }
@@ -833,10 +838,10 @@ export default function EligibleBeneficiariesWorkspace({
                 </select>
               </div>
 
-              {/* STATE */}
-              <div>
-                <label className="text-[10px] font-bold text-slate-500 block mb-1">State Zone</label>
-                {isFedUser ? (
+              {/* STATE - Only for FED */}
+              {isFedUser && (
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 block mb-1">State Zone</label>
                   <select
                     value={stateFilter}
                     onChange={(e) => setStateFilter(e.target.value)}
@@ -845,18 +850,13 @@ export default function EligibleBeneficiariesWorkspace({
                     <option value="all">All States</option>
                     {uniqueStates.map(st => <option key={st} value={st}>{st}</option>)}
                   </select>
-                ) : (
-                  <div className="w-full bg-slate-100 border border-slate-200 text-xs py-1.5 px-2 rounded-lg text-slate-600 font-medium font-mono flex items-center justify-between">
-                    <span>{session?.stateId === "state_imo_id_default" ? "Imo" : (session?.stateId || "Imo")}</span>
-                    <span className="text-[9px] font-bold tracking-wider text-slate-400 bg-white px-1 py-0.2 rounded border border-slate-200">Locked</span>
-                  </div>
-                )}
-              </div>
+                </div>
+              )}
 
-              {/* LGA */}
-              <div>
-                <label className="text-[10px] font-bold text-slate-500 block mb-1">LGA Region</label>
-                {isFedUser ? (
+              {/* LGA - Only for FED */}
+              {isFedUser && (
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 block mb-1">LGA Region</label>
                   <select
                     value={lgaFilter}
                     onChange={(e) => setLgaFilter(e.target.value)}
@@ -865,26 +865,23 @@ export default function EligibleBeneficiariesWorkspace({
                     <option value="all">All LGAs</option>
                     {uniqueLgas.map(lg => <option key={lg} value={lg}>{lg}</option>)}
                   </select>
-                ) : (
-                  <div className="w-full bg-slate-100 border border-slate-200 text-xs py-1.5 px-2 rounded-lg text-slate-600 font-medium font-mono flex items-center justify-between">
-                    <span>{session?.city || "Owerri Municipal"}</span>
-                    <span className="text-[9px] font-bold tracking-wider text-slate-400 bg-white px-1 py-0.2 rounded border border-slate-200">Locked</span>
-                  </div>
-                )}
-              </div>
+                </div>
+              )}
 
-              {/* Sector */}
-              <div>
-                <label className="text-[10px] font-bold text-slate-500 block mb-1">Skill Sector</label>
-                <select
-                  value={sectorFilter}
-                  onChange={(e) => setSectorFilter(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 text-xs py-1.5 px-2 rounded-lg text-slate-700 font-medium cursor-pointer"
-                >
-                  <option value="all">All Sectors</option>
-                  {uniqueSectors.map(sc => <option key={sc} value={sc}>{sc}</option>)}
-                </select>
-              </div>
+              {/* Sector - Only for FED */}
+              {isFedUser && (
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 block mb-1">Skill Sector</label>
+                  <select
+                    value={sectorFilter}
+                    onChange={(e) => setSectorFilter(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 text-xs py-1.5 px-2 rounded-lg text-slate-700 font-medium cursor-pointer"
+                  >
+                    <option value="all">All Sectors</option>
+                    {uniqueSectors.map(sc => <option key={sc} value={sc}>{sc}</option>)}
+                  </select>
+                </div>
+              )}
 
               {/* Programme */}
               <div>
@@ -927,6 +924,51 @@ export default function EligibleBeneficiariesWorkspace({
                 </div>
               )}
             </div>
+
+            {/* Non-FED TSP / Accredited User - Read-only Badges Area */}
+            {!isFedUser && (
+              <div id="tsp-read-only-affiliations" className="mt-3.5 p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-left">
+                <span className="text-[10px] font-mono uppercase tracking-widest font-extrabold text-slate-400 block mb-2">
+                  My Official Accredited Domain Affiliations (LOCKED)
+                </span>
+                <div className="flex flex-wrap gap-2">
+                  {/* State Badge */}
+                  <div className="inline-flex items-center gap-1.5 bg-indigo-50 border border-indigo-100 text-indigo-800 text-[10px] font-bold px-2.5 py-1 rounded-md">
+                    <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
+                    <span>State:</span>
+                    <strong className="text-indigo-950">Imo</strong>
+                  </div>
+
+                  {/* LGA Badge */}
+                  <div className="inline-flex items-center gap-1.5 bg-emerald-50 border border-emerald-100 text-emerald-800 text-[10px] font-bold px-2.5 py-1 rounded-md">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                    <span>LGA:</span>
+                    <strong className="text-emerald-950">Owerri Municipal</strong>
+                  </div>
+
+                  {/* Assigned TSP Badge */}
+                  <div className="inline-flex items-center gap-1.5 bg-violet-50 border border-violet-100 text-violet-800 text-[10px] font-bold px-2.5 py-1 rounded-md">
+                    <span className="h-1.5 w-1.5 rounded-full bg-violet-500" />
+                    <span>TSP Provider:</span>
+                    <strong className="text-violet-950">Unique Technology Nig. Ltd</strong>
+                  </div>
+
+                  {/* Assigned Sector Badge */}
+                  <div className="inline-flex items-center gap-1.5 bg-amber-50 border border-amber-100 text-amber-800 text-[10px] font-bold px-2.5 py-1 rounded-md">
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                    <span>Sector:</span>
+                    <strong className="text-amber-950">Information and Communication Technology (ICT)</strong>
+                  </div>
+
+                  {/* Assigned Skills Badge */}
+                  <div className="inline-flex items-center gap-1.5 bg-rose-50 border border-rose-100 text-rose-800 text-[10px] font-bold px-2.5 py-1 rounded-md">
+                    <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
+                    <span>Skills Course:</span>
+                    <strong className="text-rose-950">Computer Hardware and Cell Phone Repairs</strong>
+                  </div>
+                </div>
+              </div>
+            )}
             
             <div className="flex justify-between items-center mt-3 pt-3 border-t border-slate-100 flex-wrap gap-2">
               <span className="text-xs text-slate-450 font-bold">
@@ -1750,6 +1792,14 @@ export default function EligibleBeneficiariesWorkspace({
                     >
                       <Mail className="w-3.5 h-3.5" />
                       Send Individual Email
+                    </button>
+
+                    <button
+                      onClick={() => handleOpenFullProfile(selectedBeneficiary)}
+                      className="col-span-2 flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 text-indigo-700 font-extrabold text-xs rounded-lg cursor-pointer transition-colors"
+                    >
+                      <User className="w-3.5 h-3.5" />
+                      View Complete Profile Record (Tabbed Views)
                     </button>
                   </div>
 

@@ -18,7 +18,7 @@ import { AdmissionController } from "./src/backend/admission.controller";
 import { CertificationController } from "./src/backend/certification.controller";
 import { AdmissionService } from "./src/backend/admission.service";
 import { EmailService } from "./src/backend/email.service";
-import { initDb, DbRepo, getDynamicEligibility, calculateAge, getPgPool, executeQuery, startupWarnings, loadJsonState, saveJsonState } from "./src/backend/db";
+import { initDb, DbRepo, getDynamicEligibility, calculateAge, getPgPool, executeQuery, startupWarnings, loadJsonState, saveJsonState, isPgActive } from "./src/backend/db";
 import { DocumentDeliveryService, EmailDispatchService } from "./src/backend/documentDelivery.service";
 import { generateAnnex9Workbook } from "./src/backend/excelExport";
 import { requireAuth, requireRole, requireRoleOrPermission, JWT_SECRET, AuthenticatedRequest, authenticate, requestStorage } from "./src/backend/auth.middleware";
@@ -5502,6 +5502,135 @@ app.get("/api/tsps/profile", requireAuth, async (req: AuthenticatedRequest, res)
     res.json(profile);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/tsps/stats", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    let tspId = req.user?.tspId;
+    if (!tspId) {
+      const pool = getPgPool();
+      if (pool) {
+        const firstTspRes = await pool.query("SELECT id FROM tsps LIMIT 1");
+        if (firstTspRes.rows.length > 0) {
+          tspId = firstTspRes.rows[0].id;
+        }
+      }
+    }
+    if (!tspId) {
+      tspId = "00000000-0000-0000-0000-000000000001";
+    }
+
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return res.json({
+        state: "Imo",
+        lga: "Owerri Municipal",
+        sector: "Information and Communication Technology (ICT)",
+        assignedSkills: "Computer Hardware and Cell Phone Repairs",
+        programmeManager: "Tom Okwa",
+        contactPerson: "Tom Okwa",
+        accreditationStatus: "ACTIVE",
+        activeCohorts: null,
+        beneficiaryCount: 0,
+        eligibleBeneficiaryCount: 0,
+        offerLetterCount: 0,
+        acceptanceCount: 0,
+        attendanceRate: null,
+        assessmentRate: null,
+        completionRate: null
+      });
+    }
+
+    // Dynamic queries from Real PostgreSQL Database
+    const benRes = await pool.query(
+      "SELECT COUNT(*)::int as count FROM beneficiaries WHERE tsp_id = $1 AND deleted_at IS NULL",
+      [tspId]
+    );
+    const benCount = benRes.rows[0]?.count || 0;
+
+    const offerRes = await pool.query(
+      `SELECT COUNT(*)::int as count 
+       FROM admissions a 
+       JOIN beneficiaries b ON a.beneficiary_id = b.id 
+       WHERE b.tsp_id = $1 AND a.deleted_at IS NULL`,
+      [tspId]
+    );
+    const offerCount = offerRes.rows[0]?.count || 0;
+
+    const acceptRes = await pool.query(
+      `SELECT COUNT(*)::int as count 
+       FROM admissions a 
+       JOIN beneficiaries b ON a.beneficiary_id = b.id 
+       WHERE b.tsp_id = $1 AND a.admission_status IN ('ACCEPTED', 'ENROLLED', 'APPROVED', 'CONFIRMED') AND a.deleted_at IS NULL`,
+      [tspId]
+    );
+    const acceptCount = acceptRes.rows[0]?.count || 0;
+
+    const cohortRes = await pool.query(
+      "SELECT COUNT(DISTINCT batch)::int as count FROM beneficiaries WHERE tsp_id = $1 AND batch IS NOT NULL AND deleted_at IS NULL",
+      [tspId]
+    );
+    const cohortCount = cohortRes.rows[0]?.count || 0;
+
+    // Retrieve active profile
+    const tspProfile = await getTspProfile(tspId);
+
+    // Calculate eligibility breakdown
+    const eligRes = await pool.query(
+      `SELECT COUNT(*)::int as count 
+       FROM beneficiaries 
+       WHERE tsp_id = $1 AND status = 'ACTIVE' AND deleted_at IS NULL`,
+      [tspId]
+    );
+    const eligCount = eligRes.rows[0]?.count || 0;
+
+    // 1. Attendance rate
+    const attQuery = await pool.query(
+      `SELECT AVG(CASE WHEN status ILIKE 'Present' THEN 100.0 ELSE 0.0 END)::numeric(5,1) as rate 
+       FROM attendance_logs 
+       WHERE beneficiary_id IN (SELECT id FROM beneficiaries WHERE tsp_id = $1 AND deleted_at IS NULL)`,
+      [tspId]
+    );
+    const attendanceRate = attQuery.rows[0]?.rate !== null ? parseFloat(attQuery.rows[0].rate) : null;
+
+    // 2. Assessment rate
+    const assQuery = await pool.query(
+      `SELECT AVG(final_score)::numeric(5,1) as rate 
+       FROM assessments 
+       WHERE beneficiary_id IN (SELECT id FROM beneficiaries WHERE tsp_id = $1 AND deleted_at IS NULL)`,
+      [tspId]
+    );
+    const assessmentRate = assQuery.rows[0]?.rate !== null ? parseFloat(assQuery.rows[0].rate) : null;
+
+    // 3. Completion rate
+    const compQuery = await pool.query(
+      `SELECT AVG(CASE WHEN certification_status = 'CERTIFIED' OR status = 'COMPLETED' THEN 100.0 ELSE 0.0 END)::numeric(5,1) as rate 
+       FROM beneficiaries 
+       WHERE tsp_id = $1 AND deleted_at IS NULL`,
+      [tspId]
+    );
+    const completionRate = compQuery.rows[0]?.rate !== null ? parseFloat(compQuery.rows[0].rate) : null;
+
+    res.json({
+      state: tspProfile.state || "Imo",
+      lga: tspProfile.lga || "Owerri Municipal",
+      sector: "Information and Communication Technology (ICT)",
+      assignedSkills: "Computer Hardware and Cell Phone Repairs",
+      programmeManager: tspProfile.programme_manager || "Tom Okwa",
+      contactPerson: tspProfile.contact_person || "Tom Okwa",
+      accreditationStatus: tspProfile.accreditation_status || "ACTIVE",
+      activeCohorts: cohortCount,
+      beneficiaryCount: benCount,
+      eligibleBeneficiaryCount: eligCount,
+      offerLetterCount: offerCount,
+      acceptanceCount: acceptCount,
+      attendanceRate,
+      assessmentRate,
+      completionRate
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -13279,11 +13408,6 @@ app.post("/api/graduation/revoke", requireAuth, async (req: any, res) => {
 // Get Sectors
 app.get("/api/sectors", requireAuth, async (req: any, res) => {
   try {
-    const isFedUser = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
-    if (!isFedUser) {
-      return res.status(433).json({ error: "Access denied. Federal administration required." });
-    }
-
     const pool = getPgPool();
     if (pool) {
       const dbRes = await pool.query("SELECT * FROM sectors ORDER BY sector_name ASC");
@@ -13397,11 +13521,6 @@ app.delete("/api/sectors/:id", requireAuth, async (req: any, res) => {
 // Get Skills
 app.get("/api/skills", requireAuth, async (req: any, res) => {
   try {
-    const isFedUser = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
-    if (!isFedUser) {
-      return res.status(433).json({ error: "Access denied. Federal administration required." });
-    }
-
     const pool = getPgPool();
     if (pool) {
       const dbRes = await pool.query(
