@@ -28,6 +28,10 @@ export async function tenantContextMiddleware(
     await client.query("BEGIN");
 
     // Push tenant context into PostgreSQL session variables in a single multi-set query
+    const effectiveStateId = req.user.stateId === "state_imo_id_default" 
+      ? "bc183dd7-3e5e-461c-8f23-b9e888339146" 
+      : (req.user.stateId || "");
+
     await client.query(`
       SELECT 
         set_config('app.current_tenant_id', $1::text, true),
@@ -39,7 +43,7 @@ export async function tenantContextMiddleware(
     `, [
       req.user.tenantId || "",
       req.user.tenantTier || "",
-      req.user.stateId || "",
+      effectiveStateId,
       req.user.tspId || "",
       req.user.beneficiaryId || "",
       req.user.role || ""

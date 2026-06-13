@@ -8,6 +8,27 @@ import fs from "fs";
 import path from "path";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+
+// Monkeypatch pg.Client and pg.Pool to automatically map the legacy "state_imo_id_default" to the real Imo UUID in all queries
+const originalClientQuery = pg.Client.prototype.query;
+pg.Client.prototype.query = function (this: any, sql: any, params: any, cb?: any) {
+  if (Array.isArray(params)) {
+    params = params.map(p => p === "state_imo_id_default" ? "bc183dd7-3e5e-461c-8f23-b9e888339146" : p);
+  } else if (sql && typeof sql === "object" && Array.isArray(sql.values)) {
+    sql.values = sql.values.map((p: any) => p === "state_imo_id_default" ? "bc183dd7-3e5e-461c-8f23-b9e888339146" : p);
+  }
+  return originalClientQuery.call(this, sql, params, cb);
+} as any;
+
+const originalPoolQuery = pg.Pool.prototype.query;
+pg.Pool.prototype.query = function (this: any, sql: any, params: any, cb?: any) {
+  if (Array.isArray(params)) {
+    params = params.map(p => p === "state_imo_id_default" ? "bc183dd7-3e5e-461c-8f23-b9e888339146" : p);
+  } else if (sql && typeof sql === "object" && Array.isArray(sql.values)) {
+    sql.values = sql.values.map((p: any) => p === "state_imo_id_default" ? "bc183dd7-3e5e-461c-8f23-b9e888339146" : p);
+  }
+  return originalPoolQuery.call(this, sql, params, cb);
+} as any;
 import { Beneficiary, ProgramStatus, AuditLog, CustomField, OrganizationSettings, TrainingProgram, WorkflowHistory, InstitutionLetterhead, AdmissionFormTemplate } from "../types";
 import { requestStorage } from "./request-storage";
 import { NIGERIAN_STATES_AND_LGAS } from "../utils/nigerianLgasData";
@@ -197,11 +218,16 @@ export async function executeQuery(
   sql: string,
   params: any[] = []
 ): Promise<pg.QueryResult<any>> {
+  // Map state_imo_id_default string to real database UUID for PostgreSQL stability
+  const processedParams = params.map(p => 
+    p === "state_imo_id_default" ? "bc183dd7-3e5e-461c-8f23-b9e888339146" : p
+  );
+
   const store = requestStorage.getStore();
   const activeClient = store?.dbClient;
 
   if (activeClient) {
-    return activeClient.query(sql, params);
+    return activeClient.query(sql, processedParams);
   }
 
   const pool = getPgPool();
@@ -209,7 +235,7 @@ export async function executeQuery(
     throw new Error("Database pool unavailable");
   }
 
-  return pool.query(sql, params);
+  return pool.query(sql, processedParams);
 }
 
 export async function assertTenantContext(options?: { systemContext?: boolean }) {
