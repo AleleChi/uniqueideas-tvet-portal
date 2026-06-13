@@ -4469,6 +4469,382 @@ app.post("/api/attendance/bulk", requireAuth, requireRole(["SUPER_ADMIN", ...FED
   }
 });
 
+// ====================================================
+// TSP ATTENDANCE ISOLATED ENDPOINTS
+// ====================================================
+
+app.get("/api/tsp/attendance/dashboard", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: "Unauthorized access: session context missing." });
+    }
+    
+    // Scoped only by TSP ID
+    const tspId = user.tspId || "00000000-0000-0000-0000-000000000001";
+    const targetDate = (req.query.date as string) || new Date().toISOString().split("T")[0];
+    const targetMonth = targetDate.substring(0, 7);
+
+    // 1. Total Active Trainees under this TSP
+    const traineesRes = await executeQuery(
+      `SELECT COUNT(*)::int as count FROM beneficiaries 
+       WHERE tsp_id = $1 AND deleted_at IS NULL AND status IN ('ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')`,
+      [tspId]
+    );
+    const totalTrainees = traineesRes.rows[0]?.count || 0;
+
+    // 2. Today's Attendance breakdown
+    const attendanceTodayRes = await executeQuery(
+      `SELECT ta.status, COUNT(*)::int as count, SUM(COALESCE(ta.hours_logged, 0)) as hours
+       FROM trainee_attendance ta
+       JOIN beneficiaries b ON ta.beneficiary_id = b.id
+       WHERE b.tsp_id = $1 AND ta.attendance_date = $2 AND b.deleted_at IS NULL
+       GROUP BY ta.status`,
+      [tspId, targetDate]
+    );
+    
+    let present = 0;
+    let absent = 0;
+    let late = 0;
+    let excused = 0;
+    let hoursLogged = 0;
+
+    for (const row of attendanceTodayRes.rows) {
+      if (row.status === "PRESENT") present = row.count;
+      else if (row.status === "ABSENT") absent = row.count;
+      else if (row.status === "LATE") late = row.count;
+      else if (row.status === "EXCUSED") excused = row.count;
+      hoursLogged += parseFloat(row.hours || "0");
+    }
+
+    const attendanceRate = totalTrainees > 0 ? parseFloat((((present + late) / totalTrainees) * 100).toFixed(1)) : 0;
+
+    // 3. Expected days in this month is the count of distinct days with any attendance for this TSP
+    const expectedDaysRes = await executeQuery(
+      `SELECT COUNT(DISTINCT ta.attendance_date)::int as count 
+       FROM trainee_attendance ta
+       JOIN beneficiaries b ON ta.beneficiary_id = b.id
+       WHERE b.tsp_id = $1 AND TO_CHAR(ta.attendance_date, 'YYYY-MM') = $2 AND b.deleted_at IS NULL`,
+      [tspId, targetMonth]
+    );
+    const expectedDays = Math.max(expectedDaysRes.rows[0]?.count || 0, 1);
+
+    // Get compliance summary metrics of active beneficiaries
+    const complianceRes = await executeQuery(
+      `SELECT 
+         b.id,
+         COUNT(CASE WHEN ta.status IN ('PRESENT', 'LATE') THEN 1 END)::int as present_count
+       FROM beneficiaries b
+       LEFT JOIN trainee_attendance ta ON b.id = ta.beneficiary_id AND TO_CHAR(ta.attendance_date, 'YYYY-MM') = $2
+       WHERE b.tsp_id = $1 AND b.deleted_at IS NULL AND b.status IN ('ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')
+       GROUP BY b.id`,
+      [tspId, targetMonth]
+    );
+
+    let totalCompliancePct = 0;
+    let eligibleCount = 0;
+    const totalAssessed = complianceRes.rows.length;
+
+    complianceRes.rows.forEach(b => {
+      const rate = expectedDays > 0 ? (b.present_count / expectedDays) * 100 : 0;
+      totalCompliancePct += rate;
+      if (rate >= 65.0) {
+        eligibleCount++;
+      }
+    });
+
+    const avgComplianceRate = totalAssessed > 0 ? parseFloat((totalCompliancePct / totalAssessed).toFixed(1)) : 0;
+    const avgStipendEligibilityRate = totalAssessed > 0 ? parseFloat(((eligibleCount / totalAssessed) * 100).toFixed(1)) : 0;
+
+    res.json({
+      success: true,
+      data: {
+        totalTrainees,
+        present,
+        absent,
+        late,
+        excused,
+        attendanceRate,
+        hoursLogged: parseFloat(hoursLogged.toFixed(1)),
+        avgComplianceRate,
+        avgStipendEligibilityRate
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/tsp/attendance/ledger", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: "Unauthorized access: session context missing." });
+    }
+    const tspId = user.tspId || "00000000-0000-0000-0000-000000000001";
+    const { date, search } = req.query;
+    const targetDate = (date as string) || new Date().toISOString().split("T")[0];
+
+    let queryStr = `
+      SELECT 
+        b.id,
+        b.first_name,
+        b.last_name,
+        b.gender,
+        b.program,
+        b.skill_sector,
+        b.batch,
+        b.photo,
+        COALESCE(tp.tvet_id, 'ID-TVE-26-' || SUBSTRING(b.id, 1, 6)) as tvet_id,
+        ta.status as attendance_status,
+        ta.check_in_time,
+        ta.check_out_time,
+        ta.attendance_source,
+        ta.hours_logged,
+        ta.remarks
+      FROM beneficiaries b
+      LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
+      LEFT JOIN trainee_attendance ta ON b.id = ta.beneficiary_id AND ta.attendance_date = $2
+      WHERE b.tsp_id = $1 AND b.deleted_at IS NULL AND b.status IN ('ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')
+    `;
+
+    const params: any[] = [tspId, targetDate];
+    let paramIndex = 3;
+
+    if (search) {
+      queryStr += ` AND (b.first_name ILIKE $${paramIndex} OR b.last_name ILIKE $${paramIndex} OR b.id ILIKE $${paramIndex})`;
+      params.push(`%${search}%`);
+      paramIndex++;
+    }
+
+    queryStr += ` ORDER BY b.last_name ASC, b.first_name ASC`;
+
+    const result = await executeQuery(queryStr, params);
+    res.json({ success: true, count: result.rows.length, records: result.rows });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/tsp/attendance/compliance", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: "Unauthorized access: session context missing." });
+    }
+    const tspId = user.tspId || "00000000-0000-0000-0000-000000000001";
+    const { month, search } = req.query;
+    const targetMonth = (month as string) || "2026-06";
+
+    // Expected days in this month is the count of distinct days with any attendance for this TSP
+    const expectedDaysRes = await executeQuery(
+      `SELECT COUNT(DISTINCT ta.attendance_date)::int as count 
+       FROM trainee_attendance ta
+       JOIN beneficiaries b ON ta.beneficiary_id = b.id
+       WHERE b.tsp_id = $1 AND TO_CHAR(ta.attendance_date, 'YYYY-MM') = $2 AND b.deleted_at IS NULL`,
+      [tspId, targetMonth]
+    );
+    const expectedDays = Math.max(expectedDaysRes.rows[0]?.count || 0, 1);
+
+    let queryStr = `
+      SELECT 
+        b.id,
+        b.first_name,
+        b.last_name,
+        b.gender,
+        b.program,
+        b.skill_sector,
+        COALESCE(tp.tvet_id, 'ID-TVE-26-' || SUBSTRING(b.id, 1, 6)) as tvet_id,
+        COALESCE(da.present, 0) as present_days,
+        COALESCE(da.absent, 0) as absent_days,
+        COALESCE(da.late, 0) as late_days,
+        COALESCE(da.total_hours, 0) as total_hours
+      FROM beneficiaries b
+      LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
+      LEFT JOIN (
+        SELECT 
+          ta.beneficiary_id,
+          COUNT(CASE WHEN ta.status IN ('PRESENT', 'LATE') THEN 1 END)::int as present,
+          COUNT(CASE WHEN ta.status = 'ABSENT' THEN 1 END)::int as absent,
+          COUNT(CASE WHEN ta.status = 'LATE' THEN 1 END)::int as late,
+          SUM(COALESCE(ta.hours_logged, 0))::numeric as total_hours
+        FROM trainee_attendance ta
+        WHERE TO_CHAR(ta.attendance_date, 'YYYY-MM') = $2
+        GROUP BY ta.beneficiary_id
+      ) da ON b.id = da.beneficiary_id
+      WHERE b.tsp_id = $1 AND b.deleted_at IS NULL AND b.status IN ('ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')
+    `;
+
+    const params: any[] = [tspId, targetMonth];
+    let paramIndex = 3;
+
+    if (search) {
+      queryStr += ` AND (b.first_name ILIKE $${paramIndex} OR b.last_name ILIKE $${paramIndex} OR b.id ILIKE $${paramIndex})`;
+      params.push(`%${search}%`);
+      paramIndex++;
+    }
+
+    queryStr += ` ORDER BY b.last_name ASC, b.first_name ASC`;
+
+    const result = await executeQuery(queryStr, params);
+
+    const records = result.rows.map(row => {
+      const present = parseInt(row.present_days || 0, 10);
+      const attendance_percentage = expectedDays > 0 ? parseFloat(((present / expectedDays) * 100).toFixed(1)) : 0.0;
+      
+      let stipend_status = "SUSPENDED";
+      if (attendance_percentage >= 65.0) {
+        stipend_status = "ELIGIBLE";
+      } else if (attendance_percentage >= 50.0) {
+        stipend_status = "WARNING";
+      } else if (attendance_percentage >= 30.0) {
+        stipend_status = "AT_RISK";
+      } else {
+        stipend_status = "SUSPENDED";
+      }
+
+      return {
+        ...row,
+        expected_days: expectedDays,
+        attendance_percentage,
+        stipend_status,
+        stipend_reason: `Dynamic formula evaluation: Attendance rate is ${attendance_percentage}%.`
+      };
+    });
+
+    res.json({ success: true, count: records.length, records });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/tsp/attendance/mark", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: "Unauthorized access: session context missing." });
+    }
+    const tspId = user.tspId || "00000000-0000-0000-0000-000000000001";
+    const { beneficiary_id, attendance_date, status, check_in_time, check_out_time, attendance_source, remarks } = req.body;
+
+    if (!beneficiary_id || !attendance_date || !status) {
+      return res.status(400).json({ error: "Missing required parameters: beneficiary_id, attendance_date, status" });
+    }
+
+    // Tenant check
+    const trainee = await DbRepo.getBeneficiaryById(beneficiary_id);
+    if (!trainee || trainee.tspId !== tspId) {
+      return res.status(403).json({ error: "Access Denied: Cross-TSP operation rejected." });
+    }
+
+    let hours_logged = 0;
+    if (check_in_time && check_out_time) {
+      try {
+        const checkIn = new Date(check_in_time).getTime();
+        const checkOut = new Date(check_out_time).getTime();
+        if (checkOut > checkIn) {
+          hours_logged = parseFloat(((checkOut - checkIn) / (1000 * 60 * 60)).toFixed(2));
+        }
+      } catch (e) {
+        // fallback
+      }
+    } else {
+      hours_logged = status === "PRESENT" || status === "LATE" ? 6.0 : 0.0;
+    }
+
+    const record = await DbRepo.saveTraineeAttendance({
+      beneficiary_id,
+      attendance_date,
+      check_in_time,
+      check_out_time,
+      attendance_source: attendance_source || 'MANUAL',
+      status,
+      captured_by: user.email,
+      remarks: remarks || null
+    });
+
+    const monthStr = attendance_date.substring(0, 7);
+    await DbRepo.computeAndSaveStipendCompliance(beneficiary_id, monthStr);
+
+    await logAction(
+      user.email,
+      "ATTENDANCE_UPDATED",
+      `Marked attendance ${status} for ${trainee.firstName} ${trainee.lastName} on ${attendance_date}`
+    );
+
+    res.json({ success: true, record });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/tsp/attendance/bulk-mark", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: "Unauthorized access: session context missing." });
+    }
+    const tspId = user.tspId || "00000000-0000-0000-0000-000000000001";
+    const { records } = req.body;
+
+    if (!records || !Array.isArray(records)) {
+      return res.status(400).json({ error: "Missing or invalid records parameter" });
+    }
+
+    const results: any[] = [];
+    for (const rec of records) {
+      const { beneficiary_id, attendance_date, status, check_in_time, check_out_time, attendance_source, remarks } = rec;
+      if (!beneficiary_id || !attendance_date || !status) continue;
+
+      const trainee = await DbRepo.getBeneficiaryById(beneficiary_id);
+      if (!trainee || trainee.tspId !== tspId) {
+        continue; // isolation safeguard
+      }
+
+      let hours_logged = 0;
+      if (check_in_time && check_out_time) {
+        try {
+          const checkIn = new Date(check_in_time).getTime();
+          const checkOut = new Date(check_out_time).getTime();
+          if (checkOut > checkIn) {
+            hours_logged = parseFloat(((checkOut - checkIn) / (1000 * 60 * 60)).toFixed(2));
+          }
+        } catch (e) {
+          // fallback
+        }
+      } else {
+        hours_logged = status === "PRESENT" || status === "LATE" ? 6.0 : 0.0;
+      }
+
+      const record = await DbRepo.saveTraineeAttendance({
+        beneficiary_id,
+        attendance_date,
+        check_in_time,
+        check_out_time,
+        attendance_source: attendance_source || 'MANUAL',
+        status,
+        captured_by: user.email,
+        remarks: remarks || null
+      });
+
+      const monthStr = attendance_date.substring(0, 7);
+      await DbRepo.computeAndSaveStipendCompliance(beneficiary_id, monthStr);
+
+      results.push(record);
+    }
+
+    await logAction(
+      user.email,
+      "BULK_ATTENDANCE_UPDATED",
+      `Bulk updated ${results.length} attendance records via TSP Attendance Center`
+    );
+
+    res.json({ success: true, count: results.length, records: results });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.get("/api/attendance/compliance-report", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req, res) => {
   try {
     const authReq = req as AuthenticatedRequest;

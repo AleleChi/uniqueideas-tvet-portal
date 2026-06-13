@@ -5,6 +5,7 @@ import {
   FileText, Check, Database, Sparkles, RefreshCw, Bookmark, MapPin, Briefcase
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { authFetch } from "../utils/authFetch";
 
 interface TspAttendanceCenterProps {
   session: any;
@@ -24,8 +25,22 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
 
   const [trainees, setTrainees] = useState<any[]>([]);
   const [attendanceDate, setAttendanceDate] = useState(new Date().toISOString().split("T")[0]);
+  const [selectedMonth, setSelectedMonth] = useState("2026-06");
   const [complianceRecords, setComplianceRecords] = useState<any[]>([]);
   const [selectedTrainees, setSelectedTrainees] = useState<string[]>([]);
+
+  // Derived state stats from dynamic API
+  const [dashboardStats, setDashboardStats] = useState<any>({
+    totalTrainees: 0,
+    present: 0,
+    absent: 0,
+    late: 0,
+    excused: 0,
+    attendanceRate: 0,
+    hoursLogged: 0,
+    avgComplianceRate: 0,
+    avgStipendEligibilityRate: 0
+  });
 
   // Metadata Read-only (Derived or fallback)
   const assignedState = "Imo";
@@ -35,39 +50,52 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
 
   useEffect(() => {
     loadData();
-  }, [attendanceDate]);
+  }, [attendanceDate, selectedMonth]);
+
+  // Defensive JSON parser wrapper that flags formatting deviations politely
+  async function secureJsonParse(res: Response): Promise<any> {
+    const contentType = res.headers.get("content-type");
+    if (!contentType || !contentType.includes("application/json")) {
+      const textSample = await res.text();
+      console.error("[INVALID SERVER RESPONSE - ENCOUNTERED HTML HTML/TEXT FALLBACK]:", textSample.substring(0, 150));
+      throw new Error(`The attendance backend returned an invalid format. Requested resource might be restricted or route incorrect (Expected JSON, received HTML doctype/text).`);
+    }
+    return await res.json();
+  }
 
   async function loadData() {
     setLoading(true);
     try {
-      // 1. Fetch live beneficiaries inside our TSP
-      const bRes = await fetch("/api/admissions/compliance-report?month=2026-06");
-      const bData = await bRes.json();
+      // 1. Fetch live ledger details for current TSP
+      const bRes = await authFetch(`/api/tsp/attendance/ledger?date=${attendanceDate}`);
+      const bData = await secureJsonParse(bRes);
       
-      const res = await fetch(`/api/attendance?date=${attendanceDate}`);
-      const attData = await res.json();
-      
-      // Match attendance status to beneficiaries
       if (bData.success && bData.records) {
         const mapped = bData.records.map((b: any) => {
-          const matchedAtt = attData.records?.find((a: any) => a.beneficiary_id === b.id) || {};
           return {
             ...b,
-            attendanceStatus: matchedAtt.status || "ABSENT",
-            checkIn: matchedAtt.check_in_time ? matchedAtt.check_in_time.substring(11, 16) : "08:00",
-            checkOut: matchedAtt.check_out_time ? matchedAtt.check_out_time.substring(11, 16) : "14:00",
-            hoursLogged: matchedAtt.hours_logged !== undefined ? matchedAtt.hours_logged : (matchedAtt.status === "PRESENT" || matchedAtt.status === "LATE" ? 6.0 : 0.0),
+            attendanceStatus: b.attendance_status || "ABSENT",
+            checkIn: b.check_in_time ? b.check_in_time.substring(11, 16) : "08:00",
+            checkOut: b.check_out_time ? b.check_out_time.substring(11, 16) : "14:00",
+            hoursLogged: b.hours_logged !== null && b.hours_logged !== undefined ? parseFloat(b.hours_logged) : (b.attendance_status === "PRESENT" || b.attendance_status === "LATE" ? 6.0 : 0.0),
             cohort: b.batch || "Batch 2026-C"
           };
         });
         setTrainees(mapped);
       }
 
-      // Fetch compliance record list
-      const compRes = await fetch("/api/attendance/compliance-report?month=2026-06");
-      const compData = await compRes.json();
+      // 2. Fetch compliance snap records
+      const compRes = await authFetch(`/api/tsp/attendance/compliance?month=${selectedMonth}`);
+      const compData = await secureJsonParse(compRes);
       if (compData.success && compData.records) {
         setComplianceRecords(compData.records);
+      }
+
+      // 3. Fetch aggregates
+      const dashRes = await authFetch(`/api/tsp/attendance/dashboard?date=${attendanceDate}`);
+      const dashData = await secureJsonParse(dashRes);
+      if (dashData.success && dashData.data) {
+        setDashboardStats(dashData.data);
       }
     } catch (e: any) {
       showToast("Failed to load attendance ledger: " + e.message, "error");
@@ -81,11 +109,10 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
       const trainee = trainees.find(t => t.id === beneficiaryId);
       if (!trainee) return;
 
-      const dateNow = new Date().toISOString().split("T")[0];
       const checkInDateTime = status === "PRESENT" || status === "LATE" ? `${attendanceDate}T08:00:00.000Z` : null;
       const checkOutDateTime = status === "PRESENT" || status === "LATE" ? `${attendanceDate}T14:00:00.000Z` : null;
 
-      const res = await fetch("/api/attendance", {
+      const res = await authFetch("/api/tsp/attendance/mark", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -98,7 +125,7 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
         })
       });
 
-      const data = await res.json();
+      const data = await secureJsonParse(res);
       if (data.success) {
         setTrainees(prev => prev.map(t => {
           if (t.id === beneficiaryId) {
@@ -112,11 +139,17 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
         }));
         showToast(`Attendance marked ${status} for ${trainee.first_name} ${trainee.last_name}`, "success");
         
-        // Reload compliance snapshots to reflect instant calculations
-        const compRes = await fetch("/api/attendance/compliance-report?month=2026-06");
-        const compData = await compRes.json();
+        // Reload compliance snapshots & aggregates
+        const compRes = await authFetch(`/api/tsp/attendance/compliance?month=${selectedMonth}`);
+        const compData = await secureJsonParse(compRes);
         if (compData.success && compData.records) {
           setComplianceRecords(compData.records);
+        }
+
+        const dashRes = await authFetch(`/api/tsp/attendance/dashboard?date=${attendanceDate}`);
+        const dashData = await secureJsonParse(dashRes);
+        if (dashData.success && dashData.data) {
+          setDashboardStats(dashData.data);
         }
       } else {
         showToast("Failed to update status: " + data.error, "error");
@@ -147,13 +180,13 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
         };
       });
 
-      const res = await fetch("/api/attendance/bulk", {
+      const res = await authFetch("/api/tsp/attendance/bulk-mark", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ records })
       });
 
-      const data = await res.json();
+      const data = await secureJsonParse(res);
       if (data.success) {
         showToast(`Successfully bulk marked ${data.count} beneficiaries as ${status}`, "success");
         setSelectedTrainees([]);
@@ -291,44 +324,70 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
       </div>
 
       {/* Numerical Quick Stats Panel */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs flex items-center justify-between">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 mb-6">
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs flex items-center justify-between">
           <div>
-            <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Total Beneficiaries</p>
-            <p className="text-2xl font-black text-slate-800 mt-1">{trainees.length}</p>
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Total Trainees</p>
+            <p className="text-xl font-black text-slate-800 mt-1">{dashboardStats.totalTrainees || trainees.length}</p>
           </div>
-          <div className="p-3 bg-slate-50 rounded-lg border border-slate-100">
-            <Users className="w-6 h-6 text-slate-500" />
+          <div className="p-2 bg-slate-50 rounded-lg border border-slate-100">
+            <Users className="w-5 h-5 text-slate-500" />
           </div>
         </div>
 
-        <div className="bg-white border-2 border-emerald-400/30 rounded-xl p-5 shadow-xs flex items-center justify-between">
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs flex items-center justify-between">
           <div>
-            <p className="text-xs font-bold text-emerald-600 uppercase tracking-wider">Present Today</p>
-            <p className="text-2xl font-black text-emerald-700 mt-1">{presentCount}</p>
+            <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">Present Today</p>
+            <div className="flex items-baseline gap-1.5 mt-1">
+              <span className="text-xl font-black text-emerald-700">{dashboardStats.present || presentCount}</span>
+              <span className="text-[10px] text-slate-400 font-medium">({dashboardStats.late || lateCount} late)</span>
+            </div>
           </div>
-          <div className="p-3 bg-emerald-50 rounded-lg border border-emerald-100">
-            <CheckCircle2 className="w-6 h-6 text-emerald-600" />
+          <div className="p-2 bg-emerald-50 rounded-lg border border-emerald-150">
+            <CheckCircle2 className="w-5 h-5 text-emerald-600" />
           </div>
         </div>
 
-        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs flex items-center justify-between">
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs flex items-center justify-between">
           <div>
-            <p className="text-xs font-bold text-rose-500 uppercase tracking-wider">Absent Today</p>
-            <p className="text-2xl font-black text-rose-700 mt-1">{absentCount}</p>
+            <p className="text-[10px] font-bold text-rose-500 uppercase tracking-wider">Absent Today</p>
+            <div className="flex items-baseline gap-1.5 mt-1">
+              <span className="text-xl font-black text-rose-700">{dashboardStats.absent || absentCount}</span>
+              <span className="text-[10px] text-slate-400 font-medium">({dashboardStats.excused || 0} excused)</span>
+            </div>
           </div>
-          <div className="p-3 bg-rose-50 rounded-lg border border-rose-100">
-            <XCircle className="w-6 h-6 text-rose-500" />
+          <div className="p-2 bg-rose-50 rounded-lg border border-rose-150">
+            <XCircle className="w-5 h-5 text-rose-500" />
           </div>
         </div>
 
-        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs flex items-center justify-between">
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs flex items-center justify-between">
           <div>
-            <p className="text-xs font-bold text-indigo-500 uppercase tracking-wider">Attendance Rate</p>
-            <p className="text-2xl font-black text-indigo-700 mt-1">{overallRate}%</p>
+            <p className="text-[10px] font-bold text-indigo-500 uppercase tracking-wider">Attendance Rate</p>
+            <p className="text-xl font-black text-indigo-700 mt-1">{dashboardStats.attendanceRate || overallRate}%</p>
           </div>
-          <div className="p-3 bg-indigo-50 rounded-lg border border-indigo-100">
-            <Clock className="w-6 h-6 text-indigo-600" />
+          <div className="p-2 bg-indigo-50 rounded-lg border border-indigo-150">
+            <Clock className="w-5 h-5 text-indigo-600" />
+          </div>
+        </div>
+
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs flex items-center justify-between">
+          <div>
+            <p className="text-[10px] font-bold text-indigo-500 tracking-wider uppercase">Avg Compliance</p>
+            <p className="text-xl font-black text-indigo-800 mt-1">{dashboardStats.avgComplianceRate || 0}%</p>
+          </div>
+          <div className="p-2 bg-indigo-50 rounded-lg border border-indigo-100">
+            <Sparkles className="w-5 h-5 text-indigo-500" />
+          </div>
+        </div>
+
+        <div className="bg-white border border-amber-200 bg-amber-50/10 rounded-xl p-4 shadow-xs flex items-center justify-between">
+          <div>
+            <p className="text-[10px] font-bold text-amber-600 uppercase tracking-wider">Eligible Stipend</p>
+            <p className="text-xl font-black text-amber-700 mt-1">{dashboardStats.avgStipendEligibilityRate || 0}%</p>
+          </div>
+          <div className="p-2 bg-amber-50 rounded-lg border border-amber-150">
+            <Flame className="w-5 h-5 text-amber-500" />
           </div>
         </div>
       </div>
@@ -610,7 +669,11 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
             
             <div className="flex items-center gap-2">
               <span className="text-xs text-slate-500 font-bold">Month:</span>
-              <select className="px-3 py-1.5 border border-slate-200 bg-white rounded-lg text-xs font-bold text-slate-700 focus:outline-none">
+              <select 
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(e.target.value)}
+                className="px-3 py-1.5 border border-slate-200 bg-white rounded-lg text-xs font-bold text-slate-700 focus:outline-none"
+              >
                 <option value="2026-06">June 2026 (Active Session)</option>
                 <option value="2026-05">May 2026</option>
                 <option value="2026-04">April 2026</option>
