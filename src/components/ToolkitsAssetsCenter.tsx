@@ -1788,14 +1788,20 @@ export function ToolkitsAssetsCenter({ session, showToast }: ToolkitsAssetsCente
                 </div>
                 <div className="space-y-1">
                   <label className="text-[10px] text-slate-400 uppercase tracking-wider font-mono font-bold block">Category Label</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. Toolkit, Tester, Mat"
+                  <select
                     value={assetForm.assetCategory}
                     onChange={(e) => setAssetForm(prev => ({ ...prev, assetCategory: e.target.value }))}
                     className="w-full p-2 border border-slate-200 rounded-lg focus:outline-hidden"
-                  />
+                  >
+                    <option value="Computers">Computers</option>
+                    <option value="Networking Equipment">Networking Equipment</option>
+                    <option value="Training Equipment">Training Equipment</option>
+                    <option value="Solar Equipment">Solar Equipment</option>
+                    <option value="Automotive Equipment">Automotive Equipment</option>
+                    <option value="Furniture">Furniture</option>
+                    <option value="Consumables">Consumables</option>
+                    <option value="Repair Tools">Repair Tools</option>
+                  </select>
                 </div>
               </div>
 
