@@ -74,6 +74,13 @@ export default function EligibleBeneficiariesWorkspace({
   const [emailPreviewMode, setEmailPreviewMode] = useState(false);
   const [emailHistory, setEmailHistory] = useState<any[]>([]);
 
+  // Sliding Full Drawer states (Phase 4)
+  const [showProfileDrawer, setShowProfileDrawer] = useState(false);
+  const [drawerActiveTab, setDrawerActiveTab] = useState<"overview" | "timeline">("overview");
+  const [customEmailOpen, setCustomEmailOpen] = useState(false);
+  const [individualSubject, setIndividualSubject] = useState("");
+  const [individualBody, setIndividualBody] = useState("");
+
   // Derived filter helper variables from master dataset
   const uniqueStates = useMemo(() => Array.from(new Set(beneficiaries.map(b => b.state).filter(Boolean))), [beneficiaries]);
   const uniqueLgas = useMemo(() => Array.from(new Set(beneficiaries.map(b => b.city).filter(Boolean))), [beneficiaries]);
@@ -141,7 +148,7 @@ export default function EligibleBeneficiariesWorkspace({
   };
 
   // Determine dynamic eligibility classification
-  const calculateEligibility = (b: any): { status: "ELIGIBLE" | "INELIGIBLE" | "UNDER_REVIEW"; reasons: string[] } => {
+  const calculateEligibility = (b: any): { status: "ELIGIBLE" | "INELIGIBLE" | "UNDER_REVIEW" | "INCOMPLETE"; reasons: string[] } => {
     // Phase 2 Logic: Rules-based Automatic Eligibility
     if (b.eligibility_override) {
       return { 
@@ -176,6 +183,7 @@ export default function EligibleBeneficiariesWorkspace({
     if (!hasNIN) reasons.push("National Identity Number (NIN) missing");
     if (!hasBVN) reasons.push("Bank Verification Number (BVN) missing");
     if (!hasEmail) reasons.push("Contact email address missing");
+    if (!hasPhone) reasons.push("Contact phone number missing");
     if (!admissionApproved && !admissionRejected) {
       reasons.push(`Admission status is pending (${b.admissionStatus || "DRAFT"})`);
     }
@@ -187,14 +195,13 @@ export default function EligibleBeneficiariesWorkspace({
     if (!ageOK && age !== null && (age < 16 || age > 50)) {
       return { status: "INELIGIBLE", reasons: ["Age falls strictly outside extreme compliance boundaries", ...reasons] };
     }
-    if (ageOK && admissionApproved && hasNIN && hasBVN && hasEmail) {
+    if (!hasNIN || !hasBVN || !hasEmail || !hasPhone || age === null) {
+      return { status: "INCOMPLETE", reasons: ["Biometric/identification credentials or profile indices incomplete", ...reasons] };
+    }
+    if (ageOK && admissionApproved) {
       return { status: "ELIGIBLE", reasons: ["All programmatic and biometric credentials verified"] };
     }
-    if (!ageOK || !hasNIN || !hasBVN || !admissionApproved) {
-      return { status: "UNDER_REVIEW", reasons: reasons };
-    }
-
-    return { status: "UNDER_REVIEW", reasons: ["Awaiting validation audits"] };
+    return { status: "UNDER_REVIEW", reasons: ["Awaiting validation audits", ...reasons] };
   };
 
   // Enriched beneficiaries payload
@@ -277,6 +284,7 @@ export default function EligibleBeneficiariesWorkspace({
   const totalAudited = enrichedBeneficiaries.length;
   const eligibleCount = enrichedBeneficiaries.filter(b => b.calculatedEligibilityStatus === "ELIGIBLE").length;
   const underReviewCount = enrichedBeneficiaries.filter(b => b.calculatedEligibilityStatus === "UNDER_REVIEW").length;
+  const incompleteCount = enrichedBeneficiaries.filter(b => b.calculatedEligibilityStatus === "INCOMPLETE").length;
   const ineligibleCount = enrichedBeneficiaries.filter(b => b.calculatedEligibilityStatus === "INELIGIBLE").length;
 
   const handleOpenSnapshot = (b: any) => {
@@ -284,11 +292,191 @@ export default function EligibleBeneficiariesWorkspace({
     setShowSnapshotModal(true);
   };
 
+  const handleOpenProfileDrawer = (b: any) => {
+    setSelectedBeneficiary(b);
+    setShowSnapshotModal(false);
+    setShowProfileDrawer(true);
+    setDrawerActiveTab("overview");
+  };
+
   const handleOpenFullProfile = (b: any) => {
     setSelectedBeneficiary(b);
     setShowSnapshotModal(false);
     setViewMode("full-profile");
     setActiveProfileTab("overview");
+  };
+
+  const getCandidateTimeline = (b: any) => {
+    const timeline = [];
+    
+    // 1. Candidate Registration
+    timeline.push({
+      title: "Candidate Registration",
+      subtitle: "Profile uploaded to national portal",
+      date: b.created_at || b.createdAt || "June 1, 2026",
+      status: "COMPLETED",
+      desc: "Trainee registered with initial demographic details."
+    });
+
+    // 2. Eligibility Assessment
+    timeline.push({
+      title: "Biometric & Age Pre-Screening",
+      subtitle: b.calculatedEligibilityStatus === "INCOMPLETE" ? "Biometric record incomplete" : "Screening rules applied",
+      date: b.created_at || b.createdAt || "June 2, 2026",
+      status: b.calculatedEligibilityStatus === "INCOMPLETE" ? "PENDING" : "COMPLETED",
+      desc: b.eligibilityReasons?.join(", ") || "Checked against educational, age, and location credentials."
+    });
+
+    // 3. Provisional Admission Reference Generation
+    const hasGen = !!b.admissionRef;
+    timeline.push({
+      title: "Admissions Letter Compilation",
+      subtitle: hasGen ? `Reference: ${b.admissionRef}` : "Awaiting TSP initialization",
+      date: b.admissionLetterGeneratedAt || "Awaiting action",
+      status: hasGen ? "COMPLETED" : "PENDING",
+      desc: hasGen ? "PDF admissions letter template assembled by TVET engine." : "Provisional offer not yet initialized."
+    });
+
+    // 4. Offer Letter dispatch
+    const offerSent = b.admissionStatus !== "DRAFT" && b.admissionStatus !== "Admission Generated" && b.admissionStatus !== "Pending";
+    timeline.push({
+      title: "Offer Dispatch (Notification)",
+      subtitle: offerSent ? "Notified via Resend secure link" : "Not yet dispatched",
+      date: b.admission_letter_sent_at || b.admissionLetterGeneratedAt || "Awaiting dispatch",
+      status: offerSent ? "COMPLETED" : "PENDING",
+      desc: offerSent ? "Notification queued and sent to candidate's email address." : "Awaiting offer publication."
+    });
+
+    // 5. Candidate Form Onboarding
+    const viewed = !!b.admissionFormViewedAt || offerSent;
+    timeline.push({
+      title: "Student Portal Login",
+      subtitle: viewed ? "Student logged in to view offer" : "Awaiting student visit",
+      date: b.admissionFormViewedAt || "Awaiting log",
+      status: viewed ? "COMPLETED" : "PENDING",
+      desc: "Student clicked secure invitation token."
+    });
+
+    // 6. Response & Forms Submission
+    const completed = b.admissionFormCompleted || b.admissionStatus === "CONFIRMED" || b.admissionStatus === "APPROVED";
+    timeline.push({
+      title: "Onboarding Interview Complete",
+      subtitle: completed ? "Candidate accepted provisional offer" : "Awaiting candidate signature",
+      date: b.admissionFormConfirmedAt || "Awaiting sign-off",
+      status: completed ? "COMPLETED" : "PENDING",
+      desc: completed ? "LGA and physical address credentials confirmed under oath." : "Pending candidate response."
+    });
+
+    // 7. Enrollment Approved
+    const approved = b.admissionStatus === "APPROVED" || b.admissionStatus === "CONFIRMED";
+    timeline.push({
+      title: "Oversight Enrollment Verified",
+      subtitle: approved ? "Approved / Cohort Roster active" : "Pending certification",
+      date: b.admissionFormConfirmedAt || "Awaiting audit",
+      status: approved ? "COMPLETED" : "PENDING",
+      desc: approved ? "Admitted candidate cleared for active TVET classes." : "Awaiting ultimate TSP approval."
+    });
+
+    return timeline;
+  };
+
+  const [bulkDispatchStatus, setBulkDispatchStatus] = useState("");
+  const [isBulkDispatching, setIsBulkDispatching] = useState(false);
+
+  // Bulk provisional offer dispatch loop (reusing `/api/admissions/send-offer`)
+  const triggerBulkOfferDispatch = async () => {
+    const targets = enrichedBeneficiaries.filter(b => selectedRowIds.includes(b.id));
+    if (targets.length === 0) {
+      showToast("Please select at least one candidate row to query bulk offer dispatch.", "warning");
+      return;
+    }
+
+    setIsBulkDispatching(true);
+    let successCount = 0;
+    let failedCount = 0;
+
+    for (let i = 0; i < targets.length; i++) {
+      const b = targets[i];
+      setBulkDispatchStatus(`Compiling and dispatching provisional offer ${i + 1} of ${targets.length}...`);
+      try {
+        // Auto-ref generation logic
+        if (!b.admissionRef) {
+          const autoRef = `IDEAS/TVET/ADM/${b.id.split("-").pop()}/${new Date().getFullYear()}`;
+          await authFetch(`${API_BASE_URL}/api/beneficiaries/${b.id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              admissionStatus: "Admission Generated",
+              admissionRef: autoRef,
+              admissionLetterGeneratedAt: new Date().toISOString(),
+              status: ProgramStatus.VERIFIED
+            })
+          });
+        }
+
+        const res = await authFetch(`${API_BASE_URL}/api/admissions/send-offer`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            beneficiaryId: b.id,
+            origin: window.location.origin
+          })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success) successCount++;
+          else failedCount++;
+        } else {
+          failedCount++;
+        }
+      } catch {
+        failedCount++;
+      }
+    }
+
+    setIsBulkDispatching(false);
+    setBulkDispatchStatus("");
+    showToast(`Bulk Provisional offer letter dispatches complete: ${successCount} successfully queued, ${failedCount} failures logged.`, successCount > 0 ? "success" : "error");
+    setSelectedRowIds([]);
+    fetchBeneficiariesList();
+  };
+
+  // Client-side secure CSV query view exporter (Phase 4)
+  const exportFilterViewToCSV = () => {
+    try {
+      const headers = ["Beneficiary ID", "Full Name", "Gender", "Age", "Age Bracket", "State", "LGA", "Programme", "Cohort", "Skill Sector", "Admission Status", "Eligibility Status", "Email Address", "Phone Number"];
+      const rows = filteredBeneficiaries.map(b => [
+        b.id,
+        b.fullName,
+        b.gender,
+        b.age || "",
+        b.ageBand || "",
+        b.state || "",
+        b.city || "",
+        b.program || "IDEAS-TVET",
+        b.batch || "Batch 2026-A",
+        b.skill_sector || b.skillSector || "",
+        b.admissionStatus || "DRAFT",
+        b.calculatedEligibilityStatus,
+        b.email || "",
+        b.phone_number || b.phoneNumber || ""
+      ]);
+
+      const csvContent = "data:text/csv;charset=utf-8," 
+        + [headers.join(","), ...rows.map(e => e.map(val => `"${String(val).replace(/"/g, '""')}"`).join(","))].join("\n");
+      
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", `eligible_beneficiaries_export_${Date.now()}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      showToast("Current Filtered candidates view exported successfully!", "success");
+    } catch (err: any) {
+      showToast("Failed to compile local CSV asset: " + err.message, "error");
+    }
   };
 
   const handlesendBulkEmails = () => {
@@ -468,7 +656,7 @@ export default function EligibleBeneficiariesWorkspace({
       {viewMode === "list" && (
         <>
           {/* 2. DYNAMIC TELEMETRY TELEMETRIC RIBBONS */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
             <div id="kpi-total-audited" className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm text-left">
               <span className="font-bold text-[9px] uppercase tracking-wider text-slate-400 block">Total Audited Profile Logs</span>
               <div className="flex items-baseline gap-2 mt-2">
@@ -488,7 +676,7 @@ export default function EligibleBeneficiariesWorkspace({
             </div>
 
             <div id="kpi-under-review" className="bg-amber-50/40 border border-amber-200 rounded-xl p-4 shadow-sm text-left">
-              <span className="font-bold text-[9px] uppercase tracking-wider text-amber-600 block">Under Review / Incomplete</span>
+              <span className="font-bold text-[9px] uppercase tracking-wider text-amber-600 block">Under Review Audits</span>
               <div className="flex items-baseline gap-2 mt-2">
                 <span className="text-2xl font-extrabold text-amber-700 leading-none">{underReviewCount}</span>
                 <span className="text-xs font-bold text-amber-600 bg-amber-100/60 px-1.5 py-0.5 rounded-md font-mono">
@@ -497,11 +685,21 @@ export default function EligibleBeneficiariesWorkspace({
               </div>
             </div>
 
-            <div id="kpi-ineligible" className="bg-red-50/40 border border-red-200 rounded-xl p-4 shadow-sm text-left">
-              <span className="font-bold text-[9px] uppercase tracking-wider text-red-650 block">Ineligible Records</span>
+            <div id="kpi-incomplete" className="bg-sky-50/40 border border-sky-200 rounded-xl p-4 shadow-sm text-left">
+              <span className="font-bold text-[9px] uppercase tracking-wider text-sky-600 block">Incomplete Profiles</span>
               <div className="flex items-baseline gap-2 mt-2">
-                <span className="text-2xl font-extrabold text-red-700 leading-none">{ineligibleCount}</span>
-                <span className="text-xs font-bold text-red-600 bg-red-105 px-1.5 py-0.5 rounded-md font-mono">
+                <span className="text-2xl font-extrabold text-sky-700 leading-none">{incompleteCount}</span>
+                <span className="text-xs font-bold text-sky-600 bg-sky-100/60 px-1.5 py-0.5 rounded-md font-mono">
+                  {totalAudited > 0 ? Math.round((incompleteCount / totalAudited) * 100) : 0}%
+                </span>
+              </div>
+            </div>
+
+            <div id="kpi-ineligible" className="bg-rose-50/40 border border-rose-250 rounded-xl p-4 shadow-sm text-left">
+              <span className="font-bold text-[9px] uppercase tracking-wider text-rose-650 block">Ineligible Records</span>
+              <div className="flex items-baseline gap-2 mt-2">
+                <span className="text-2xl font-extrabold text-rose-750 leading-none">{ineligibleCount}</span>
+                <span className="text-xs font-bold text-rose-600 bg-rose-105 px-1.5 py-0.5 rounded-md font-mono">
                   {totalAudited > 0 ? Math.round((ineligibleCount / totalAudited) * 100) : 0}%
                 </span>
               </div>
@@ -730,29 +928,74 @@ export default function EligibleBeneficiariesWorkspace({
               )}
             </div>
             
-            <div className="flex justify-between items-center mt-3 pt-3 border-t border-slate-100">
+            <div className="flex justify-between items-center mt-3 pt-3 border-t border-slate-100 flex-wrap gap-2">
               <span className="text-xs text-slate-450 font-bold">
                 Filtered Candidates Result Block: <span className="text-indigo-650">{filteredBeneficiaries.length}</span> / <span className="text-slate-650">{totalAudited}</span> records
               </span>
-              <button
-                onClick={() => {
-                  setSearchQuery("");
-                  setGenderFilter("all");
-                  setStateFilter("all");
-                  setLgaFilter("all");
-                  setSectorFilter("all");
-                  setProgramFilter("all");
-                  setCohortFilter("all");
-                  setEligibilityFilter("all");
-                  setAgeBandFilter("all");
-                  setTspFilter("all");
-                }}
-                className="text-[11px] font-mono hover:text-indigo-600 text-slate-400 font-bold flex items-center gap-1 cursor-pointer"
-              >
-                Clear Sifting Filters
-              </button>
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={exportFilterViewToCSV}
+                  className="text-[11px] font-mono text-emerald-650 hover:text-emerald-700 font-bold flex items-center gap-1 cursor-pointer"
+                  title="Export currently filtered view to a CSV file"
+                >
+                  <Download className="w-3.5 h-3.5" /> Export Filter View
+                </button>
+                <button
+                  onClick={() => {
+                    setSearchQuery("");
+                    setGenderFilter("all");
+                    setStateFilter("all");
+                    setLgaFilter("all");
+                    setSectorFilter("all");
+                    setProgramFilter("all");
+                    setCohortFilter("all");
+                    setEligibilityFilter("all");
+                    setAgeBandFilter("all");
+                    setTspFilter("all");
+                  }}
+                  className="text-[11px] font-mono hover:text-indigo-600 text-slate-400 font-bold flex items-center gap-1 cursor-pointer"
+                >
+                  Clear Sifting Filters
+                </button>
+              </div>
             </div>
           </div>
+
+          {/* Selected Row Operational Action Bar */}
+          {selectedRowIds.length > 0 && (
+            <div className="bg-indigo-50/70 border border-indigo-150 rounded-xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-left shadow-xs transition-all">
+              <div>
+                <span className="text-[10px] text-indigo-850 uppercase font-mono font-black tracking-wider block leading-none">Selected Candidates Working Roster</span>
+                <span className="text-xs text-slate-600 mt-1 font-medium">You have checked <strong className="text-indigo-750 font-extrabold">{selectedRowIds.length}</strong> candidate profiles. Select a bulk action to run.</span>
+              </div>
+              
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={triggerBulkOfferDispatch}
+                  disabled={isBulkDispatching}
+                  className="px-3.5 py-2 bg-indigo-650 hover:bg-indigo-700 text-white font-black text-xs rounded-lg flex items-center gap-1.5 cursor-pointer disabled:opacity-50 transition-colors shadow-sm"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  {isBulkDispatching ? "Dispatching..." : "Bulk Offer Dispatch"}
+                </button>
+                
+                <button
+                  onClick={() => setSelectedRowIds([])}
+                  disabled={isBulkDispatching}
+                  className="px-3.5 py-2 bg-white hover:bg-slate-50 border border-slate-205 text-slate-505 font-bold text-xs rounded-lg cursor-pointer transition-colors"
+                >
+                  Cancel Selection
+                </button>
+              </div>
+            </div>
+          )}
+
+          {isBulkDispatching && (
+            <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-4 text-[11px] font-semibold font-mono flex items-center gap-2 text-left animate-pulse">
+              <span className="h-2 w-2 rounded-full bg-amber-500 animate-ping" />
+              <span>{bulkDispatchStatus}</span>
+            </div>
+          )}
 
           {/* 5. ELIGIBLES DETAILED REGISTRY DATASTORES LIST */}
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
@@ -793,13 +1036,23 @@ export default function EligibleBeneficiariesWorkspace({
                     </tr>
                   ) : (
                     paginatedBeneficiaries.map(b => (
-                      <tr key={b.id} className="hover:bg-slate-50/50 transition-all font-medium">
+                      <tr 
+                        key={b.id} 
+                        onClick={(e) => {
+                          const target = e.target as HTMLElement;
+                          if (target.closest("input") || target.closest("button")) {
+                            return;
+                          }
+                          handleOpenSnapshot(b);
+                        }}
+                        className="hover:bg-slate-50/50 transition-all font-medium cursor-pointer"
+                      >
                         <td className="p-3 text-left">
                           <input
                             type="checkbox"
                             checked={selectedRowIds.includes(b.id)}
                             onChange={() => handleToggleSelectRow(b.id)}
-                            className="rounded border-slate-310 text-indigo-607 focus:ring-indigo-405"
+                            className="rounded border-slate-310 text-indigo-607 focus:ring-indigo-405 cursor-pointer"
                           />
                         </td>
                         <td className="p-3 font-mono text-[10.5px] uppercase font-bold text-slate-450 select-all">
@@ -845,9 +1098,10 @@ export default function EligibleBeneficiariesWorkspace({
                         <td className="p-3">
                           <div className="flex flex-col items-start">
                             <span className={`px-2 py-0.5 text-[9.5px] font-extrabold font-mono rounded border leading-none tracking-wide flex items-center gap-1 ${
-                              b.calculatedEligibilityStatus === "ELIGIBLE" ? "bg-emerald-100 text-emerald-800 border-emerald-300" :
-                              b.calculatedEligibilityStatus === "INELIGIBLE" ? "bg-red-100 text-red-800 border-red-300" :
-                              "bg-amber-100 text-amber-805 border-amber-300"
+                              b.calculatedEligibilityStatus === "ELIGIBLE" ? "bg-emerald-100 text-emerald-800 border-[1.5px] border-emerald-300 shadow-sm" :
+                              b.calculatedEligibilityStatus === "INELIGIBLE" ? "bg-rose-100 text-rose-800 border-[1.5px] border-rose-300" :
+                              b.calculatedEligibilityStatus === "INCOMPLETE" ? "bg-sky-100 text-sky-800 border-[1.5px] border-sky-300" :
+                              "bg-amber-100 text-amber-805 border-[1.5px] border-amber-300"
                             }`}>
                               {b.calculatedEligibilityStatus}
                             </span>
@@ -862,16 +1116,22 @@ export default function EligibleBeneficiariesWorkspace({
                         <td className="p-3 text-center">
                           <div className="flex items-center justify-center gap-2">
                             <button
-                              onClick={() => handleOpenSnapshot(b)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleOpenSnapshot(b);
+                              }}
                               className="p-1 px-2.5 bg-slate-100 border border-slate-200 rounded-lg text-slate-650 hover:bg-slate-201 text-[10.5px] font-bold tracking-tight cursor-pointer transition-colors"
                               title="Quick Snapshot"
                             >
                               Snapshot
                             </button>
                             <button
-                              onClick={() => handleOpenFullProfile(b)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleOpenProfileDrawer(b);
+                              }}
                               className="p-1 bg-white border border-slate-250 hover:bg-slate-50 text-indigo-600 rounded-lg cursor-pointer flex items-center justify-center h-7 w-7 transition-colors"
-                              title="View Full Profile Archive"
+                              title="View Full Profile Drawer"
                             >
                               <Eye className="w-4 h-4" />
                             </button>
@@ -1057,7 +1317,8 @@ export default function EligibleBeneficiariesWorkspace({
             <div className="flex items-center gap-2">
               <span className={`px-2.5 py-0.5 text-[10px] font-mono font-extrabold rounded-full tracking-wider uppercase ${
                 selectedBeneficiary.calculatedEligibilityStatus === "ELIGIBLE" ? "bg-emerald-100/70 text-emerald-800 border border-emerald-300" :
-                selectedBeneficiary.calculatedEligibilityStatus === "INELIGIBLE" ? "bg-red-105 text-red-800 border border-red-300" :
+                selectedBeneficiary.calculatedEligibilityStatus === "INELIGIBLE" ? "bg-rose-100 text-rose-800 border border-rose-300" :
+                selectedBeneficiary.calculatedEligibilityStatus === "INCOMPLETE" ? "bg-sky-100 text-sky-800 border border-sky-305" :
                 "bg-amber-105 text-amber-805 border border-amber-300"
               }`}>
                 {selectedBeneficiary.calculatedEligibilityStatus}
@@ -1339,7 +1600,8 @@ export default function EligibleBeneficiariesWorkspace({
                 <div className="flex flex-wrap items-center gap-2 mb-2">
                   <span className={`px-2 py-0.5 text-[9.5px] font-extrabold font-mono rounded border uppercase ${
                     selectedBeneficiary.calculatedEligibilityStatus === "ELIGIBLE" ? "bg-emerald-100 text-emerald-800 border-emerald-300" :
-                    selectedBeneficiary.calculatedEligibilityStatus === "INELIGIBLE" ? "bg-red-100 text-red-800 border-red-300" :
+                    selectedBeneficiary.calculatedEligibilityStatus === "INELIGIBLE" ? "bg-rose-100 text-rose-800 border-rose-300" :
+                    selectedBeneficiary.calculatedEligibilityStatus === "INCOMPLETE" ? "bg-sky-100 text-sky-800 border-sky-300" :
                     "bg-amber-100 text-amber-805 border-amber-300"
                   }`}>
                     {selectedBeneficiary.calculatedEligibilityStatus}
@@ -1364,10 +1626,10 @@ export default function EligibleBeneficiariesWorkspace({
             {/* Modal Actions */}
             <div className="bg-slate-50 border-t border-slate-150 px-4 py-3 flex gap-2 justify-end shrink-0">
               <button
-                onClick={() => handleOpenFullProfile(selectedBeneficiary)}
-                className="px-4 py-2 bg-indigo-600 text-white hover:bg-indigo-700 text-xs font-bold font-mono rounded-lg cursor-pointer"
+                onClick={() => handleOpenProfileDrawer(selectedBeneficiary)}
+                className="px-4 py-2 bg-indigo-600 text-white hover:bg-indigo-700 text-xs font-bold font-mono rounded-lg cursor-pointer flex items-center gap-1.5"
               >
-                View Full Profile
+                <Eye className="w-3.5 h-3.5" /> View Profile Drawer
               </button>
               <button
                 onClick={() => {
@@ -1379,6 +1641,294 @@ export default function EligibleBeneficiariesWorkspace({
               </button>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* 6. SLIDING FULL BENEFICIARY PROFILE DRAWER (Phase 4) */}
+      {showProfileDrawer && selectedBeneficiary && (
+        <div className="fixed inset-0 z-50 overflow-hidden text-left">
+          {/* Backdrop */}
+          <div 
+            className="absolute inset-0 bg-slate-900/60 backdrop-blur-[2px] transition-opacity cursor-pointer" 
+            onClick={() => setShowProfileDrawer(false)}
+          />
+          
+          {/* Sliding Panel */}
+          <div className="absolute inset-y-0 right-0 max-w-full flex pl-10">
+            <div className="w-screen max-w-2xl bg-white shadow-2xl border-l border-slate-205 flex flex-col h-full overflow-hidden">
+              
+              {/* Drawer Header */}
+              <div className="bg-slate-900 text-white p-5 flex items-center justify-between border-b border-indigo-950 shrink-0">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center font-bold text-white border border-indigo-500 uppercase font-mono shadow-sm">
+                    {selectedBeneficiary.fullName?.slice(0, 2)}
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-black text-slate-100">{selectedBeneficiary.fullName}</h3>
+                      <span className={`px-2 py-0.5 text-[9px] font-mono font-bold uppercase rounded ${
+                        selectedBeneficiary.calculatedEligibilityStatus === "ELIGIBLE" ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30" :
+                        selectedBeneficiary.calculatedEligibilityStatus === "INELIGIBLE" ? "bg-rose-500/20 text-rose-300 border border-rose-500/30" :
+                        selectedBeneficiary.calculatedEligibilityStatus === "INCOMPLETE" ? "bg-sky-500/20 text-sky-300 border border-sky-500/30" :
+                        "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                      }`}>
+                        {selectedBeneficiary.calculatedEligibilityStatus}
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-mono block mt-1 uppercase">Candidate Portfolio Drawer (ID: {selectedBeneficiary.id?.slice(0, 12)}...)</span>
+                  </div>
+                </div>
+                
+                <button 
+                  onClick={() => setShowProfileDrawer(false)}
+                  className="p-1.5 bg-slate-850 hover:bg-slate-750 border border-slate-700/60 rounded-lg text-slate-400 hover:text-white cursor-pointer transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Drawer Body */}
+              <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                
+                {/* Micro Actions Center */}
+                <div className="bg-indigo-50/50 border border-indigo-100 rounded-xl p-4 space-y-3 shadow-xs">
+                  <span className="text-[10px] uppercase font-mono tracking-wider font-extrabold text-indigo-800 block">Actions Workspace</span>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      onClick={async () => {
+                        if (sendingEmails) return;
+                        setSendingEmails(true);
+                        try {
+                          // Ensure candidate has a unique provisional reference
+                          if (!selectedBeneficiary.admissionRef) {
+                            const autoRef = `IDEAS/TVET/ADM/${selectedBeneficiary.id.split("-").pop()}/${new Date().getFullYear()}`;
+                            await authFetch(`${API_BASE_URL}/api/beneficiaries/${selectedBeneficiary.id}`, {
+                              method: "PUT",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({
+                                admissionStatus: "Admission Generated",
+                                admissionRef: autoRef,
+                                admissionLetterGeneratedAt: new Date().toISOString(),
+                                status: ProgramStatus.VERIFIED
+                              })
+                            });
+                          }
+
+                          const res = await authFetch(`${API_BASE_URL}/api/admissions/send-offer`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                              beneficiaryId: selectedBeneficiary.id,
+                              origin: window.location.origin
+                            })
+                          });
+                          
+                          const data = await res.json();
+                          if (data.success) {
+                            showToast(`Provisional admission offer letter dispatched! Link: ${data.secureLink}`, "success");
+                            fetchBeneficiariesList();
+                          } else {
+                            showToast(`SMTP Mail Delivery failed: ${data.smtpErrorDetails || "Unknown SMTP error check."}`, "error");
+                          }
+                        } catch (err: any) {
+                          showToast(`Error dispatching offer letter: ${err.message}`, "error");
+                        } finally {
+                          setSendingEmails(false);
+                        }
+                      }}
+                      disabled={sendingEmails}
+                      className="flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-650 hover:bg-indigo-700 text-white font-black text-xs rounded-lg shadow-sm cursor-pointer disabled:opacity-50 transition-colors"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      {sendingEmails ? "Sending Offer..." : "Send Offer Letter"}
+                    </button>
+
+                    <button
+                      onClick={() => setCustomEmailOpen(!customEmailOpen)}
+                      className="flex items-center justify-center gap-1.5 px-3 py-2 bg-white hover:bg-slate-50 border border-slate-205 text-slate-705 font-bold text-xs rounded-lg cursor-pointer transition-colors"
+                    >
+                      <Mail className="w-3.5 h-3.5" />
+                      Send Individual Email
+                    </button>
+                  </div>
+
+                  {/* Individual custom email dispatcher inline */}
+                  {customEmailOpen && (
+                    <div className="bg-white border border-indigo-150 rounded-xl p-4 mt-3 space-y-3.5 shadow-xs">
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-500 block mb-1 font-mono">Recipient candidate</label>
+                        <input 
+                          type="text" 
+                          readOnly 
+                          value={selectedBeneficiary.email} 
+                          className="w-full bg-slate-50 border border-slate-200 text-xs py-1.5 px-2.5 rounded-lg text-slate-505 font-medium cursor-not-allowed font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-500 block mb-1 font-mono">Subject Header Line</label>
+                        <input 
+                          type="text" 
+                          placeholder="Subject line for recipient..."
+                          value={individualSubject}
+                          onChange={(e) => setIndividualSubject(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 text-xs py-1.5 px-2.5 rounded-lg text-slate-705 font-semibold placeholder-slate-400 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-500 block mb-1 font-mono">Email Content Body</label>
+                        <textarea 
+                          rows={4}
+                          placeholder="Write instructions or update requirements..."
+                          value={individualBody}
+                          onChange={(e) => setIndividualBody(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 text-xs p-2.5 rounded-lg text-slate-705 placeholder-slate-400 focus:outline-none"
+                        />
+                      </div>
+                      <div className="flex justify-end gap-2 pt-1 border-t border-slate-100">
+                        <button 
+                          onClick={() => setCustomEmailOpen(false)}
+                          className="text-[10.5px] font-bold text-slate-450 hover:text-slate-650 cursor-pointer px-2.5 py-1"
+                        >
+                          Cancel
+                        </button>
+                        <button 
+                          onClick={async () => {
+                            if (!individualSubject.trim() || !individualBody.trim()) {
+                              showToast("Subject and body are both required for dispatch.", "warning");
+                              return;
+                            }
+                            setSendingEmails(true);
+                            try {
+                              const response = await authFetch(`${API_BASE_URL}/api/email/test-send`, {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                  recipient: selectedBeneficiary.email,
+                                  subject: individualSubject,
+                                  body: individualBody
+                                })
+                              });
+                              const resData = await response.json().catch(() => null);
+                              if (response.ok && resData?.success) {
+                                showToast(`Custom communication successfully dispatched to ${selectedBeneficiary.email}!`, "success");
+                                setIndividualSubject("");
+                                setIndividualBody("");
+                                setCustomEmailOpen(false);
+                              } else {
+                                showToast(`Direct dispatch failed. SMTP error, check configuration.`, "error");
+                              }
+                            } catch (err: any) {
+                              showToast("Failed to dispatch custom mail: " + err.message, "error");
+                            } finally {
+                              setSendingEmails(false);
+                            }
+                          }}
+                          disabled={sendingEmails}
+                          className="px-3.5 py-1.5 bg-indigo-650 hover:bg-indigo-700 text-white text-xs font-black rounded-lg cursor-pointer flex items-center justify-center disabled:opacity-50"
+                        >
+                          {sendingEmails ? "Sending..." : "Dispatch Mail"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Sub Tab selection */}
+                <div className="flex gap-4 border-b border-slate-100 pb-2">
+                  <button 
+                    onClick={() => setDrawerActiveTab("overview")}
+                    className={`pb-2 text-xs font-black border-b-2 px-1 transition-all cursor-pointer leading-wide uppercase font-mono ${
+                      drawerActiveTab === "overview" ? "border-indigo-600 text-indigo-650" : "border-transparent text-slate-400 hover:text-slate-700"
+                    }`}
+                  >
+                    Demographics & Credentials
+                  </button>
+                  <button 
+                    onClick={() => setDrawerActiveTab("timeline")}
+                    className={`pb-2 text-xs font-black border-b-2 px-1 transition-all cursor-pointer leading-wide uppercase font-mono ${
+                      drawerActiveTab === "timeline" ? "border-indigo-600 text-indigo-650" : "border-transparent text-slate-400 hover:text-slate-700"
+                    }`}
+                  >
+                    Admission Milestone Timeline
+                  </button>
+                </div>
+
+                {drawerActiveTab === "overview" ? (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg">
+                        <span className="text-[10px] text-slate-450 font-mono font-bold block uppercase leading-none">Biographical Gender</span>
+                        <strong className="text-slate-800 text-xs block mt-1.5">{selectedBeneficiary.gender || "Not Declared"}</strong>
+                      </div>
+                      <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg">
+                        <span className="text-[10px] text-slate-455 font-mono font-bold block uppercase leading-none">Age Indicator</span>
+                        <strong className="text-slate-800 text-xs mt-1.5 block font-semibold">{selectedBeneficiary.age ? `${selectedBeneficiary.age} Years (${selectedBeneficiary.ageBand})` : "Unknown"}</strong>
+                      </div>
+                      <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg col-span-2">
+                        <span className="text-[10px] text-slate-450 font-mono font-bold block uppercase leading-none">National Identity Number (NIN)</span>
+                        <strong className="text-slate-800 text-xs block mt-1.5 font-mono tracking-wider">{selectedBeneficiary.nin || "Missing Credentials"}</strong>
+                      </div>
+                      <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg col-span-2">
+                        <span className="text-[10px] text-slate-450 font-mono font-bold block uppercase leading-none">Bank Verification Number (BVN)</span>
+                        <strong className="text-slate-800 text-xs block mt-1.5 font-mono tracking-wider">{selectedBeneficiary.bvn || "Missing Credentials"}</strong>
+                      </div>
+                      <div className="p-3.5 bg-slate-50 border border-slate-205 rounded-lg col-span-2">
+                        <span className="text-[10px] text-slate-450 font-mono font-bold block uppercase leading-none">Contact Information Email</span>
+                        <strong className="text-slate-805 text-xs block mt-1.5 font-bold font-mono">{selectedBeneficiary.email}</strong>
+                        <strong className="text-slate-700 text-xs block mt-1 font-mono">{selectedBeneficiary.phone_number || selectedBeneficiary.phoneNumber || "No active phone"}</strong>
+                      </div>
+                      <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg col-span-2">
+                        <span className="text-[10px] text-slate-450 font-mono font-bold block uppercase leading-none">Skill Sector Registry & Assigned Program</span>
+                        <strong className="text-slate-800 text-xs mt-1.5 block uppercase font-extrabold text-indigo-700">{selectedBeneficiary.program || "IDEAS-TVET"}</strong>
+                        <span className="text-[11px] text-slate-500 block mt-1 font-semibold">{selectedBeneficiary.skill_sector || selectedBeneficiary.skillSector || "General Services"}</span>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-4 pl-2 text-left">
+                    <div className="relative border-l-2 border-indigo-100 space-y-6">
+                      {getCandidateTimeline(selectedBeneficiary).map((item, idx) => (
+                        <div key={idx} className="relative pl-6">
+                          <span className={`absolute -left-[7px] top-1.5 h-3.5 w-3.5 rounded-full border-2 ${
+                            item.status === "COMPLETED" 
+                              ? "bg-emerald-500 border-emerald-600" 
+                              : "bg-white border-slate-300"
+                          }`} />
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-xs font-extrabold text-slate-800">{item.title}</h4>
+                              <span className={`px-1.5 py-0.2 text-[8px] font-mono font-extrabold rounded ${
+                                item.status === "COMPLETED" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-slate-50 text-slate-400 border border-slate-200"
+                              }`}>
+                                {item.status}
+                              </span>
+                            </div>
+                            <span className="text-[10px] text-indigo-650 font-bold block mt-0.5 font-mono">{item.subtitle}</span>
+                            {item.date && (
+                              <span className="text-[9px] text-slate-400 font-bold block mt-0.5 font-mono">{item.date}</span>
+                            )}
+                            <p className="text-[10.5px] text-slate-500 mt-1.5 leading-relaxed font-medium">{item.desc}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+              </div>
+
+              {/* Drawer Footer */}
+              <div className="bg-slate-50 border-t border-slate-205 p-4 flex justify-end shrink-0">
+                <button 
+                  onClick={() => setShowProfileDrawer(false)}
+                  className="px-4 py-2 bg-white border border-slate-205 hover:bg-slate-100 rounded-lg text-slate-700 text-xs font-bold cursor-pointer font-mono"
+                >
+                  Close Profile Drawer
+                </button>
+              </div>
+
+            </div>
           </div>
         </div>
       )}
