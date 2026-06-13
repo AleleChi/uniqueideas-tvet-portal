@@ -5244,9 +5244,13 @@ async function getTspProfile(tspId: string) {
           latitude: row.latitude ? parseFloat(row.latitude) : null,
           longitude: row.longitude ? parseFloat(row.longitude) : null,
           registration_number: row.registration_number || "",
-          accreditation_status: row.accreditation_status || "ACTIVE",
+           accreditation_status: row.accreditation_status || "ACTIVE",
           accreditation_number: row.accreditation_number || "",
           accreditation_expiry: row.accreditation_expiry || "",
+          is_nbte_accredited: row.is_nbte_accredited !== null && row.is_nbte_accredited !== undefined ? !!row.is_nbte_accredited : true,
+          nbte_accreditation_number: row.nbte_accreditation_number || row.accreditation_number || "",
+          accreditation_date: row.accreditation_date || "",
+          accreditation_expiry_date: row.accreditation_expiry_date || row.accreditation_expiry || "",
           tsp_code: row.tsp_code || row.code || "",
           account_status: row.account_status || (row.is_active ? "ACTIVE" : "DEACTIVATED"),
           profile_completed: !!row.profile_completed,
@@ -6179,7 +6183,15 @@ app.post("/api/tsp/activate", async (req, res) => {
       success: true,
       name: tsp.name,
       email: tsp.contact_email,
-      tsp_code: tsp.tsp_code || tsp.code
+      tsp_code: tsp.tsp_code || tsp.code,
+      state: tsp.state || "",
+      lga: tsp.lga || "",
+      contact_phone: tsp.contact_phone || "",
+      is_nbte_accredited: tsp.is_nbte_accredited !== null && tsp.is_nbte_accredited !== undefined ? !!tsp.is_nbte_accredited : true,
+      nbte_accreditation_number: tsp.nbte_accreditation_number || tsp.accreditation_number || "",
+      accreditation_date: tsp.accreditation_date || "",
+      accreditation_expiry_date: tsp.accreditation_expiry_date || tsp.accreditation_expiry || "",
+      accreditation_status: tsp.accreditation_status || "ACCREDITED"
     });
   } catch (e: any) {
     console.error(`[VALIDATE ERROR] Exception encountered during activation check: ${e.message}`);
@@ -6367,13 +6379,20 @@ app.post("/api/tsp/complete-profile", requireAuth, async (req: AuthenticatedRequ
 
     const { 
       organization_name, state, lga, physical_address, contact_email, contact_phone, 
-      nbte_accreditation_number, accreditation_status,
+      is_nbte_accredited, nbte_accreditation_number, accreditation_status,
+      accreditation_date, accreditation_expiry_date,
       // Optional/Extended fields 
       latitude, longitude, website, secondary_contact 
     } = req.body;
 
-    if (!organization_name || !state || !lga || !physical_address || !contact_email || !contact_phone || !nbte_accreditation_number || !accreditation_status) {
+    const isAccredited = is_nbte_accredited === true || is_nbte_accredited === "true";
+
+    if (!organization_name || !state || !lga || !physical_address || !contact_email || !contact_phone) {
       return res.status(400).json({ error: "Missing mandatory configuration profile fields." });
+    }
+
+    if (isAccredited && !nbte_accreditation_number) {
+      return res.status(400).json({ error: "NBTE Accreditation number is required when accredited." });
     }
 
     const pool = getPgPool();
@@ -6388,6 +6407,12 @@ app.post("/api/tsp/complete-profile", requireAuth, async (req: AuthenticatedRequ
 
     const calLat = latitude === "" || latitude === null || latitude === undefined ? null : Number(latitude);
     const calLng = longitude === "" || longitude === null || longitude === undefined ? null : Number(longitude);
+
+    const finalAccredited = isAccredited ? true : false;
+    const finalNumber = isAccredited ? nbte_accreditation_number : "";
+    const finalStatus = isAccredited ? (accreditation_status || "ACCREDITED") : "NOT_ACCREDITED";
+    const finalDate = isAccredited ? (accreditation_date || "") : "";
+    const finalExpiry = isAccredited ? (accreditation_expiry_date || "") : "";
 
     await pool.query(`
       UPDATE tsps
@@ -6404,16 +6429,22 @@ app.post("/api/tsp/complete-profile", requireAuth, async (req: AuthenticatedRequ
         longitude = $10,
         website = $11,
         secondary_contact = $12,
+        is_nbte_accredited = $13,
+        nbte_accreditation_number = $14,
+        accreditation_date = $15,
+        accreditation_expiry_date = $16,
         account_status = 'ACTIVE',
         invitation_status = 'ACTIVE',
         organization_status = 'ACTIVE',
         profile_completed = true,
         updated_at = NOW()
-      WHERE id = $13
+      WHERE id = $17
     `, [
       organization_name, state, lga, physical_address, contact_email, contact_phone, 
-      nbte_accreditation_number, accreditation_status, calLat, calLng, 
-      website || "", secondary_contact || "", tspId
+      finalNumber, finalStatus, calLat, calLng, 
+      website || "", secondary_contact || "",
+      finalAccredited, finalNumber, finalDate, finalExpiry,
+      tspId
     ]);
 
     await logAction(

@@ -9,6 +9,7 @@ import {
   Building2, Globe, AlertTriangle, ArrowRight, Sparkles, Navigation, Globe2
 } from "lucide-react";
 import { authFetch } from "../utils/authFetch";
+import { NIGERIAN_STATES_AND_LGAS } from "../utils/nigerianLgasData";
 
 interface TspActivationFlowProps {
   token?: string;
@@ -29,7 +30,9 @@ export function TspActivationFlow({ token, onClose, onActivationSuccess }: TspAc
   const [submittingPassword, setSubmittingPassword] = useState(false);
 
   // Step 2: Organizational Profile
-  const [states, setStates] = useState<any[]>([]);
+  const [states, setStates] = useState<any[]>(() => {
+    return Object.keys(NIGERIAN_STATES_AND_LGAS).map((s) => ({ name: s })).sort((a,b) => a.name.localeCompare(b.name));
+  });
   const [lgas, setLgas] = useState<any[]>([]);
   const [loadingLgas, setLoadingLgas] = useState(false);
   
@@ -40,8 +43,11 @@ export function TspActivationFlow({ token, onClose, onActivationSuccess }: TspAc
     physical_address: "",
     contact_email: "",
     contact_phone: "",
+    is_nbte_accredited: true,
     nbte_accreditation_number: "",
-    accreditation_status: "PROVISIONAL",
+    accreditation_status: "ACCREDITED",
+    accreditation_date: "",
+    accreditation_expiry_date: "",
     website: "",
     secondary_contact: "",
     latitude: "",
@@ -54,22 +60,10 @@ export function TspActivationFlow({ token, onClose, onActivationSuccess }: TspAc
   // 1. Validate the activation token or fetch the profile on mount
   useEffect(() => {
     let active = true;
-    const fetchStatesList = async () => {
-      try {
-        const statesRes = await fetch("/api/reference/states");
-        if (statesRes.ok && active) {
-          const statesData = await statesRes.json();
-          setStates(statesData);
-        }
-      } catch (err) {
-        console.error("Failed to load states:", err);
-      }
-    };
 
     const verifyTokenOrLoadProfile = async () => {
       try {
         setLoading(true);
-        await fetchStatesList();
 
         if (token) {
           const res = await fetch("/api/tsp/activate", {
@@ -88,7 +82,14 @@ export function TspActivationFlow({ token, onClose, onActivationSuccess }: TspAc
               ...prev,
               organization_name: data.name || "",
               contact_email: data.email || "",
-              state: data.state || ""
+              state: data.state || "",
+              lga: data.lga || "",
+              contact_phone: data.contact_phone || "",
+              is_nbte_accredited: data.is_nbte_accredited !== undefined ? (data.is_nbte_accredited === true || data.is_nbte_accredited === "true") : true,
+              nbte_accreditation_number: data.nbte_accreditation_number || data.accreditation_number || "",
+              accreditation_status: data.accreditation_status || "ACCREDITED",
+              accreditation_date: data.accreditation_date || "",
+              accreditation_expiry_date: data.accreditation_expiry_date || data.accreditation_expiry || ""
             }));
           } else {
             const err = await res.json();
@@ -113,8 +114,11 @@ export function TspActivationFlow({ token, onClose, onActivationSuccess }: TspAc
               physical_address: data.physical_address || "",
               contact_email: data.contact_email || "",
               contact_phone: data.contact_phone || "",
+              is_nbte_accredited: data.is_nbte_accredited !== undefined ? (data.is_nbte_accredited === true || data.is_nbte_accredited === "true") : true,
               nbte_accreditation_number: data.nbte_accreditation_number || data.accreditation_number || "",
-              accreditation_status: data.accreditation_status || "PROVISIONAL",
+              accreditation_status: data.accreditation_status || "ACCREDITED",
+              accreditation_date: data.accreditation_date || "",
+              accreditation_expiry_date: data.accreditation_expiry_date || data.accreditation_expiry || "",
               website: data.website || "",
               secondary_contact: data.secondary_contact || "",
               latitude: data.latitude ? String(data.latitude) : "",
@@ -146,13 +150,15 @@ export function TspActivationFlow({ token, onClose, onActivationSuccess }: TspAc
       return;
     }
 
-    const loadLgas = async () => {
+    const loadLgas = () => {
+      setLoadingLgas(true);
       try {
-        setLoadingLgas(true);
-        const res = await fetch(`/api/reference/lgas/${encodeURIComponent(profileForm.state)}`);
-        if (res.ok) {
-          const lgaData = await res.json();
-          setLgas(lgaData);
+        const matchedKey = Object.keys(NIGERIAN_STATES_AND_LGAS).find(
+          k => k.toLowerCase().trim() === profileForm.state.toLowerCase().trim()
+        );
+        if (matchedKey) {
+          const matchedLgas = NIGERIAN_STATES_AND_LGAS[matchedKey].sort().map(name => ({ name }));
+          setLgas(matchedLgas);
         } else {
           setLgas([]);
         }
@@ -218,7 +224,11 @@ export function TspActivationFlow({ token, onClose, onActivationSuccess }: TspAc
     if (!profileForm.physical_address.trim()) errors.physical_address = "Corporate address is mandatory.";
     if (!profileForm.contact_email.trim()) errors.contact_email = "Primary email is mandatory.";
     if (!profileForm.contact_phone.trim()) errors.contact_phone = "Primary contact phone is mandatory.";
-    if (!profileForm.nbte_accreditation_number.trim()) errors.nbte_accreditation_number = "NBTE Accreditation number is mandatory.";
+    if (profileForm.is_nbte_accredited) {
+      if (!profileForm.nbte_accreditation_number.trim()) {
+        errors.nbte_accreditation_number = "NBTE Accreditation number is mandatory.";
+      }
+    }
 
     if (Object.keys(errors).length > 0) {
       setFormErrors(errors);
@@ -599,35 +609,104 @@ export function TspActivationFlow({ token, onClose, onActivationSuccess }: TspAc
                   />
                 </div>
 
-                <div>
+                <div className="sm:col-span-2 border-t border-b border-slate-100 py-4 my-2">
                   <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
-                    NBTE Accreditation Number *
+                    NBTE Accredited? *
                   </label>
-                  <input
-                    type="text"
-                    className="border border-slate-200 bg-white text-slate-800 rounded-lg block w-full px-3 py-2.5 text-xs font-medium outline-hidden focus:border-indigo-550 focus:ring-1 focus:ring-indigo-500"
-                    placeholder="E.g. NBTE/TVET/UT-001/2024"
-                    value={profileForm.nbte_accreditation_number}
-                    onChange={(e) => setProfileForm(prev => ({ ...prev, nbte_accreditation_number: e.target.value }))}
-                  />
-                  {formErrors.nbte_accreditation_number && (
-                    <p className="text-red-500 text-xs mt-1.5 font-medium">{formErrors.nbte_accreditation_number}</p>
-                  )}
+                  <div className="flex gap-6 mt-1.5">
+                    <label className="inline-flex items-center text-xs font-medium text-slate-700 cursor-pointer">
+                      <input
+                        type="radio"
+                        className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-slate-300"
+                        name="is_nbte_accredited"
+                        checked={profileForm.is_nbte_accredited === true}
+                        onChange={() => setProfileForm(prev => ({ 
+                          ...prev, 
+                          is_nbte_accredited: true,
+                          accreditation_status: prev.accreditation_status === "NOT_ACCREDITED" ? "ACCREDITED" : prev.accreditation_status
+                        }))}
+                      />
+                      <span className="ml-2">Yes</span>
+                    </label>
+                    <label className="inline-flex items-center text-xs font-medium text-slate-700 cursor-pointer">
+                      <input
+                        type="radio"
+                        className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-slate-300"
+                        name="is_nbte_accredited"
+                        checked={profileForm.is_nbte_accredited === false}
+                        onChange={() => setProfileForm(prev => ({ 
+                          ...prev, 
+                          is_nbte_accredited: false,
+                          accreditation_status: "NOT_ACCREDITED"
+                        }))}
+                      />
+                      <span className="ml-2">No</span>
+                    </label>
+                  </div>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
-                    Accreditation Status *
-                  </label>
-                  <select
-                    className="border border-slate-200 bg-white text-slate-800 rounded-lg block w-full px-3 py-2.5 text-xs font-medium outline-hidden focus:border-indigo-550 focus:ring-1 focus:ring-indigo-500"
-                    value={profileForm.accreditation_status}
-                    onChange={(e) => setProfileForm(prev => ({ ...prev, accreditation_status: e.target.value }))}
-                  >
-                    <option value="ACCREDITED">Fully Accredited</option>
-                    <option value="PROVISIONAL">Provisional Approval</option>
-                  </select>
-                </div>
+                {profileForm.is_nbte_accredited && (
+                  <>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                        Accreditation Number *
+                      </label>
+                      <input
+                        type="text"
+                        className="border border-slate-200 bg-white text-slate-800 rounded-lg block w-full px-3 py-2.5 text-xs font-medium outline-hidden focus:border-indigo-550 focus:ring-1 focus:ring-indigo-500"
+                        placeholder="E.g. NBTE/TVET/UT-001/2024"
+                        value={profileForm.nbte_accreditation_number}
+                        onChange={(e) => setProfileForm(prev => ({ ...prev, nbte_accreditation_number: e.target.value }))}
+                      />
+                      {formErrors.nbte_accreditation_number && (
+                        <p className="text-red-500 text-xs mt-1.5 font-medium">{formErrors.nbte_accreditation_number}</p>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                        Accreditation Status *
+                      </label>
+                      <select
+                        className="border border-slate-200 bg-white text-slate-800 rounded-lg block w-full px-3 py-2.5 text-xs font-medium outline-hidden focus:border-indigo-550 focus:ring-1 focus:ring-indigo-500"
+                        value={profileForm.accreditation_status}
+                        onChange={(e) => setProfileForm(prev => ({ ...prev, accreditation_status: e.target.value }))}
+                      >
+                        <option value="ACCREDITED">Fully Accredited</option>
+                        <option value="PENDING">Pending Evaluation</option>
+                        <option value="SUSPENDED">Suspended</option>
+                        <option value="EXPIRED">Expired</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                        Accreditation Date *
+                      </label>
+                      <input
+                        type="date"
+                        className="border border-slate-200 bg-white text-slate-800 rounded-lg block w-full px-3 py-2.5 text-xs font-medium outline-hidden focus:border-indigo-550 focus:ring-1 focus:ring-indigo-500"
+                        value={profileForm.accreditation_date}
+                        onChange={(e) => setProfileForm(prev => ({ ...prev, accreditation_date: e.target.value }))}
+                      />
+                      {formErrors.accreditation_date && (
+                        <p className="text-red-500 text-xs mt-1.5 font-medium">{formErrors.accreditation_date}</p>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                        Accreditation Expiry Date (Optional)
+                      </label>
+                      <input
+                        type="date"
+                        className="border border-slate-200 bg-white text-slate-800 rounded-lg block w-full px-3 py-2.5 text-xs font-medium outline-hidden focus:border-indigo-550 focus:ring-1 focus:ring-indigo-500"
+                        value={profileForm.accreditation_expiry_date}
+                        onChange={(e) => setProfileForm(prev => ({ ...prev, accreditation_expiry_date: e.target.value }))}
+                      />
+                    </div>
+                  </>
+                )}
 
                 <div>
                   <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">

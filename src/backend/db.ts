@@ -1498,6 +1498,10 @@ export async function initDb(): Promise<void> {
       ALTER TABLE tsps ADD COLUMN IF NOT EXISTS accreditation_status VARCHAR(50);
       ALTER TABLE tsps ADD COLUMN IF NOT EXISTS accreditation_number VARCHAR(100);
       ALTER TABLE tsps ADD COLUMN IF NOT EXISTS accreditation_expiry VARCHAR(50);
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS is_nbte_accredited BOOLEAN DEFAULT TRUE;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS nbte_accreditation_number VARCHAR(155);
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS accreditation_date VARCHAR(100);
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS accreditation_expiry_date VARCHAR(100);
       
       -- Add TSP identity and provisioning columns (Task 017B)
       ALTER TABLE tsps ADD COLUMN IF NOT EXISTS tsp_code VARCHAR(50) UNIQUE;

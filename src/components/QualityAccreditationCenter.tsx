@@ -45,6 +45,36 @@ export function QualityAccreditationCenter({ session, showToast, onRefreshRoot }
   const [submittingSuspense, setSubmittingSuspense] = useState(false);
   const [tspRosterSearch, setTspRosterSearch] = useState("");
   const [statusFilterTsp, setStatusFilterTsp] = useState("ALL");
+  const [accreditationFilterTsp, setAccreditationFilterTsp] = useState("ALL");
+
+  const getFilteredTsps = () => {
+    return tsps.filter(t => {
+      const q = tspRosterSearch.toLowerCase().trim();
+      if (q) {
+        const matchName = (t.name || "").toLowerCase().includes(q);
+        const matchCode = (t.tsp_code || t.code || "").toLowerCase().includes(q);
+        const matchLga = (t.lga || "").toLowerCase().includes(q);
+        const matchState = (t.state || "").toLowerCase().includes(q);
+        if (!matchName && !matchCode && !matchLga && !matchState) return false;
+      }
+      if (statusFilterTsp !== "ALL") {
+        const stat = t.account_status || (t.is_active ? "ACTIVE" : "DEACTIVATED");
+        if (stat !== statusFilterTsp) return false;
+      }
+      if (accreditationFilterTsp !== "ALL") {
+        const isAcc = t.is_nbte_accredited === true || t.is_nbte_accredited === "true" || t.accreditation_status === "ACCREDITED";
+        const accStatus = t.accreditation_status || "NOT_ACCREDITED";
+        if (accreditationFilterTsp === "ACCREDITED") {
+          if (!isAcc || (accStatus !== "ACCREDITED" && accStatus !== "PROVISIONAL")) return false;
+        } else if (accreditationFilterTsp === "NOT_ACCREDITED") {
+          if (isAcc && accStatus !== "NOT_ACCREDITED") return false;
+        } else {
+          if (accStatus !== accreditationFilterTsp) return false;
+        }
+      }
+      return true;
+    });
+  };
 
   const fetchTspsRoster = async () => {
     try {
@@ -1397,10 +1427,23 @@ export function QualityAccreditationCenter({ session, showToast, onRefreshRoot }
                 value={statusFilterTsp}
                 onChange={(e) => setStatusFilterTsp(e.target.value)}
               >
-                <option value="ALL">All Status States</option>
+                <option value="ALL">All Activation States</option>
                 <option value="ACTIVE">Active Dashboard Only</option>
                 <option value="PENDING_ACTIVATION">Pending Invitations</option>
                 <option value="SUSPENDED">Suspended Organizations</option>
+              </select>
+
+              <select
+                className="bg-white border border-slate-200 text-slate-700 rounded-lg px-3 py-2 text-xs font-medium outline-hidden"
+                value={accreditationFilterTsp}
+                onChange={(e) => setAccreditationFilterTsp(e.target.value)}
+              >
+                <option value="ALL">All Accreditation States</option>
+                <option value="ACCREDITED">Fully Accredited (or Provisional)</option>
+                <option value="NOT_ACCREDITED">Not Accredited</option>
+                <option value="PENDING">Pending Evaluation</option>
+                <option value="SUSPENDED">Suspended Accreditation</option>
+                <option value="EXPIRED">Expired Accreditation</option>
               </select>
             </div>
 
@@ -1440,45 +1483,13 @@ export function QualityAccreditationCenter({ session, showToast, onRefreshRoot }
                         <span>Querying national TSP registry databases...</span>
                       </td>
                     </tr>
-                  ) : tsps.filter(t => {
-                    // Filter Search Query
-                    const q = tspRosterSearch.toLowerCase().trim();
-                    if (q) {
-                      const matchName = (t.name || "").toLowerCase().includes(q);
-                      const matchCode = (t.tsp_code || t.code || "").toLowerCase().includes(q);
-                      const matchLga = (t.lga || "").toLowerCase().includes(q);
-                      const matchState = (t.state || "").toLowerCase().includes(q);
-                      if (!matchName && !matchCode && !matchLga && !matchState) return false;
-                    }
-
-                    // Filter Status State
-                    if (statusFilterTsp !== "ALL") {
-                      const stat = t.account_status || (t.is_active ? "ACTIVE" : "DEACTIVATED");
-                      if (stat !== statusFilterTsp) return false;
-                    }
-
-                    return true;
-                  }).length === 0 ? (
+                  ) : getFilteredTsps().length === 0 ? (
                     <tr>
                       <td colSpan={6} className="p-8 text-center text-slate-400 font-display">
                         No registered Training Service Providers match the applied constraints.
                       </td>
                     </tr>
-                  ) : tsps.filter(t => {
-                    const q = tspRosterSearch.toLowerCase().trim();
-                    if (q) {
-                      const matchName = (t.name || "").toLowerCase().includes(q);
-                      const matchCode = (t.tsp_code || t.code || "").toLowerCase().includes(q);
-                      const matchLga = (t.lga || "").toLowerCase().includes(q);
-                      const matchState = (t.state || "").toLowerCase().includes(q);
-                      if (!matchName && !matchCode && !matchLga && !matchState) return false;
-                    }
-                    if (statusFilterTsp !== "ALL") {
-                      const stat = t.account_status || (t.is_active ? "ACTIVE" : "DEACTIVATED");
-                      if (stat !== statusFilterTsp) return false;
-                    }
-                    return true;
-                  }).map((item, index) => {
+                  ) : getFilteredTsps().map((item, index) => {
                     const status = item.account_status || (item.is_active ? "ACTIVE" : "DEACTIVATED");
                     return (
                       <tr key={index} className="hover:bg-slate-50/45 transition">
