@@ -6240,29 +6240,44 @@ app.post("/api/tsp/set-password", async (req, res) => {
       return res.status(400).json({ error: "Onboarding registry is closed." });
     }
 
-    const userRes = await pool.query("SELECT * FROM users WHERE tsp_id = $1 AND role = 'TSP_ADMIN'", [tsp.id]);
-    if (userRes.rows.length === 0) {
-      await pool.query(`
-        INSERT INTO activation_audit_logs (
-          tsp_id, tsp_name, contact_email, action, token_truncated, token_hash, status, ip_address, user_agent, sandbox_mode, error_message
-        ) VALUES ($1, $2, $3, 'PASSWORD_SET', $4, $5, 'USER_NOT_FOUND', $6, $7, $8, 'No associated TSP_ADMIN user records found.')
-      `, [tsp.id, tsp.name, tsp.contact_email, tokenTruncated, tokenHash, ip, userAgent, sandbox]);
-
-      return res.status(404).json({ error: "Default primary admin user map not found." });
-    }
-    const user = userRes.rows[0];
-
+    let user;
     const hashedCheck = bcrypt.hashSync(password, 10);
+    const userRes = await pool.query("SELECT * FROM users WHERE tsp_id = $1 AND role = 'TSP_ADMIN'", [tsp.id]);
 
-    // Update user: must_change_password is now false, reset login counters
-    await pool.query(`
-      UPDATE users
-      SET 
-        password_hash = $1,
-        must_change_password = false,
-        updated_at = NOW()
-      WHERE id = $2
-    `, [hashedCheck, user.id]);
+    if (userRes.rows.length === 0) {
+      console.log(`[ACTIVATION] No pre-existing TSP_ADMIN user found for TSP ${tsp.name} (ID: ${tsp.id}). Provisioning automatically.`);
+      const userId = "usr_" + crypto.randomBytes(16).toString("hex");
+      
+      const insertUserRes = await pool.query(`
+        INSERT INTO users (
+          id, email, password_hash, role, tenant_id, state_id, tsp_id,
+          failed_login_attempts, must_change_password, is_primary_contact,
+          created_at, updated_at
+        ) VALUES ($1, $2, $3, 'TSP_ADMIN', $4, $5, $6, 0, false, true, NOW(), NOW())
+        ON CONFLICT (email) DO UPDATE SET
+          password_hash = EXCLUDED.password_hash,
+          role = 'TSP_ADMIN',
+          tsp_id = EXCLUDED.tsp_id,
+          tenant_id = EXCLUDED.tenant_id,
+          state_id = EXCLUDED.state_id,
+          must_change_password = false,
+          updated_at = NOW()
+        RETURNING *
+      `, [userId, tsp.contact_email, hashedCheck, tsp.tenant_id, tsp.state_id, tsp.id]);
+
+      user = insertUserRes.rows[0];
+    } else {
+      user = userRes.rows[0];
+      // Update existing user: must_change_password is now false, reset login counters
+      await pool.query(`
+        UPDATE users
+        SET 
+          password_hash = $1,
+          must_change_password = false,
+          updated_at = NOW()
+        WHERE id = $2
+      `, [hashedCheck, user.id]);
+    }
 
     // Track active invitation activation timestamp and mark account ACTIVE
     await pool.query(`
