@@ -3697,6 +3697,52 @@ export class DbRepo {
   }
 
   /**
+   * Resiliently resolve potential custom formats to the actual candidate database UUID.
+   */
+  static async resolveBeneficiaryIdResiliently(idOrToken: any, activeConnection?: any): Promise<string> {
+    if (!idOrToken) return idOrToken;
+    const cleanToken = String(idOrToken).trim();
+    if (DbRepo.isValidUuid(cleanToken)) {
+      return cleanToken;
+    }
+
+    const conn = activeConnection || getPgPool();
+    if (conn) {
+      try {
+        // 1. Check direct beneficiaries ID or custom fields (tvet_id or reference_number)
+        const resBenef = await conn.query(
+          "SELECT id FROM beneficiaries WHERE id = $1 OR custom_fields->>'tvet_id' = $1 OR custom_fields->>'reference_number' = $1 LIMIT 1",
+          [cleanToken]
+        );
+        if (resBenef.rows.length > 0) {
+          return resBenef.rows[0].id;
+        }
+
+        // 2. Check trainee_profiles for tvet_id
+        const resProfile = await conn.query(
+          "SELECT beneficiary_id FROM trainee_profiles WHERE tvet_id = $1 LIMIT 1",
+          [cleanToken]
+        );
+        if (resProfile.rows.length > 0) {
+          return resProfile.rows[0].beneficiary_id;
+        }
+
+        // 3. Check admissions fields
+        const resAdm = await conn.query(
+          "SELECT beneficiary_id FROM admissions WHERE admission_ref = $1 OR admission_form_ref = $1 LIMIT 1",
+          [cleanToken]
+        );
+        if (resAdm.rows.length > 0) {
+          return resAdm.rows[0].beneficiary_id;
+        }
+      } catch (e) {
+        console.error("[DbRepo.resolveBeneficiaryIdResiliently] DB lookup error:", e);
+      }
+    }
+    return cleanToken;
+  }
+
+  /**
    * Writes a new system security context logs entry
    */
   static async saveAuditLog(logOrUsername: any, maybeAction?: string, maybeDetails?: string): Promise<any> {

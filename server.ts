@@ -10173,6 +10173,128 @@ app.get("/api/dispatches/beneficiary/:beneficiaryId", requireAuth, async (req, r
   }
 });
 
+/**
+ * Processes a single beneficiary offer dispatch with strict row-level locking
+ * and a 15-second idempotency window guard.
+ */
+export async function processIdempotentOfferDispatch(
+  bId: string,
+  documentType: string,
+  operator: string,
+  baseUrl: string,
+  pool: any
+): Promise<any> {
+  const client = await pool.connect();
+  try {
+    // Open explicit transaction
+    await client.query("BEGIN");
+
+    // Implement row-level database locking to intercept and block rapid, concurrent click signals
+    const benefLock = await client.query(
+      "SELECT id, email, beneficiary_status FROM beneficiaries WHERE id = $1 FOR UPDATE",
+      [bId]
+    );
+
+    if (benefLock.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return { success: false, error: "Trainee registry lookup failure." };
+    }
+
+    const beneficiary = benefLock.rows[0];
+    const emailAddress = beneficiary.email;
+    const bStatus = beneficiary.beneficiary_status || "ACTIVE";
+
+    if (!["ACTIVE", "COMPLETED"].includes(bStatus)) {
+      await client.query("ROLLBACK");
+      return { success: false, error: "Trainee is currently ineligible for dispatch due to inactive status." };
+    }
+
+    if (!emailAddress) {
+      await client.query("ROLLBACK");
+      return { success: false, error: "Email address not declared in trainee profile." };
+    }
+
+    // Execute idempotency check for active dispatches of the same document type
+    const activeDispatchesLock = await client.query(
+      `SELECT id, status FROM document_dispatches 
+       WHERE beneficiary_id = $1 AND document_type = $2 AND status IN ('QUEUED', 'PROCESSING', 'SENDING') 
+       FOR UPDATE`,
+      [bId, documentType]
+    );
+
+    if (activeDispatchesLock.rows.length > 0) {
+      await client.query("ROLLBACK");
+      return {
+        success: false,
+        isRaceConflict: true,
+        error: "IDENTICAL_DISPATCH_ACTIVE",
+        message: `A dispatch process of type '${documentType}' for beneficiary '${bId}' is already active. Transmissions are blocked.`
+      };
+    }
+
+    // Check if an offer was dispatched within the last 15 seconds to prevent race conditions and duplicate email blasts
+    const recentDispatches = await client.query(
+      `SELECT id FROM document_dispatches 
+       WHERE beneficiary_id = $1 AND document_type = $2 
+       AND (sent_at > NOW() - INTERVAL '15 seconds' OR created_at > NOW() - INTERVAL '15 seconds')
+       LIMIT 1`,
+      [bId, documentType]
+    );
+
+    if (recentDispatches.rows.length > 0) {
+      await client.query("ROLLBACK");
+      return {
+        success: true,
+        status: "SUPPRESSED",
+        message: "Duplicate dispatch request dropped under strict 15-second idempotency guard."
+      };
+    }
+
+    // Commit transaction safety checks
+    await client.query("COMMIT");
+
+    // Check if document exists; if not, compile baseline document inside the sandbox
+    const generatedDocs = await DbRepo.getGeneratedDocuments(bId);
+    let targetDoc = generatedDocs.find(d => d.documentType === documentType);
+
+    if (!targetDoc) {
+      console.log(`[Auto-Gen Sandbox compile] ${documentType} not found for ${bId}. Launching generation...`);
+      try {
+        targetDoc = await DocumentService.generateDocument(bId, documentType as any, operator, false);
+      } catch (e: any) {
+        return { success: false, error: `Document compile failure: ${e.message}` };
+      }
+    }
+
+    // Create new Dispatch item log
+    const dispatch = await DocumentDeliveryService.createDispatch(
+      bId,
+      documentType,
+      emailAddress,
+      targetDoc ? targetDoc.id : undefined
+    );
+
+    // Execute single send dispatch via mail server
+    const processed = await DocumentDeliveryService.executeDispatch(dispatch.id, baseUrl);
+
+    return {
+      success: processed.status === "SENT",
+      status: processed.status,
+      dispatchId: dispatch.id,
+      error: processed.failureReason
+    };
+
+  } catch (err: any) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rErr) {}
+    console.error(`[Dispatch Manager Engine] Aborted dispatch loop for ${bId}:`, err);
+    return { success: false, error: err.message };
+  } finally {
+    client.release();
+  }
+}
+
 app.post("/api/dispatches/send", requireAuth, async (req, res) => {
   try {
     const { beneficiaryIds, documentType } = req.body;
@@ -10192,124 +10314,18 @@ app.post("/api/dispatches/send", requireAuth, async (req, res) => {
       return res.status(500).json({ error: "PostgreSQL Database pool is not active or initialized." });
     }
 
-    // Process each beneficiary with robust database transactions, row-level locks, and concurrency protection
     for (const bId of beneficiaryIds) {
-      const client = await pool.connect();
-      try {
-        // Open explicit transaction
-        await client.query("BEGIN");
-
-        // Implement row-level database locking to intercept and block rapid, concurrent click signals
-        const benefLock = await client.query(
-          "SELECT id, email, beneficiary_status FROM beneficiaries WHERE id = $1 FOR UPDATE",
-          [bId]
-        );
-
-        if (benefLock.rows.length === 0) {
-          await client.query("ROLLBACK");
-          resultLogs.push({ beneficiaryId: bId, success: false, error: "Trainee registry lookup failure." });
-          continue;
-        }
-
-        const beneficiary = benefLock.rows[0];
-        const emailAddress = beneficiary.email;
-        const bStatus = beneficiary.beneficiary_status || "ACTIVE";
-
-        if (!["ACTIVE", "COMPLETED"].includes(bStatus)) {
-          await client.query("ROLLBACK");
-          resultLogs.push({ beneficiaryId: bId, success: false, error: "Beneficiary record is currently ineligible for dispatch due to inactive status." });
-          continue;
-        }
-
-        if (!emailAddress) {
-          await client.query("ROLLBACK");
-          resultLogs.push({ beneficiaryId: bId, success: false, error: "email_address not declared in trainee profile." });
-          continue;
-        }
-
-        // Execute idempotency check for active dispatches of the same document type
-        const activeDispatchesLock = await client.query(
-          `SELECT id, status FROM document_dispatches 
-           WHERE beneficiary_id = $1 AND document_type = $2 AND status IN ('QUEUED', 'PROCESSING', 'SENDING') 
-           FOR UPDATE`,
-          [bId, documentType]
-        );
-
-        if (activeDispatchesLock.rows.length > 0) {
-          // Identical processing dispatch is active; reject, rollback, and return HTTP 409 limit signal
-          await client.query("ROLLBACK");
-          return res.status(409).json({
-            error: "IDENTICAL_DISPATCH_ACTIVE",
-            message: `A dispatch process of type '${documentType}' for beneficiary '${bId}' is already registered in a processing state. Transmissions are blocked to prevent duplicate email blasts.`
-          });
-        }
-
-        // Check if an offer was dispatched within the last 15 seconds to prevent race conditions and duplicate email blasts
-        const recentDispatches = await client.query(
-          `SELECT id FROM document_dispatches 
-           WHERE beneficiary_id = $1 AND document_type = $2 
-           AND (sent_at > NOW() - INTERVAL '15 seconds' OR created_at > NOW() - INTERVAL '15 seconds')
-           LIMIT 1`,
-          [bId, documentType]
-        );
-
-        if (recentDispatches.rows.length > 0) {
-          // A dispatch was sent extremely recently. Intercept the race, roll back, and drop the duplicate safely.
-          await client.query("ROLLBACK");
-          resultLogs.push({
-            beneficiaryId: bId,
-            success: true,
-            status: "SUPPRESSED",
-            message: "Duplicate dispatch request dropped under strict 15-second idempotency guard."
-          });
-          continue;
-        }
-
-        // Commit safety checks transaction
-        await client.query("COMMIT");
-
-        // Check if document exists; if not, compile baseline document inside the sandbox
-        const generatedDocs = await DbRepo.getGeneratedDocuments(bId);
-        let targetDoc = generatedDocs.find(d => d.documentType === documentType);
-
-        if (!targetDoc) {
-          console.log(`[Auto-Gen Sandbox compile] ${documentType} not found for ${bId}. Launching generation...`);
-          try {
-            targetDoc = await DocumentService.generateDocument(bId, documentType as any, operator, false);
-          } catch (e: any) {
-            resultLogs.push({ beneficiaryId: bId, success: false, error: `Document compile failure: ${e.message}` });
-            continue;
-          }
-        }
-
-        // Create new Dispatch item log
-        const dispatch = await DocumentDeliveryService.createDispatch(
-          bId,
-          documentType,
-          emailAddress,
-          targetDoc ? targetDoc.id : undefined
-        );
-
-        // Execute single send dispatch via mail server
-        const processed = await DocumentDeliveryService.executeDispatch(dispatch.id, baseUrl);
-
-        resultLogs.push({
-          beneficiaryId: bId,
-          dispatchId: dispatch.id,
-          status: processed.status,
-          success: processed.status === "SENT",
-          error: processed.failureReason
+      const outcome = await processIdempotentOfferDispatch(bId, documentType, operator, baseUrl, pool);
+      if (outcome.isRaceConflict) {
+        return res.status(409).json({
+          error: outcome.error,
+          message: outcome.message
         });
-
-      } catch (err: any) {
-        try {
-          await client.query("ROLLBACK");
-        } catch (rErr) {}
-        console.error(`[Dispatch Manager Engine] Aborted dispatch loop for ${bId}:`, err);
-        resultLogs.push({ beneficiaryId: bId, success: false, error: err.message });
-      } finally {
-        client.release();
       }
+      resultLogs.push({
+        beneficiaryId: bId,
+        ...outcome
+      });
     }
 
     res.json({

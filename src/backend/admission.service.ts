@@ -226,7 +226,8 @@ export class AdmissionService {
    * Logs a tracking open event when the candidate opens their communication link.
    */
   static async registerEmailOpened(beneficiaryId: string): Promise<boolean> {
-    const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
+    const resolvedId = await DbRepo.resolveBeneficiaryIdResiliently(beneficiaryId);
+    const beneficiary = await DbRepo.getBeneficiaryById(resolvedId);
     if (!beneficiary) return false;
 
     if (beneficiary.emailTrackingStatus !== "Opened") {
@@ -403,7 +404,8 @@ export class AdmissionService {
     }
 
     const fetchStart = performance.now();
-    const beneficiary = await DbRepo.getBeneficiaryById(decoded.id);
+    const resolvedId = await DbRepo.resolveBeneficiaryIdResiliently(decoded.id);
+    const beneficiary = await DbRepo.getBeneficiaryById(resolvedId);
     const fetchDuration = performance.now() - fetchStart;
     console.log(`[PERF TRACE] [processPortalSubmission] Initial database beneficiary fetch took ${fetchDuration.toFixed(2)}ms`);
 

@@ -141,8 +141,14 @@ export class AdmissionController {
         return res.status(401).json({ error: "The response token is invalid, expired, or corrupted." });
       }
 
+      // Resolve underlying database UUID resiliently
+      const resolvedId = await DbRepo.resolveBeneficiaryIdResiliently(decoded.id);
+      if (!resolvedId) {
+        return res.status(404).json({ error: "Candidate matching the secure token session could not be tracked." });
+      }
+
       // Load beneficiary using our non-blocking database repository
-      const beneficiary = await DbRepo.getBeneficiaryById(decoded.id);
+      const beneficiary = await DbRepo.getBeneficiaryById(resolvedId);
 
       if (!beneficiary) {
         return res.status(404).json({ error: "Candidate matching the secure token session could not be located." });
@@ -172,7 +178,7 @@ export class AdmissionController {
       }
 
       // Automatically record tracking Opened event when portal is opened
-      await AdmissionService.registerEmailOpened(decoded.id);
+      await AdmissionService.registerEmailOpened(resolvedId);
 
       // Return sanitized candidate fields suitable for public view (excluding core admin values if needed)
       return res.status(200).json({
