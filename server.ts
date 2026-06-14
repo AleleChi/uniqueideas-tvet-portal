@@ -15,6 +15,7 @@ import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
 import { Gender, ProgramStatus, Beneficiary, CustomField, AuditLog, DocumentType, WorkflowHistory } from "./src/types";
 import { AdmissionController } from "./src/backend/admission.controller";
+import { TokenService } from "./src/backend/token.service";
 import { CertificationController } from "./src/backend/certification.controller";
 import { AdmissionService } from "./src/backend/admission.service";
 import { EmailService } from "./src/backend/email.service";
@@ -104,7 +105,7 @@ export const buildSanitizedFilename = (beneficiary: any, docType: string, ext: s
  * it queries the database (such as custom fields, profile, or custom identifier columns) 
  * to find and return the clean, matching UUID.
  */
-export async function resolveBeneficiaryIdResiliently(idOrToken: string): Promise<string> {
+export async function resolveBeneficiaryIdResiliently(idOrToken: string, poolOrClient?: any): Promise<string> {
   if (!idOrToken) return idOrToken;
   
   const cleanToken = idOrToken.trim();
@@ -113,34 +114,34 @@ export async function resolveBeneficiaryIdResiliently(idOrToken: string): Promis
     return cleanToken;
   }
 
-  const pool = getPgPool();
-  if (pool) {
+  const activeConnection = poolOrClient || getPgPool();
+  if (activeConnection) {
     try {
-      // 1. Check if it's stored in admissions fields
-      const resAdm = await pool.query(
-        "SELECT beneficiary_id FROM admissions WHERE admission_ref = $1 OR admission_form_ref = $1 LIMIT 1",
-        [cleanToken]
-      );
-      if (resAdm.rows.length > 0) {
-        return resAdm.rows[0].beneficiary_id;
-      }
-
-      // 2. Lookup in beneficiaries columns
-      const resBenef = await pool.query(
-        "SELECT id FROM beneficiaries WHERE id = $1 OR reference_number = $1 LIMIT 1",
+      // 1. Check direct beneficiaries ID or custom fields
+      const resBenef = await activeConnection.query(
+        "SELECT id FROM beneficiaries WHERE id = $1 OR custom_fields->>'tvet_id' = $1 OR custom_fields->>'reference_number' = $1 LIMIT 1",
         [cleanToken]
       );
       if (resBenef.rows.length > 0) {
         return resBenef.rows[0].id;
       }
 
-      // 3. Check trainee_profiles for tvet_id matching
-      const resProfile = await pool.query(
+      // 2. Check trainee_profiles for tvet_id
+      const resProfile = await activeConnection.query(
         "SELECT beneficiary_id FROM trainee_profiles WHERE tvet_id = $1 LIMIT 1",
         [cleanToken]
       );
       if (resProfile.rows.length > 0) {
         return resProfile.rows[0].beneficiary_id;
+      }
+
+      // 3. Check admissions fields
+      const resAdm = await activeConnection.query(
+        "SELECT beneficiary_id FROM admissions WHERE admission_ref = $1 OR admission_form_ref = $1 LIMIT 1",
+        [cleanToken]
+      );
+      if (resAdm.rows.length > 0) {
+        return resAdm.rows[0].beneficiary_id;
       }
     } catch (e) {
       console.error("[resolveBeneficiaryIdResiliently] DB lookup error:", e);
@@ -1913,9 +1914,201 @@ app.get("/api/export/reports/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADM
 
 app.get("/api/admissions/email-health", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), AdmissionController.getEmailHealth);
 app.post("/api/admissions/send-offer", requireAuth, AdmissionController.sendOffer);
-app.get("/api/admissions/validate-token", AdmissionController.validateToken);
+
+app.get("/api/admissions/validate-token", async (req: any, res: any) => {
+  try {
+    const token = req.query.token as string;
+    if (!token) {
+      return res.status(400).json({ error: "No secure response token provided in verification query." });
+    }
+
+    const decoded = TokenService.verifyToken(token);
+    if (!decoded || !decoded.id) {
+      return res.status(401).json({ error: "The response token is invalid, expired, or corrupted." });
+    }
+
+    const pool = getPgPool();
+    // Resolve underlying database UUID resiliently using helper
+    const resolvedId = await resolveBeneficiaryIdResiliently(decoded.id, pool);
+    if (!resolvedId) {
+      return res.status(404).json({ error: "Candidate matching the secure token session could not be tracked." });
+    }
+
+    // Load beneficiary using our non-blocking database repository
+    const beneficiary = await DbRepo.getBeneficiaryById(resolvedId);
+    if (!beneficiary) {
+      return res.status(404).json({ error: "Candidate matching the secure token session could not be located." });
+    }
+
+    // Check token version
+    const tokenVersion = decoded.tokenVersion !== undefined ? decoded.tokenVersion : 1;
+    const bTokenVersion = beneficiary.tokenVersion !== undefined ? beneficiary.tokenVersion : 1;
+    if (tokenVersion !== bTokenVersion) {
+      return res.status(401).json({ error: "TOKEN_REVOKED: This portal or admission token has been revoked due to administrative rollback or status update." });
+    }
+
+    // Validate 10-day provisional offer expiration window
+    let sentTime = beneficiary.admissionLetterSentAt ? new Date(beneficiary.admissionLetterSentAt).getTime() : null;
+
+    if (pool) {
+      try {
+        const dispatchRes = await pool.query(
+          "SELECT id, sent_at, created_at FROM document_dispatches WHERE secure_token = $1 LIMIT 1",
+          [token]
+        );
+        if (dispatchRes.rows.length > 0) {
+          const d = dispatchRes.rows[0];
+          if (d.sent_at) sentTime = new Date(d.sent_at).getTime();
+          else if (d.created_at) sentTime = new Date(d.created_at).getTime();
+        }
+      } catch (dispatchErr) {
+        console.error("[validate-token] Dispatch check failed:", dispatchErr);
+      }
+    }
+
+    if (sentTime) {
+      const expiresTime = sentTime + (10 * 24 * 60 * 60 * 1000); // 10 days
+      if (Date.now() > expiresTime) {
+        if (beneficiary.admissionStatus !== "EXPIRED") {
+          beneficiary.admissionStatus = "EXPIRED";
+          await DbRepo.upsertBeneficiary(beneficiary);
+        }
+        return res.status(403).json({
+          error: "OFFER_EXPIRED",
+          message: "The 10-day provisional offer letter acceptance window has elapsed. This offer is permanently locked as EXPIRED and cannot be accessed."
+        });
+      }
+    }
+
+    // Return sanitized candidate fields suitable for public view (excluding core admin values)
+    // Non-destructive: No state change / token rotation updates
+    return res.status(200).json({
+      valid: true,
+      candidate: {
+        id: beneficiary.id,
+        firstName: beneficiary.firstName,
+        lastName: beneficiary.lastName,
+        email: beneficiary.email,
+        nin: beneficiary.nin,
+        bvn: beneficiary.bvn,
+        state: beneficiary.state,
+        city: beneficiary.city,
+        skillSector: beneficiary.skillSector || "Computer Hardware and Cell Phone Repairs",
+        admissionRef: beneficiary.admissionRef,
+        admissionStatus: beneficiary.admissionStatus || "Pending",
+        admissionFormCompleted: beneficiary.admissionFormCompleted || false,
+        admissionFormStatus: beneficiary.admissionFormStatus || "Pending",
+        admissionFormData: beneficiary.admissionFormData || {},
+        admissionLetterUrl: beneficiary.admissionLetterUrl || "",
+        acceptanceLetterUrl: beneficiary.acceptanceLetterUrl || ""
+      }
+    });
+
+  } catch (err: any) {
+    console.error("[validate-token] failed:", err);
+    return res.status(500).json({ error: "Internal token decrypter processing failure." });
+  }
+});
+
 app.get("/api/admissions/secure-link", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), AdmissionController.getSecureLink);
-app.post("/api/admissions/submit-response", AdmissionController.submitResponse);
+
+app.post("/api/admissions/submit-response", async (req: any, res: any) => {
+  const pool = getPgPool();
+  if (!pool) {
+    return res.status(500).json({ error: "PostgreSQL Database pool is not active or initialized." });
+  }
+
+  const client = await pool.connect();
+  try {
+    const { token, responseData } = req.body;
+    if (!token || !responseData) {
+      return res.status(400).json({ error: "Missing required response parameters: token or responseData" });
+    }
+
+    const decoded = TokenService.verifyToken(token);
+    if (!decoded || !decoded.id) {
+      return res.status(401).json({ error: "The response token is invalid, expired, or corrupted." });
+    }
+
+    // 1. BEGIN transaction with strict context
+    await client.query("BEGIN");
+
+    // 2. Resolve target ID resiliently inside the active connection
+    const resolvedId = await resolveBeneficiaryIdResiliently(decoded.id, client);
+    if (!resolvedId) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Trainee matching secure token was not recognized." });
+    }
+
+    // 3. Row-level lock on beneficiaries row
+    const lockRes = await client.query(
+      "SELECT id, admission_status, admission_letter_sent_at, token_version FROM beneficiaries WHERE id = $1 FOR UPDATE",
+      [resolvedId]
+    );
+
+    if (lockRes.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Candidate biological record corresponding to session could not be tracked." });
+    }
+
+    const dbBeneficiary = lockRes.rows[0];
+    const tokenVersion = decoded.tokenVersion !== undefined ? decoded.tokenVersion : 1;
+    const bTokenVersion = dbBeneficiary.token_version !== undefined ? dbBeneficiary.token_version : 1;
+    if (tokenVersion !== bTokenVersion) {
+      await client.query("ROLLBACK");
+      return res.status(401).json({ error: "TOKEN_REVOKED: This portal or admission token has been revoked due to administrative rollback or status update." });
+    }
+
+    // 4. Validate 10-day provisional offer expiration window
+    let sentTime = dbBeneficiary.admission_letter_sent_at ? new Date(dbBeneficiary.admission_letter_sent_at).getTime() : null;
+    
+    const dispatchRes = await client.query(
+      "SELECT id, sent_at, created_at FROM document_dispatches WHERE secure_token = $1 LIMIT 1",
+      [token]
+    );
+    if (dispatchRes.rows.length > 0) {
+      const d = dispatchRes.rows[0];
+      if (d.sent_at) sentTime = new Date(d.sent_at).getTime();
+      else if (d.created_at) sentTime = new Date(d.created_at).getTime();
+    }
+
+    if (sentTime) {
+      const expiresTime = sentTime + (10 * 24 * 60 * 60 * 1000); // 10 days
+      if (Date.now() > expiresTime) {
+        await client.query(
+          "UPDATE beneficiaries SET admission_status = 'EXPIRED', updated_at = NOW() WHERE id = $1",
+          [resolvedId]
+        );
+        await client.query("COMMIT");
+        return res.status(403).json({
+          error: "OFFER_EXPIRED",
+          message: "The 10-day provisional offer letter acceptance window has elapsed. This offer is permanently locked as EXPIRED and cannot be accessed."
+        });
+      }
+    }
+
+    // COMMIT to allow file upload/Cloudinary/PDF processing to happen without holding lock
+    await client.query("COMMIT");
+
+    // 5. Delegate processing to the AdmissionService logic
+    const outcome = await AdmissionService.processPortalSubmission(token, responseData);
+
+    return res.status(200).json({
+      success: true,
+      message: "Your e-Signature and admission enrollment profiles were successfully verified and logged.",
+      candidate: outcome.beneficiary
+    });
+
+  } catch (err: any) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rErr) {}
+    console.error("[inline-submit-response] failed:", err);
+    return res.status(500).json({ error: err.message || "Failed validating and persisting portal response." });
+  } finally {
+    client.release();
+  }
+});
 function isValidTransition(oldStatus: string | undefined, newStatus: string): boolean {
   if (oldStatus === newStatus) return true;
   
@@ -10049,6 +10242,27 @@ app.post("/api/dispatches/send", requireAuth, async (req, res) => {
             error: "IDENTICAL_DISPATCH_ACTIVE",
             message: `A dispatch process of type '${documentType}' for beneficiary '${bId}' is already registered in a processing state. Transmissions are blocked to prevent duplicate email blasts.`
           });
+        }
+
+        // Check if an offer was dispatched within the last 15 seconds to prevent race conditions and duplicate email blasts
+        const recentDispatches = await client.query(
+          `SELECT id FROM document_dispatches 
+           WHERE beneficiary_id = $1 AND document_type = $2 
+           AND (sent_at > NOW() - INTERVAL '15 seconds' OR created_at > NOW() - INTERVAL '15 seconds')
+           LIMIT 1`,
+          [bId, documentType]
+        );
+
+        if (recentDispatches.rows.length > 0) {
+          // A dispatch was sent extremely recently. Intercept the race, roll back, and drop the duplicate safely.
+          await client.query("ROLLBACK");
+          resultLogs.push({
+            beneficiaryId: bId,
+            success: true,
+            status: "SUPPRESSED",
+            message: "Duplicate dispatch request dropped under strict 15-second idempotency guard."
+          });
+          continue;
         }
 
         // Commit safety checks transaction
