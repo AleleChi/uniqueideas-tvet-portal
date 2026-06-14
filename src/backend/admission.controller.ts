@@ -57,6 +57,11 @@ export class AdmissionController {
         return res.status(404).json({ error: `Beneficiary candidate '${beneficiaryId}' not found in registry.` });
       }
 
+      // Check if offer has already been sent to avoid duplicate dispatch (Idempotency Protection)
+      if (beneficiary.admissionLetterSentAt) {
+        return res.status(400).json({ error: "Offer already sent" });
+      }
+
       // Enforce multi-tier role scope check
       const isFederal = user.role === "SUPER_ADMIN" || 
                         user.role === "FED" || 
@@ -94,12 +99,7 @@ export class AdmissionController {
         return (
           l.includes("aistudio") ||
           l.includes("google") ||
-          l.includes("run.app") ||
-          l.includes("localhost") ||
-          l.includes("127.0.0.1") ||
           l.includes("sandbox") ||
-          l.includes("ais-dev") ||
-          l.includes("ais-pre") ||
           l.includes("my_app_url")
         );
       };
@@ -142,7 +142,7 @@ export class AdmissionController {
       }
 
       // Load beneficiary using our non-blocking database repository
-      const beneficiary = await DbRepo.getBeneficiaryById(decoded.id);
+      const beneficiary = await DbRepo.getBeneficiaryById(decoded.id, { systemContext: true });
 
       if (!beneficiary) {
         return res.status(404).json({ error: "Candidate matching the secure token session could not be located." });

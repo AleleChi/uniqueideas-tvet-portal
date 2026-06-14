@@ -700,15 +700,22 @@ export default function EligibleBeneficiariesWorkspace({
           });
         }
       } else {
-        const errorText = await res.text();
-        showToast("Outbound routing failed.", "error");
+        let detailedError = "Outbound routing failed. HTTP transport level error.";
+        try {
+          const errData = await res.json();
+          detailedError = errData.error || detailedError;
+        } catch {
+          const text = await res.text();
+          if (text) detailedError = text;
+        }
+        showToast(detailedError, "error");
         setOperatorFeedback({
           type: "send",
           success: false,
           beneficiaryName: b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim(),
           id: b.id,
           timestamp: new Date().toLocaleString(),
-          error: errorText || "Outbound routing failed. HTTP transport level error.",
+          error: detailedError,
           retryAction: () => handleSendOfferSingle(b)
         });
       }

@@ -169,6 +169,12 @@ export class AdmissionService {
       }
       beneficiary.admissionLetterSentAt = new Date().toISOString();
       beneficiary.smtpErrorDetails = undefined;
+      beneficiary.customFields = {
+        ...(beneficiary.customFields || {}),
+        token_created_at: new Date().toISOString(),
+        token_expires_at: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000).toISOString(),
+        email_sent_at: new Date().toISOString()
+      };
       changeRemarks = "Admission offer letter successfully generated and sent via email.";
     } else {
       beneficiary.emailStatus = "Failed";
@@ -226,7 +232,7 @@ export class AdmissionService {
    * Logs a tracking open event when the candidate opens their communication link.
    */
   static async registerEmailOpened(beneficiaryId: string): Promise<boolean> {
-    const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
+    const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId, { systemContext: true });
     if (!beneficiary) return false;
 
     if (beneficiary.emailTrackingStatus !== "Opened") {
@@ -239,6 +245,12 @@ export class AdmissionService {
         description: "Student clicked secure portal URL, verifying that transmission was opened."
       });
       beneficiary.emailTrackingHistory = trackingHistory;
+
+      // Track email_opened_at trace in customFields
+      beneficiary.customFields = {
+        ...(beneficiary.customFields || {}),
+        email_opened_at: new Date().toISOString()
+      };
 
       const oldAdmissionStatus = beneficiary.admissionStatus || "Pending";
       let newAdmissionStatus = oldAdmissionStatus;
@@ -403,7 +415,7 @@ export class AdmissionService {
     }
 
     const fetchStart = performance.now();
-    const beneficiary = await DbRepo.getBeneficiaryById(decoded.id);
+    const beneficiary = await DbRepo.getBeneficiaryById(decoded.id, { systemContext: true });
     const fetchDuration = performance.now() - fetchStart;
     console.log(`[PERF TRACE] [processPortalSubmission] Initial database beneficiary fetch took ${fetchDuration.toFixed(2)}ms`);
 
@@ -573,6 +585,10 @@ export class AdmissionService {
     // 5. Upgrade lifecycle statuses automatic matching rules:
     beneficiary.admissionStatus = "Acceptance Uploaded";
     beneficiary.status = ProgramStatus.PENDING_PHOTO; // Mark status pending admin check
+    beneficiary.customFields = {
+      ...(beneficiary.customFields || {}),
+      offer_accepted_at: new Date().toISOString()
+    };
     beneficiary.updatedAt = new Date().toISOString();
 
     const dbStart = performance.now();

@@ -95,12 +95,7 @@ export const buildPublicUrl = (requestPath: string, req?: any): string => {
     return (
       l.includes("aistudio") ||
       l.includes("google") ||
-      l.includes("run.app") ||
-      l.includes("localhost") ||
-      l.includes("127.0.0.1") ||
       l.includes("sandbox") ||
-      l.includes("ais-dev") ||
-      l.includes("ais-pre") ||
       l.includes("my_app_url")
     );
   };
