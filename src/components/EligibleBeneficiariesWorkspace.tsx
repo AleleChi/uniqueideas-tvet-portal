@@ -252,6 +252,17 @@ export default function EligibleBeneficiariesWorkspace({
   const [saveAsDraft, setSaveAsDraft] = useState(false);
   const [selectedRowIds, setSelectedRowIds] = useState<string[]>([]);
   const [sendingEmails, setSendingEmails] = useState(false);
+  const [operatorFeedback, setOperatorFeedback] = useState<{
+    type: "generate" | "send";
+    success: boolean;
+    beneficiaryName: string;
+    id: string;
+    offerId?: string;
+    timestamp: string;
+    recipientEmail?: string;
+    error?: string;
+    retryAction?: () => void;
+  } | null>(null);
   const [emailPreviewMode, setEmailPreviewMode] = useState(false);
   const [emailHistory, setEmailHistory] = useState<any[]>([]);
 
@@ -591,6 +602,8 @@ export default function EligibleBeneficiariesWorkspace({
 
   // --- OPERATIONAL ACTIONS ON INDIVIDUAL BENEFICIARIES (Phase 2) ---
   const handleGenerateOfferSingle = async (b: any) => {
+    if (sendingEmails) return;
+    setSendingEmails(true);
     const autoRef = `IDEAS/TVET/ADM/${b.id.split("-").pop()}/${new Date().getFullYear()}`;
     showToast(`Assembling admission reference ${autoRef}...`, "info");
     try {
@@ -606,18 +619,50 @@ export default function EligibleBeneficiariesWorkspace({
         })
       });
       if (res.ok) {
-        showToast(`Provisional admission offer letter compiled for ${b.fullName}.`, "success");
+        showToast(`Provisional admission offer letter compiled for ${b.fullName || "Candidate"}.`, "success");
         fetchBeneficiariesList();
+        setOperatorFeedback({
+          type: "generate",
+          success: true,
+          beneficiaryName: b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim(),
+          id: b.id,
+          offerId: autoRef,
+          timestamp: new Date().toLocaleString(),
+        });
       } else {
+        const errorText = await res.text();
         showToast("Provisional letter compilation failed.", "error");
+        setOperatorFeedback({
+          type: "generate",
+          success: false,
+          beneficiaryName: b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim(),
+          id: b.id,
+          timestamp: new Date().toLocaleString(),
+          error: errorText || "Provisional letter compilation failed. Check server response.",
+          retryAction: () => handleGenerateOfferSingle(b)
+        });
       }
     } catch (err: any) {
       showToast(`Compilation error: ${err.message}`, "error");
+      setOperatorFeedback({
+        type: "generate",
+        success: false,
+        beneficiaryName: b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim(),
+        id: b.id,
+        timestamp: new Date().toLocaleString(),
+        error: err.message || "An unexpected network or gateway timeout occurred.",
+        retryAction: () => handleGenerateOfferSingle(b)
+      });
+    } finally {
+      setSendingEmails(false);
     }
   };
 
   const handleSendOfferSingle = async (b: any) => {
+    if (sendingEmails) return;
+    setSendingEmails(true);
     showToast(`Dispatching offer notification to ${b.email}...`, "info");
+    const autoRef = b.admissionRef || `IDEAS/TVET/ADM/${b.id.split("-").pop()}/${new Date().getFullYear()}`;
     try {
       // Direct post route for admissions dispatch
       const res = await authFetch(`${API_BASE_URL}/api/admissions/send-offer`, {
@@ -631,16 +676,55 @@ export default function EligibleBeneficiariesWorkspace({
       if (res.ok) {
         const payload = await res.json();
         if (payload.success) {
-          showToast(`Official offer letter dispatched to ${b.fullName} (${b.email}) successfully!`, "success");
+          showToast(`Official offer letter dispatched to ${b.fullName || "Candidate"} successfully!`, "success");
           fetchBeneficiariesList();
+          setOperatorFeedback({
+            type: "send",
+            success: true,
+            beneficiaryName: b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim(),
+            id: b.id,
+            offerId: payload.beneficiary?.admissionRef || autoRef,
+            recipientEmail: b.email,
+            timestamp: new Date().toLocaleString(),
+          });
         } else {
           showToast(`SMTP Dispatch rejected: ${payload.error || "Check Resend Gateway Configuration"}`, "error");
+          setOperatorFeedback({
+            type: "send",
+            success: false,
+            beneficiaryName: b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim(),
+            id: b.id,
+            timestamp: new Date().toLocaleString(),
+            error: payload.error || "SMTP Dispatch rejected. Please verify the Resend workspace settings.",
+            retryAction: () => handleSendOfferSingle(b)
+          });
         }
       } else {
+        const errorText = await res.text();
         showToast("Outbound routing failed.", "error");
+        setOperatorFeedback({
+          type: "send",
+          success: false,
+          beneficiaryName: b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim(),
+          id: b.id,
+          timestamp: new Date().toLocaleString(),
+          error: errorText || "Outbound routing failed. HTTP transport level error.",
+          retryAction: () => handleSendOfferSingle(b)
+        });
       }
     } catch (err: any) {
       showToast(`Transmission error: ${err.message}`, "error");
+      setOperatorFeedback({
+        type: "send",
+        success: false,
+        beneficiaryName: b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim(),
+        id: b.id,
+        timestamp: new Date().toLocaleString(),
+        error: err.message || "An unexpected error occurred during network transmission.",
+        retryAction: () => handleSendOfferSingle(b)
+      });
+    } finally {
+      setSendingEmails(false);
     }
   };
 
@@ -2302,25 +2386,27 @@ export default function EligibleBeneficiariesWorkspace({
                                   </div>
                                   <button
                                     type="button"
+                                    disabled={sendingEmails}
                                     onClick={() => {
                                       setActiveActionMenuId(null);
                                       handleGenerateOfferSingle(b);
                                     }}
-                                    className="w-full px-3 py-1.5 hover:bg-slate-50 hover:text-indigo-600 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold"
+                                    className="w-full px-3 py-1.5 hover:bg-slate-50 hover:text-indigo-600 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold disabled:opacity-50"
                                   >
                                     <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                                    Generate Offer Letter
+                                    {sendingEmails ? "Generating Offer..." : "Generate Offer Letter"}
                                   </button>
                                   <button
                                     type="button"
+                                    disabled={sendingEmails}
                                     onClick={() => {
                                       setActiveActionMenuId(null);
                                       handleSendOfferSingle(b);
                                     }}
-                                    className="w-full px-3 py-1.5 hover:bg-slate-50 hover:text-indigo-600 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold"
+                                    className="w-full px-3 py-1.5 hover:bg-slate-50 hover:text-indigo-600 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold disabled:opacity-50"
                                   >
                                     <Send className="w-3.5 h-3.5 text-indigo-500" />
-                                    Send Offer Letter
+                                    {sendingEmails ? "Sending Offer..." : "Send Offer Letter"}
                                   </button>
                                   <button
                                     type="button"
@@ -3402,45 +3488,7 @@ export default function EligibleBeneficiariesWorkspace({
                   <div className="grid grid-cols-2 gap-3">
                     <button
                       onClick={async () => {
-                        if (sendingEmails) return;
-                        setSendingEmails(true);
-                        try {
-                          // Ensure candidate has a unique provisional reference
-                          if (!selectedBeneficiary.admissionRef) {
-                            const autoRef = `IDEAS/TVET/ADM/${selectedBeneficiary.id.split("-").pop()}/${new Date().getFullYear()}`;
-                            await authFetch(`${API_BASE_URL}/api/beneficiaries/${selectedBeneficiary.id}`, {
-                              method: "PUT",
-                              headers: { "Content-Type": "application/json" },
-                              body: JSON.stringify({
-                                admissionStatus: "Admission Generated",
-                                admissionRef: autoRef,
-                                admissionLetterGeneratedAt: new Date().toISOString(),
-                                status: ProgramStatus.VERIFIED
-                              })
-                            });
-                          }
-
-                          const res = await authFetch(`${API_BASE_URL}/api/admissions/send-offer`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                              beneficiaryId: selectedBeneficiary.id,
-                              origin: window.location.origin
-                            })
-                          });
-                          
-                          const data = await res.json();
-                          if (data.success) {
-                            showToast(`Provisional admission offer letter dispatched! Link: ${data.secureLink}`, "success");
-                            fetchBeneficiariesList();
-                          } else {
-                            showToast(`SMTP Mail Delivery failed: ${data.smtpErrorDetails || "Unknown SMTP error check."}`, "error");
-                          }
-                        } catch (err: any) {
-                          showToast(`Error dispatching offer letter: ${err.message}`, "error");
-                        } finally {
-                          setSendingEmails(false);
-                        }
+                        await handleSendOfferSingle(selectedBeneficiary);
                       }}
                       disabled={sendingEmails}
                       className="flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-650 hover:bg-indigo-700 text-white font-black text-xs rounded-lg shadow-sm cursor-pointer disabled:opacity-50 transition-colors"
@@ -3711,65 +3759,19 @@ export default function EligibleBeneficiariesWorkspace({
                       <div className="flex flex-wrap gap-2">
                         <button
                           type="button"
-                          onClick={async () => {
-                            if (sendingEmails) return;
-                            setSendingEmails(true);
-                            try {
-                              if (!selectedBeneficiary.admissionRef) {
-                                const autoRef = `IDEAS/TVET/ADM/${selectedBeneficiary.id.split("-").pop()}/${new Date().getFullYear()}`;
-                                await authFetch(`${API_BASE_URL}/api/beneficiaries/${selectedBeneficiary.id}`, {
-                                  method: "PUT",
-                                  headers: { "Content-Type": "application/json" },
-                                  body: JSON.stringify({
-                                    admissionStatus: "Admission Generated",
-                                    admissionRef: autoRef,
-                                    admissionLetterGeneratedAt: new Date().toISOString(),
-                                    status: ProgramStatus.VERIFIED
-                                  })
-                                });
-                              }
-                              showToast(`Successfully generated admission letter details!`, "success");
-                              fetchBeneficiariesList();
-                            } catch (e: any) {
-                              showToast(e.message, "error");
-                            } finally {
-                              setSendingEmails(false);
-                            }
-                          }}
-                          className="px-3 py-1.5 bg-white border font-bold font-mono hover:bg-slate-50 text-slate-705 text-[10.5px] rounded-lg transition-colors cursor-pointer shadow-xs"
+                          onClick={() => handleGenerateOfferSingle(selectedBeneficiary)}
+                          disabled={sendingEmails}
+                          className="px-3 py-1.5 bg-white border font-bold font-mono hover:bg-slate-50 text-slate-705 text-[10.5px] rounded-lg transition-colors cursor-pointer shadow-xs disabled:opacity-50"
                         >
-                          Generate Offer
+                          {sendingEmails ? "Processing..." : "Generate Offer"}
                         </button>
                         <button
                           type="button"
-                          onClick={async () => {
-                            if (sendingEmails) return;
-                            setSendingEmails(true);
-                            try {
-                              const res = await authFetch(`${API_BASE_URL}/api/admissions/send-offer`, {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
-                                  beneficiaryId: selectedBeneficiary.id,
-                                  origin: window.location.origin
-                                })
-                              });
-                              const data = await res.json();
-                              if (data.success) {
-                                showToast(`Provisional offer of admission successfully dispatched to ${selectedBeneficiary.email}`, "success");
-                                fetchBeneficiariesList();
-                              } else {
-                                showToast(`Mail dispatch failure`, "error");
-                              }
-                            } catch (e: any) {
-                              showToast(e.message, "error");
-                            } finally {
-                              setSendingEmails(false);
-                            }
-                          }}
-                          className="px-3 py-1.5 bg-indigo-600 font-bold font-mono hover:bg-indigo-755 text-white text-[10.5px] rounded-lg transition-colors cursor-pointer"
+                          onClick={() => handleSendOfferSingle(selectedBeneficiary)}
+                          disabled={sendingEmails}
+                          className="px-3 py-1.5 bg-indigo-600 font-bold font-mono hover:bg-indigo-700 text-white text-[10.5px] rounded-lg transition-colors cursor-pointer disabled:opacity-50"
                         >
-                          Send Offer
+                          {sendingEmails ? "Sending..." : "Send Offer"}
                         </button>
                         
                         <button
@@ -4392,6 +4394,144 @@ export default function EligibleBeneficiariesWorkspace({
                 Close Preview
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* SEV-1 ISSUE 3 — OPERATOR FEEDBACK POPUP/MODAL */}
+      {operatorFeedback && (
+        <div id="operator-feedback-modal" className="fixed inset-0 bg-slate-950/70 z-50 flex items-center justify-center p-4 backdrop-blur-[1px]">
+          <div className="bg-white border-2 border-indigo-100 rounded-2xl w-full max-w-md p-6 text-left shadow-2xl relative">
+            <button 
+              id="close-feedback-btn"
+              onClick={() => setOperatorFeedback(null)} 
+              className="absolute top-4 right-4 text-slate-450 hover:text-slate-700 font-extrabold text-sm p-1 cursor-pointer"
+            >
+              ✕
+            </button>
+
+            {operatorFeedback.success ? (
+              <div className="space-y-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-emerald-50 text-emerald-650 flex items-center justify-center border border-emerald-200">
+                    <Check className="w-5 h-5 stroke-[3px]" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black text-slate-900 border-b-2 border-emerald-50 pb-0.5">
+                      {operatorFeedback.type === "generate" ? "Admission Offer Generated" : "Email Offer Dispatched"}
+                    </h3>
+                    <p className="text-[10px] text-slate-450 font-medium">Operation completed successfully.</p>
+                  </div>
+                </div>
+
+                <div className="bg-slate-50/50 border border-slate-150 rounded-xl p-4 space-y-2.5 font-sans">
+                  <div className="flex justify-between items-center border-b border-slate-100 pb-1.5">
+                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Candidate Name</span>
+                    <strong className="text-xs font-extrabold text-slate-800">{operatorFeedback.beneficiaryName}</strong>
+                  </div>
+                  
+                  {operatorFeedback.offerId && (
+                    <div className="flex justify-between items-center border-b border-slate-100 pb-1.5">
+                      <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Offer Reference ID</span>
+                      <span className="text-xs font-mono font-bold text-indigo-700 select-all">{operatorFeedback.offerId}</span>
+                    </div>
+                  )}
+
+                  {operatorFeedback.recipientEmail && (
+                    <div className="flex justify-between items-center border-b border-slate-100 pb-1.5">
+                      <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Recipient Email</span>
+                      <span className="text-xs font-mono font-medium text-slate-650 select-all">{operatorFeedback.recipientEmail}</span>
+                    </div>
+                  )}
+
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Timestamp</span>
+                    <span className="text-[11px] font-mono text-slate-500">{operatorFeedback.timestamp}</span>
+                  </div>
+
+                  {operatorFeedback.type === "send" && (
+                    <div className="flex justify-between items-center border-t border-slate-100 pt-1.5 mt-1">
+                      <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Admission Status Update</span>
+                      <span className="px-2 py-0.5 bg-indigo-50 border border-indigo-200 text-[8.5px] font-mono font-bold uppercase text-indigo-700 rounded">
+                        ADMISSION SENT
+                      </span>
+                    </div>
+                  )}
+                  
+                  {operatorFeedback.type === "generate" && (
+                    <div className="flex justify-between items-center border-t border-slate-100 pt-1.5 mt-1">
+                      <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Admission Status Update</span>
+                      <span className="px-2 py-0.5 bg-amber-50 border border-amber-200 text-[8.5px] font-mono font-bold uppercase text-amber-700 rounded">
+                        ADMISSION GENERATED
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex justify-end pt-2">
+                  <button
+                    id="acknowledge-feedback-btn"
+                    onClick={() => setOperatorFeedback(null)}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-mono font-bold text-xs rounded-lg cursor-pointer shadow-xs transition-colors"
+                  >
+                    Acknowledge & Dismiss
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-rose-50 text-rose-650 flex items-center justify-center border border-rose-200">
+                    <AlertTriangle className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black text-slate-900 border-b-2 border-rose-50 pb-0.5">
+                      {operatorFeedback.type === "generate" ? "Generation Failure" : "Mail Dispatch Failure"}
+                    </h3>
+                    <p className="text-[10px] text-rose-500 font-bold uppercase tracking-wider">Gateway Processing Error</p>
+                  </div>
+                </div>
+
+                <div className="bg-rose-50/40 border border-rose-150 rounded-xl p-4 space-y-2.5">
+                  <div className="space-y-1">
+                    <span className="text-[9.5px] text-rose-450 uppercase font-mono font-bold block">Trainee Candidate</span>
+                    <strong className="text-slate-800 text-xs block font-bold">{operatorFeedback.beneficiaryName}</strong>
+                  </div>
+                  
+                  <div className="space-y-1 border-t border-rose-100 pt-2">
+                    <span className="text-[9.5px] text-rose-450 uppercase font-mono font-bold block">Detailed Technical Error Message</span>
+                    <p className="text-[10.5px] font-mono bg-white border border-rose-200 p-2.5 rounded-lg text-slate-600 select-all overflow-x-auto whitespace-pre-wrap break-all leading-normal max-h-36">
+                      {operatorFeedback.error || "An undocumented network error has occurred."}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex justify-end gap-2.5 pt-2">
+                  <button
+                    id="cancel-feedback-btn"
+                    onClick={() => setOperatorFeedback(null)}
+                    className="px-4 py-2 bg-white hover:bg-slate-50 border text-slate-600 text-xs font-bold rounded-lg cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  {operatorFeedback.retryAction && (
+                    <button
+                      id="retry-feedback-btn"
+                      onClick={() => {
+                        const action = operatorFeedback.retryAction;
+                        setOperatorFeedback(null);
+                        setTimeout(() => {
+                          action?.();
+                        }, 50);
+                      }}
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-lg cursor-pointer flex items-center gap-1.5"
+                    >
+                      Retry Action
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
