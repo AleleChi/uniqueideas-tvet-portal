@@ -29,203 +29,290 @@ export class AdmissionService {
     await DbRepo.saveAuditLog(newLog);
   }
 
+  private static readonly activeDispatches = new Set<string>();
+
   /**
    * Prepares and dispatches an admission offer email with formal PDFs
    */
-  static async sendAdmissionOffer(beneficiaryId: string, customDomain: string): Promise<any> {
+  static async sendAdmissionOffer(beneficiaryId: string, customDomain: string, actor: string = "system"): Promise<any> {
     const totalStart = performance.now();
     
-    // Measure Fetch time
-    const fetchStart = performance.now();
-    const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
-    const fetchDuration = performance.now() - fetchStart;
-    console.log(`[PERF TRACE] [sendAdmissionOffer] Initial database beneficiary fetch took ${fetchDuration.toFixed(2)}ms`);
-    
-    if (!beneficiary) {
-      throw new Error(`Beneficiary candidate '${beneficiaryId}' not found in registry.`);
+    // Concurrency Check (Server-Side Idempotency Lock)
+    if (this.activeDispatches.has(beneficiaryId)) {
+      throw new Error(`ADMISSION_DISPATCH_IN_PROGRESS: Another offer generation or email dispatch is already in progress for candidate '${beneficiaryId}'.`);
     }
-    
-    // 1. Generate Letter references and update beneficiary local parameters
-    const admissionRef = beneficiary.admissionRef || `IDEAS/TVET/ADM/${beneficiary.id.split("-").pop()}/${new Date().getFullYear()}`;
-    const originalAdmissionStatus = beneficiary.admissionStatus || "Pending";
-    
-    if (!beneficiary.admissionStatus || beneficiary.admissionStatus === "Pending") {
-      beneficiary.admissionStatus = "Admission Generated";
-    }
-    beneficiary.admissionRef = admissionRef;
-    beneficiary.admissionLetterGeneratedAt = beneficiary.admissionLetterGeneratedAt || new Date().toISOString();
-    beneficiary.updatedAt = new Date().toISOString();
+    this.activeDispatches.add(beneficiaryId);
 
-    // 2. Generate secure single-use response token link
-    const secureToken = TokenService.generateToken(beneficiary.id, beneficiary.tokenVersion || 1);
-    const secureLink = `${customDomain}/?token=${secureToken}`;
-
-    // 3. Generate dynamic documents via unified DocumentService in parallel to optimize throughput
-    console.log("[AdmissionService] Generating official admission & acceptance documents through DocumentService in parallel...");
-    const [admissionResult, acceptanceResult] = await Promise.all([
-      DocumentService.generateDocumentWithBuffer(
-        beneficiary.id,
-        DocumentType.ADMISSION_LETTER,
-        "SYSTEM_ADMISSIONS",
-        true
-      ),
-      DocumentService.generateDocumentWithBuffer(
-        beneficiary.id,
-        DocumentType.ACCEPTANCE_LETTER,
-        "SYSTEM_ADMISSIONS",
-        true
-      )
-    ]);
-    const { document: admissionDoc, pdfBuffer: admissionPdfBuffer } = admissionResult;
-    const { document: acceptanceDoc, pdfBuffer: acceptancePdfBuffer } = acceptanceResult;
-
-    // Sync URLs to main columns
-    const admissionPdfUrl = admissionDoc.pdfUrl;
-    const acceptancePdfUrl = acceptanceDoc.pdfUrl;
-    beneficiary.admissionLetterUrl = admissionPdfUrl;
-    beneficiary.acceptanceLetterUrl = acceptancePdfUrl;
-
-    const fName = (beneficiary.firstName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-    const lName = (beneficiary.lastName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-    const namePart = fName && lName ? `${fName}_${lName}` : `${(beneficiary.id || "TRAINEE").replace(/[^A-Z0-9-]/g, "")}`;
-
-    // 5. Document Versioning for Admission Letter
-    const currentVersions = beneficiary.admissionLetterVersions || [];
-    const nextVersionNum = admissionDoc.version;
-    const newVersionItem = {
-      version: nextVersionNum,
-      url: admissionPdfUrl,
-      name: `${namePart}_ADMISSION_LETTER_v${nextVersionNum}.pdf`,
-      generatedAt: new Date().toISOString()
-    };
-    beneficiary.admissionLetterVersions = [...currentVersions, newVersionItem];
-    console.log(`[PIPELINE TRACE] STAGE 2 - STORAGE RECORD CREATION (Versioning List): Registered version '${newVersionItem.name}' in beneficiary.admissionLetterVersions.`);
-
-    // 6. Save documents inside Candidate's local document list
-    const currentDocs = beneficiary.documentsList || [];
-    const updatedDocs = [...currentDocs];
-    const newDocItem = {
-      id: admissionDoc.id,
-      name: `${namePart}_ADMISSION_LETTER.pdf`,
-      type: "admission",
-      url: admissionPdfUrl,
-      uploadedAt: new Date().toISOString(),
-      version: nextVersionNum
-    };
-    updatedDocs.push(newDocItem);
-    beneficiary.documentsList = updatedDocs;
-    console.log(`[PIPELINE TRACE] STAGE 2 - STORAGE RECORD CREATION (Candidate Document Registry): Appended registry item '${newDocItem.name}' in beneficiary.documentsList.`);
-
-    // 7. Send automated email using formal unique email coordinates
-    const toEmail = beneficiary.email || "uniqueideasproject@gmail.com";
-    const admissionPdfBase64 = admissionPdfBuffer ? admissionPdfBuffer.toString("base64") : "";
-    const acceptancePdfBase64 = acceptancePdfBuffer ? acceptancePdfBuffer.toString("base64") : "";
-
-    const isAdmissionRealPdf = admissionPdfBuffer && admissionPdfBuffer.length >= 4 && admissionPdfBuffer[0] === 0x25 && admissionPdfBuffer[1] === 0x50 && admissionPdfBuffer[2] === 0x44 && admissionPdfBuffer[3] === 0x46;
-    const isAcceptanceRealPdf = acceptancePdfBuffer && acceptancePdfBuffer.length >= 4 && acceptancePdfBuffer[0] === 0x25 && acceptancePdfBuffer[1] === 0x50 && acceptancePdfBuffer[2] === 0x44 && acceptancePdfBuffer[3] === 0x46;
-
-    if (!isAdmissionRealPdf) {
-      console.error("[AdmissionService] WARNING: Admission Letter PDF compilation failed or is corrupt! Aborting automated email dispatch to prevent sending invalid files.");
-      throw new Error("Admission Letter compilation failed: Generated file is invalid or corrupted. Aborting email dispatch.");
-    }
-
-    if (!isAcceptanceRealPdf) {
-      console.error("[AdmissionService] WARNING: Acceptance Form PDF compilation failed or is corrupt! Aborting automated email dispatch to prevent sending invalid files.");
-      throw new Error("Acceptance Form compilation failed: Generated file is invalid or corrupted. Aborting email dispatch.");
-    }
-
-    const admissionAttachmentName = buildSanitizedFilename(beneficiary, "ADMISSION_LETTER", "pdf");
-    const acceptanceAttachmentName = buildSanitizedFilename(beneficiary, "ACCEPTANCE_LETTER", "pdf");
-
-    console.log(`[AdmissionService] All PDF attachments successfully verified. Dispatched recipient: ${toEmail}. Files: ${admissionAttachmentName} (${admissionPdfBuffer.length} bytes), ${acceptanceAttachmentName} (${acceptancePdfBuffer.length} bytes). Tracing to step 6...`);
-
-    const emailSendStart = performance.now();
-    const mailResult = await EmailService.sendAdmissionEmail(
-      toEmail, 
-      `${beneficiary.firstName} ${beneficiary.lastName}`, 
-      secureLink,
-      [
-        {
-          name: admissionAttachmentName,
-          content: admissionPdfBase64,
-          contentType: "application/pdf"
-        },
-        {
-          name: acceptanceAttachmentName,
-          content: acceptancePdfBase64,
-          contentType: "application/pdf"
-        }
-      ]
-    );
-    const emailSendDuration = performance.now() - emailSendStart;
-    console.log(`[PERF TRACE] SMTP/Resend notification email send took ${emailSendDuration.toFixed(2)}ms`);
-
-    let changeRemarks = "";
-    // Set Separate Email Status as requested
-    if (mailResult.success) {
-      beneficiary.emailStatus = "Sent";
-      if (!beneficiary.admissionStatus || beneficiary.admissionStatus === "Admission Generated") {
-        beneficiary.admissionStatus = "Admission Sent";
+    try {
+      // Measure Fetch time
+      const fetchStart = performance.now();
+      const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId, { systemContext: true });
+      const fetchDuration = performance.now() - fetchStart;
+      console.log(`[PERF TRACE] [sendAdmissionOffer] Initial database beneficiary fetch took ${fetchDuration.toFixed(2)}ms`);
+      
+      if (!beneficiary) {
+        throw new Error(`Beneficiary candidate '${beneficiaryId}' not found in registry.`);
       }
-      beneficiary.admissionLetterSentAt = new Date().toISOString();
-      beneficiary.smtpErrorDetails = undefined;
-      beneficiary.customFields = {
-        ...(beneficiary.customFields || {}),
-        token_created_at: new Date().toISOString(),
-        token_expires_at: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000).toISOString(),
-        email_sent_at: new Date().toISOString()
+
+      const isResend = !!beneficiary.admissionLetterSentAt;
+      const oldTokenVersion = beneficiary.tokenVersion || 1;
+
+      if (isResend) {
+        beneficiary.tokenVersion = oldTokenVersion + 1;
+        const oldCustomFields = beneficiary.customFields || {};
+        const resendCount = (oldCustomFields.resend_count !== undefined ? parseInt(String(oldCustomFields.resend_count), 10) : 0) + 1;
+        beneficiary.customFields = {
+          ...oldCustomFields,
+          resend_count: String(resendCount),
+          last_resent_at: new Date().toISOString()
+        };
+
+        // Create TOKEN_REVOKED audit log
+        try {
+          await DbRepo.saveAuditLog({
+            username: actor,
+            action: "TOKEN_REVOKED",
+            role: "System Broker",
+            details: `[TOKEN_REVOKED] Timestamp: ${new Date().toISOString()} | Actor: ${actor} | Beneficiary ID: ${beneficiary.id} | Admission ID: ${beneficiary.admissionRef || "N/A"} | Revoked Token Version: ${oldTokenVersion}`,
+            beneficiaryId: beneficiary.id
+          });
+        } catch (le) {
+          console.error("Failed to log TOKEN_REVOKED event:", le);
+        }
+      } else {
+        // First Send: Create OFFER_GENERATED audit log
+        try {
+          await DbRepo.saveAuditLog({
+            username: actor,
+            action: "OFFER_GENERATED",
+            role: "System Broker",
+            details: `[OFFER_GENERATED] Timestamp: ${new Date().toISOString()} | Actor: ${actor} | Beneficiary ID: ${beneficiary.id} | Admission ID: ${beneficiary.admissionRef || "N/A"}`,
+            beneficiaryId: beneficiary.id
+          });
+        } catch (le) {
+          console.error("Failed to log OFFER_GENERATED event:", le);
+        }
+      }
+      
+      // 1. Generate Letter references and update beneficiary local parameters
+      const admissionRef = beneficiary.admissionRef || `IDEAS/TVET/ADM/${beneficiary.id.split("-").pop()}/${new Date().getFullYear()}`;
+      const originalAdmissionStatus = beneficiary.admissionStatus || "Pending";
+      
+      if (!beneficiary.admissionStatus || beneficiary.admissionStatus === "Pending") {
+        beneficiary.admissionStatus = "Admission Generated";
+      }
+      beneficiary.admissionRef = admissionRef;
+      beneficiary.admissionLetterGeneratedAt = beneficiary.admissionLetterGeneratedAt || new Date().toISOString();
+      beneficiary.updatedAt = new Date().toISOString();
+
+      // 2. Generate secure single-use response token link
+      const secureToken = TokenService.generateToken(beneficiary.id, beneficiary.tokenVersion || 1);
+      const secureLink = `${customDomain}/?token=${secureToken}`;
+
+      // 3. Generate dynamic documents via unified DocumentService in parallel to optimize throughput
+      console.log("[AdmissionService] Generating official admission & acceptance documents through DocumentService in parallel...");
+      const [admissionResult, acceptanceResult] = await Promise.all([
+        DocumentService.generateDocumentWithBuffer(
+          beneficiary.id,
+          DocumentType.ADMISSION_LETTER,
+          "SYSTEM_ADMISSIONS",
+          true
+        ),
+        DocumentService.generateDocumentWithBuffer(
+          beneficiary.id,
+          DocumentType.ACCEPTANCE_LETTER,
+          "SYSTEM_ADMISSIONS",
+          true
+        )
+      ]);
+      const { document: admissionDoc, pdfBuffer: admissionPdfBuffer } = admissionResult;
+      const { document: acceptanceDoc, pdfBuffer: acceptancePdfBuffer } = acceptanceResult;
+
+      // Sync URLs to main columns
+      const admissionPdfUrl = admissionDoc.pdfUrl;
+      const acceptancePdfUrl = acceptanceDoc.pdfUrl;
+      beneficiary.admissionLetterUrl = admissionPdfUrl;
+      beneficiary.acceptanceLetterUrl = acceptancePdfUrl;
+
+      const fName = (beneficiary.firstName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const lName = (beneficiary.lastName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const namePart = fName && lName ? `${fName}_${lName}` : `${(beneficiary.id || "TRAINEE").replace(/[^A-Z0-9-]/g, "")}`;
+
+      // 5. Document Versioning for Admission Letter
+      const currentVersions = beneficiary.admissionLetterVersions || [];
+      const nextVersionNum = admissionDoc.version;
+      const newVersionItem = {
+        version: nextVersionNum,
+        url: admissionPdfUrl,
+        name: `${namePart}_ADMISSION_LETTER_v${nextVersionNum}.pdf`,
+        generatedAt: new Date().toISOString()
       };
-      changeRemarks = "Admission offer letter successfully generated and sent via email.";
-    } else {
-      beneficiary.emailStatus = "Failed";
-      beneficiary.smtpErrorDetails = mailResult.status;
-      changeRemarks = `Admission offer letter generated, but email dispatch failed: ${mailResult.status}`;
+      beneficiary.admissionLetterVersions = [...currentVersions, newVersionItem];
+      console.log(`[PIPELINE TRACE] STAGE 2 - STORAGE RECORD CREATION (Versioning List): Registered version '${newVersionItem.name}' in beneficiary.admissionLetterVersions.`);
+
+      // 6. Save documents inside Candidate's local document list
+      const currentDocs = beneficiary.documentsList || [];
+      const updatedDocs = [...currentDocs];
+      const newDocItem = {
+        id: admissionDoc.id,
+        name: `${namePart}_ADMISSION_LETTER.pdf`,
+        type: "admission",
+        url: admissionPdfUrl,
+        uploadedAt: new Date().toISOString(),
+        version: nextVersionNum
+      };
+      updatedDocs.push(newDocItem);
+      beneficiary.documentsList = updatedDocs;
+      console.log(`[PIPELINE TRACE] STAGE 2 - STORAGE RECORD CREATION (Candidate Document Registry): Appended registry item '${newDocItem.name}' in beneficiary.documentsList.`);
+
+      // 7. Send automated email using formal unique email coordinates
+      const toEmail = beneficiary.email || "uniqueideasproject@gmail.com";
+      const admissionPdfBase64 = admissionPdfBuffer ? admissionPdfBuffer.toString("base64") : "";
+      const acceptancePdfBase64 = acceptancePdfBuffer ? acceptancePdfBuffer.toString("base64") : "";
+
+      const isAdmissionRealPdf = admissionPdfBuffer && admissionPdfBuffer.length >= 4 && admissionPdfBuffer[0] === 0x25 && admissionPdfBuffer[1] === 0x50 && admissionPdfBuffer[2] === 0x44 && admissionPdfBuffer[3] === 0x46;
+      const isAcceptanceRealPdf = acceptancePdfBuffer && acceptancePdfBuffer.length >= 4 && acceptancePdfBuffer[0] === 0x25 && acceptancePdfBuffer[1] === 0x50 && acceptancePdfBuffer[2] === 0x44 && acceptancePdfBuffer[3] === 0x46;
+
+      if (!isAdmissionRealPdf) {
+        console.error("[AdmissionService] WARNING: Admission Letter PDF compilation failed or is corrupt! Aborting automated email dispatch to prevent sending invalid files.");
+        throw new Error("Admission Letter compilation failed: Generated file is invalid or corrupted. Aborting email dispatch.");
+      }
+
+      if (!isAcceptanceRealPdf) {
+        console.error("[AdmissionService] WARNING: Acceptance Form PDF compilation failed or is corrupt! Aborting automated email dispatch to prevent sending invalid files.");
+        throw new Error("Acceptance Form compilation failed: Generated file is invalid or corrupted. Aborting email dispatch.");
+      }
+
+      const admissionAttachmentName = buildSanitizedFilename(beneficiary, "ADMISSION_LETTER", "pdf");
+      const acceptanceAttachmentName = buildSanitizedFilename(beneficiary, "ACCEPTANCE_LETTER", "pdf");
+
+      console.log(`[AdmissionService] All PDF attachments successfully verified. Dispatched recipient: ${toEmail}. Files: ${admissionAttachmentName} (${admissionPdfBuffer.length} bytes), ${acceptanceAttachmentName} (${acceptancePdfBuffer.length} bytes). Tracing to step 6...`);
+
+      const emailSendStart = performance.now();
+      const mailResult = await EmailService.sendAdmissionEmail(
+        toEmail, 
+        `${beneficiary.firstName} ${beneficiary.lastName}`, 
+        secureLink,
+        [
+          {
+            name: admissionAttachmentName,
+            content: admissionPdfBase64,
+            contentType: "application/pdf"
+          },
+          {
+            name: acceptanceAttachmentName,
+            content: acceptancePdfBase64,
+            contentType: "application/pdf"
+          }
+        ],
+        beneficiary.id,
+        beneficiary.program,
+        beneficiary.tsp,
+        beneficiary.skillSector
+      );
+      const emailSendDuration = performance.now() - emailSendStart;
+      console.log(`[PERF TRACE] SMTP/Resend notification email send took ${emailSendDuration.toFixed(2)}ms`);
+
+      let changeRemarks = "";
+      // Set Separate Email Status as requested
+      if (mailResult.success) {
+        beneficiary.emailStatus = "Sent";
+        if (!beneficiary.admissionStatus || (beneficiary.admissionStatus as string) === "Admission Generated" || (beneficiary.admissionStatus as string) === "Pending") {
+          beneficiary.admissionStatus = "Admission Sent";
+        }
+        beneficiary.admissionLetterSentAt = new Date().toISOString();
+        beneficiary.smtpErrorDetails = undefined;
+        beneficiary.customFields = {
+          ...(beneficiary.customFields || {}),
+          token_created_at: new Date().toISOString(),
+          token_expires_at: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000).toISOString(),
+          email_sent_at: new Date().toISOString()
+        };
+
+        if (isResend) {
+          changeRemarks = "Admission offer letter successfully RE-SENT via email.";
+          
+          // Log OFFER_RESENT
+          try {
+            await DbRepo.saveAuditLog({
+              username: actor,
+              action: "OFFER_RESENT",
+              role: "System Broker",
+              details: `[OFFER_RESENT] Timestamp: ${new Date().toISOString()} | Actor: ${actor} | Beneficiary ID: ${beneficiary.id} | Admission ID: ${beneficiary.admissionRef || "N/A"}`,
+              beneficiaryId: beneficiary.id
+            });
+          } catch (le) {
+            console.error("Failed to log OFFER_RESENT event:", le);
+          }
+        } else {
+          changeRemarks = "Admission offer letter successfully generated and sent via email.";
+          
+          // Log OFFER_SENT
+          try {
+            await DbRepo.saveAuditLog({
+              username: actor,
+              action: "OFFER_SENT",
+              role: "System Broker",
+              details: `[OFFER_SENT] Timestamp: ${new Date().toISOString()} | Actor: ${actor} | Beneficiary ID: ${beneficiary.id} | Admission ID: ${beneficiary.admissionRef || "N/A"}`,
+              beneficiaryId: beneficiary.id
+            });
+          } catch (le) {
+            console.error("Failed to log OFFER_SENT event:", le);
+          }
+        }
+      } else {
+        beneficiary.emailStatus = "Failed";
+        beneficiary.smtpErrorDetails = mailResult.status;
+        changeRemarks = `Admission offer letter generated, but email dispatch failed: ${mailResult.status}`;
+      }
+
+      // Append operations tracker entry
+      const deliveryHistory = beneficiary.emailDeliveryHistory || [];
+      const newDeliveryRecord = {
+        dateSent: new Date().toISOString(),
+        recipientEmail: toEmail,
+        deliveryResult: mailResult.success ? ("Sent" as const) : ("Failed" as const),
+        smtpResponse: mailResult.success 
+          ? (mailResult.apiResponse ? JSON.stringify(mailResult.apiResponse) : (mailResult.messageId ? JSON.stringify({ id: mailResult.messageId }) : "SMTP Message accepted by server")) 
+          : (mailResult.apiResponse ? JSON.stringify(mailResult.apiResponse) : (mailResult.errorDetails || "Connection Timeout / Transport Error"))
+      };
+      beneficiary.emailDeliveryHistory = [...deliveryHistory, newDeliveryRecord];
+
+      const persistenceStart = performance.now();
+      // Write to Workflow History table!
+      await DbRepo.saveWorkflowHistory({
+        beneficiaryId: beneficiary.id,
+        oldStatus: originalAdmissionStatus,
+        newStatus: beneficiary.admissionStatus || "Admission Sent",
+        changedBy: "SYSTEM_ADMISSIONS",
+        changedAt: new Date().toISOString(),
+        remarks: changeRemarks
+      });
+
+      // 8. Append secure logs and write to storage
+      await this.logAction(
+        actor === "system" ? "admission@uniqueideas.dontechservicesconst.com" : actor, 
+        isResend ? "Email Re-sent" : "Email Sent", 
+        `Dispatched formal admission offer & PDFs to '${beneficiary.firstName} ${beneficiary.lastName}'. Delivery Status: ${mailResult.success ? 'Success' : 'Failed'}`
+      );
+
+      await DbRepo.upsertBeneficiary(beneficiary);
+      const persistenceDuration = performance.now() - persistenceStart;
+      console.log(`[PERF TRACE] Database updates (workflow history, logs, upsertBeneficiary) took ${persistenceDuration.toFixed(2)}ms`);
+
+      const totalDuration = performance.now() - totalStart;
+      console.log(`[PERF TRACE] sendAdmissionOffer TOTAL request duration took ${totalDuration.toFixed(2)}ms`);
+
+      return { 
+        success: mailResult.success, 
+        secureLink, 
+        emailStatus: beneficiary.emailStatus, 
+        smtpErrorDetails: beneficiary.smtpErrorDetails,
+        beneficiary 
+      } as any;
+    } finally {
+      this.activeDispatches.delete(beneficiaryId);
     }
-
-    // Append operations tracker entry
-    const deliveryHistory = beneficiary.emailDeliveryHistory || [];
-    const newDeliveryRecord = {
-      dateSent: new Date().toISOString(),
-      recipientEmail: toEmail,
-      deliveryResult: mailResult.success ? ("Sent" as const) : ("Failed" as const),
-      smtpResponse: mailResult.success 
-        ? (mailResult.apiResponse ? JSON.stringify(mailResult.apiResponse) : (mailResult.messageId ? JSON.stringify({ id: mailResult.messageId }) : "SMTP Message accepted by server")) 
-        : (mailResult.apiResponse ? JSON.stringify(mailResult.apiResponse) : (mailResult.errorDetails || "Connection Timeout / Transport Error"))
-    };
-    beneficiary.emailDeliveryHistory = [...deliveryHistory, newDeliveryRecord];
-
-    const persistenceStart = performance.now();
-    // Write to Workflow History table!
-    await DbRepo.saveWorkflowHistory({
-      beneficiaryId: beneficiary.id,
-      oldStatus: originalAdmissionStatus,
-      newStatus: beneficiary.admissionStatus || "Admission Sent",
-      changedBy: "SYSTEM_ADMISSIONS",
-      changedAt: new Date().toISOString(),
-      remarks: changeRemarks
-    });
-
-    // 8. Append secure logs and write to storage
-    await this.logAction(
-      "admission@uniqueideas.dontechservicesconst.com", 
-      "Email Sent", 
-      `Dispatched formal admission offer & PDFs to '${beneficiary.firstName} ${beneficiary.lastName}'. Delivery Status: ${mailResult.success ? 'Success' : 'Failed'}`
-    );
-
-    await DbRepo.upsertBeneficiary(beneficiary);
-    const persistenceDuration = performance.now() - persistenceStart;
-    console.log(`[PERF TRACE] Database updates (workflow history, logs, upsertBeneficiary) took ${persistenceDuration.toFixed(2)}ms`);
-
-    const totalDuration = performance.now() - totalStart;
-    console.log(`[PERF TRACE] sendAdmissionOffer TOTAL request duration took ${totalDuration.toFixed(2)}ms`);
-
-    return { 
-      success: mailResult.success, 
-      secureLink, 
-      emailStatus: beneficiary.emailStatus, 
-      smtpErrorDetails: beneficiary.smtpErrorDetails,
-      beneficiary 
-    } as any;
   }
 
   /**
@@ -270,6 +357,19 @@ export class AdmissionService {
           remarks: "Trainee loaded secure response link; logged Offer Viewed event."
         });
       } catch (err) {}
+
+      // Save EMAIL_OPENED audit log
+      try {
+        await DbRepo.saveAuditLog({
+          username: "TRAINEE",
+          action: "EMAIL_OPENED",
+          role: "Student",
+          details: `[EMAIL_OPENED] Timestamp: ${new Date().toISOString()} | Actor: TRAINEE | Beneficiary ID: ${beneficiary.id} | Admission ID: ${beneficiary.admissionRef || "N/A"}`,
+          beneficiaryId: beneficiary.id
+        });
+      } catch (le) {
+        console.error("Failed to save EMAIL_OPENED audit log:", le);
+      }
 
       // Audit Log
       await this.logAction(
@@ -449,6 +549,18 @@ export class AdmissionService {
         });
       } catch (err) {}
 
+      try {
+        await DbRepo.saveAuditLog({
+          username: "TRAINEE",
+          action: "OFFER_DECLINED",
+          role: "Student",
+          details: `[OFFER_DECLINED] Timestamp: ${new Date().toISOString()} | Actor: TRAINEE | Beneficiary ID: ${beneficiary.id} | Admission ID: ${beneficiary.admissionRef || "N/A"}`,
+          beneficiaryId: beneficiary.id
+        });
+      } catch (le) {
+        console.error("Failed to save OFFER_DECLINED audit log:", le);
+      }
+
       await DbRepo.upsertBeneficiary(beneficiary);
       return { success: true, beneficiary };
     }
@@ -605,6 +717,18 @@ export class AdmissionService {
     } catch (err) {}
 
     // 6. Generate detailed audit log traces
+    try {
+      await DbRepo.saveAuditLog({
+        username: "TRAINEE",
+        action: "OFFER_ACCEPTED",
+        role: "Student",
+        details: `[OFFER_ACCEPTED] Timestamp: ${new Date().toISOString()} | Actor: TRAINEE | Beneficiary ID: ${beneficiary.id} | Admission ID: ${beneficiary.admissionRef || "N/A"}`,
+        beneficiaryId: beneficiary.id
+      });
+    } catch (le) {
+      console.error("Failed to save OFFER_ACCEPTED audit log:", le);
+    }
+
     await this.logAction(
       beneficiary.email || `${beneficiary.firstName.toLowerCase()}@tvet-response.net`,
       "Acceptance Uploaded",

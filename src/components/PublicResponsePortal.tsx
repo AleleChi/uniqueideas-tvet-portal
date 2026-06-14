@@ -20,13 +20,46 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
   const [loading, setLoading] = useState(true);
   const [validationError, setValidationError] = useState<string | null>(null);
 
-  // Form Fields State
-  const [emergencyName, setEmergencyName] = useState("");
-  const [emergencyPhone, setEmergencyPhone] = useState("");
-  const [guardianName, setGuardianName] = useState("");
-  const [highestQualification, setHighestQualification] = useState("Secondary School Certificate");
-  const [priorKnowledge, setPriorKnowledge] = useState("No Prior Knowledge");
-  const [medicalDeclaration, setMedicalDeclaration] = useState(false);
+  // Form Fields State with multi-session draft recovery fallback rules
+  const [emergencyName, setEmergencyName] = useState(() => localStorage.getItem(`draft_${token}_emergencyName`) || "");
+  const [emergencyPhone, setEmergencyPhone] = useState(() => localStorage.getItem(`draft_${token}_emergencyPhone`) || "");
+  const [guardianName, setGuardianName] = useState(() => localStorage.getItem(`draft_${token}_guardianName`) || "");
+  const [highestQualification, setHighestQualification] = useState(() => localStorage.getItem(`draft_${token}_highestQualification`) || "Secondary School Certificate");
+  const [priorKnowledge, setPriorKnowledge] = useState(() => localStorage.getItem(`draft_${token}_priorKnowledge`) || "No Prior Knowledge");
+  const [medicalDeclaration, setMedicalDeclaration] = useState(() => localStorage.getItem(`draft_${token}_medicalDeclaration`) === "true");
+
+  // Step parameters for guided navigation
+  const [currentStep, setCurrentStep] = useState<number>(() => {
+    const saved = localStorage.getItem(`draft_${token}_currentStep`);
+    return saved ? parseInt(saved, 10) : 1;
+  });
+
+  const handleSetStep = (step: number) => {
+    setCurrentStep(step);
+    localStorage.setItem(`draft_${token}_currentStep`, String(step));
+  };
+
+  const handleFieldChange = (field: string, value: any) => {
+    if (field === "emergencyName") {
+      setEmergencyName(value);
+      localStorage.setItem(`draft_${token}_emergencyName`, value);
+    } else if (field === "emergencyPhone") {
+      setEmergencyPhone(value);
+      localStorage.setItem(`draft_${token}_emergencyPhone`, value);
+    } else if (field === "guardianName") {
+      setGuardianName(value);
+      localStorage.setItem(`draft_${token}_guardianName`, value);
+    } else if (field === "highestQualification") {
+      setHighestQualification(value);
+      localStorage.setItem(`draft_${token}_highestQualification`, value);
+    } else if (field === "priorKnowledge") {
+      setPriorKnowledge(value);
+      localStorage.setItem(`draft_${token}_priorKnowledge`, value);
+    } else if (field === "medicalDeclaration") {
+      setMedicalDeclaration(value);
+      localStorage.setItem(`draft_${token}_medicalDeclaration`, String(value));
+    }
+  };
 
   // E-Signature Pad Parameters
   const [hasSignature, setHasSignature] = useState(false);
@@ -62,12 +95,12 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
           // Seed initial draft fields if student had some cached data
           if (data.candidate.admissionFormData) {
             const fd = data.candidate.admissionFormData;
-            if (fd.emergencyName) setEmergencyName(fd.emergencyName);
-            if (fd.emergencyPhone) setEmergencyPhone(fd.emergencyPhone);
-            if (fd.guardianName) setGuardianName(fd.guardianName);
-            if (fd.highestQualification) setHighestQualification(fd.highestQualification);
-            if (fd.priorKnowledge) setPriorKnowledge(fd.priorKnowledge);
-            if (fd.medicalDeclaration !== undefined) setMedicalDeclaration(fd.medicalDeclaration);
+            if (fd.emergencyName) handleFieldChange("emergencyName", fd.emergencyName);
+            if (fd.emergencyPhone) handleFieldChange("emergencyPhone", fd.emergencyPhone);
+            if (fd.guardianName) handleFieldChange("guardianName", fd.guardianName);
+            if (fd.highestQualification) handleFieldChange("highestQualification", fd.highestQualification);
+            if (fd.priorKnowledge) handleFieldChange("priorKnowledge", fd.priorKnowledge);
+            if (fd.medicalDeclaration !== undefined) handleFieldChange("medicalDeclaration", fd.medicalDeclaration);
           }
         } else {
           const err = await res.json();
@@ -226,6 +259,26 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
     }
   };
 
+  const handleNextToStep2 = () => {
+    if (!emergencyName || !emergencyName.trim()) {
+      alert("Next of Kin Name is required (*).");
+      return;
+    }
+    if (!emergencyPhone || !emergencyPhone.trim()) {
+      alert("Emergency Contact Phone Number is required (*).");
+      return;
+    }
+    if (!guardianName || !guardianName.trim()) {
+      alert("Parent / Sponsor Name (Guardian) is required (*).");
+      return;
+    }
+    if (!medicalDeclaration) {
+      alert("You must acknowledge and sign the physical workshop manual fitness declaration checkbox to proceed.");
+      return;
+    }
+    handleSetStep(2);
+  };
+
   // Submit Admission Response Portal Details
   const handleFinalSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -263,8 +316,16 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
       });
 
       if (res.ok) {
+        // Clear drafts
+        const keysToClear = [
+          "emergencyName", "emergencyPhone", "guardianName", 
+          "highestQualification", "priorKnowledge", "medicalDeclaration", "currentStep"
+        ];
+        keysToClear.forEach(k => localStorage.removeItem(`draft_${token}_${k}`));
+
         setSubmissionSuccess(true);
         setIsDeclined(false);
+        handleSetStep(3);
       } else {
         const err = await res.json();
         alert(err.error || "Failed submit validation checks.");
@@ -300,8 +361,16 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
       });
 
       if (res.ok) {
+        // Clear drafts
+        const keysToClear = [
+          "emergencyName", "emergencyPhone", "guardianName", 
+          "highestQualification", "priorKnowledge", "medicalDeclaration", "currentStep"
+        ];
+        keysToClear.forEach(k => localStorage.removeItem(`draft_${token}_${k}`));
+
         setIsDeclined(true);
         setSubmissionSuccess(true);
+        handleSetStep(3);
       } else {
         const err = await res.json();
         alert(err.error || "Failed to process decline request.");
@@ -471,7 +540,7 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
       <header className="bg-slate-950 border-b border-slate-800 px-6 py-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 sticky top-0 z-50">
         <div className="flex items-center gap-3">
           <div className="p-2 bg-indigo-600 rounded-lg text-white">
-            <Sparkles className="w-5 h-5" />
+            <Sparkles className="w-5 h-5 animate-pulse" />
           </div>
           <div>
             <h1 className="font-bold text-sm tracking-wide text-slate-200 uppercase font-sans">
@@ -490,11 +559,40 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
         </div>
       </header>
 
+      {/* Modern guided progress indicator tracker */}
+      <div className="max-w-4xl w-full mx-auto px-6 mt-6 animate-in fade-in duration-300">
+        <div className="bg-slate-950/40 border border-slate-800/80 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2 font-mono font-bold text-[10px] uppercase tracking-wider text-slate-400">
+            <span className="inline-flex items-center justify-center px-1.5 py-0.5 rounded bg-indigo-600/20 text-indigo-400 font-extrabold mr-1">
+              STEP {currentStep} OF 2
+            </span>
+            <span>
+              {currentStep === 1 
+                ? "Supplemental Information & Lab Fitness Check" 
+                : "Admission Documents Attestation & E-Signature"}
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5 font-mono text-[9px] text-slate-500 font-bold font-sans">
+            <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
+            <span>PROGRESS SAVE ENFORCED</span>
+          </div>
+        </div>
+        <div className="h-1.5 w-full bg-slate-950 border border-slate-805 rounded-full overflow-hidden mt-3">
+          <div 
+            className="h-full bg-gradient-to-r from-indigo-500 to-emerald-400 transition-all duration-300" 
+            style={{ width: currentStep === 1 ? "50%" : "100%" }}
+          />
+        </div>
+      </div>
+
       {/* 2. Main Content Canvas Container */}
-      <main className="max-w-4xl w-full mx-auto px-6 mt-10 flex-grow space-y-8">
+      <main className="max-w-4xl w-full mx-auto px-6 mt-6 flex-grow space-y-8">
         
-        {/* STEP 0: Redesigned Candidate Roster & Portrait (Phase 3 requirement) */}
-        <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-xl text-left flex flex-col md:flex-row gap-6 items-center md:items-start animate-in fade-in slide-in-from-top-4 duration-300">
+        {/* STEP 1: Candidate Roster Portrait & Help card */}
+        {currentStep === 1 && (
+          <>
+            {/* STEP 0: Redesigned Candidate Roster & Portrait (Phase 3 requirement) */}
+            <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-xl text-left flex flex-col md:flex-row gap-6 items-center md:items-start animate-in fade-in slide-in-from-top-4 duration-300">
           <div className="relative shrink-0">
             {candidate.photo && (candidate.photo.startsWith("data:") || candidate.photo.length > 100) ? (
               <img
@@ -570,11 +668,16 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
             </p>
           </div>
         </div>
+          </>
+        )}
 
         <form onSubmit={handleFinalSubmit} className="space-y-8">
 
-          {/* STEP 1: DOWNLOAD OFFICIAL MATERIALS */}
-          <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 sm:p-8 space-y-6 shadow-xl text-left">
+          {/* STEP 2: DOWNLOAD MATERIALS & CONTRACT VERIFICATION */}
+          {currentStep === 2 && (
+            <>
+              {/* STEP 1: DOWNLOAD OFFICIAL MATERIALS */}
+              <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 sm:p-8 space-y-6 shadow-xl text-left">
             <div className="flex items-center gap-3 pb-4 border-b border-slate-800">
               <span className="h-6 w-6 rounded-full bg-slate-800 text-xs font-bold font-mono flex items-center justify-center text-indigo-400">
                 01
@@ -640,9 +743,13 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
               </div>
             </div>
           </div>
+          </>
+        )}
 
-          {/* STEP 2: FILL SUPPLEMENTAL DETAILS */}
-          <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 sm:p-8 space-y-6 shadow-xl text-left">
+          {/* STEP 1 Questionnaire: FILL SUPPLEMENTAL DETAILS */}
+          {currentStep === 1 && (
+            <>
+              <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 sm:p-8 space-y-6 shadow-xl text-left">
             <div className="flex items-center gap-3 pb-4 border-b border-slate-800">
               <span className="h-6 w-6 rounded-full bg-slate-800 text-xs font-bold font-mono flex items-center justify-center text-indigo-400">
                 02
@@ -749,8 +856,33 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
             </div>
           </div>
 
-          {/* STEP 3: BIOMETRIC E-SIGNATURE OR FILE UPLOAD */}
-          <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 sm:p-8 space-y-6 shadow-xl text-left">
+          {/* Guided Step Navigation bar */}
+          <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 sm:p-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 font-sans text-xs">
+            <div className="text-left">
+              <p className="text-[10px] font-mono font-bold text-indigo-400 uppercase tracking-widest">
+                ✓ PROGRESS CACHED LOCALLY
+              </p>
+              <p className="text-[10px] text-slate-500 font-mono mt-0.5">
+                Confirm metrics to activate next step.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleNextToStep2}
+              className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-505 text-white font-bold py-2.5 px-6 rounded-lg text-xs uppercase tracking-wider transition flex items-center justify-center gap-2 cursor-pointer shadow-md font-mono"
+            >
+              <span>Proceed to Acceptance & Signature</span>
+              <Check className="w-4 h-4 text-white shrink-0" />
+            </button>
+          </div>
+          </>
+        )}
+
+          {/* STEP 2 Part 2: BIOMETRIC E-SIGNATURE & ENDORSEMENTS */}
+          {currentStep === 2 && (
+            <>
+              {/* STEP 3: BIOMETRIC E-SIGNATURE OR FILE UPLOAD */}
+              <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 sm:p-8 space-y-6 shadow-xl text-left">
             <div className="flex items-center gap-3 pb-4 border-b border-slate-800">
               <span className="h-6 w-6 rounded-full bg-slate-800 text-xs font-bold font-mono flex items-center justify-center text-indigo-400">
                 03
@@ -897,6 +1029,14 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
               <div className="flex items-center gap-3 w-full sm:w-auto">
                 <button
                   type="button"
+                  onClick={() => handleSetStep(1)}
+                  disabled={submitting}
+                  className="flex-1 sm:flex-initial py-2.5 px-4 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-205 border border-slate-800 rounded-lg text-xs font-bold uppercase tracking-wider transition cursor-pointer font-sans"
+                >
+                  ← Back to Step 1
+                </button>
+                <button
+                  type="button"
                   onClick={handleDeclineOffer}
                   disabled={submitting}
                   className="flex-1 sm:flex-initial py-2.5 px-4 rounded-lg text-xs font-bold uppercase tracking-wider transition hover:bg-rose-950/20 border border-rose-900/40 text-rose-400 cursor-pointer hover:border-rose-950"
@@ -927,6 +1067,8 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
               </div>
             </div>
           </div>
+            </>
+          )}
 
         </form>
       </main>

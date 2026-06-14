@@ -57,10 +57,7 @@ export class AdmissionController {
         return res.status(404).json({ error: `Beneficiary candidate '${beneficiaryId}' not found in registry.` });
       }
 
-      // Check if offer has already been sent to avoid duplicate dispatch (Idempotency Protection)
-      if (beneficiary.admissionLetterSentAt) {
-        return res.status(400).json({ error: "Offer already sent" });
-      }
+      const isResend = !!beneficiary.admissionLetterSentAt;
 
       // Enforce multi-tier role scope check
       const isFederal = user.role === "SUPER_ADMIN" || 
@@ -108,11 +105,12 @@ export class AdmissionController {
       const customDomain = safeOrigin || buildPublicUrl("", req);
 
       // Invoke the single-source-of-truth service for offer dispatch
-      const outcome = await OfferService.sendOffer(beneficiaryId, customDomain);
+      const outcome = await OfferService.sendOffer(beneficiaryId, customDomain, user.email || "system");
       return res.status(200).json({ 
         success: outcome.success, 
+        action: isResend ? "RESENT" : "SENT",
         message: outcome.success 
-          ? "Provisional offer generated, letter compiled, and notification email successfully queued."
+          ? (isResend ? "✓ This admission offer letter has been successfully RE-SENT to the candidate." : "Provisional offer generated, letter compiled, and notification email successfully queued.")
           : `SMTP delivery failed: ${outcome.smtpErrorDetails || "Unknown SMTP error."}`,
         secureLink: outcome.secureLink,
         emailStatus: outcome.emailStatus,
@@ -133,60 +131,106 @@ export class AdmissionController {
     try {
       const token = req.query.token as string;
       if (!token) {
-        return res.status(400).json({ error: "No secure response token provided in verification query." });
+        return res.status(400).json({ valid: false, reason: "TOKEN_NOT_FOUND", error: "No secure response token provided in verification query." });
       }
 
       const decoded = TokenService.verifyToken(token);
       if (!decoded || !decoded.id) {
-        return res.status(401).json({ error: "The response token is invalid, expired, or corrupted." });
+        return res.status(401).json({ valid: false, reason: "TOKEN_NOT_FOUND", error: "The response token is invalid, unrecognized, or corrupted." });
+      }
+
+      if (decoded.expires !== undefined && decoded.expires < Date.now()) {
+        try {
+          await DbRepo.saveAuditLog({
+            username: "TRAINEE",
+            action: "TOKEN_EXPIRED",
+            role: "Student",
+            details: `[TOKEN_EXPIRED] Timestamp: ${new Date().toISOString()} | Actor: TRAINEE | Beneficiary ID: ${decoded.id} | Admission ID: N/A`,
+            beneficiaryId: decoded.id
+          });
+        } catch (le) {
+          console.error("Failed to save expired token audit log:", le);
+        }
+        return res.status(401).json({ valid: false, reason: "TOKEN_EXPIRED", error: "TOKEN_EXPIRED: The activation link has expired." });
       }
 
       // Load beneficiary using our non-blocking database repository
       const beneficiary = await DbRepo.getBeneficiaryById(decoded.id, { systemContext: true });
 
       if (!beneficiary) {
-        return res.status(404).json({ error: "Candidate matching the secure token session could not be located." });
+        return res.status(404).json({ valid: false, reason: "BENEFICIARY_NOT_FOUND", error: "Candidate matching the secure token session could not be located." });
       }
 
       // Check token version (Phase 1)
       const tokenVersion = decoded.tokenVersion !== undefined ? decoded.tokenVersion : 1;
       const bTokenVersion = beneficiary.tokenVersion !== undefined ? beneficiary.tokenVersion : 1;
       if (tokenVersion !== bTokenVersion) {
-        return res.status(401).json({ error: "TOKEN_REVOKED: This portal or admission token has been revoked due to administrative rollback or status update." });
+        try {
+          await DbRepo.saveAuditLog({
+            username: "TRAINEE",
+            action: "TOKEN_REVOKED",
+            role: "Student",
+            details: `[TOKEN_REVOKED] Timestamp: ${new Date().toISOString()} | Actor: TRAINEE | Beneficiary ID: ${beneficiary.id} | Admission ID: ${beneficiary.admissionRef || "N/A"} | Token revoked due to version mismatch (Token: ${tokenVersion}, DB: ${bTokenVersion})`,
+            beneficiaryId: beneficiary.id
+          });
+        } catch (le) {
+          console.error("Failed to save revoked token audit log:", le);
+        }
+        return res.status(401).json({ valid: false, reason: "TOKEN_REVOKED", error: "TOKEN_REVOKED: This portal or admission token has been revoked due to administrative rollback or status update." });
       }
 
       // Automatically record tracking Opened event when portal is opened
-      await AdmissionService.registerEmailOpened(decoded.id);
+      try {
+        await AdmissionService.registerEmailOpened(decoded.id);
+      } catch (e) {
+        console.error("Failed to register email opened event:", e);
+      }
+
+      // Automatically record PORTAL_ACCESSED audit log when portal is loaded
+      try {
+        await DbRepo.saveAuditLog({
+          username: "TRAINEE",
+          action: "PORTAL_ACCESSED",
+          role: "Student",
+          details: `[PORTAL_ACCESSED] Timestamp: ${new Date().toISOString()} | Actor: TRAINEE | Beneficiary ID: ${beneficiary.id} | Admission ID: ${beneficiary.admissionRef || "N/A"}`,
+          beneficiaryId: beneficiary.id
+        });
+      } catch (le) {
+        console.error("Failed to save portal accessed audit log:", le);
+      }
+
+      const candidateObj = {
+        id: beneficiary.id,
+        firstName: beneficiary.firstName,
+        lastName: beneficiary.lastName,
+        email: beneficiary.email,
+        nin: beneficiary.nin,
+        bvn: beneficiary.bvn,
+        state: beneficiary.state,
+        city: beneficiary.city,
+        skillSector: beneficiary.skillSector || "Computer Hardware and Cell Phone Repairs",
+        admissionRef: beneficiary.admissionRef,
+        admissionStatus: beneficiary.admissionStatus || "Pending",
+        admissionFormCompleted: beneficiary.admissionFormCompleted || false,
+        admissionFormStatus: beneficiary.admissionFormStatus || "Pending",
+        admissionFormData: beneficiary.admissionFormData || {},
+        admissionLetterUrl: beneficiary.admissionLetterUrl || "",
+        acceptanceLetterUrl: beneficiary.acceptanceLetterUrl || "",
+        photo: beneficiary.photo || "",
+        tsp: beneficiary.tsp || "Unique Technology Nig. Ltd",
+        program: beneficiary.program || "Computer Hardware and Cell Phone Repairs",
+        status: beneficiary.status
+      };
 
       // Return sanitized candidate fields suitable for public view (excluding core admin values if needed)
       return res.status(200).json({
         valid: true,
-        candidate: {
-          id: beneficiary.id,
-          firstName: beneficiary.firstName,
-          lastName: beneficiary.lastName,
-          email: beneficiary.email,
-          nin: beneficiary.nin,
-          bvn: beneficiary.bvn,
-          state: beneficiary.state,
-          city: beneficiary.city,
-          skillSector: beneficiary.skillSector || "Computer Hardware and Cell Phone Repairs",
-          admissionRef: beneficiary.admissionRef,
-          admissionStatus: beneficiary.admissionStatus || "Pending",
-          admissionFormCompleted: beneficiary.admissionFormCompleted || false,
-          admissionFormStatus: beneficiary.admissionFormStatus || "Pending",
-          admissionFormData: beneficiary.admissionFormData || {},
-          admissionLetterUrl: beneficiary.admissionLetterUrl || "",
-          acceptanceLetterUrl: beneficiary.acceptanceLetterUrl || "",
-          photo: beneficiary.photo || "",
-          tsp: beneficiary.tsp || "Unique Technology Nig. Ltd",
-          program: beneficiary.program || "Computer Hardware and Cell Phone Repairs",
-          status: beneficiary.status
-        }
+        candidate: candidateObj,
+        beneficiary: candidateObj
       });
     } catch (err: any) {
       console.error("[AdmissionController] validateToken failed:", err);
-      return res.status(500).json({ error: "Internal token decrypter processing failure." });
+      return res.status(500).json({ valid: false, reason: "SERVER_ERROR", error: "Internal token decrypter processing failure." });
     }
   }
 
