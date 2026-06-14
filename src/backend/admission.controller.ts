@@ -177,7 +177,11 @@ export class AdmissionController {
           admissionFormStatus: beneficiary.admissionFormStatus || "Pending",
           admissionFormData: beneficiary.admissionFormData || {},
           admissionLetterUrl: beneficiary.admissionLetterUrl || "",
-          acceptanceLetterUrl: beneficiary.acceptanceLetterUrl || ""
+          acceptanceLetterUrl: beneficiary.acceptanceLetterUrl || "",
+          photo: beneficiary.photo || "",
+          tsp: beneficiary.tsp || "Unique Technology Nig. Ltd",
+          program: beneficiary.program || "Computer Hardware and Cell Phone Repairs",
+          status: beneficiary.status
         }
       });
     } catch (err: any) {
@@ -256,30 +260,33 @@ export class AdmissionController {
         return res.status(400).json({ error: "Missing required parameter: beneficiaryId" });
       }
 
-      // Automatically construct origin domain if not provided, sanitizing out any preview environments
-      const isPreviewOrLocal = (url: any): boolean => {
-        if (!url || typeof url !== "string") return true;
-        const l = url.toLowerCase();
-        return (
-          l.includes("aistudio") ||
-          l.includes("google") ||
-          l.includes("run.app") ||
-          l.includes("localhost") ||
-          l.includes("127.0.0.1") ||
-          l.includes("sandbox") ||
-          l.includes("ais-dev") ||
-          l.includes("ais-pre") ||
-          l.includes("my_app_url")
-        );
-      };
-
-      const safeOrigin = (typeof origin === "string" && !isPreviewOrLocal(origin)) ? origin : undefined;
-      const customDomain = safeOrigin || buildPublicUrl("", req);
-
       const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
       if (!beneficiary) {
         return res.status(404).json({ error: "Candidate matching the secure token session could not be located." });
       }
+
+      // Strict role and organizational isolation (Phase 8)
+      const authReq = req as AuthenticatedRequest;
+      const user = authReq.user;
+      if (user) {
+        const isFederal = user.role === "SUPER_ADMIN" || 
+                          user.role === "FED" || 
+                          user.role.startsWith("FED") || 
+                          user.role.startsWith("FEDERAL");
+        if (!isFederal) {
+          const isTspUser = user.role === "TSP" || user.role.startsWith("TSP") || user.role === "REVIEW_OFFICER" || user.role === "ADMIN_OFFICER";
+          if (isTspUser) {
+            const userTspId = user.tspId || "00000000-0000-0000-0000-000000000001";
+            const bTspId = beneficiary.tspId || "00000000-0000-0000-0000-000000000001";
+            if (bTspId !== userTspId) {
+              return res.status(403).json({ error: "Access Denied: Tenant isolation active. This beneficiary belongs to another organization." });
+            }
+          }
+        }
+      }
+
+      // For authenticated administrative actions inside the workspace, allow previewing the local origin
+      const customDomain = (origin && typeof origin === "string") ? origin : buildPublicUrl("", req);
 
       const secureToken = TokenService.generateToken(beneficiaryId, beneficiary.tokenVersion || 1);
       const secureLink = `${customDomain}/?token=${secureToken}`;

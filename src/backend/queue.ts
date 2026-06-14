@@ -3,6 +3,7 @@ import { EmailService } from "./email.service";
 import { DocumentService } from "./document.service";
 import { TokenService } from "./token.service";
 import { DocumentType } from "../types";
+import { buildPublicUrl } from "../config/api";
 
 export interface CampaignConfig {
   campaignId: string;
@@ -145,7 +146,7 @@ export class EmailCampaignQueue {
         const email = recipient.email;
 
         // Custom domain for portal links (Vite preview has current origin or we use default dev url)
-        const customDomain = process.env.VITE_API_URL || "https://ais-dev-nsgofjneehq5yhv2fp247q-526547409209.europe-west1.run.app";
+        const customDomain = buildPublicUrl("");
         const tokenVersion = beneficiary.tokenVersion || 1;
         const secureToken = TokenService.generateToken(beneficiary.id, tokenVersion);
         const secureLink = `${customDomain}/?token=${secureToken}`;

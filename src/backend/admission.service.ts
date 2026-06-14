@@ -420,6 +420,27 @@ export class AdmissionService {
 
     const oldAdmissionStatus = beneficiary.admissionStatus || "Pending";
 
+    // Handle candidates declining the provisional offer
+    if (formData.declined) {
+      console.log(`[AdmissionService] Candidate ${beneficiary.id} chose to decline the admission offer.`);
+      beneficiary.admissionStatus = "Declined";
+      beneficiary.updatedAt = new Date().toISOString();
+
+      try {
+        await DbRepo.saveWorkflowHistory({
+          beneficiaryId: beneficiary.id,
+          oldStatus: oldAdmissionStatus,
+          newStatus: "Declined",
+          changedBy: beneficiary.email || "STUDENT_PORTAL",
+          changedAt: new Date().toISOString(),
+          remarks: "Candidate formally declined the provisional admission offer via response portal."
+        });
+      } catch (err) {}
+
+      await DbRepo.upsertBeneficiary(beneficiary);
+      return { success: true, beneficiary };
+    }
+
     // Register active form version control
     const currentFormVersions = beneficiary.admissionFormVersions || [];
     const nextFormVerNum = currentFormVersions.length + 1;

@@ -58,7 +58,7 @@ export interface Beneficiary {
   customFields: Record<string, string>;
 
   // Extended Lifecycle & Admission Workflow
-  admissionStatus?: "Draft" | "Pending" | "Admission Generated" | "Admission Sent" | "Offer Viewed" | "Acceptance Pending" | "Acceptance Uploaded" | "Under Review" | "Accepted" | "Enrolled" | "Training In Progress" | "Training Completed" | "Certified" | "Alumni" | "Acceptance Rejected" | "Admitted";
+  admissionStatus?: "Draft" | "Pending" | "Admission Generated" | "Admission Sent" | "Offer Viewed" | "Acceptance Pending" | "Acceptance Uploaded" | "Under Review" | "Accepted" | "Enrolled" | "Training In Progress" | "Training Completed" | "Certified" | "Alumni" | "Acceptance Rejected" | "Admitted" | "Declined";
   admissionRef?: string;
   admissionFormRef?: string;
   admissionLetterGeneratedAt?: string;
