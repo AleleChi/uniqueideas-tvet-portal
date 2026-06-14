@@ -20,46 +20,13 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
   const [loading, setLoading] = useState(true);
   const [validationError, setValidationError] = useState<string | null>(null);
 
-  // Form Fields State with multi-session draft recovery fallback rules
-  const [emergencyName, setEmergencyName] = useState(() => localStorage.getItem(`draft_${token}_emergencyName`) || "");
-  const [emergencyPhone, setEmergencyPhone] = useState(() => localStorage.getItem(`draft_${token}_emergencyPhone`) || "");
-  const [guardianName, setGuardianName] = useState(() => localStorage.getItem(`draft_${token}_guardianName`) || "");
-  const [highestQualification, setHighestQualification] = useState(() => localStorage.getItem(`draft_${token}_highestQualification`) || "Secondary School Certificate");
-  const [priorKnowledge, setPriorKnowledge] = useState(() => localStorage.getItem(`draft_${token}_priorKnowledge`) || "No Prior Knowledge");
-  const [medicalDeclaration, setMedicalDeclaration] = useState(() => localStorage.getItem(`draft_${token}_medicalDeclaration`) === "true");
-
-  // Step parameters for guided navigation
-  const [currentStep, setCurrentStep] = useState<number>(() => {
-    const saved = localStorage.getItem(`draft_${token}_currentStep`);
-    return saved ? parseInt(saved, 10) : 1;
-  });
-
-  const handleSetStep = (step: number) => {
-    setCurrentStep(step);
-    localStorage.setItem(`draft_${token}_currentStep`, String(step));
-  };
-
-  const handleFieldChange = (field: string, value: any) => {
-    if (field === "emergencyName") {
-      setEmergencyName(value);
-      localStorage.setItem(`draft_${token}_emergencyName`, value);
-    } else if (field === "emergencyPhone") {
-      setEmergencyPhone(value);
-      localStorage.setItem(`draft_${token}_emergencyPhone`, value);
-    } else if (field === "guardianName") {
-      setGuardianName(value);
-      localStorage.setItem(`draft_${token}_guardianName`, value);
-    } else if (field === "highestQualification") {
-      setHighestQualification(value);
-      localStorage.setItem(`draft_${token}_highestQualification`, value);
-    } else if (field === "priorKnowledge") {
-      setPriorKnowledge(value);
-      localStorage.setItem(`draft_${token}_priorKnowledge`, value);
-    } else if (field === "medicalDeclaration") {
-      setMedicalDeclaration(value);
-      localStorage.setItem(`draft_${token}_medicalDeclaration`, String(value));
-    }
-  };
+  // Form Fields State
+  const [emergencyName, setEmergencyName] = useState("");
+  const [emergencyPhone, setEmergencyPhone] = useState("");
+  const [guardianName, setGuardianName] = useState("");
+  const [highestQualification, setHighestQualification] = useState("Secondary School Certificate");
+  const [priorKnowledge, setPriorKnowledge] = useState("No Prior Knowledge");
+  const [medicalDeclaration, setMedicalDeclaration] = useState(false);
 
   // E-Signature Pad Parameters
   const [hasSignature, setHasSignature] = useState(false);
@@ -74,7 +41,6 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
   // Submission Flow Parameters
   const [submitting, setSubmitting] = useState(false);
   const [submissionSuccess, setSubmissionSuccess] = useState(false);
-  const [isDeclined, setIsDeclined] = useState(false);
 
   // Validate Secure Token on Mount
   useEffect(() => {
@@ -85,22 +51,15 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
           const data = await res.json();
           setCandidate(data.candidate);
           
-          if (data.candidate.admissionStatus === "Declined") {
-            setIsDeclined(true);
-            setSubmissionSuccess(true);
-          } else if (data.candidate.admissionStatus === "Acceptance Uploaded" || data.candidate.admissionStatus === "Accepted") {
-            setSubmissionSuccess(true);
-          }
-
           // Seed initial draft fields if student had some cached data
           if (data.candidate.admissionFormData) {
             const fd = data.candidate.admissionFormData;
-            if (fd.emergencyName) handleFieldChange("emergencyName", fd.emergencyName);
-            if (fd.emergencyPhone) handleFieldChange("emergencyPhone", fd.emergencyPhone);
-            if (fd.guardianName) handleFieldChange("guardianName", fd.guardianName);
-            if (fd.highestQualification) handleFieldChange("highestQualification", fd.highestQualification);
-            if (fd.priorKnowledge) handleFieldChange("priorKnowledge", fd.priorKnowledge);
-            if (fd.medicalDeclaration !== undefined) handleFieldChange("medicalDeclaration", fd.medicalDeclaration);
+            if (fd.emergencyName) setEmergencyName(fd.emergencyName);
+            if (fd.emergencyPhone) setEmergencyPhone(fd.emergencyPhone);
+            if (fd.guardianName) setGuardianName(fd.guardianName);
+            if (fd.highestQualification) setHighestQualification(fd.highestQualification);
+            if (fd.priorKnowledge) setPriorKnowledge(fd.priorKnowledge);
+            if (fd.medicalDeclaration !== undefined) setMedicalDeclaration(fd.medicalDeclaration);
           }
         } else {
           const err = await res.json();
@@ -259,26 +218,6 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
     }
   };
 
-  const handleNextToStep2 = () => {
-    if (!emergencyName || !emergencyName.trim()) {
-      alert("Next of Kin Name is required (*).");
-      return;
-    }
-    if (!emergencyPhone || !emergencyPhone.trim()) {
-      alert("Emergency Contact Phone Number is required (*).");
-      return;
-    }
-    if (!guardianName || !guardianName.trim()) {
-      alert("Parent / Sponsor Name (Guardian) is required (*).");
-      return;
-    }
-    if (!medicalDeclaration) {
-      alert("You must acknowledge and sign the physical workshop manual fitness declaration checkbox to proceed.");
-      return;
-    }
-    handleSetStep(2);
-  };
-
   // Submit Admission Response Portal Details
   const handleFinalSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -316,16 +255,7 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
       });
 
       if (res.ok) {
-        // Clear drafts
-        const keysToClear = [
-          "emergencyName", "emergencyPhone", "guardianName", 
-          "highestQualification", "priorKnowledge", "medicalDeclaration", "currentStep"
-        ];
-        keysToClear.forEach(k => localStorage.removeItem(`draft_${token}_${k}`));
-
         setSubmissionSuccess(true);
-        setIsDeclined(false);
-        handleSetStep(3);
       } else {
         const err = await res.json();
         alert(err.error || "Failed submit validation checks.");
@@ -333,51 +263,6 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
     } catch (err) {
       console.error(err);
       alert("A system error occurred while transacting your admission details.");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  // Call the Decline offer pipeline (Phase 3 option)
-  const handleDeclineOffer = async () => {
-    const confirmDecline = window.confirm(
-      "Are you absolutely sure you want to decline this provisional admission offer? This action is permanent and irreversible."
-    );
-    if (!confirmDecline) return;
-
-    setSubmitting(true);
-    try {
-      const payload = {
-        token,
-        responseData: {
-          declined: true
-        }
-      };
-
-      const res = await fetch(`${API_BASE_URL}/api/admissions/submit-response`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-
-      if (res.ok) {
-        // Clear drafts
-        const keysToClear = [
-          "emergencyName", "emergencyPhone", "guardianName", 
-          "highestQualification", "priorKnowledge", "medicalDeclaration", "currentStep"
-        ];
-        keysToClear.forEach(k => localStorage.removeItem(`draft_${token}_${k}`));
-
-        setIsDeclined(true);
-        setSubmissionSuccess(true);
-        handleSetStep(3);
-      } else {
-        const err = await res.json();
-        alert(err.error || "Failed to process decline request.");
-      }
-    } catch (err) {
-      console.error(err);
-      alert("An unexpected system anomaly occurred while submitting decline.");
     } finally {
       setSubmitting(false);
     }
@@ -422,112 +307,31 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
   }
 
   if (submissionSuccess) {
-    if (isDeclined) {
-      return (
-        <div className="h-screen w-screen flex flex-col justify-center items-center bg-slate-950 text-white font-sans px-6">
-          <div className="max-w-md w-full text-center space-y-6 bg-slate-900 p-8 border border-slate-800 rounded-2xl shadow-2xl animate-in fade-in zoom-in-95 duration-300">
-            <div className="mx-auto w-12 h-12 rounded-full bg-rose-500/10 flex items-center justify-center text-rose-400">
-              <CircleAlert className="w-6 h-6" />
-            </div>
-            <div className="space-y-2">
-              <h2 className="text-lg font-bold font-sans text-rose-400 uppercase tracking-wide">
-                Admission Offer Declined
-              </h2>
-              <p className="text-slate-400 text-xs leading-relaxed">
-                Hello, <strong>{candidate.firstName} {candidate.lastName}</strong> (Applicant: {candidate.id}). You have formally declined the provisional admission offer for <strong>{candidate.program || "Computer Hardware and Cell Phone Repairs"}</strong>.
-              </p>
-            </div>
-            <div className="p-4 bg-slate-950 border border-slate-800 rounded-lg text-left text-[11px] font-mono space-y-2 text-slate-400">
-              <div className="flex items-center gap-2 text-slate-350 font-bold uppercase tracking-wider text-[10px] pb-1 border-b border-slate-800 font-sans">
-                <CircleAlert className="w-3.5 h-3.5 text-rose-400" />
-                <span>Registry Updates Applied:</span>
-              </div>
-              <div>• Candidate Admissions Status: <span className="text-rose-400 font-bold">DECLINED</span></div>
-              <div>• Training TSP Organization: <span className="text-slate-300">{candidate.tsp}</span></div>
-              <div>• Database Record Status: <span className="text-rose-400 font-bold">RELEASED</span></div>
-            </div>
-            <p className="text-[10px] text-slate-500 font-mono">
-              The programme administrator has been updated. You may safely close this response window.
-            </p>
-          </div>
-        </div>
-      );
-    }
-
-    // Congratulations experience using live database loaded values (Phase 4 success page)
     return (
-      <div className="min-h-screen w-screen bg-slate-900 text-slate-100 flex flex-col justify-center items-center font-sans antialiased px-6 py-12">
-        <div className="max-w-xl w-full text-center space-y-8 bg-slate-950 p-8 sm:p-10 border border-emerald-950 rounded-3xl shadow-2xl animate-in fade-in zoom-in-95 duration-300">
-          <div className="mx-auto w-14 h-14 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-400">
-            <FileCheck className="w-7 h-7 animate-pulse" />
+      <div className="h-screen w-screen flex flex-col justify-center items-center bg-slate-900 text-white font-sans px-6">
+        <div className="max-w-md w-full text-center space-y-6 bg-slate-950 p-8 border border-emerald-950 rounded-2xl shadow-2xl animate-in fade-in zoom-in-95 duration-300">
+          <div className="mx-auto w-12 h-12 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+            <FileCheck className="w-6 h-6 animate-pulse" />
           </div>
-          
           <div className="space-y-2">
-            <span className="text-[10px] font-extrabold uppercase font-mono tracking-widest text-emerald-400">CONGRATULATIONS • ENROLLMENT LOCKED</span>
-            <h2 className="text-2xl font-black text-slate-100 tracking-tight">
-              Admission Formally Confirmed!
+            <h2 className="text-lg font-bold font-sans text-emerald-400 uppercase tracking-wide">
+              Enrollment Declared Successful
             </h2>
-            <p className="text-slate-400 text-xs sm:text-sm leading-relaxed max-w-md mx-auto">
-              Dear <strong>{candidate.firstName} {candidate.lastName}</strong>, your signed acceptance contract and supplemental student demographics have been officially verified and committed to the federal TVET registry.
+            <p className="text-slate-400 text-xs leading-relaxed">
+              Thank you, <strong>{candidate.firstName} {candidate.lastName}</strong>! Your signed acceptance documentation and student profile details have been successfully certified by the federal TVET registry.
             </p>
           </div>
-
-          {/* Live database properties list (Phase 4) */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 text-left text-xs space-y-3 font-sans">
-            <div className="flex items-center gap-2 text-slate-300 font-extrabold uppercase tracking-wider text-[10px] pb-2 border-b border-indigo-900/40">
-              <Sparkles className="w-4 h-4 text-emerald-400" />
-              <span>COHORT ENROLLMENT VERIFIED RECORD:</span>
+          <div className="p-4 bg-slate-900 border border-slate-800 rounded-lg text-left text-[11px] font-sans space-y-2 text-slate-400">
+            <div className="flex items-center gap-2 text-slate-350 font-bold uppercase tracking-wider text-[10px] pb-1 border-b border-slate-800">
+              <Check className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Registry Updates Applied:</span>
             </div>
-            
-            <div className="grid grid-cols-2 gap-y-3 gap-x-4 pt-1 font-mono text-[11px]">
-              <div>
-                <span className="text-slate-500 block text-[9px] font-sans font-bold uppercase tracking-wider">Candidate ID:</span>
-                <span className="text-slate-200 font-bold">{candidate.id}</span>
-              </div>
-              <div>
-                <span className="text-slate-500 block text-[9px] font-sans font-bold uppercase tracking-wider">Assigned TSP Center:</span>
-                <span className="text-slate-200 font-bold">{candidate.tsp}</span>
-              </div>
-              <div className="col-span-2">
-                <span className="text-slate-500 block text-[9px] font-sans font-bold uppercase tracking-wider">Official Skill Cohort:</span>
-                <span className="text-emerald-400 font-bold">{candidate.program}</span>
-              </div>
-              <div>
-                <span className="text-slate-500 block text-[9px] font-sans font-bold uppercase tracking-wider">State Region:</span>
-                <span className="text-slate-200">{candidate.state} State ({candidate.city})</span>
-              </div>
-              <div>
-                <span className="text-slate-500 block text-[9px] font-sans font-bold uppercase tracking-wider font-mono">Admission status:</span>
-                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 uppercase font-sans">
-                  {candidate.status === "ENROLLED" ? "Enrolled" : "Accepted"}
-                </span>
-              </div>
-            </div>
+            <div>• Candidate Admissions Status: <span className="text-emerald-400 font-bold">ACCEPTED</span></div>
+            <div>• Attestation Contract Upload: <span className="text-emerald-400 font-bold">COMMITTED</span></div>
+            <div>• Database Enrollment Lock: <span className="text-emerald-400 font-bold">VERIFIED</span></div>
           </div>
-
-          <div className="flex flex-col sm:flex-row gap-3 pt-2">
-            <button
-              onClick={triggerAdmissionLetterDownload}
-              className="flex-1 py-2.5 px-4 rounded-xl text-xs font-bold uppercase tracking-wider bg-slate-900 border border-slate-800 text-slate-300 hover:text-white hover:bg-slate-850 cursor-pointer flex items-center justify-center gap-2"
-            >
-              <FileText className="w-4 h-4" />
-              Download Admission Offer
-            </button>
-            {candidate.acceptanceLetterUrl && (
-              <a
-                href={candidate.acceptanceLetterUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="flex-1 py-2.5 px-4 rounded-xl text-xs font-bold uppercase tracking-wider bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer flex items-center justify-center gap-2"
-              >
-                <FileCheck className="w-4 h-4" />
-                View Acceptance Slip
-              </a>
-            )}
-          </div>
-
           <p className="text-[10px] text-slate-500 font-mono">
-            Thank you for joining the national skills recovery cohort. Standard bio loggers will commence next week.
+            You may safely close this response tab now.
           </p>
         </div>
       </div>
@@ -540,11 +344,11 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
       <header className="bg-slate-950 border-b border-slate-800 px-6 py-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 sticky top-0 z-50">
         <div className="flex items-center gap-3">
           <div className="p-2 bg-indigo-600 rounded-lg text-white">
-            <Sparkles className="w-5 h-5 animate-pulse" />
+            <Sparkles className="w-5 h-5" />
           </div>
           <div>
             <h1 className="font-bold text-sm tracking-wide text-slate-200 uppercase font-sans">
-              {candidate.tsp || "Unique Technology Nig. Ltd"}
+              Unique Technology Nig. Ltd
             </h1>
             <p className="text-[10px] font-mono text-slate-400 font-bold uppercase tracking-widest mt-0.5">
               Federal FME IDEAS-TVET Skills Registry Gateway
@@ -559,125 +363,28 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
         </div>
       </header>
 
-      {/* Modern guided progress indicator tracker */}
-      <div className="max-w-4xl w-full mx-auto px-6 mt-6 animate-in fade-in duration-300">
-        <div className="bg-slate-950/40 border border-slate-800/80 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-          <div className="flex items-center gap-2 font-mono font-bold text-[10px] uppercase tracking-wider text-slate-400">
-            <span className="inline-flex items-center justify-center px-1.5 py-0.5 rounded bg-indigo-600/20 text-indigo-400 font-extrabold mr-1">
-              STEP {currentStep} OF 2
-            </span>
-            <span>
-              {currentStep === 1 
-                ? "Supplemental Information & Lab Fitness Check" 
-                : "Admission Documents Attestation & E-Signature"}
-            </span>
-          </div>
-          <div className="flex items-center gap-1.5 font-mono text-[9px] text-slate-500 font-bold font-sans">
-            <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
-            <span>PROGRESS SAVE ENFORCED</span>
-          </div>
-        </div>
-        <div className="h-1.5 w-full bg-slate-950 border border-slate-805 rounded-full overflow-hidden mt-3">
-          <div 
-            className="h-full bg-gradient-to-r from-indigo-500 to-emerald-400 transition-all duration-300" 
-            style={{ width: currentStep === 1 ? "50%" : "100%" }}
-          />
-        </div>
-      </div>
-
       {/* 2. Main Content Canvas Container */}
-      <main className="max-w-4xl w-full mx-auto px-6 mt-6 flex-grow space-y-8">
+      <main className="max-w-4xl w-full mx-auto px-6 mt-10 flex-grow space-y-8">
         
-        {/* STEP 1: Candidate Roster Portrait & Help card */}
-        {currentStep === 1 && (
-          <>
-            {/* STEP 0: Redesigned Candidate Roster & Portrait (Phase 3 requirement) */}
-            <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-xl text-left flex flex-col md:flex-row gap-6 items-center md:items-start animate-in fade-in slide-in-from-top-4 duration-300">
-          <div className="relative shrink-0">
-            {candidate.photo && (candidate.photo.startsWith("data:") || candidate.photo.length > 100) ? (
-              <img
-                id={`photo-${candidate.id}`}
-                referrerPolicy="no-referrer"
-                src={candidate.photo}
-                alt="Candidate Avatar"
-                className="w-24 h-24 sm:w-28 sm:h-28 rounded-xl object-cover border-2 border-indigo-500/30 shadow-md bg-slate-900"
-              />
-            ) : (
-              <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-xl border-2 border-slate-800 bg-slate-900 flex flex-col items-center justify-center text-slate-500 shadow-inner">
-                <FileText className="w-8 h-8 opacity-40 mb-1" />
-                <span className="text-[8px] uppercase font-mono font-bold tracking-widest text-slate-400 text-center">NO PHOTO<br/>UPLOADED</span>
-              </div>
-            )}
-            <div className="absolute -bottom-2 -right-2 px-2 py-0.5 bg-indigo-600 text-white rounded font-mono text-[9px] font-extrabold uppercase tracking-wide">
-              TRAINEE
-            </div>
-          </div>
-
-          <div className="flex-grow grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 w-full">
-            <div className="space-y-0.5">
-              <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest font-mono">Full Name</span>
-              <h2 className="text-base font-extrabold text-slate-200">
-                {candidate.firstName} {candidate.lastName}
-              </h2>
-            </div>
-            
-            <div className="space-y-0.5 font-mono">
-              <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest block font-sans">Application Number</span>
-              <span className="text-xs text-indigo-400 font-extrabold">{candidate.id}</span>
-            </div>
-
-            <div className="space-y-0.5">
-              <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest font-mono">Assigned TSP Center</span>
-              <p className="text-xs text-slate-350 font-bold">
-                {candidate.tsp || "Unique Technology Nig. Ltd"}
-              </p>
-            </div>
-
-            <div className="space-y-0.5 font-mono">
-              <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest block font-sans">State & Sector</span>
-              <span className="text-xs text-slate-350 font-semibold uppercase">
-                {candidate.state || "FEDERAL COHORT"} State • {candidate.program || "Technology Diagnostic Sector"}
-              </span>
-            </div>
-
-            <div className="space-y-0.5 col-span-1 sm:col-span-2">
-              <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest font-mono">Lifecycle Admission state</span>
-              <div className="flex items-center gap-2 pt-0.5">
-                <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase bg-amber-500/10 text-amber-400">
-                  Offer Status: {candidate.admissionStatus || "PENDING RESPONSE"}
-                </span>
-                <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase bg-indigo-500/10 text-indigo-400">
-                  Acceptance Status: UNVERIFIED
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-
         {/* Dynamic Warning Alert Card */}
-        <div className="bg-indigo-950/20 border border-indigo-900/50 rounded-2xl p-6 flex gap-4 text-left">
+        <div className="bg-indigo-950/20 border border-indigo-900/50 rounded-2xl p-6 flex gap-4">
           <div className="p-2 bg-indigo-900/40 rounded-lg text-indigo-400 h-fit">
             <HelpCircle className="w-5 h-5" />
           </div>
-          <div className="space-y-1">
+          <div className="space-y-1 text-left">
             <h4 className="text-xs font-bold text-indigo-300 uppercase tracking-wider">
-              Provisional FME Intake: Secure Verification Window
+              Secure Registry Intake: Candidate Profile Located
             </h4>
             <p className="text-xs text-slate-350 leading-relaxed">
-              Hello, <strong>{candidate.firstName}</strong>! You have been granted provisional admission into <strong>{candidate.program}</strong>. Please download materials, provide emergency verification fields, and sign or upload standard acceptance terms.
+              Hello, <strong>{candidate.firstName} {candidate.lastName}</strong>! You have been awarded provisional admission into <strong>Computer Hardware and Cell Phone Repairs (IDEAS-TVET cohort)</strong>. Follow the steps below to download materials, provide necessary diagnostics fields, and sign your acceptance declaration.
             </p>
           </div>
         </div>
-          </>
-        )}
 
         <form onSubmit={handleFinalSubmit} className="space-y-8">
 
-          {/* STEP 2: DOWNLOAD MATERIALS & CONTRACT VERIFICATION */}
-          {currentStep === 2 && (
-            <>
-              {/* STEP 1: DOWNLOAD OFFICIAL MATERIALS */}
-              <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 sm:p-8 space-y-6 shadow-xl text-left">
+          {/* STEP 1: DOWNLOAD OFFICIAL MATERIALS */}
+          <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 sm:p-8 space-y-6 shadow-xl text-left">
             <div className="flex items-center gap-3 pb-4 border-b border-slate-800">
               <span className="h-6 w-6 rounded-full bg-slate-800 text-xs font-bold font-mono flex items-center justify-center text-indigo-400">
                 01
@@ -743,13 +450,9 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
               </div>
             </div>
           </div>
-          </>
-        )}
 
-          {/* STEP 1 Questionnaire: FILL SUPPLEMENTAL DETAILS */}
-          {currentStep === 1 && (
-            <>
-              <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 sm:p-8 space-y-6 shadow-xl text-left">
+          {/* STEP 2: FILL SUPPLEMENTAL DETAILS */}
+          <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 sm:p-8 space-y-6 shadow-xl text-left">
             <div className="flex items-center gap-3 pb-4 border-b border-slate-800">
               <span className="h-6 w-6 rounded-full bg-slate-800 text-xs font-bold font-mono flex items-center justify-center text-indigo-400">
                 02
@@ -765,8 +468,8 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-2">
-                <label className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">
-                  Next of Kin / Emergency Contact Name <span className="text-rose-455">*</span>
+                <label className="text-[10px] font-bold uppercase text-slate-450 tracking-wider">
+                  Next of Kin / Emergency Contact Name <span className="text-rose-450">*</span>
                 </label>
                 <input
                   type="text"
@@ -779,8 +482,8 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
               </div>
 
               <div className="space-y-2">
-                <label className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">
-                  Emergency Contact Phone Number <span className="text-rose-455">*</span>
+                <label className="text-[10px] font-bold uppercase text-slate-450 tracking-wider">
+                  Emergency Contact Phone Number <span className="text-rose-450">*</span>
                 </label>
                 <input
                   type="tel"
@@ -793,8 +496,8 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
               </div>
 
               <div className="space-y-2">
-                <label className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">
-                  Parent / Sponsor Name (Guardian) <span className="text-rose-455">*</span>
+                <label className="text-[10px] font-bold uppercase text-slate-450 tracking-wider">
+                  Parent / Sponsor Name (Guardian) <span className="text-rose-450">*</span>
                 </label>
                 <input
                   type="text"
@@ -807,8 +510,8 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
               </div>
 
               <div className="space-y-2">
-                <label className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">
-                  Highest Academic Achievement <span className="text-rose-455">*</span>
+                <label className="text-[10px] font-bold uppercase text-slate-450 tracking-wider">
+                  Highest Academic Achievement <span className="text-rose-450">*</span>
                 </label>
                 <select
                   value={highestQualification}
@@ -826,8 +529,8 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
               </div>
 
               <div className="space-y-2">
-                <label className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">
-                  Prior repairs Knowledge / Diagnostic level <span className="text-rose-455">*</span>
+                <label className="text-[10px] font-bold uppercase text-slate-450 tracking-wider">
+                  Prior repairs Knowledge / Diagnostic level <span className="text-rose-450">*</span>
                 </label>
                 <select
                   value={priorKnowledge}
@@ -856,33 +559,8 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
             </div>
           </div>
 
-          {/* Guided Step Navigation bar */}
-          <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 sm:p-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 font-sans text-xs">
-            <div className="text-left">
-              <p className="text-[10px] font-mono font-bold text-indigo-400 uppercase tracking-widest">
-                ✓ PROGRESS CACHED LOCALLY
-              </p>
-              <p className="text-[10px] text-slate-500 font-mono mt-0.5">
-                Confirm metrics to activate next step.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={handleNextToStep2}
-              className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-505 text-white font-bold py-2.5 px-6 rounded-lg text-xs uppercase tracking-wider transition flex items-center justify-center gap-2 cursor-pointer shadow-md font-mono"
-            >
-              <span>Proceed to Acceptance & Signature</span>
-              <Check className="w-4 h-4 text-white shrink-0" />
-            </button>
-          </div>
-          </>
-        )}
-
-          {/* STEP 2 Part 2: BIOMETRIC E-SIGNATURE & ENDORSEMENTS */}
-          {currentStep === 2 && (
-            <>
-              {/* STEP 3: BIOMETRIC E-SIGNATURE OR FILE UPLOAD */}
-              <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 sm:p-8 space-y-6 shadow-xl text-left">
+          {/* STEP 3: BIOMETRIC E-SIGNATURE OR FILE UPLOAD */}
+          <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 sm:p-8 space-y-6 shadow-xl text-left">
             <div className="flex items-center gap-3 pb-4 border-b border-slate-800">
               <span className="h-6 w-6 rounded-full bg-slate-800 text-xs font-bold font-mono flex items-center justify-center text-indigo-400">
                 03
@@ -900,7 +578,7 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
               {/* Option A: Canvas E-Signature */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider flex items-center gap-1.5">
+                  <span className="text-[10px] font-bold uppercase text-slate-450 tracking-wider flex items-center gap-1.5">
                     <Signature className="w-4.5 h-4.5 text-indigo-400" />
                     Option A: Draw Digital Signature (Touch / Cursor)
                   </span>
@@ -908,7 +586,7 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
                     <button
                       type="button"
                       onClick={clearSignature}
-                      className="text-[10px] text-rose-400 font-bold uppercase hover:underline transition flex items-center gap-1 cursor-pointer"
+                      className="text-[10px] text-rose-450 font-bold uppercase hover:underline transition flex items-center gap-1 cursor-pointer"
                     >
                       <Trash2 className="w-3 h-3" />
                       clear pad
@@ -938,7 +616,7 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
 
               {/* Option B: Scanned Attestation Scan */}
               <div className="space-y-3">
-                <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider flex items-center gap-1.5">
+                <span className="text-[10px] font-bold uppercase text-slate-450 tracking-wider flex items-center gap-1.5">
                   <UploadCloud className="w-4.5 h-4.5 text-emerald-400" />
                   Option B: Upload Signed Document Scan (PDF / Html / Image)
                 </span>
@@ -962,9 +640,9 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
                     className="hidden"
                     accept="image/*,application/pdf,text/html"
                     onChange={(e) => {
-                       if (e.target.files && e.target.files.length > 0) {
-                         handleFileUpload(e.target.files[0]);
-                       }
+                      if (e.target.files && e.target.files.length > 0) {
+                        handleFileUpload(e.target.files[0]);
+                      }
                     }}
                   />
                   {scannedLetterBase64 ? (
@@ -987,7 +665,7 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
                           setScannedLetterBase64(null);
                           setUploadedFileName(null);
                         }}
-                        className="text-[10px] text-rose-400 uppercase font-bold hover:underline font-mono mt-1"
+                        className="text-[10px] text-rose-450 uppercase font-bold hover:underline font-mono mt-1"
                       >
                         remove file
                       </button>
@@ -1022,53 +700,33 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
               By pressing the finalization button, I attet with high solemnity that the supplemental criteria supplied above represent truth. I declare provisional offer acceptance and authorize coordinates.
             </p>
 
-            <div className="pt-4 border-t border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="pt-4 border-t border-slate-800 flex items-center justify-between gap-4">
               <span className="text-[10px] font-mono text-slate-500 block">
                 Logged Hash: ID-{token.substring(0,8)} | State-Certified Protocol
               </span>
-              <div className="flex items-center gap-3 w-full sm:w-auto">
-                <button
-                  type="button"
-                  onClick={() => handleSetStep(1)}
-                  disabled={submitting}
-                  className="flex-1 sm:flex-initial py-2.5 px-4 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-205 border border-slate-800 rounded-lg text-xs font-bold uppercase tracking-wider transition cursor-pointer font-sans"
-                >
-                  ← Back to Step 1
-                </button>
-                <button
-                  type="button"
-                  onClick={handleDeclineOffer}
-                  disabled={submitting}
-                  className="flex-1 sm:flex-initial py-2.5 px-4 rounded-lg text-xs font-bold uppercase tracking-wider transition hover:bg-rose-950/20 border border-rose-900/40 text-rose-400 cursor-pointer hover:border-rose-950"
-                >
-                  Decline Offer
-                </button>
-                <button
-                  type="submit"
-                  disabled={submitting || (!hasSignature && !scannedLetterBase64)}
-                  className={`flex-1 sm:flex-initial py-2.5 px-6 rounded-lg text-xs font-bold uppercase tracking-wider transition active:scale-[98%] shadow-md flex items-center justify-center gap-2 cursor-pointer ${
-                    submitting || (!hasSignature && !scannedLetterBase64)
-                      ? "bg-slate-800 text-slate-500 cursor-not-allowed"
-                      : "bg-emerald-500 hover:bg-emerald-450 text-slate-950 hover:scale-[101%]"
-                  }`}
-                >
-                  {submitting ? (
-                    <>
-                      <span className="h-4 w-4 rounded-full border-2 border-slate-950 border-t-transparent animate-spin inline-block" />
-                      <span>Committing...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Check className="w-4.5 h-4.5 text-slate-950" />
-                      <span>Confirm & Accept Enrollment</span>
-                    </>
-                  )}
-                </button>
-              </div>
+              <button
+                type="submit"
+                disabled={submitting || (!hasSignature && !scannedLetterBase64)}
+                className={`py-2.5 px-6 rounded-lg text-xs font-bold uppercase tracking-wider transition active:scale-[98%] shadow-md flex items-center gap-2 cursor-pointer ${
+                  submitting || (!hasSignature && !scannedLetterBase64)
+                    ? "bg-slate-800 text-slate-500 cursor-not-allowed"
+                    : "bg-emerald-500 hover:bg-emerald-450 text-slate-950"
+                }`}
+              >
+                {submitting ? (
+                  <>
+                    <span className="h-4 w-4 rounded-full border-2 border-slate-950 border-t-transparent animate-spin inline-block" />
+                    <span>Committing...</span>
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-4.5 h-4.5 text-slate-950" />
+                    <span>Confirm & Accept Enrollment</span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
-            </>
-          )}
 
         </form>
       </main>

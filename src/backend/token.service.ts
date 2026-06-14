@@ -32,7 +32,7 @@ export class TokenService {
   /**
    * Verifies and decrypts a token string, returning target beneficiary ID if valid
    */
-  static verifyToken(token: string): { id: string; tokenVersion?: number; expires?: number } | null {
+  static verifyToken(token: string): { id: string; tokenVersion?: number } | null {
     try {
       const encryptedHex = Buffer.from(token, "base64url").toString("hex");
       const key = crypto.scryptSync(this.SECRET, "salt-tvet", 32);
@@ -43,7 +43,11 @@ export class TokenService {
       decrypted += decipher.final("utf8");
 
       const payload = JSON.parse(decrypted);
-      return { id: payload.id, tokenVersion: payload.tokenVersion, expires: payload.expires };
+      if (payload.expires < Date.now()) {
+        console.warn("[TOKEN] Verification failed: Token expired.");
+        return null;
+      }
+      return { id: payload.id, tokenVersion: payload.tokenVersion };
     } catch (e) {
       console.error("[TOKEN] Cryptographic decrypt decode error:", e);
       return null;

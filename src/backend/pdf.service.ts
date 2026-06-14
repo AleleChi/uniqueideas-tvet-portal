@@ -483,6 +483,15 @@ total=${totalTime.toFixed(2)}ms`);
       ? new Date(beneficiary.acceptanceLetterUploadedAt).toLocaleDateString("en-GB")
       : new Date().toLocaleDateString("en-GB");
 
+    const signatureInput = beneficiary.digitalSignature || beneficiary.admissionFormData?.digitalSignature || beneficiary.admissionFormData?.signature;
+    const isBase64Image = typeof signatureInput === "string" && (signatureInput.startsWith("data:image/") || (/^[a-zA-Z0-9+/=]+$/.test(signatureInput) && signatureInput.length > 100));
+    const signatureSrc = isBase64Image 
+      ? (signatureInput.startsWith("data:image/") ? signatureInput : `data:image/png;base64,${signatureInput}`) 
+      : null;
+    const verificationTime = beneficiary.acceptanceLetterUploadedAt
+      ? new Date(beneficiary.acceptanceLetterUploadedAt).toISOString()
+      : new Date().toISOString();
+
     const htmlContent = `
       <!DOCTYPE html>
       <html lang="en">
@@ -608,12 +617,17 @@ total=${totalTime.toFixed(2)}ms`);
             <tr>
               <td style="width: 55%; vertical-align: top;">
                 <div style="width: 85%; border-bottom: 1px solid #111111; height: 50px; position: relative;">
-                  <span style="font-family: 'Brush Script MT', 'Georgia', cursive, serif; font-size: 24px; color: #1b5e20; position: absolute; bottom: 3px; left: 15px;">
-                    ${beneficiary.firstName} ${beneficiary.lastName}
-                  </span>
+                  ${signatureSrc ? `
+                    <img src="${signatureSrc}" style="max-height: 48px; max-width: 90%; position: absolute; bottom: 1px; left: 15px;" referrerPolicy="no-referrer" />
+                  ` : `
+                    <span style="font-family: 'Brush Script MT', 'Georgia', cursive, serif; font-size: 22px; color: #1b5e20; position: absolute; bottom: 3px; left: 15px;">
+                      ${signatureInput || `${beneficiary.firstName} ${beneficiary.lastName}`}
+                    </span>
+                  `}
                 </div>
                 <p style="margin-top: 8px; font-size: 12px; font-family: Arial, sans-serif; color: #424242; font-weight: bold; text-transform: uppercase;">Trainee Signature</p>
                 <p style="font-size: 11px; font-family: Arial, sans-serif; color: #727272; margin-top: 1px;">Candidate Name: ${beneficiary.firstName} ${beneficiary.lastName}</p>
+                <p style="font-size: 9px; font-family: monospace; color: #727272; margin-top: 1px;">ID: ${beneficiary.id} • SECURE VERIFIED: ${verificationTime}</p>
               </td>
               <td style="width: 45%; vertical-align: top;">
                 <div style="width: 85%; border-bottom: 1px solid #111111; height: 50px; position: relative;">

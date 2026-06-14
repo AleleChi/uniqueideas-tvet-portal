@@ -264,29 +264,22 @@ export class EmailService {
     studentName: string, 
     secureLink: string, 
     attachmentsList: Array<{ name: string; content: string; contentType: string }>,
-    beneficiaryId?: string,
-    programName?: string,
-    tspName?: string,
-    skillSector?: string
+    beneficiaryId?: string
   ): Promise<{ success: boolean; status: "Delivered" | "Failed"; errorDetails?: string; messageId?: string; apiResponse?: any }> {
     console.log(`[Resend] Attempting automated offer transmission to candidate: ${studentName} <${to}>`);
     console.log(`[Resend] Portal URL: ${secureLink}`);
 
-    const derivedTspName = tspName || "Unique Technology Nig. Ltd";
-    const derivedProgramName = programName || "IDEAS-TVET Skills Sector Programme";
-    const derivedSkillSector = skillSector || "Computer Hardware and Cell Phone Repairs";
-
-    const emailSubject = `OFFICIAL OFFER OF ADMISSION - ${derivedProgramName.toUpperCase()} (${studentName})`;
+    const emailSubject = `OFFICIAL OFFER OF ADMISSION - IDEAS-TVET Skills Sector Programme (${studentName})`;
     
     const emailHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
         <div style="background-color: #312e81; padding: 25px; text-align: center; color: white;">
-          <h2 style="margin: 0; font-size: 20px; text-transform: uppercase; letter-spacing: 0.5px;">${derivedTspName}</h2>
-          <p style="margin: 5px 0 0 0; font-size: 11px; font-weight: bold; color: #a5b4fc; text-transform: uppercase; letter-spacing: 1px;">${derivedProgramName}</p>
+          <h2 style="margin: 0; font-size: 20px; text-transform: uppercase; letter-spacing: 0.5px;">Unique Technology Nig. Ltd</h2>
+          <p style="margin: 5px 0 0 0; font-size: 11px; font-weight: bold; color: #a5b4fc; text-transform: uppercase; letter-spacing: 1px;">IDEAS-TVET Skills Sector Programme</p>
         </div>
         <div style="padding: 30px; color: #1e293b; line-height: 1.6;">
           <p style="font-size: 15px; margin-top: 0;">Dear <strong>${studentName}</strong>,</p>
-          <p>Congratulations! We are delighted to inform you that you have been offered provisional admission into the federal government's <strong>${derivedProgramName}</strong> for <strong>${derivedSkillSector}</strong>.</p>
+          <p>Congratulations! We are delighted to inform you that you have been offered provisional admission into the federal government's <strong>IDEAS-TVET skill enhancement cohort</strong> for <strong>Computer Hardware and Cell Phone Repairs</strong>.</p>
           <p>To view your official Admission Offer Letter, download the Acceptance Form template, and complete your registration details, click the secure verification button below:</p>
           
           <div style="text-align: center; margin: 30px 0;">
@@ -300,7 +293,7 @@ export class EmailService {
           </p>
         </div>
         <div style="background-color: #f1f5f9; padding: 15px; text-align: center; font-size: 11px; color: #64748b; border-top: 1px solid #e2e8f0;">
-          ${derivedTspName} | Accredited Federal TVET Skill Hub Coordinator<br>
+          Unique Technology Nig. Ltd | Accredited Federal TVET Skill Hub Coordinator<br>
           Ref: FME-Trainee-Enrollment-Registry
         </div>
       </div>

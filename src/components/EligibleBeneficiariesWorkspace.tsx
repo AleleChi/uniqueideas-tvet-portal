@@ -20,7 +20,6 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   LineChart, Line, PieChart, Pie, Cell
 } from "recharts";
-import { SecureBeneficiaryImage } from "./SecureBeneficiaryImage";
 
 interface EligibleBeneficiariesWorkspaceProps {
   session?: { username?: string; role?: string; email?: string; tenantId?: string; tspId?: string; stateId?: string; city?: string; } | null;
@@ -33,142 +32,76 @@ const PREFERRED_AGE_MAX = 35;
 
 // Phase 1: High Fidelity Image Fallback Component
 export function ImageWithFallback({ b, className, sizeClass = "w-10 h-10 text-xs" }: { b: any; className?: string; sizeClass?: string }) {
-  const nameStr = b ? (b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim() || "Candidate") : "Candidate";
-  const initials = nameStr.split(" ").map((n: string) => n[0]).join("").slice(0, 2).toUpperCase() || "TV";
+  const [error, setError] = useState(false);
+  
+  const photoSrc = useMemo(() => {
+    if (!b) return "";
+    if (b.photo && (b.photo.startsWith("data:image") || b.photo.length > 200)) {
+      return b.photo;
+    }
+    if (b.photo_url) return b.photo_url;
+    if (b.passport_url) return b.passport_url;
+    if (b.profile_photo_url) return b.profile_photo_url;
+    if (b.photo) return b.photo;
+    return `${API_BASE_URL}/api/beneficiaries/${b.id}/photo/raw`;
+  }, [b]);
 
-  if (!b) {
-    return (
-      <div className={`${className} flex items-center justify-center font-bold font-mono bg-slate-100 border border-slate-200 text-slate-500 uppercase ${sizeClass}`}>
-        {initials}
-      </div>
-    );
-  }
-
-  // If inlined base64
-  if (b.photo && (b.photo.startsWith("data:image") || b.photo.length > 200)) {
+  if (photoSrc && !error) {
     return (
       <img
         id={`photo-${b.id}`}
-        src={b.photo}
+        src={photoSrc}
         referrerPolicy="no-referrer"
-        alt={nameStr}
+        alt={b.fullName || ""}
         className={`${className} object-cover`}
+        onError={() => setError(true)}
       />
-    );
-  }
-
-  const hasPhotoIndicator = !!(b.photo || b.photo_url || b.passport_url || b.profile_photo_url);
-
-  if (!hasPhotoIndicator) {
-    return (
-      <div id={`fallback-${b.id}`} className={`${className} flex items-center justify-center font-bold font-mono bg-indigo-50 border border-indigo-200 text-indigo-700 uppercase ${sizeClass}`}>
-        {initials}
-      </div>
-    );
-  }
-
-  // Secure async photo loader
-  return (
-    <SecureBeneficiaryImage
-      id={b.id}
-      className={`${className} object-cover`}
-      alt={nameStr}
-      fallbackInitials={initials}
-    />
-  );
-}
-
-export function FullProfileImage({ b, className }: { b: any; className?: string }) {
-  if (!b) {
-    return (
-      <div className="flex flex-col items-center justify-center p-2 text-center text-slate-400 font-bold font-mono text-[9px] bg-slate-100/50 border border-dashed border-slate-200 w-full h-full select-none">
-        <User className="w-5 h-5 text-slate-300 mb-0.5" />
-        <span>No beneficiary photograph uploaded</span>
-      </div>
     );
   }
 
   const nameStr = b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim() || "Candidate";
   const initials = nameStr.split(" ").map((n: string) => n[0]).join("").slice(0, 2).toUpperCase() || "TV";
+  
+  return (
+    <div id={`fallback-${b.id}`} className={`${className} flex items-center justify-center font-bold font-mono bg-indigo-50 border border-indigo-200 text-indigo-700 uppercase ${sizeClass}`}>
+      {initials}
+    </div>
+  );
+}
 
-  // If inlined base64
-  if (b.photo && (b.photo.startsWith("data:image") || b.photo.length > 200)) {
+export function FullProfileImage({ b, className }: { b: any; className?: string }) {
+  const [error, setError] = useState(false);
+  const photoSrc = useMemo(() => {
+    if (!b) return "";
+    if (b.photo && (b.photo.startsWith("data:image") || b.photo.length > 200)) {
+      return b.photo;
+    }
+    if (b.photo_url) return b.photo_url;
+    if (b.passport_url) return b.passport_url;
+    if (b.profile_photo_url) return b.profile_photo_url;
+    if (b.photo) return b.photo;
+    return b.id ? `${API_BASE_URL}/api/beneficiaries/${b.id}/photo/raw` : "";
+  }, [b]);
+
+  if (photoSrc && !error) {
     return (
       <img
-        src={b.photo}
+        src={photoSrc}
         referrerPolicy="no-referrer"
-        alt={nameStr}
+        alt={b.fullName || "Candidate"}
         className={`${className} object-cover`}
+        onError={() => setError(true)}
       />
     );
   }
 
-  const hasPhotoIndicator = !!(b.photo || b.photo_url || b.passport_url || b.profile_photo_url);
-
-  if (!hasPhotoIndicator) {
-    return (
-      <div className="flex flex-col items-center justify-center p-2 text-center text-slate-400 font-bold font-mono text-[9px] bg-slate-100/50 border border-dashed border-slate-200 w-full h-full select-none">
-        <User className="w-5 h-5 text-slate-300 mb-0.5" />
-        <span>No beneficiary photograph uploaded</span>
-      </div>
-    );
-  }
-
-  // Secure photo query
   return (
-    <SecureBeneficiaryImage
-      id={b.id}
-      className={`${className} object-cover w-full h-full rounded-lg`}
-      alt={nameStr}
-      fallbackInitials={initials}
-    />
+    <div className="flex flex-col items-center justify-center p-2 text-center text-slate-400 font-bold font-mono text-[9px] bg-slate-100/50 border border-dashed border-slate-200 w-full h-full select-none">
+      <User className="w-5 h-5 text-slate-300 mb-0.5" />
+      <span>No photo uploaded</span>
+    </div>
   );
 }
-
-// Phase 4: Dynamic Email Templates and auto-population per workspace rules
-export const getEmailTemplateContent = (templateKey: string, b: any) => {
-  if (!b) return { subject: "", body: "" };
-  const name = b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim() || "Candidate";
-  const email = b.email || "";
-  const program = b.program || b.programme || "IDEAS-TVET Program";
-  const sector = b.skill_sector || b.skillSector || "Information and Communication Technology";
-  const skill = b.skill || "Computer Hardware & Cell Phone Repairs";
-  const tsp = b.tsp || b.tsp_name || "Unique Nigeria Technology Ltd";
-  const state = b.state || "Imo State";
-
-  switch (templateKey) {
-    case "offer_letter":
-      return {
-        subject: `Official Admission Offer Letter - ${program}`,
-        body: `Dear ${name},\n\nWe are pleased to offer you provisional admission to the ${program} under the ${sector} sector (Specialization: ${skill}). Your training will be conducted by ${tsp} in ${state}.\n\nPlease review and complete your student registration form as soon as possible.\n\nRespectfully,\nNational TVET Registry Center`
-      };
-    case "acceptance_letter":
-      return {
-        subject: `Acceptance of Admission & Enrollment Confirmation - ${program}`,
-        body: `Dear ${name},\n\nThis confirms receipt and approval of your Acceptance of Admission for the ${program}.\n\nYou are now officially enrolled under the ${sector} track. Your assigned training provider is ${tsp}, located in ${state}.\n\nCongratulations and best regards,\nNational TVET Board`
-      };
-    case "reminder":
-      return {
-        subject: "Urgent Action Required: Provisional Admission Onboarding Deadline",
-        body: `Dear ${name},\n\nThis is an official administrative reminder from the National TVET board regarding your pending admission onboarding for ${skill}.\n\nPlease access the portal immediately and accept the pending provisional covenant letters to secure your slot at ${tsp}.\n\nRespectfully,\nNational TVET Registry Center`
-      };
-    case "missing_docs":
-      return {
-        subject: "Action Required: Missing Onboarding Documents Alert",
-        body: `Dear ${name},\n\nDuring our recent audit of your profile in ${state}, we noticed that some of your required identification or biometric files are missing. Can you please upload them to secure your registration for ${skill} as soon as possible to avoid forfeiture.\n\nRespectfully,\nAdmissions Compliance Team`
-      };
-    case "resumption":
-      return {
-        subject: `Notice of Training Resumption - ${tsp}`,
-        body: `Dear ${name},\n\nWe are pleased to notify you that active TVET training sessions for the ${program} (${skill}) are scheduled to resume shortly at ${tsp} in ${state}.\n\nPlease ensure you are present and have completed all initial onboarding deliverables before resumption.\n\nRespectfully,\nTraining Operations Desk\n${tsp}`
-      };
-    default:
-      return {
-        subject: "",
-        body: ""
-      };
-  }
-};
 
 export default function EligibleBeneficiariesWorkspace({
   session,
@@ -252,17 +185,6 @@ export default function EligibleBeneficiariesWorkspace({
   const [saveAsDraft, setSaveAsDraft] = useState(false);
   const [selectedRowIds, setSelectedRowIds] = useState<string[]>([]);
   const [sendingEmails, setSendingEmails] = useState(false);
-  const [operatorFeedback, setOperatorFeedback] = useState<{
-    type: "generate" | "send";
-    success: boolean;
-    beneficiaryName: string;
-    id: string;
-    offerId?: string;
-    timestamp: string;
-    recipientEmail?: string;
-    error?: string;
-    retryAction?: () => void;
-  } | null>(null);
   const [emailPreviewMode, setEmailPreviewMode] = useState(false);
   const [emailHistory, setEmailHistory] = useState<any[]>([]);
 
@@ -287,7 +209,6 @@ export default function EligibleBeneficiariesWorkspace({
 
   // Auditing Simulation & Role Management (Phase 1)
   const [debugRole, setDebugRole] = useState<"FED" | "STA" | "TSP" | "">("");
-  const [isAuditMode, setIsAuditMode] = useState<boolean>(false);
 
   // Action Dropdown & Bulk Email states (Phases 3, 4, 5, 6)
   const [showBulkEmailComposer, setShowBulkEmailComposer] = useState(false);
@@ -297,7 +218,7 @@ export default function EligibleBeneficiariesWorkspace({
 
   const isRealSuperOrFedAdmin = useMemo(() => {
     const r = session?.role?.toUpperCase() || "";
-    return ["SUPER_ADMIN", "FED_ADMIN"].includes(r);
+    return ["SUPER_ADMIN", "FED_ADMIN", "ADMIN_OFFICER", "FED", "FEDERAL_SUPER_ADMIN"].includes(r);
   }, [session]);
 
   const activeRole = useMemo(() => {
@@ -602,8 +523,6 @@ export default function EligibleBeneficiariesWorkspace({
 
   // --- OPERATIONAL ACTIONS ON INDIVIDUAL BENEFICIARIES (Phase 2) ---
   const handleGenerateOfferSingle = async (b: any) => {
-    if (sendingEmails) return;
-    setSendingEmails(true);
     const autoRef = `IDEAS/TVET/ADM/${b.id.split("-").pop()}/${new Date().getFullYear()}`;
     showToast(`Assembling admission reference ${autoRef}...`, "info");
     try {
@@ -619,50 +538,18 @@ export default function EligibleBeneficiariesWorkspace({
         })
       });
       if (res.ok) {
-        showToast(`Provisional admission offer letter compiled for ${b.fullName || "Candidate"}.`, "success");
+        showToast(`Provisional admission offer letter compiled for ${b.fullName}.`, "success");
         fetchBeneficiariesList();
-        setOperatorFeedback({
-          type: "generate",
-          success: true,
-          beneficiaryName: b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim(),
-          id: b.id,
-          offerId: autoRef,
-          timestamp: new Date().toLocaleString(),
-        });
       } else {
-        const errorText = await res.text();
         showToast("Provisional letter compilation failed.", "error");
-        setOperatorFeedback({
-          type: "generate",
-          success: false,
-          beneficiaryName: b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim(),
-          id: b.id,
-          timestamp: new Date().toLocaleString(),
-          error: errorText || "Provisional letter compilation failed. Check server response.",
-          retryAction: () => handleGenerateOfferSingle(b)
-        });
       }
     } catch (err: any) {
       showToast(`Compilation error: ${err.message}`, "error");
-      setOperatorFeedback({
-        type: "generate",
-        success: false,
-        beneficiaryName: b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim(),
-        id: b.id,
-        timestamp: new Date().toLocaleString(),
-        error: err.message || "An unexpected network or gateway timeout occurred.",
-        retryAction: () => handleGenerateOfferSingle(b)
-      });
-    } finally {
-      setSendingEmails(false);
     }
   };
 
   const handleSendOfferSingle = async (b: any) => {
-    if (sendingEmails) return;
-    setSendingEmails(true);
     showToast(`Dispatching offer notification to ${b.email}...`, "info");
-    const autoRef = b.admissionRef || `IDEAS/TVET/ADM/${b.id.split("-").pop()}/${new Date().getFullYear()}`;
     try {
       // Direct post route for admissions dispatch
       const res = await authFetch(`${API_BASE_URL}/api/admissions/send-offer`, {
@@ -676,62 +563,16 @@ export default function EligibleBeneficiariesWorkspace({
       if (res.ok) {
         const payload = await res.json();
         if (payload.success) {
-          showToast(`Official offer letter dispatched to ${b.fullName || "Candidate"} successfully!`, "success");
+          showToast(`Official offer letter dispatched to ${b.fullName} (${b.email}) successfully!`, "success");
           fetchBeneficiariesList();
-          setOperatorFeedback({
-            type: "send",
-            success: true,
-            beneficiaryName: b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim(),
-            id: b.id,
-            offerId: payload.beneficiary?.admissionRef || autoRef,
-            recipientEmail: b.email,
-            timestamp: new Date().toLocaleString(),
-          });
         } else {
           showToast(`SMTP Dispatch rejected: ${payload.error || "Check Resend Gateway Configuration"}`, "error");
-          setOperatorFeedback({
-            type: "send",
-            success: false,
-            beneficiaryName: b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim(),
-            id: b.id,
-            timestamp: new Date().toLocaleString(),
-            error: payload.error || "SMTP Dispatch rejected. Please verify the Resend workspace settings.",
-            retryAction: () => handleSendOfferSingle(b)
-          });
         }
       } else {
-        let detailedError = "Outbound routing failed. HTTP transport level error.";
-        try {
-          const errData = await res.json();
-          detailedError = errData.error || detailedError;
-        } catch {
-          const text = await res.text();
-          if (text) detailedError = text;
-        }
-        showToast(detailedError, "error");
-        setOperatorFeedback({
-          type: "send",
-          success: false,
-          beneficiaryName: b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim(),
-          id: b.id,
-          timestamp: new Date().toLocaleString(),
-          error: detailedError,
-          retryAction: () => handleSendOfferSingle(b)
-        });
+        showToast("Outbound routing failed.", "error");
       }
     } catch (err: any) {
       showToast(`Transmission error: ${err.message}`, "error");
-      setOperatorFeedback({
-        type: "send",
-        success: false,
-        beneficiaryName: b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim(),
-        id: b.id,
-        timestamp: new Date().toLocaleString(),
-        error: err.message || "An unexpected error occurred during network transmission.",
-        retryAction: () => handleSendOfferSingle(b)
-      });
-    } finally {
-      setSendingEmails(false);
     }
   };
 
@@ -1124,27 +965,12 @@ export default function EligibleBeneficiariesWorkspace({
       const b = targets[i];
       setBulkDispatchStatus(`Transmitting custom communication ${i + 1} of ${targets.length} to ${b.fullName}...`);
       try {
-        const program = b.program || b.programme || "IDEAS-TVET Program";
-        const sector = b.skill_sector || b.skillSector || "Information and Communication Technology";
-        const skill = b.skill || "Computer Hardware & Cell Phone Repairs";
-        const tspName = b.tsp || b.tsp_name || "Unique Nigeria Technology Ltd";
-
         const mailBody = bulkEmailBody
           .replace(/\[Name\]/g, b.fullName || "")
-          .replace(/\[beneficiary_name\]/g, b.fullName || "")
-          .replace(/\[email\]/g, b.email || "")
           .replace(/\[Beneficiary ID\]/g, b.id || "")
-          .replace(/\[Programme\]/g, program)
-          .replace(/\[programme\]/g, program)
-          .replace(/\[Sector\]/g, sector)
-          .replace(/\[sector\]/g, sector)
-          .replace(/\[Skill\]/g, skill)
-          .replace(/\[skill\]/g, skill)
-          .replace(/\[TSP\]/g, tspName)
-          .replace(/\[tsp_name\]/g, tspName)
           .replace(/\[State\]/g, b.state || "")
-          .replace(/\[state\]/g, b.state || "")
-          .replace(/\[LGA\]/g, b.city || "");
+          .replace(/\[LGA\]/g, b.city || "")
+          .replace(/\[TSP\]/g, b.tsp || "");
 
         const res = await authFetch(`${API_BASE_URL}/api/email/test-send`, {
           method: "POST",
@@ -1170,6 +996,57 @@ export default function EligibleBeneficiariesWorkspace({
     setBulkDispatchStatus("");
     setShowBulkEmailComposer(false);
     showToast(`Bulk email transmission finalized: ${successCount} sent out, ${failedCount} failures logged.`, successCount > 0 ? "success" : "error");
+    setSelectedRowIds([]);
+    fetchBeneficiariesList();
+  };
+
+  const triggerBulkAcceptanceDispatch = async () => {
+    const targets = enrichedBeneficiaries.filter(b => selectedRowIds.includes(b.id));
+    if (targets.length === 0) {
+      showToast("Please select at least one candidate row to send bulk acceptances.", "warning");
+      return;
+    }
+
+    setIsBulkDispatching(true);
+    let successCount = 0;
+    let failedCount = 0;
+
+    for (let i = 0; i < targets.length; i++) {
+      const b = targets[i];
+      setBulkDispatchStatus(`Transmitting acceptance & ENROLL message ${i + 1} of ${targets.length} to ${b.fullName}...`);
+      try {
+        const res = await authFetch(`${API_BASE_URL}/api/beneficiaries/${b.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            admissionStatus: "Approved",
+            status: ProgramStatus.VERIFIED,
+            updatedAt: new Date().toISOString()
+          })
+        });
+        
+        if (res.ok) {
+          await authFetch(`${API_BASE_URL}/api/email/test-send`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              recipient: b.email,
+              subject: "Official Admission Acceptance Confirmation - National TVET Portal",
+              body: `Dear ${b.fullName},\n\nWe are pleased to inform you that your provisional acceptance letter has been verified and processed by the National TVET board. You are now officially ENROLLED as a participant under the mobile hardware/cell repairs program.\n\nCongratulations and best regards,\nNational TVET Board`
+            })
+          });
+          successCount++;
+        } else {
+          failedCount++;
+        }
+      } catch {
+        failedCount++;
+      }
+    }
+
+    setIsBulkDispatching(false);
+    setBulkDispatchStatus("");
+    showToast(`Bulk Acceptance processed: ${successCount} confirmed, ${failedCount} failures.`, successCount > 0 ? "success" : "error");
     setSelectedRowIds([]);
     fetchBeneficiariesList();
   };
@@ -1376,58 +1253,40 @@ export default function EligibleBeneficiariesWorkspace({
         {/* Audit Simulation controls panel */}
         {isRealSuperOrFedAdmin && (
           <div className="flex flex-wrap items-center gap-2">
-            <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-slate-600 border border-slate-200 bg-white hover:bg-slate-50 px-2.5 py-1.5 rounded-lg transition-all shadow-xs">
-              <input 
-                type="checkbox"
-                checked={isAuditMode}
-                onChange={(e) => {
-                  setIsAuditMode(e.target.checked);
-                  if (!e.target.checked) {
-                    setDebugRole("");
-                    setViewMode("list");
-                  }
-                }}
-                className="rounded border-slate-305 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5"
-              />
-              <span className="font-mono text-[10px] uppercase font-bold tracking-wider">Audit Mode</span>
-            </label>
-
-            {isAuditMode && (
-              <div className="bg-slate-50 border border-slate-200 p-1.5 rounded-lg flex items-center gap-1.5 font-mono text-[10px] font-bold shadow-xs">
-                <span className="text-[9px] uppercase text-slate-400 pl-1">Simulate Workspace:</span>
+            <div className="bg-slate-50 border border-slate-200 p-1.5 rounded-lg flex items-center gap-1.5 font-mono text-[10px] font-bold shadow-xs">
+              <span className="text-[9px] uppercase text-slate-400 pl-1">Simulate Workspace:</span>
+              <button 
+                type="button" 
+                onClick={() => { setDebugRole("FED"); setViewMode("list"); }} 
+                className={`px-2 py-1 rounded font-bold transition-all ${activeRole === "FED" ? "bg-indigo-600 text-white shadow-xs" : "bg-white border hover:bg-slate-50 text-slate-600"}`}
+              >
+                FED
+              </button>
+              <button 
+                type="button" 
+                onClick={() => { setDebugRole("STA"); setViewMode("list"); }} 
+                className={`px-2 py-1 rounded font-bold transition-all ${activeRole === "STA" ? "bg-cyan-600 text-white shadow-xs" : "bg-white border hover:bg-slate-50 text-slate-600"}`}
+              >
+                STA
+              </button>
+              <button 
+                type="button" 
+                onClick={() => { setDebugRole("TSP"); setViewMode("list"); }} 
+                className={`px-2 py-1 rounded font-bold transition-all ${activeRole === "TSP" ? "bg-emerald-600 text-white shadow-xs" : "bg-white border hover:bg-slate-50 text-slate-600"}`}
+              >
+                TSP
+              </button>
+              {debugRole && (
                 <button 
                   type="button" 
-                  onClick={() => { setDebugRole("FED"); setViewMode("list"); }} 
-                  className={`px-2 py-1 rounded font-bold transition-all ${activeRole === "FED" ? "bg-indigo-600 text-white shadow-xs" : "bg-white border hover:bg-slate-50 text-slate-600"}`}
+                  onClick={() => { setDebugRole(""); setViewMode("list"); }} 
+                  className="text-[9px] text-rose-500 hover:text-rose-700 font-bold px-1"
+                  title="Reset simulation of session role"
                 >
-                  FED
+                  Clear
                 </button>
-                <button 
-                  type="button" 
-                  onClick={() => { setDebugRole("STA"); setViewMode("list"); }} 
-                  className={`px-2 py-1 rounded font-bold transition-all ${activeRole === "STA" ? "bg-cyan-600 text-white shadow-xs" : "bg-white border hover:bg-slate-50 text-slate-605"}`}
-                >
-                  STA
-                </button>
-                <button 
-                  type="button" 
-                  onClick={() => { setDebugRole("TSP"); setViewMode("list"); }} 
-                  className={`px-2 py-1 rounded font-bold transition-all ${activeRole === "TSP" ? "bg-emerald-600 text-white shadow-xs" : "bg-white border hover:bg-slate-50 text-slate-600"}`}
-                >
-                  TSP
-                </button>
-                {debugRole && (
-                  <button 
-                    type="button" 
-                    onClick={() => { setDebugRole(""); setViewMode("list"); }} 
-                    className="text-[9px] text-rose-500 hover:text-rose-700 font-bold px-1"
-                    title="Reset simulation of session role"
-                  >
-                    Clear
-                  </button>
-                )}
-              </div>
-            )}
+              )}
+            </div>
           </div>
         )}
 
@@ -1879,6 +1738,7 @@ export default function EligibleBeneficiariesWorkspace({
                   
                   <div className="flex flex-wrap items-center gap-1.5">
                     <button
+                      type="button"
                       onClick={async () => {
                         setIsBulkDispatching(true);
                         let done = 0;
@@ -1908,99 +1768,43 @@ export default function EligibleBeneficiariesWorkspace({
                       }}
                       disabled={isBulkDispatching}
                       className="px-3 py-1.5 bg-indigo-100 hover:bg-indigo-200 border border-indigo-200 text-indigo-700 font-extrabold text-[11px] rounded-lg transition-colors cursor-pointer"
+                      title="Generate Provisional Admission Offer letters for selected candidates"
                     >
-                      Bulk Generate Offers
+                      Generate Offers
                     </button>
 
                     <button
+                      type="button"
                       onClick={triggerBulkOfferDispatch}
                       disabled={isBulkDispatching}
                       className="px-3 py-1.5 bg-indigo-650 hover:bg-indigo-700 text-white font-extrabold text-[11px] rounded-lg flex items-center gap-1.5 cursor-pointer disabled:opacity-50 transition-colors shadow-sm"
+                      title="Send physical Admission Offer letter emails to candidates"
                     >
                       <Send className="w-3 h-3" />
-                      {isBulkDispatching ? "Dispatching..." : "Bulk Send Offers"}
+                      {isBulkDispatching ? "Dispatching..." : "Send Offers"}
                     </button>
 
                     <button
-                      onClick={async () => {
-                        setIsBulkDispatching(true);
-                        let done = 0;
-                        for (const b of targets) {
-                          setBulkDispatchStatus(`Generating acceptance letter for ${b.fullName}...`);
-                          try {
-                            await authFetch(`${API_BASE_URL}/api/beneficiaries/${b.id}`, {
-                              method: "PUT",
-                              headers: { "Content-Type": "application/json" },
-                              body: JSON.stringify({
-                                admissionStatus: "Acceptance Letter Generated",
-                                updatedAt: new Date().toISOString()
-                              })
-                            });
-                            done++;
-                          } catch {}
-                        }
-                        setIsBulkDispatching(false);
-                        setBulkDispatchStatus("");
-                        showToast(`Bulk Acceptance Letter Generation complete: ${done} records successfully processed.`, "success");
-                        fetchBeneficiariesList();
-                      }}
+                      type="button"
+                      onClick={triggerBulkAcceptanceDispatch}
                       disabled={isBulkDispatching}
-                      className="px-3 py-1.5 bg-sky-100 hover:bg-sky-200 border border-sky-205 text-sky-700 font-extrabold text-[11px] rounded-lg transition-colors cursor-pointer"
+                      className="px-3 py-1.5 bg-violet-600 hover:bg-violet-700 text-white font-extrabold text-[11px] rounded-lg cursor-pointer transition-colors"
+                      title="Acknowledge response and send enrollment acceptances in bulk"
                     >
-                      Bulk Acceptance Letters
+                      Send Acceptance Letters
                     </button>
 
                     <button
-                      onClick={() => setShowBulkEmailComposer(!showBulkEmailComposer)}
-                      disabled={isBulkDispatching}
-                      className="px-3 py-1.5 bg-amber-55 hover:bg-amber-100 border border-amber-200 text-amber-805 font-extrabold text-[11px] rounded-lg transition-colors cursor-pointer flex items-center gap-1"
+                      type="button"
+                      onClick={() => setShowBulkEmailComposer(prev => !prev)}
+                      className={`px-3 py-1.5 font-extrabold text-[11px] rounded-lg transition-all cursor-pointer ${showBulkEmailComposer ? "bg-indigo-600 border border-indigo-700 text-white" : "bg-white border md:hover:bg-slate-50 text-indigo-700 border-slate-200"}`}
+                      title="Dispatch multi-template custom and preset outreach emails"
                     >
-                      <Mail className="w-3 h-3" /> Bulk Email Dispatch
+                      Send Email
                     </button>
 
                     <button
-                      onClick={async () => {
-                        const nextStatus = window.prompt("Enter new Admission Status to apply to selected candidates (e.g. DRAFT, APPROVED, VERIFIED, REJECTED, CONFIRMED):");
-                        if (!nextStatus) return;
-                        const cleanStatus = nextStatus.trim().toUpperCase();
-                        if (!["DRAFT", "APPROVED", "VERIFIED", "REJECTED", "CONFIRMED"].includes(cleanStatus)) {
-                          showToast("Invalid status. Choose from: DRAFT, APPROVED, VERIFIED, REJECTED, CONFIRMED", "warning");
-                          return;
-                        }
-                        setIsBulkDispatching(true);
-                        let done = 0;
-                        for (const b of targets) {
-                          setBulkDispatchStatus(`Updating status for ${b.fullName} to ${cleanStatus}...`);
-                          try {
-                            const bodyUpdate: any = {
-                              admissionStatus: cleanStatus,
-                              updatedAt: new Date().toISOString()
-                            };
-                            if (cleanStatus === "APPROVED" || cleanStatus === "CONFIRMED") {
-                              bodyUpdate.status = ProgramStatus.VERIFIED;
-                            } else if (cleanStatus === "REJECTED") {
-                              bodyUpdate.status = ProgramStatus.FLAGGED;
-                            }
-                            await authFetch(`${API_BASE_URL}/api/beneficiaries/${b.id}`, {
-                              method: "PUT",
-                              headers: { "Content-Type": "application/json" },
-                              body: JSON.stringify(bodyUpdate)
-                            });
-                            done++;
-                          } catch {}
-                        }
-                        setIsBulkDispatching(false);
-                        setBulkDispatchStatus("");
-                        showToast(`Bulk Status Updates complete: ${done} records updated to ${cleanStatus}.`, "success");
-                        fetchBeneficiariesList();
-                      }}
-                      disabled={isBulkDispatching}
-                      className="px-3 py-1.5 bg-purple-100 hover:bg-purple-200 border border-purple-200 text-purple-700 font-extrabold text-[11px] rounded-lg transition-colors cursor-pointer"
-                    >
-                      Bulk Status Updates
-                    </button>
-
-                    <button
+                      type="button"
                       onClick={() => {
                         try {
                           const headers = ["ID", "Name", "Email", "State", "LGA", "TSP", "Skill Sector", "Admission Status"];
@@ -2018,11 +1822,13 @@ export default function EligibleBeneficiariesWorkspace({
                         }
                       }}
                       className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 font-extrabold text-[11px] rounded-lg transition-colors cursor-pointer flex items-center gap-1"
+                      title="Download clean CSV of selected candidates"
                     >
-                      <Download className="w-3 h-3" /> Export CSV
+                      <Download className="w-3 h-3" /> Export Selection
                     </button>
 
                     <button
+                      type="button"
                       onClick={() => {
                         const statusDist = targets.reduce((acc: any, b: any) => {
                           const s = b.admissionStatus || "DRAFT";
@@ -2038,7 +1844,11 @@ export default function EligibleBeneficiariesWorkspace({
                     </button>
                     
                     <button
-                      onClick={() => setSelectedRowIds([])}
+                      type="button"
+                      onClick={() => {
+                        setSelectedRowIds([]);
+                        setShowBulkEmailComposer(false);
+                      }}
                       disabled={isBulkDispatching}
                       className="px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-205 text-slate-505 font-bold text-[11px] rounded-lg cursor-pointer transition-colors"
                     >
@@ -2046,88 +1856,6 @@ export default function EligibleBeneficiariesWorkspace({
                     </button>
                   </div>
                 </div>
-
-                {/* Collapsible Bulk Email Composer card */}
-                {showBulkEmailComposer && (
-                  <div className="bg-white border border-amber-200 rounded-xl p-4 mt-3 space-y-3 shadow-xs">
-                    <span className="text-[10px] uppercase font-mono tracking-wider font-extrabold text-amber-805 block">
-                      En masse Email Broadcast Desk (All {total} Selected)
-                    </span>
-                    <div className="space-y-2 text-xs">
-                      <div>
-                        <label className="text-[10px] font-bold text-slate-500 block mb-1 font-mono">Mail Template Preset</label>
-                        <select 
-                          value={bulkEmailTemplate}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setBulkEmailTemplate(val);
-                            // We use the first beneficiary as a preview example to build the preset
-                            const previewB = targets[0] || {};
-                            const content = getEmailTemplateContent(val, previewB);
-                            if (val !== "custom") {
-                              setBulkEmailSubject(content.subject);
-                              // We use the raw placeholder version for bulk sending so we do the replace dynamically per beneficiary!
-                              const rawContentTable = {
-                                "offer_letter": `Dear [Name],\n\nWe are pleased to offer you provisional admission to the [Programme] under the [Sector] sector. Your training will be conducted by [TSP] in [State].\n\nPlease review and complete your student registration form as soon as possible.\n\nRespectfully,\nNational TVET Registry Center`,
-                                "acceptance_letter": `Dear [Name],\n\nThis confirms receipt and approval of your Acceptance of Admission. You are now officially enrolled under the [Sector] track. Your assigned training provider is [TSP], located in [State].\n\nCongratulations and best regards,\nNational TVET Board`,
-                                "reminder": `Dear [Name],\n\nThis is an official administrative reminder from the National TVET board regarding your pending admission onboarding.\n\nPlease access the portal immediately and accept the pending provisional covenant letters to secure your slot at [TSP].\n\nRespectfully,\nNational TVET Registry Center`,
-                                "missing_docs": `Dear [Name],\n\nDuring our recent audit of your profile in [State], we noticed that some of your required files are missing. Can you please upload them as soon as possible.\n\nRespectfully,\nAdmissions Compliance Team`,
-                                "resumption": `Dear [Name],\n\nWe are pleased to notify you that active TVET training sessions are scheduled to resume shortly at [TSP] in [State].\n\nPlease ensure you are present and have completed all initial onboarding deliverables.\n\nRespectfully,\nTraining Operations Desk\n[TSP]`
-                              };
-                              setBulkEmailBody((rawContentTable as any)[val] || "");
-                            } else {
-                              setBulkEmailSubject("");
-                              setBulkEmailBody("");
-                            }
-                          }}
-                          className="w-full bg-white border border-slate-200 text-xs py-1.5 px-2 rounded-lg text-slate-705 cursor-pointer font-bold"
-                        >
-                          <option value="custom">Custom Message (No Template)</option>
-                          <option value="offer_letter">Offer Letter Template</option>
-                          <option value="acceptance_letter">Acceptance Letter Template</option>
-                          <option value="reminder">Admission Reminder Template</option>
-                          <option value="missing_docs">Missing Documents Reminder Template</option>
-                          <option value="resumption">Training Resumption Notice Template</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-bold text-slate-500 block mb-1 font-mono">Broadcast Subject</label>
-                        <input 
-                          type="text" 
-                          placeholder="Broadcast email subject header..."
-                          value={bulkEmailSubject}
-                          onChange={(e) => setBulkEmailSubject(e.target.value)}
-                          className="w-full bg-white border border-slate-200 text-xs py-1.5 px-2.5 rounded-lg text-slate-705 font-bold focus:outline-none"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-bold text-slate-500 block mb-1 font-mono">Custom Body (Supports placeholders: [Name], [Beneficiary ID], [State], [LGA], [TSP])</label>
-                        <textarea 
-                          rows={4}
-                          placeholder="Type raw correspondence instructions here..."
-                          value={bulkEmailBody}
-                          onChange={(e) => setBulkEmailBody(e.target.value)}
-                          className="w-full bg-slate-50 border border-slate-200 text-xs p-2.5 rounded-lg text-slate-705 focus:outline-none font-mono"
-                        />
-                      </div>
-                      <div className="flex justify-end gap-2 pt-1 border-t border-slate-100">
-                        <button 
-                          onClick={() => setShowBulkEmailComposer(false)}
-                          className="text-[10.5px] font-bold text-slate-450 hover:text-slate-650 cursor-pointer px-2.5 py-1"
-                        >
-                          Cancel
-                        </button>
-                        <button 
-                          onClick={handleSendBulkCustomEmail}
-                          disabled={isBulkDispatching}
-                          className="px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-[11px] rounded-lg shadow-sm cursor-pointer disabled:opacity-50 transition-colors"
-                        >
-                          Dispatch Bulk Broadcast
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
 
                 {/* Grid analytics layout */}
                 <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 w-full pt-1">
@@ -2156,6 +1884,107 @@ export default function EligibleBeneficiariesWorkspace({
                     <strong className="text-sm font-black text-rose-600 block mt-0.5">{failed}</strong>
                   </div>
                 </div>
+
+                {/* HIGH FIDELITY BULK EMAIL COMPOSER PANEL (Embedded) */}
+                {showBulkEmailComposer && (
+                  <div className="bg-white border border-indigo-150 rounded-xl p-4 mt-3 space-y-3.5 shadow-md">
+                    <div className="flex justify-between items-center border-b border-slate-100 pb-2">
+                      <h4 className="text-xs font-bold text-slate-800 uppercase tracking-tight flex items-center gap-1.5 font-mono">
+                        <Mail className="w-4 h-4 text-indigo-500 animate-bounce" />
+                        Outbound Bulk Communication Dispatch Center
+                      </h4>
+                      <button 
+                        type="button"
+                        onClick={() => setShowBulkEmailComposer(false)}
+                        className="text-[10px] text-slate-400 hover:text-slate-600 font-bold"
+                      >
+                        Hide Panel
+                      </button>
+                    </div>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="md:col-span-1 space-y-3 bg-slate-50 p-3 rounded-xl border border-slate-150">
+                        <div>
+                          <label className="text-[9.5px] font-bold text-slate-500 uppercase font-mono block mb-1">Preset Template Selector</label>
+                          <select 
+                            value={bulkEmailTemplate}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setBulkEmailTemplate(v);
+                              if (v === "custom") {
+                                setBulkEmailSubject("");
+                                setBulkEmailBody("");
+                              } else if (v === "offer_reminder") {
+                                setBulkEmailSubject("Action Required: Your Provisional Admission Offer to IDEAS TVET Program");
+                                setBulkEmailBody(`Dear [Name],\n\nThis is an official notice to inform you that your provisional offer letter is currently pending certification. Your candidate ID is [Beneficiary ID].\n\nPlease review your credential checklist for the flag state of [State] and submit physical documents at [LGA] LGA offices.\n\nBest regards,\nNational TVET Board Office of admissions.`);
+                              } else if (v === "acceptance_notice") {
+                                setBulkEmailSubject("Official Admission Acceptance Confirmation - National TVET Portal");
+                                setBulkEmailBody(`Dear [Name],\n\nWe are pleased to inform you that your provisional acceptance letter has been verified and processed by the National TVET board. Your enrolment ID is [Beneficiary ID].\n\nYou are now officially ENROLLED as an active participant at ${targets[0]?.tsp || "[TSP]"} under the mobile hardware/cell repairs program.\n\nCongratulations and best regards,\nNational TVET Board`);
+                              }
+                            }}
+                            className="w-full bg-white border border-slate-200 text-xs py-1.5 px-2.5 rounded-lg text-slate-700 font-semibold focus:ring-1 focus:ring-indigo-400 focus:outline-hidden"
+                          >
+                            <option value="custom">Custom Template (Blank Page)</option>
+                            <option value="offer_reminder">Admissions Provisional Offer Reminder</option>
+                            <option value="acceptance_notice">Official Enrollment Confirmed Letter</option>
+                          </select>
+                        </div>
+
+                        <div className="p-2.5 rounded-lg bg-indigo-50/50 text-[10px] text-slate-500 leading-normal font-mono space-y-1 border border-indigo-100">
+                          <span className="font-bold block uppercase text-[8.5px] text-indigo-750">Sifting Placeholders:</span>
+                          <div><code className="text-pink-600 font-bold bg-pink-50 px-1 rounded">[Name]</code> - candidate name</div>
+                          <div><code className="text-pink-600 font-bold bg-pink-50 px-1 rounded">[Beneficiary ID]</code> - candidate ID</div>
+                          <div><code className="text-pink-600 font-bold bg-pink-50 px-1 rounded">[State]</code> - state</div>
+                          <div><code className="text-pink-600 font-bold bg-pink-50 px-1 rounded">[LGA]</code> - city/LGA</div>
+                          <div><code className="text-pink-600 font-bold bg-pink-50 px-1 rounded">[TSP]</code> - trainer provider</div>
+                        </div>
+                      </div>
+                      
+                      <div className="md:col-span-2 space-y-3">
+                        <div className="space-y-1">
+                          <label className="text-[9.5px] font-bold text-slate-500 uppercase font-mono block">Template Subject Title</label>
+                          <input
+                            type="text"
+                            value={bulkEmailSubject}
+                            onChange={(e) => setBulkEmailSubject(e.target.value)}
+                            placeholder="e.g. Action Required: Your Provisional Admission Offer to IDEAS TVET Program"
+                            className="w-full bg-slate-50 border border-slate-200 text-xs py-1.5 px-2.5 rounded-lg text-slate-800 font-semibold focus:ring-1 focus:ring-indigo-400 focus:outline-hidden"
+                          />
+                        </div>
+                        
+                        <div className="space-y-1">
+                          <label className="text-[9.5px] font-bold text-slate-500 uppercase font-mono block">Outreach Message Body</label>
+                          <textarea
+                            rows={5}
+                            value={bulkEmailBody}
+                            onChange={(e) => setBulkEmailBody(e.target.value)}
+                            placeholder="Write your email body here. Use placeholders like [Name], [Beneficiary ID], or [TSP] for custom substitution per candidate transaction."
+                            className="w-full bg-slate-50 border border-slate-200 text-xs py-2 px-2.5 rounded-lg text-slate-700 font-medium font-mono focus:ring-1 focus:ring-indigo-400 focus:outline-hidden"
+                          />
+                        </div>
+                        
+                        <div className="flex gap-2 justify-end pt-1">
+                          <button
+                            type="button"
+                            onClick={() => setShowBulkEmailComposer(false)}
+                            className="px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-600 text-[11px] font-bold rounded-lg cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleSendBulkCustomEmail}
+                            disabled={isBulkDispatching || !bulkEmailSubject.trim() || !bulkEmailBody.trim()}
+                            className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-black rounded-lg cursor-pointer disabled:opacity-50 flex items-center gap-1.5 shadow-sm"
+                          >
+                            <Send className="w-3 h-3" />
+                            {isBulkDispatching ? "Transmitting..." : "Execute Outbound Dispatch"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })()}
@@ -2393,27 +2222,25 @@ export default function EligibleBeneficiariesWorkspace({
                                   </div>
                                   <button
                                     type="button"
-                                    disabled={sendingEmails}
                                     onClick={() => {
                                       setActiveActionMenuId(null);
                                       handleGenerateOfferSingle(b);
                                     }}
-                                    className="w-full px-3 py-1.5 hover:bg-slate-50 hover:text-indigo-600 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold disabled:opacity-50"
+                                    className="w-full px-3 py-1.5 hover:bg-slate-50 hover:text-indigo-600 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold"
                                   >
                                     <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                                    {sendingEmails ? "Generating Offer..." : "Generate Offer Letter"}
+                                    Generate Offer Letter
                                   </button>
                                   <button
                                     type="button"
-                                    disabled={sendingEmails}
                                     onClick={() => {
                                       setActiveActionMenuId(null);
                                       handleSendOfferSingle(b);
                                     }}
-                                    className="w-full px-3 py-1.5 hover:bg-slate-50 hover:text-indigo-600 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold disabled:opacity-50"
+                                    className="w-full px-3 py-1.5 hover:bg-slate-50 hover:text-indigo-600 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold"
                                   >
                                     <Send className="w-3.5 h-3.5 text-indigo-500" />
-                                    {sendingEmails ? "Sending Offer..." : "Send Offer Letter"}
+                                    Send Offer Letter
                                   </button>
                                   <button
                                     type="button"
@@ -3495,7 +3322,45 @@ export default function EligibleBeneficiariesWorkspace({
                   <div className="grid grid-cols-2 gap-3">
                     <button
                       onClick={async () => {
-                        await handleSendOfferSingle(selectedBeneficiary);
+                        if (sendingEmails) return;
+                        setSendingEmails(true);
+                        try {
+                          // Ensure candidate has a unique provisional reference
+                          if (!selectedBeneficiary.admissionRef) {
+                            const autoRef = `IDEAS/TVET/ADM/${selectedBeneficiary.id.split("-").pop()}/${new Date().getFullYear()}`;
+                            await authFetch(`${API_BASE_URL}/api/beneficiaries/${selectedBeneficiary.id}`, {
+                              method: "PUT",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({
+                                admissionStatus: "Admission Generated",
+                                admissionRef: autoRef,
+                                admissionLetterGeneratedAt: new Date().toISOString(),
+                                status: ProgramStatus.VERIFIED
+                              })
+                            });
+                          }
+
+                          const res = await authFetch(`${API_BASE_URL}/api/admissions/send-offer`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                              beneficiaryId: selectedBeneficiary.id,
+                              origin: window.location.origin
+                            })
+                          });
+                          
+                          const data = await res.json();
+                          if (data.success) {
+                            showToast(`Provisional admission offer letter dispatched! Link: ${data.secureLink}`, "success");
+                            fetchBeneficiariesList();
+                          } else {
+                            showToast(`SMTP Mail Delivery failed: ${data.smtpErrorDetails || "Unknown SMTP error check."}`, "error");
+                          }
+                        } catch (err: any) {
+                          showToast(`Error dispatching offer letter: ${err.message}`, "error");
+                        } finally {
+                          setSendingEmails(false);
+                        }
                       }}
                       disabled={sendingEmails}
                       className="flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-650 hover:bg-indigo-700 text-white font-black text-xs rounded-lg shadow-sm cursor-pointer disabled:opacity-50 transition-colors"
@@ -3766,19 +3631,65 @@ export default function EligibleBeneficiariesWorkspace({
                       <div className="flex flex-wrap gap-2">
                         <button
                           type="button"
-                          onClick={() => handleGenerateOfferSingle(selectedBeneficiary)}
-                          disabled={sendingEmails}
-                          className="px-3 py-1.5 bg-white border font-bold font-mono hover:bg-slate-50 text-slate-705 text-[10.5px] rounded-lg transition-colors cursor-pointer shadow-xs disabled:opacity-50"
+                          onClick={async () => {
+                            if (sendingEmails) return;
+                            setSendingEmails(true);
+                            try {
+                              if (!selectedBeneficiary.admissionRef) {
+                                const autoRef = `IDEAS/TVET/ADM/${selectedBeneficiary.id.split("-").pop()}/${new Date().getFullYear()}`;
+                                await authFetch(`${API_BASE_URL}/api/beneficiaries/${selectedBeneficiary.id}`, {
+                                  method: "PUT",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({
+                                    admissionStatus: "Admission Generated",
+                                    admissionRef: autoRef,
+                                    admissionLetterGeneratedAt: new Date().toISOString(),
+                                    status: ProgramStatus.VERIFIED
+                                  })
+                                });
+                              }
+                              showToast(`Successfully generated admission letter details!`, "success");
+                              fetchBeneficiariesList();
+                            } catch (e: any) {
+                              showToast(e.message, "error");
+                            } finally {
+                              setSendingEmails(false);
+                            }
+                          }}
+                          className="px-3 py-1.5 bg-white border font-bold font-mono hover:bg-slate-50 text-slate-705 text-[10.5px] rounded-lg transition-colors cursor-pointer shadow-xs"
                         >
-                          {sendingEmails ? "Processing..." : "Generate Offer"}
+                          Generate Offer
                         </button>
                         <button
                           type="button"
-                          onClick={() => handleSendOfferSingle(selectedBeneficiary)}
-                          disabled={sendingEmails}
-                          className="px-3 py-1.5 bg-indigo-600 font-bold font-mono hover:bg-indigo-700 text-white text-[10.5px] rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                          onClick={async () => {
+                            if (sendingEmails) return;
+                            setSendingEmails(true);
+                            try {
+                              const res = await authFetch(`${API_BASE_URL}/api/admissions/send-offer`, {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                  beneficiaryId: selectedBeneficiary.id,
+                                  origin: window.location.origin
+                                })
+                              });
+                              const data = await res.json();
+                              if (data.success) {
+                                showToast(`Provisional offer of admission successfully dispatched to ${selectedBeneficiary.email}`, "success");
+                                fetchBeneficiariesList();
+                              } else {
+                                showToast(`Mail dispatch failure`, "error");
+                              }
+                            } catch (e: any) {
+                              showToast(e.message, "error");
+                            } finally {
+                              setSendingEmails(false);
+                            }
+                          }}
+                          className="px-3 py-1.5 bg-indigo-600 font-bold font-mono hover:bg-indigo-755 text-white text-[10.5px] rounded-lg transition-colors cursor-pointer"
                         >
-                          {sendingEmails ? "Sending..." : "Send Offer"}
+                          Send Offer
                         </button>
                         
                         <button
@@ -3959,18 +3870,22 @@ export default function EligibleBeneficiariesWorkspace({
                           <select 
                             onChange={(e) => {
                               const val = e.target.value;
-                              const content = getEmailTemplateContent(val, selectedBeneficiary);
-                              setIndividualSubject(content.subject);
-                              setIndividualBody(content.body);
+                              if (val === "reminder") {
+                                setIndividualSubject("Urgent Action Required: Provisional Admission Onboarding Deadline");
+                                setIndividualBody(`Dear ${selectedBeneficiary.fullName},\n\nThis is an official administrative reminder from the National TVET board regarding your pending admission onboarding. Please access the portal immediately and accept the pending provisional covenant letters.\n\nRespectfully,\nNational TVET Registry Center\nIDEAS-TVET Project`);
+                              } else if (val === "notice") {
+                                setIndividualSubject("Placement Match Alignment: Mobile Hardware Repairs & Diagnostics");
+                                setIndividualBody(`Dear ${selectedBeneficiary.fullName},\n\nYour portfolio matching diagnostics are complete. You have been placed and aligned under the Mobile Hardware Repairs track at Owerri, Imo State under provider: Unique Technology Nig. Ltd.\n\nRespectfully,\nNational TVET Board`);
+                              } else {
+                                setIndividualSubject("");
+                                setIndividualBody("");
+                              }
                             }}
                             className="w-full bg-white border border-slate-200 text-xs py-1.5 px-2 rounded-lg text-slate-705 cursor-pointer font-bold"
                           >
                             <option value="">Custom Correspondence Message</option>
-                            <option value="offer_letter">Offer Letter Template</option>
-                            <option value="acceptance_letter">Acceptance Letter Template</option>
                             <option value="reminder">Admission Offer Acceptance Reminder Notice</option>
-                            <option value="missing_docs">Missing Onboarding Documents Notice</option>
-                            <option value="resumption">Training Resumption Notice Template</option>
+                            <option value="notice">Accredited Skill Placement Match Alignment Notice</option>
                           </select>
                         </div>
 
@@ -4401,144 +4316,6 @@ export default function EligibleBeneficiariesWorkspace({
                 Close Preview
               </button>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* SEV-1 ISSUE 3 — OPERATOR FEEDBACK POPUP/MODAL */}
-      {operatorFeedback && (
-        <div id="operator-feedback-modal" className="fixed inset-0 bg-slate-950/70 z-50 flex items-center justify-center p-4 backdrop-blur-[1px]">
-          <div className="bg-white border-2 border-indigo-100 rounded-2xl w-full max-w-md p-6 text-left shadow-2xl relative">
-            <button 
-              id="close-feedback-btn"
-              onClick={() => setOperatorFeedback(null)} 
-              className="absolute top-4 right-4 text-slate-450 hover:text-slate-700 font-extrabold text-sm p-1 cursor-pointer"
-            >
-              ✕
-            </button>
-
-            {operatorFeedback.success ? (
-              <div className="space-y-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-emerald-50 text-emerald-650 flex items-center justify-center border border-emerald-200">
-                    <Check className="w-5 h-5 stroke-[3px]" />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-black text-slate-900 border-b-2 border-emerald-50 pb-0.5">
-                      {operatorFeedback.type === "generate" ? "Admission Offer Generated" : "Email Offer Dispatched"}
-                    </h3>
-                    <p className="text-[10px] text-slate-450 font-medium">Operation completed successfully.</p>
-                  </div>
-                </div>
-
-                <div className="bg-slate-50/50 border border-slate-150 rounded-xl p-4 space-y-2.5 font-sans">
-                  <div className="flex justify-between items-center border-b border-slate-100 pb-1.5">
-                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Candidate Name</span>
-                    <strong className="text-xs font-extrabold text-slate-800">{operatorFeedback.beneficiaryName}</strong>
-                  </div>
-                  
-                  {operatorFeedback.offerId && (
-                    <div className="flex justify-between items-center border-b border-slate-100 pb-1.5">
-                      <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Offer Reference ID</span>
-                      <span className="text-xs font-mono font-bold text-indigo-700 select-all">{operatorFeedback.offerId}</span>
-                    </div>
-                  )}
-
-                  {operatorFeedback.recipientEmail && (
-                    <div className="flex justify-between items-center border-b border-slate-100 pb-1.5">
-                      <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Recipient Email</span>
-                      <span className="text-xs font-mono font-medium text-slate-650 select-all">{operatorFeedback.recipientEmail}</span>
-                    </div>
-                  )}
-
-                  <div className="flex justify-between items-center">
-                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Timestamp</span>
-                    <span className="text-[11px] font-mono text-slate-500">{operatorFeedback.timestamp}</span>
-                  </div>
-
-                  {operatorFeedback.type === "send" && (
-                    <div className="flex justify-between items-center border-t border-slate-100 pt-1.5 mt-1">
-                      <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Admission Status Update</span>
-                      <span className="px-2 py-0.5 bg-indigo-50 border border-indigo-200 text-[8.5px] font-mono font-bold uppercase text-indigo-700 rounded">
-                        ADMISSION SENT
-                      </span>
-                    </div>
-                  )}
-                  
-                  {operatorFeedback.type === "generate" && (
-                    <div className="flex justify-between items-center border-t border-slate-100 pt-1.5 mt-1">
-                      <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Admission Status Update</span>
-                      <span className="px-2 py-0.5 bg-amber-50 border border-amber-200 text-[8.5px] font-mono font-bold uppercase text-amber-700 rounded">
-                        ADMISSION GENERATED
-                      </span>
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex justify-end pt-2">
-                  <button
-                    id="acknowledge-feedback-btn"
-                    onClick={() => setOperatorFeedback(null)}
-                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-mono font-bold text-xs rounded-lg cursor-pointer shadow-xs transition-colors"
-                  >
-                    Acknowledge & Dismiss
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-rose-50 text-rose-650 flex items-center justify-center border border-rose-200">
-                    <AlertTriangle className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-black text-slate-900 border-b-2 border-rose-50 pb-0.5">
-                      {operatorFeedback.type === "generate" ? "Generation Failure" : "Mail Dispatch Failure"}
-                    </h3>
-                    <p className="text-[10px] text-rose-500 font-bold uppercase tracking-wider">Gateway Processing Error</p>
-                  </div>
-                </div>
-
-                <div className="bg-rose-50/40 border border-rose-150 rounded-xl p-4 space-y-2.5">
-                  <div className="space-y-1">
-                    <span className="text-[9.5px] text-rose-450 uppercase font-mono font-bold block">Trainee Candidate</span>
-                    <strong className="text-slate-800 text-xs block font-bold">{operatorFeedback.beneficiaryName}</strong>
-                  </div>
-                  
-                  <div className="space-y-1 border-t border-rose-100 pt-2">
-                    <span className="text-[9.5px] text-rose-450 uppercase font-mono font-bold block">Detailed Technical Error Message</span>
-                    <p className="text-[10.5px] font-mono bg-white border border-rose-200 p-2.5 rounded-lg text-slate-600 select-all overflow-x-auto whitespace-pre-wrap break-all leading-normal max-h-36">
-                      {operatorFeedback.error || "An undocumented network error has occurred."}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex justify-end gap-2.5 pt-2">
-                  <button
-                    id="cancel-feedback-btn"
-                    onClick={() => setOperatorFeedback(null)}
-                    className="px-4 py-2 bg-white hover:bg-slate-50 border text-slate-600 text-xs font-bold rounded-lg cursor-pointer"
-                  >
-                    Cancel
-                  </button>
-                  {operatorFeedback.retryAction && (
-                    <button
-                      id="retry-feedback-btn"
-                      onClick={() => {
-                        const action = operatorFeedback.retryAction;
-                        setOperatorFeedback(null);
-                        setTimeout(() => {
-                          action?.();
-                        }, 50);
-                      }}
-                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-lg cursor-pointer flex items-center gap-1.5"
-                    >
-                      Retry Action
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
           </div>
         </div>
       )}

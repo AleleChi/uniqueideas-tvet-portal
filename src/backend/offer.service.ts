@@ -15,8 +15,8 @@ export class OfferService {
    * @param beneficiaryId - Unique identifier of the beneficiary
    * @param customDomain - External URL for secure token-based user response portal
    */
-  static async sendOffer(beneficiaryId: string, customDomain: string, actor: string = "system"): Promise<any> {
-    console.log(`[OfferService] Intercepting offer dispatch task for candidate: ${beneficiaryId} by actor: ${actor}`);
-    return AdmissionService.sendAdmissionOffer(beneficiaryId, customDomain, actor);
+  static async sendOffer(beneficiaryId: string, customDomain: string): Promise<any> {
+    console.log(`[OfferService] Intercepting offer dispatch task for candidate: ${beneficiaryId}`);
+    return AdmissionService.sendAdmissionOffer(beneficiaryId, customDomain);
   }
 }

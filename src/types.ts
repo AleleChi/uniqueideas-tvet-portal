@@ -58,13 +58,14 @@ export interface Beneficiary {
   customFields: Record<string, string>;
 
   // Extended Lifecycle & Admission Workflow
-  admissionStatus?: "Draft" | "Pending" | "Admission Generated" | "Admission Sent" | "Offer Viewed" | "Acceptance Pending" | "Acceptance Uploaded" | "Under Review" | "Accepted" | "Enrolled" | "Training In Progress" | "Training Completed" | "Certified" | "Alumni" | "Acceptance Rejected" | "Admitted" | "Declined";
+  admissionStatus?: "Draft" | "Pending" | "Admission Generated" | "Admission Sent" | "Offer Viewed" | "Acceptance Pending" | "Acceptance Uploaded" | "Under Review" | "Accepted" | "Enrolled" | "Training In Progress" | "Training Completed" | "Certified" | "Alumni" | "Acceptance Rejected" | "Admitted" | "EXPIRED";
   admissionRef?: string;
   admissionFormRef?: string;
   admissionLetterGeneratedAt?: string;
   admissionLetterSentAt?: string;
   admissionFormCompleted?: boolean;
   admissionFormStatus?: "Pending" | "Draft" | "Submitted" | "Verified" | "NOT_GENERATED" | "GENERATED" | "IN_PROGRESS" | "VIEWED" | "CONFIRMED" | "LOCKED";
+  digitalSignature?: string;
   admissionFormData?: {
     emergencyName?: string;
     emergencyPhone?: string;
@@ -81,6 +82,8 @@ export interface Beneficiary {
     priorKnowledge?: string;
     medicalDeclaration?: boolean | string;
     submissionDate?: string;
+    digitalSignature?: string;
+    signature?: string;
   };
   acceptanceLetterUploaded?: boolean;
   acceptanceLetterUrl?: string; // base64 or mock url

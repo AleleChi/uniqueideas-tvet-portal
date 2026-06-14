@@ -57,8 +57,6 @@ export class AdmissionController {
         return res.status(404).json({ error: `Beneficiary candidate '${beneficiaryId}' not found in registry.` });
       }
 
-      const isResend = !!beneficiary.admissionLetterSentAt;
-
       // Enforce multi-tier role scope check
       const isFederal = user.role === "SUPER_ADMIN" || 
                         user.role === "FED" || 
@@ -96,7 +94,12 @@ export class AdmissionController {
         return (
           l.includes("aistudio") ||
           l.includes("google") ||
+          l.includes("run.app") ||
+          l.includes("localhost") ||
+          l.includes("127.0.0.1") ||
           l.includes("sandbox") ||
+          l.includes("ais-dev") ||
+          l.includes("ais-pre") ||
           l.includes("my_app_url")
         );
       };
@@ -105,12 +108,11 @@ export class AdmissionController {
       const customDomain = safeOrigin || buildPublicUrl("", req);
 
       // Invoke the single-source-of-truth service for offer dispatch
-      const outcome = await OfferService.sendOffer(beneficiaryId, customDomain, user.email || "system");
+      const outcome = await OfferService.sendOffer(beneficiaryId, customDomain);
       return res.status(200).json({ 
         success: outcome.success, 
-        action: isResend ? "RESENT" : "SENT",
         message: outcome.success 
-          ? (isResend ? "✓ This admission offer letter has been successfully RE-SENT to the candidate." : "Provisional offer generated, letter compiled, and notification email successfully queued.")
+          ? "Provisional offer generated, letter compiled, and notification email successfully queued."
           : `SMTP delivery failed: ${outcome.smtpErrorDetails || "Unknown SMTP error."}`,
         secureLink: outcome.secureLink,
         emailStatus: outcome.emailStatus,
@@ -131,106 +133,72 @@ export class AdmissionController {
     try {
       const token = req.query.token as string;
       if (!token) {
-        return res.status(400).json({ valid: false, reason: "TOKEN_NOT_FOUND", error: "No secure response token provided in verification query." });
+        return res.status(400).json({ error: "No secure response token provided in verification query." });
       }
 
       const decoded = TokenService.verifyToken(token);
       if (!decoded || !decoded.id) {
-        return res.status(401).json({ valid: false, reason: "TOKEN_NOT_FOUND", error: "The response token is invalid, unrecognized, or corrupted." });
-      }
-
-      if (decoded.expires !== undefined && decoded.expires < Date.now()) {
-        try {
-          await DbRepo.saveAuditLog({
-            username: "TRAINEE",
-            action: "TOKEN_EXPIRED",
-            role: "Student",
-            details: `[TOKEN_EXPIRED] Timestamp: ${new Date().toISOString()} | Actor: TRAINEE | Beneficiary ID: ${decoded.id} | Admission ID: N/A`,
-            beneficiaryId: decoded.id
-          });
-        } catch (le) {
-          console.error("Failed to save expired token audit log:", le);
-        }
-        return res.status(401).json({ valid: false, reason: "TOKEN_EXPIRED", error: "TOKEN_EXPIRED: The activation link has expired." });
+        return res.status(401).json({ error: "The response token is invalid, expired, or corrupted." });
       }
 
       // Load beneficiary using our non-blocking database repository
-      const beneficiary = await DbRepo.getBeneficiaryById(decoded.id, { systemContext: true });
+      const beneficiary = await DbRepo.getBeneficiaryById(decoded.id);
 
       if (!beneficiary) {
-        return res.status(404).json({ valid: false, reason: "BENEFICIARY_NOT_FOUND", error: "Candidate matching the secure token session could not be located." });
+        return res.status(404).json({ error: "Candidate matching the secure token session could not be located." });
       }
 
       // Check token version (Phase 1)
       const tokenVersion = decoded.tokenVersion !== undefined ? decoded.tokenVersion : 1;
       const bTokenVersion = beneficiary.tokenVersion !== undefined ? beneficiary.tokenVersion : 1;
       if (tokenVersion !== bTokenVersion) {
-        try {
-          await DbRepo.saveAuditLog({
-            username: "TRAINEE",
-            action: "TOKEN_REVOKED",
-            role: "Student",
-            details: `[TOKEN_REVOKED] Timestamp: ${new Date().toISOString()} | Actor: TRAINEE | Beneficiary ID: ${beneficiary.id} | Admission ID: ${beneficiary.admissionRef || "N/A"} | Token revoked due to version mismatch (Token: ${tokenVersion}, DB: ${bTokenVersion})`,
-            beneficiaryId: beneficiary.id
+        return res.status(401).json({ error: "TOKEN_REVOKED: This portal or admission token has been revoked due to administrative rollback or status update." });
+      }
+
+      // Check for 10-day link / offer expiration
+      if (beneficiary.admissionLetterSentAt) {
+        const sentTime = new Date(beneficiary.admissionLetterSentAt).getTime();
+        const expiresTime = sentTime + (10 * 24 * 60 * 60 * 1000); // 10 days
+        if (Date.now() > expiresTime) {
+          if (beneficiary.admissionStatus !== "EXPIRED") {
+            beneficiary.admissionStatus = "EXPIRED";
+            await DbRepo.upsertBeneficiary(beneficiary);
+          }
+          return res.status(403).json({
+            error: "OFFER_EXPIRED",
+            message: "The 10-day provisional offer letter acceptance window has elapsed. This offer is permanently locked as EXPIRED and cannot be accessed."
           });
-        } catch (le) {
-          console.error("Failed to save revoked token audit log:", le);
         }
-        return res.status(401).json({ valid: false, reason: "TOKEN_REVOKED", error: "TOKEN_REVOKED: This portal or admission token has been revoked due to administrative rollback or status update." });
       }
 
       // Automatically record tracking Opened event when portal is opened
-      try {
-        await AdmissionService.registerEmailOpened(decoded.id);
-      } catch (e) {
-        console.error("Failed to register email opened event:", e);
-      }
-
-      // Automatically record PORTAL_ACCESSED audit log when portal is loaded
-      try {
-        await DbRepo.saveAuditLog({
-          username: "TRAINEE",
-          action: "PORTAL_ACCESSED",
-          role: "Student",
-          details: `[PORTAL_ACCESSED] Timestamp: ${new Date().toISOString()} | Actor: TRAINEE | Beneficiary ID: ${beneficiary.id} | Admission ID: ${beneficiary.admissionRef || "N/A"}`,
-          beneficiaryId: beneficiary.id
-        });
-      } catch (le) {
-        console.error("Failed to save portal accessed audit log:", le);
-      }
-
-      const candidateObj = {
-        id: beneficiary.id,
-        firstName: beneficiary.firstName,
-        lastName: beneficiary.lastName,
-        email: beneficiary.email,
-        nin: beneficiary.nin,
-        bvn: beneficiary.bvn,
-        state: beneficiary.state,
-        city: beneficiary.city,
-        skillSector: beneficiary.skillSector || "Computer Hardware and Cell Phone Repairs",
-        admissionRef: beneficiary.admissionRef,
-        admissionStatus: beneficiary.admissionStatus || "Pending",
-        admissionFormCompleted: beneficiary.admissionFormCompleted || false,
-        admissionFormStatus: beneficiary.admissionFormStatus || "Pending",
-        admissionFormData: beneficiary.admissionFormData || {},
-        admissionLetterUrl: beneficiary.admissionLetterUrl || "",
-        acceptanceLetterUrl: beneficiary.acceptanceLetterUrl || "",
-        photo: beneficiary.photo || "",
-        tsp: beneficiary.tsp || "Unique Technology Nig. Ltd",
-        program: beneficiary.program || "Computer Hardware and Cell Phone Repairs",
-        status: beneficiary.status
-      };
+      await AdmissionService.registerEmailOpened(decoded.id);
 
       // Return sanitized candidate fields suitable for public view (excluding core admin values if needed)
       return res.status(200).json({
         valid: true,
-        candidate: candidateObj,
-        beneficiary: candidateObj
+        candidate: {
+          id: beneficiary.id,
+          firstName: beneficiary.firstName,
+          lastName: beneficiary.lastName,
+          email: beneficiary.email,
+          nin: beneficiary.nin,
+          bvn: beneficiary.bvn,
+          state: beneficiary.state,
+          city: beneficiary.city,
+          skillSector: beneficiary.skillSector || "Computer Hardware and Cell Phone Repairs",
+          admissionRef: beneficiary.admissionRef,
+          admissionStatus: beneficiary.admissionStatus || "Pending",
+          admissionFormCompleted: beneficiary.admissionFormCompleted || false,
+          admissionFormStatus: beneficiary.admissionFormStatus || "Pending",
+          admissionFormData: beneficiary.admissionFormData || {},
+          admissionLetterUrl: beneficiary.admissionLetterUrl || "",
+          acceptanceLetterUrl: beneficiary.acceptanceLetterUrl || ""
+        }
       });
     } catch (err: any) {
       console.error("[AdmissionController] validateToken failed:", err);
-      return res.status(500).json({ valid: false, reason: "SERVER_ERROR", error: "Internal token decrypter processing failure." });
+      return res.status(500).json({ error: "Internal token decrypter processing failure." });
     }
   }
 
@@ -304,33 +272,30 @@ export class AdmissionController {
         return res.status(400).json({ error: "Missing required parameter: beneficiaryId" });
       }
 
+      // Automatically construct origin domain if not provided, sanitizing out any preview environments
+      const isPreviewOrLocal = (url: any): boolean => {
+        if (!url || typeof url !== "string") return true;
+        const l = url.toLowerCase();
+        return (
+          l.includes("aistudio") ||
+          l.includes("google") ||
+          l.includes("run.app") ||
+          l.includes("localhost") ||
+          l.includes("127.0.0.1") ||
+          l.includes("sandbox") ||
+          l.includes("ais-dev") ||
+          l.includes("ais-pre") ||
+          l.includes("my_app_url")
+        );
+      };
+
+      const safeOrigin = (typeof origin === "string" && !isPreviewOrLocal(origin)) ? origin : undefined;
+      const customDomain = safeOrigin || buildPublicUrl("", req);
+
       const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
       if (!beneficiary) {
         return res.status(404).json({ error: "Candidate matching the secure token session could not be located." });
       }
-
-      // Strict role and organizational isolation (Phase 8)
-      const authReq = req as AuthenticatedRequest;
-      const user = authReq.user;
-      if (user) {
-        const isFederal = user.role === "SUPER_ADMIN" || 
-                          user.role === "FED" || 
-                          user.role.startsWith("FED") || 
-                          user.role.startsWith("FEDERAL");
-        if (!isFederal) {
-          const isTspUser = user.role === "TSP" || user.role.startsWith("TSP") || user.role === "REVIEW_OFFICER" || user.role === "ADMIN_OFFICER";
-          if (isTspUser) {
-            const userTspId = user.tspId || "00000000-0000-0000-0000-000000000001";
-            const bTspId = beneficiary.tspId || "00000000-0000-0000-0000-000000000001";
-            if (bTspId !== userTspId) {
-              return res.status(403).json({ error: "Access Denied: Tenant isolation active. This beneficiary belongs to another organization." });
-            }
-          }
-        }
-      }
-
-      // For authenticated administrative actions inside the workspace, allow previewing the local origin
-      const customDomain = (origin && typeof origin === "string") ? origin : buildPublicUrl("", req);
 
       const secureToken = TokenService.generateToken(beneficiaryId, beneficiary.tokenVersion || 1);
       const secureLink = `${customDomain}/?token=${secureToken}`;

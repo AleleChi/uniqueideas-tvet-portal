@@ -99,53 +99,109 @@ export const buildSanitizedFilename = (beneficiary: any, docType: string, ext: s
 };
 
 /**
- * Sends compiled PDF or gracefully falls back to HTML container if Puppeteer fails
+ * Resiliently resolves a beneficiary's underlying database system UUID.
+ * Parses input tokens; if a custom ID or mask format is matched, 
+ * it queries the database (such as custom fields, profile, or custom identifier columns) 
+ * to find and return the clean, matching UUID.
+ */
+export async function resolveBeneficiaryIdResiliently(idOrToken: string): Promise<string> {
+  if (!idOrToken) return idOrToken;
+  
+  const cleanToken = idOrToken.trim();
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanToken);
+  if (isUuid) {
+    return cleanToken;
+  }
+
+  const pool = getPgPool();
+  if (pool) {
+    try {
+      // 1. Check if it's stored in admissions fields
+      const resAdm = await pool.query(
+        "SELECT beneficiary_id FROM admissions WHERE admission_ref = $1 OR admission_form_ref = $1 LIMIT 1",
+        [cleanToken]
+      );
+      if (resAdm.rows.length > 0) {
+        return resAdm.rows[0].beneficiary_id;
+      }
+
+      // 2. Lookup in beneficiaries columns
+      const resBenef = await pool.query(
+        "SELECT id FROM beneficiaries WHERE id = $1 OR reference_number = $1 LIMIT 1",
+        [cleanToken]
+      );
+      if (resBenef.rows.length > 0) {
+        return resBenef.rows[0].id;
+      }
+
+      // 3. Check trainee_profiles for tvet_id matching
+      const resProfile = await pool.query(
+        "SELECT beneficiary_id FROM trainee_profiles WHERE tvet_id = $1 LIMIT 1",
+        [cleanToken]
+      );
+      if (resProfile.rows.length > 0) {
+        return resProfile.rows[0].beneficiary_id;
+      }
+    } catch (e) {
+      console.error("[resolveBeneficiaryIdResiliently] DB lookup error:", e);
+    }
+  }
+
+  return cleanToken;
+}
+
+/**
+ * Sends compiled PDF, DOCX, or dynamically matched images, assigning proper MIME types on transmission.
  */
 export const sendDocumentResponse = (res: any, data: Buffer | string, beneficiary: any, type: string, inline: boolean) => {
-  const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
+  let buffer: Buffer;
+  
+  // Resolve base64 strings or binary buffers into robust memory streams cleanly
+  if (Buffer.isBuffer(data)) {
+    buffer = data;
+  } else if (typeof data === "string" && data.startsWith("data:")) {
+    const parts = data.split(",");
+    const base64Data = parts[1] || parts[0];
+    buffer = Buffer.from(base64Data, "base64");
+  } else if (typeof data === "string" && (data.startsWith("/") || /^[a-zA-Z0-9+/=]+$/.test(data.substring(0, 100)))) {
+    buffer = Buffer.from(data, "base64");
+  } else {
+    buffer = Buffer.from(data || "");
+  }
+
   const signatureAscii = buffer.toString("ascii", 0, 5);
   
   let isRealPdf = false;
   let mime = "application/pdf";
   let ext = "pdf";
 
-  // Check file signature (magic numbers) to determine MIME type dynamically!
+  // Check file signature (magic numbers / headers) to assign correct MIME types dynamically
   if (buffer.length >= 4 && signatureAscii.startsWith("%PDF-")) {
     isRealPdf = true;
     mime = "application/pdf";
     ext = "pdf";
   } else if (buffer.length >= 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
-    // PNG file
     mime = "image/png";
     ext = "png";
   } else if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
-    // JPEG file
     mime = "image/jpeg";
     ext = "jpg";
+  } else if (buffer.length >= 4 && buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38) {
+    mime = "image/gif";
+    ext = "gif";
   } else if (buffer.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b && buffer[2] === 0x03 && buffer[3] === 0x04) {
-    // PKZip / Word Docx file
     mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
     ext = "docx";
   }
 
   const filename = buildSanitizedFilename(beneficiary, type || "document", ext);
 
-  console.log(`[PIPELINE TRACE] STAGE 4 - DOWNLOAD RESPONSE HEADERS: Setting transport headers for candidate '${beneficiary.id}'. Filename: '${filename}', mime: '${mime}', size: ${buffer.length} bytes, inline: ${inline}`);
-  if (inline) {
-    console.log(`[PIPELINE TRACE] STAGE 5 - PREVIEW TITLE: Browser preview rendering title expected from inline content-disposition header: '${filename}'`);
-  }
+  console.log(`[PIPELINE TRACE] SECURE FILE INGRESS MATCHED: Filename: '${filename}', resolved mime: '${mime}', size: ${buffer.length} bytes, inline: ${inline}`);
 
-  console.log({
-    filename,
-    mime,
-    size: buffer.length,
-    header: buffer.slice(0, 50).toString("hex")
-  });
-
-  const isAllowedFormat = isRealPdf || mime.startsWith("image/") || ext === "docx";
+  const isAllowedFormat = isRealPdf || mime.startsWith("image/") || ext === "docx" || mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
   if (!isAllowedFormat) {
-    console.error(`[File Audit REJECTED] Unknown file type or corruption. Signature was: '${signatureAscii}'. Rejecting transmission. Filename: ${filename}`);
+    console.error(`[File Audit REJECTED] Unknown file signature or binary corruption. Magic header: '${signatureAscii}'. Rejecting transmission. Filename: ${filename}`);
     res.status(500);
     res.setHeader("Content-Type", "application/json");
     return res.json({
@@ -1858,7 +1914,7 @@ app.get("/api/export/reports/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADM
 app.get("/api/admissions/email-health", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), AdmissionController.getEmailHealth);
 app.post("/api/admissions/send-offer", requireAuth, AdmissionController.sendOffer);
 app.get("/api/admissions/validate-token", AdmissionController.validateToken);
-app.get("/api/admissions/secure-link", requireAuth, AdmissionController.getSecureLink);
+app.get("/api/admissions/secure-link", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), AdmissionController.getSecureLink);
 app.post("/api/admissions/submit-response", AdmissionController.submitResponse);
 function isValidTransition(oldStatus: string | undefined, newStatus: string): boolean {
   if (oldStatus === newStatus) return true;
@@ -9934,63 +9990,112 @@ app.post("/api/dispatches/send", requireAuth, async (req, res) => {
     const operator = (req as any).user?.email || "Admin Administrator";
     const baseUrl = buildPublicUrl("", req);
 
-    console.log(`[Dispatch Manager] Bulk dispatch initialize: ${beneficiaryIds.length} beneficiaries, type=${documentType}`);
+    console.log(`[Dispatch Manager] Bulk idempotent dispatch initialize: ${beneficiaryIds.length} beneficiaries, type=${documentType}`);
 
     const resultLogs: any[] = [];
-    
-    // Sequential high safety memory iteration loop
+    const pool = getPgPool();
+
+    if (!pool) {
+      return res.status(500).json({ error: "PostgreSQL Database pool is not active or initialized." });
+    }
+
+    // Process each beneficiary with robust database transactions, row-level locks, and concurrency protection
     for (const bId of beneficiaryIds) {
-      const beneficiary = await DbRepo.getBeneficiaryById(bId);
-      if (!beneficiary) {
-        resultLogs.push({ beneficiaryId: bId, success: false, error: "Beneficiary lookup failure." });
-        continue;
-      }
+      const client = await pool.connect();
+      try {
+        // Open explicit transaction
+        await client.query("BEGIN");
 
-      const bStatus = beneficiary.beneficiaryStatus || "ACTIVE";
-      if (!["ACTIVE", "COMPLETED"].includes(bStatus)) {
-        resultLogs.push({ beneficiaryId: bId, success: false, error: "This beneficiary is not eligible for dispatch operations due to current inactive lifecycle status." });
-        continue;
-      }
+        // Implement row-level database locking to intercept and block rapid, concurrent click signals
+        const benefLock = await client.query(
+          "SELECT id, email, beneficiary_status FROM beneficiaries WHERE id = $1 FOR UPDATE",
+          [bId]
+        );
 
-      const emailAddress = beneficiary.email;
-      if (!emailAddress) {
-        resultLogs.push({ beneficiaryId: bId, success: false, error: "email_address not declared in trainee profile." });
-        continue;
-      }
-
-      // Check if document exits, if not auto generate it!
-      const generatedDocs = await DbRepo.getGeneratedDocuments(bId);
-      let targetDoc = generatedDocs.find(d => d.documentType === documentType);
-      
-      if (!targetDoc) {
-        // Auto compile baseline document
-        console.log(`[Auto-Gen Sandbox compile] ${documentType} not found for ${bId}. Launching generation...`);
-        try {
-          targetDoc = await DocumentService.generateDocument(bId, documentType as any, operator, false);
-        } catch (e: any) {
-          resultLogs.push({ beneficiaryId: bId, success: false, error: `Document compile failure: ${e.message}` });
+        if (benefLock.rows.length === 0) {
+          await client.query("ROLLBACK");
+          resultLogs.push({ beneficiaryId: bId, success: false, error: "Trainee registry lookup failure." });
           continue;
         }
+
+        const beneficiary = benefLock.rows[0];
+        const emailAddress = beneficiary.email;
+        const bStatus = beneficiary.beneficiary_status || "ACTIVE";
+
+        if (!["ACTIVE", "COMPLETED"].includes(bStatus)) {
+          await client.query("ROLLBACK");
+          resultLogs.push({ beneficiaryId: bId, success: false, error: "Beneficiary record is currently ineligible for dispatch due to inactive status." });
+          continue;
+        }
+
+        if (!emailAddress) {
+          await client.query("ROLLBACK");
+          resultLogs.push({ beneficiaryId: bId, success: false, error: "email_address not declared in trainee profile." });
+          continue;
+        }
+
+        // Execute idempotency check for active dispatches of the same document type
+        const activeDispatchesLock = await client.query(
+          `SELECT id, status FROM document_dispatches 
+           WHERE beneficiary_id = $1 AND document_type = $2 AND status IN ('QUEUED', 'PROCESSING', 'SENDING') 
+           FOR UPDATE`,
+          [bId, documentType]
+        );
+
+        if (activeDispatchesLock.rows.length > 0) {
+          // Identical processing dispatch is active; reject, rollback, and return HTTP 409 limit signal
+          await client.query("ROLLBACK");
+          return res.status(409).json({
+            error: "IDENTICAL_DISPATCH_ACTIVE",
+            message: `A dispatch process of type '${documentType}' for beneficiary '${bId}' is already registered in a processing state. Transmissions are blocked to prevent duplicate email blasts.`
+          });
+        }
+
+        // Commit safety checks transaction
+        await client.query("COMMIT");
+
+        // Check if document exists; if not, compile baseline document inside the sandbox
+        const generatedDocs = await DbRepo.getGeneratedDocuments(bId);
+        let targetDoc = generatedDocs.find(d => d.documentType === documentType);
+
+        if (!targetDoc) {
+          console.log(`[Auto-Gen Sandbox compile] ${documentType} not found for ${bId}. Launching generation...`);
+          try {
+            targetDoc = await DocumentService.generateDocument(bId, documentType as any, operator, false);
+          } catch (e: any) {
+            resultLogs.push({ beneficiaryId: bId, success: false, error: `Document compile failure: ${e.message}` });
+            continue;
+          }
+        }
+
+        // Create new Dispatch item log
+        const dispatch = await DocumentDeliveryService.createDispatch(
+          bId,
+          documentType,
+          emailAddress,
+          targetDoc ? targetDoc.id : undefined
+        );
+
+        // Execute single send dispatch via mail server
+        const processed = await DocumentDeliveryService.executeDispatch(dispatch.id, baseUrl);
+
+        resultLogs.push({
+          beneficiaryId: bId,
+          dispatchId: dispatch.id,
+          status: processed.status,
+          success: processed.status === "SENT",
+          error: processed.failureReason
+        });
+
+      } catch (err: any) {
+        try {
+          await client.query("ROLLBACK");
+        } catch (rErr) {}
+        console.error(`[Dispatch Manager Engine] Aborted dispatch loop for ${bId}:`, err);
+        resultLogs.push({ beneficiaryId: bId, success: false, error: err.message });
+      } finally {
+        client.release();
       }
-
-      // Create new Dispatch item log
-      const dispatch = await DocumentDeliveryService.createDispatch(
-        bId,
-        documentType,
-        emailAddress,
-        targetDoc ? targetDoc.id : undefined
-      );
-
-      // Execute Single Send Dispatch
-      const processed = await DocumentDeliveryService.executeDispatch(dispatch.id, baseUrl);
-
-      resultLogs.push({
-        beneficiaryId: bId,
-        dispatchId: dispatch.id,
-        status: processed.status,
-        success: processed.status === "SENT",
-        error: processed.failureReason
-      });
     }
 
     res.json({
