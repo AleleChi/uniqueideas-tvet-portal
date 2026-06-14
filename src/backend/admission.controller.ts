@@ -15,6 +15,7 @@ import { buildSanitizedFilename } from "./pdfTraceAudit";
 import JSZip from "jszip";
 import { buildPublicUrl } from "../config/api";
 import { AuthenticatedRequest } from "./auth.middleware";
+import { OfferService } from "./offer.service";
 
 
 export class AdmissionController {
@@ -33,7 +34,7 @@ export class AdmissionController {
   }
 
   /**
-   * Controller for Admin endpoint to dispatch letters and send email notification
+   * Controller for Admin/TSP/STA endpoint to dispatch letters and send email notification
    * POST /api/admissions/send-offer
    */
   static async sendOffer(req: Request, res: Response) {
@@ -41,6 +42,49 @@ export class AdmissionController {
       const { beneficiaryId, origin } = req.body;
       if (!beneficiaryId) {
         return res.status(400).json({ error: "Missing required parameter: beneficiaryId" });
+      }
+
+      // Check user authorization & scope isolation
+      const authReq = req as AuthenticatedRequest;
+      const user = authReq.user;
+      if (!user) {
+        return res.status(401).json({ error: "Access denied. Authentication required to view or dispatch offers." });
+      }
+
+      // Query candidate database record first
+      const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
+      if (!beneficiary) {
+        return res.status(404).json({ error: `Beneficiary candidate '${beneficiaryId}' not found in registry.` });
+      }
+
+      // Enforce multi-tier role scope check
+      const isFederal = user.role === "SUPER_ADMIN" || 
+                        user.role === "FED" || 
+                        user.role.startsWith("FED") || 
+                        user.role.startsWith("FEDERAL");
+
+      if (!isFederal) {
+        const isStaUser = user.role === "STA" || user.role.startsWith("STA") || user.role.includes("STATE");
+        const isTspUser = user.role === "TSP" || user.role.startsWith("TSP") || user.role === "REVIEW_OFFICER" || user.role === "ADMIN_OFFICER";
+
+        if (isTspUser) {
+          const userTspId = user.tspId || "00000000-0000-0000-0000-000000000001";
+          const bTspId = beneficiary.tspId || "00000000-0000-0000-0000-000000000001";
+          if (bTspId !== userTspId) {
+            console.warn(`[AdmissionController] Scoping Denied: TSP User ${user.email} (TSP: ${userTspId}) tried to send offer to beneficiary in TSP: ${bTspId}`);
+            return res.status(403).json({ error: "Access Denied: Tenant isolation active. This beneficiary belongs to another organization." });
+          }
+        } else if (isStaUser) {
+          const userStateId = user.stateId || "state_imo_id_default";
+          const bStateId = beneficiary.stateId || "state_imo_id_default";
+          if (bStateId !== userStateId) {
+            console.warn(`[AdmissionController] Scoping Denied: STA User ${user.email} (State: ${userStateId}) tried to send offer to beneficiary in State: ${bStateId}`);
+            return res.status(403).json({ error: "Access Denied: State division isolation active. This beneficiary belongs to another State scope." });
+          }
+        } else {
+          console.warn(`[AdmissionController] Role Denied: User ${user.email} with role ${user.role} is not authorized to dispatch offers.`);
+          return res.status(403).json({ error: "Access Denied: You do not hold clearance to view or dispatch provisional offer notifications." });
+        }
       }
 
       // Automatically construct origin domain if not provided, sanitizing out any preview environments
@@ -63,7 +107,8 @@ export class AdmissionController {
       const safeOrigin = (origin && typeof origin === "string" && !isPreviewOrLocal(origin)) ? origin : undefined;
       const customDomain = safeOrigin || buildPublicUrl("", req);
 
-      const outcome = await AdmissionService.sendAdmissionOffer(beneficiaryId, customDomain);
+      // Invoke the single-source-of-truth service for offer dispatch
+      const outcome = await OfferService.sendOffer(beneficiaryId, customDomain);
       return res.status(200).json({ 
         success: outcome.success, 
         message: outcome.success 

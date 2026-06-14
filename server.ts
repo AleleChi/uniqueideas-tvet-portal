@@ -1856,7 +1856,7 @@ app.get("/api/export/reports/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADM
 });
 
 app.get("/api/admissions/email-health", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), AdmissionController.getEmailHealth);
-app.post("/api/admissions/send-offer", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), AdmissionController.sendOffer);
+app.post("/api/admissions/send-offer", requireAuth, AdmissionController.sendOffer);
 app.get("/api/admissions/validate-token", AdmissionController.validateToken);
 app.get("/api/admissions/secure-link", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), AdmissionController.getSecureLink);
 app.post("/api/admissions/submit-response", AdmissionController.submitResponse);
