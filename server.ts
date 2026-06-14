@@ -1940,14 +1940,23 @@ app.get("/api/admissions/validate-token", async (req: any, res: any) => {
       return res.status(404).json({ error: "Candidate matching the secure token session could not be located." });
     }
 
-    // Check token version
-    const tokenVersion = decoded.tokenVersion !== undefined ? decoded.tokenVersion : 1;
-    const bTokenVersion = beneficiary.tokenVersion !== undefined ? beneficiary.tokenVersion : 1;
-    if (tokenVersion !== bTokenVersion) {
-      return res.status(401).json({ error: "TOKEN_REVOKED: This portal or admission token has been revoked due to administrative rollback or status update." });
-    }
+    // ─────────────────────────────────────────────────────────────────────────
+    // TOKEN VERSION CHECK — INTENTIONALLY REMOVED FOR OFFER-ACCEPTANCE TOKENS
+    //
+    // Previously this block rejected the token if the DB tokenVersion didn't
+    // match the version embedded in the token payload.  This caused every student
+    // acceptance link to silently break whenever an admin performed a workflow
+    // rollback, form unlock, or status update — all of which bump tokenVersion.
+    //
+    // Offer-acceptance link validity is governed solely by the token's embedded
+    // `expires` timestamp (checked inside TokenService.verifyToken above) and
+    // the 10-day dispatch window below.  tokenVersion is now audit-only.
+    // ─────────────────────────────────────────────────────────────────────────
 
-    // Validate 10-day provisional offer expiration window
+    // Validate 10-day provisional offer expiration window.
+    // Primary source: the token's own embedded expiry (already checked by verifyToken).
+    // Secondary source: dispatch record sent_at — used as ground-truth fallback
+    // in case the token was regenerated after the original send.
     let sentTime = beneficiary.admissionLetterSentAt ? new Date(beneficiary.admissionLetterSentAt).getTime() : null;
 
     if (pool) {
@@ -1967,9 +1976,8 @@ app.get("/api/admissions/validate-token", async (req: any, res: any) => {
     }
 
     if (sentTime) {
-      const expiresTime = sentTime + (10 * 24 * 60 * 60 * 1000); // 10 days
+      const expiresTime = sentTime + (10 * 24 * 60 * 60 * 1000); // 10 days from send
       if (Date.now() > expiresTime) {
-        // NON-DESTRUCTIVE: Do not update status on disk in a validation handler
         return res.status(403).json({
           error: "OFFER_EXPIRED",
           message: "The 10-day provisional offer letter acceptance window has elapsed. This offer is permanently locked as EXPIRED and cannot be accessed."

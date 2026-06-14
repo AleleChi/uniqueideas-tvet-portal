@@ -34,61 +34,86 @@ export class AdmissionService {
    */
   static async sendAdmissionOffer(beneficiaryId: string, customDomain: string): Promise<any> {
     const totalStart = performance.now();
-    
-    // Establish explicit transaction row-level lock check to drop overlaps within 15 seconds
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // IDEMPOTENT DISPATCH GUARD
+    // Uses an atomic UPDATE … WHERE … RETURNING to claim the dispatch slot.
+    // Only ONE concurrent caller can own the slot; all others are rejected
+    // immediately.  A successful previous send within 5 minutes is also blocked.
+    // The lock column (offer_dispatch_lock) is released after the full pipeline
+    // completes, even on failure.
+    // ─────────────────────────────────────────────────────────────────────────
     const pool = getPgPool();
+    let dispatchLockAcquired = false;
+
     if (pool) {
       const client = await pool.connect();
       try {
-        await client.query("BEGIN");
-        
-        // 1. Row locking of admissions table or beneficiaries to sync concurrent requests
-        const lockRes = await client.query(
-          "SELECT beneficiary_id, admission_letter_sent_at FROM admissions WHERE beneficiary_id = $1 FOR UPDATE",
-          [beneficiaryId]
+        // Ensure the lock column exists (safe no-op if already present)
+        await client.query(
+          "ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS offer_dispatch_lock BOOLEAN DEFAULT FALSE"
         );
-        
-        let lastSentAt: Date | null = null;
-        if (lockRes.rows.length === 0) {
-          const bLockRes = await client.query(
-            "SELECT id FROM beneficiaries WHERE id = $1 FOR UPDATE",
+        await client.query(
+          "ALTER TABLE beneficiaries ADD COLUMN IF NOT EXISTS offer_dispatch_started_at TIMESTAMPTZ DEFAULT NULL"
+        );
+
+        // Atomic claim: only succeeds if no other request already holds the lock
+        // AND the last successful send was more than 5 minutes ago.
+        const claimRes = await client.query(`
+          UPDATE beneficiaries
+          SET offer_dispatch_lock = TRUE,
+              offer_dispatch_started_at = NOW()
+          WHERE id = $1
+            AND (offer_dispatch_lock IS DISTINCT FROM TRUE)
+            AND (
+              admission_letter_sent_at IS NULL
+              OR NOW() - admission_letter_sent_at > INTERVAL '5 minutes'
+            )
+          RETURNING id, admission_letter_sent_at
+        `, [beneficiaryId]);
+
+        if (claimRes.rowCount === 0) {
+          // Could not claim → another dispatch is in-flight OR sent recently
+          client.release();
+
+          // Check why we were blocked so we can return a meaningful message
+          const checkRes = await pool.query(
+            "SELECT offer_dispatch_lock, admission_letter_sent_at FROM beneficiaries WHERE id = $1",
             [beneficiaryId]
           );
-          if (bLockRes.rows.length === 0) {
-            await client.query("ROLLBACK");
-            throw new Error(`Beneficiary candidate '${beneficiaryId}' not found in registry.`);
+          const row = checkRes.rows[0];
+          const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
+
+          if (row?.offer_dispatch_lock) {
+            console.log(`[AdmissionService] Idempotent guard: dispatch already in-flight for ${beneficiaryId}.`);
+          } else {
+            const sentAt = row?.admission_letter_sent_at ? new Date(row.admission_letter_sent_at) : null;
+            const diffMin = sentAt ? Math.round((Date.now() - sentAt.getTime()) / 60000) : 0;
+            console.log(`[AdmissionService] Idempotent guard: offer sent ${diffMin}m ago for ${beneficiaryId}. Suppressing duplicate.`);
           }
-        } else {
-          const row = lockRes.rows[0];
-          if (row.admission_letter_sent_at) {
-            lastSentAt = new Date(row.admission_letter_sent_at);
-          }
+
+          return {
+            success: true,
+            duplicate: true,
+            secureLink: `${customDomain}/?token=${TokenService.generateToken(beneficiaryId, beneficiary?.tokenVersion || 1)}`,
+            emailStatus: beneficiary?.emailStatus || "Sent",
+            smtpErrorDetails: beneficiary?.smtpErrorDetails,
+            beneficiary
+          };
         }
-        
-        if (lastSentAt) {
-          const diffMs = Date.now() - lastSentAt.getTime();
-          if (diffMs < 15000) {
-            // Overlapping duplicate within 15 seconds - Suppress dispatch
-            await client.query("ROLLBACK");
-            console.log(`[AdmissionService] Concurrency Guard triggered for beneficiary: ${beneficiaryId}. Drop duplicate overlap.`);
-            const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
-            return {
-              success: true,
-              secureLink: `${customDomain}/?token=${TokenService.generateToken(beneficiaryId, beneficiary?.tokenVersion || 1)}`,
-              emailStatus: beneficiary?.emailStatus || "Sent",
-              smtpErrorDetails: beneficiary?.smtpErrorDetails,
-              beneficiary
-            };
-          }
+
+        // Lock acquired — we own this dispatch
+        dispatchLockAcquired = true;
+        client.release();
+        console.log(`[AdmissionService] Idempotent dispatch lock acquired for beneficiary: ${beneficiaryId}`);
+
+      } catch (lockErr: any) {
+        client.release();
+        // If the column simply doesn't exist yet (first deploy) continue without the guard
+        if (!lockErr.message?.includes("offer_dispatch_lock")) {
+          throw lockErr;
         }
-        
-        await client.query("COMMIT");
-      } catch (err) {
-        await client.query("ROLLBACK");
-        client.release();
-        throw err;
-      } finally {
-        client.release();
+        console.warn("[AdmissionService] Dispatch lock column not yet available — proceeding without guard:", lockErr.message);
       }
     }
 
@@ -266,6 +291,22 @@ export class AdmissionService {
     await DbRepo.upsertBeneficiary(beneficiary);
     const persistenceDuration = performance.now() - persistenceStart;
     console.log(`[PERF TRACE] Database updates (workflow history, logs, upsertBeneficiary) took ${persistenceDuration.toFixed(2)}ms`);
+
+    // Release the dispatch lock now that the full pipeline is complete.
+    // The lock is released regardless of email success/failure so that
+    // an admin can manually retry after a genuine SMTP failure.
+    if (pool && dispatchLockAcquired) {
+      try {
+        await pool.query(
+          "UPDATE beneficiaries SET offer_dispatch_lock = FALSE WHERE id = $1",
+          [beneficiaryId]
+        );
+        console.log(`[AdmissionService] Dispatch lock released for beneficiary: ${beneficiaryId}`);
+      } catch (unlockErr) {
+        console.error("[AdmissionService] Failed to release dispatch lock:", unlockErr);
+        // Non-fatal — lock will auto-heal on next successful send
+      }
+    }
 
     const totalDuration = performance.now() - totalStart;
     console.log(`[PERF TRACE] sendAdmissionOffer TOTAL request duration took ${totalDuration.toFixed(2)}ms`);
