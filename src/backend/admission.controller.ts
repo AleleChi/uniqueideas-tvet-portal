@@ -161,15 +161,12 @@ export class AdmissionController {
         return res.status(401).json({ error: "TOKEN_REVOKED: This portal or admission token has been revoked due to administrative rollback or status update." });
       }
 
-      // Check for 10-day link / offer expiration
+      // Check for 10-day link / offer expiration window
       if (beneficiary.admissionLetterSentAt) {
         const sentTime = new Date(beneficiary.admissionLetterSentAt).getTime();
         const expiresTime = sentTime + (10 * 24 * 60 * 60 * 1000); // 10 days
         if (Date.now() > expiresTime) {
-          if (beneficiary.admissionStatus !== "EXPIRED") {
-            beneficiary.admissionStatus = "EXPIRED";
-            await DbRepo.upsertBeneficiary(beneficiary);
-          }
+          // NON-DESTRUCTIVE: Do not execute disk writes like upsertBeneficiary inside a read operation.
           return res.status(403).json({
             error: "OFFER_EXPIRED",
             message: "The 10-day provisional offer letter acceptance window has elapsed. This offer is permanently locked as EXPIRED and cannot be accessed."
@@ -177,9 +174,7 @@ export class AdmissionController {
         }
       }
 
-      // Automatically record tracking Opened event when portal is opened
-      await AdmissionService.registerEmailOpened(resolvedId);
-
+      // NON-DESTRUCTIVE: Do not execute registerEmailOpened write cycles upon GET validation
       // Return sanitized candidate fields suitable for public view (excluding core admin values if needed)
       return res.status(200).json({
         valid: true,
