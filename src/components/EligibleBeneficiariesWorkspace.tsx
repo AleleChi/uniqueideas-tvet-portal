@@ -20,6 +20,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   LineChart, Line, PieChart, Pie, Cell
 } from "recharts";
+import { SecureBeneficiaryImage } from "./SecureBeneficiaryImage";
 
 interface EligibleBeneficiariesWorkspaceProps {
   session?: { username?: string; role?: string; email?: string; tenantId?: string; tspId?: string; stateId?: string; city?: string; } | null;
@@ -32,42 +33,142 @@ const PREFERRED_AGE_MAX = 35;
 
 // Phase 1: High Fidelity Image Fallback Component
 export function ImageWithFallback({ b, className, sizeClass = "w-10 h-10 text-xs" }: { b: any; className?: string; sizeClass?: string }) {
-  const [error, setError] = useState(false);
-  
-  const photoSrc = useMemo(() => {
-    if (!b) return "";
-    if (b.photo && (b.photo.startsWith("data:image") || b.photo.length > 200)) {
-      return b.photo;
-    }
-    if (b.photo_url) return b.photo_url;
-    if (b.passport_url) return b.passport_url;
-    if (b.profile_photo_url) return b.profile_photo_url;
-    if (b.photo) return b.photo;
-    return `${API_BASE_URL}/api/beneficiaries/${b.id}/photo/raw`;
-  }, [b]);
+  const nameStr = b ? (b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim() || "Candidate") : "Candidate";
+  const initials = nameStr.split(" ").map((n: string) => n[0]).join("").slice(0, 2).toUpperCase() || "TV";
 
-  if (photoSrc && !error) {
+  if (!b) {
+    return (
+      <div className={`${className} flex items-center justify-center font-bold font-mono bg-slate-100 border border-slate-200 text-slate-500 uppercase ${sizeClass}`}>
+        {initials}
+      </div>
+    );
+  }
+
+  // If inlined base64
+  if (b.photo && (b.photo.startsWith("data:image") || b.photo.length > 200)) {
     return (
       <img
         id={`photo-${b.id}`}
-        src={photoSrc}
+        src={b.photo}
         referrerPolicy="no-referrer"
-        alt={b.fullName || ""}
+        alt={nameStr}
         className={`${className} object-cover`}
-        onError={() => setError(true)}
       />
+    );
+  }
+
+  const hasPhotoIndicator = !!(b.photo || b.photo_url || b.passport_url || b.profile_photo_url);
+
+  if (!hasPhotoIndicator) {
+    return (
+      <div id={`fallback-${b.id}`} className={`${className} flex items-center justify-center font-bold font-mono bg-indigo-50 border border-indigo-200 text-indigo-700 uppercase ${sizeClass}`}>
+        {initials}
+      </div>
+    );
+  }
+
+  // Secure async photo loader
+  return (
+    <SecureBeneficiaryImage
+      id={b.id}
+      className={`${className} object-cover`}
+      alt={nameStr}
+      fallbackInitials={initials}
+    />
+  );
+}
+
+export function FullProfileImage({ b, className }: { b: any; className?: string }) {
+  if (!b) {
+    return (
+      <div className="flex flex-col items-center justify-center p-2 text-center text-slate-400 font-bold font-mono text-[9px] bg-slate-100/50 border border-dashed border-slate-200 w-full h-full select-none">
+        <User className="w-5 h-5 text-slate-300 mb-0.5" />
+        <span>No beneficiary photograph uploaded</span>
+      </div>
     );
   }
 
   const nameStr = b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim() || "Candidate";
   const initials = nameStr.split(" ").map((n: string) => n[0]).join("").slice(0, 2).toUpperCase() || "TV";
-  
+
+  // If inlined base64
+  if (b.photo && (b.photo.startsWith("data:image") || b.photo.length > 200)) {
+    return (
+      <img
+        src={b.photo}
+        referrerPolicy="no-referrer"
+        alt={nameStr}
+        className={`${className} object-cover`}
+      />
+    );
+  }
+
+  const hasPhotoIndicator = !!(b.photo || b.photo_url || b.passport_url || b.profile_photo_url);
+
+  if (!hasPhotoIndicator) {
+    return (
+      <div className="flex flex-col items-center justify-center p-2 text-center text-slate-400 font-bold font-mono text-[9px] bg-slate-100/50 border border-dashed border-slate-200 w-full h-full select-none">
+        <User className="w-5 h-5 text-slate-300 mb-0.5" />
+        <span>No beneficiary photograph uploaded</span>
+      </div>
+    );
+  }
+
+  // Secure photo query
   return (
-    <div id={`fallback-${b.id}`} className={`${className} flex items-center justify-center font-bold font-mono bg-indigo-50 border border-indigo-200 text-indigo-700 uppercase ${sizeClass}`}>
-      {initials}
-    </div>
+    <SecureBeneficiaryImage
+      id={b.id}
+      className={`${className} object-cover w-full h-full rounded-lg`}
+      alt={nameStr}
+      fallbackInitials={initials}
+    />
   );
 }
+
+// Phase 4: Dynamic Email Templates and auto-population per workspace rules
+export const getEmailTemplateContent = (templateKey: string, b: any) => {
+  if (!b) return { subject: "", body: "" };
+  const name = b.fullName || `${b.first_name || ""} ${b.last_name || ""}`.trim() || "Candidate";
+  const email = b.email || "";
+  const program = b.program || b.programme || "IDEAS-TVET Program";
+  const sector = b.skill_sector || b.skillSector || "Information and Communication Technology";
+  const skill = b.skill || "Computer Hardware & Cell Phone Repairs";
+  const tsp = b.tsp || b.tsp_name || "Unique Nigeria Technology Ltd";
+  const state = b.state || "Imo State";
+
+  switch (templateKey) {
+    case "offer_letter":
+      return {
+        subject: `Official Admission Offer Letter - ${program}`,
+        body: `Dear ${name},\n\nWe are pleased to offer you provisional admission to the ${program} under the ${sector} sector (Specialization: ${skill}). Your training will be conducted by ${tsp} in ${state}.\n\nPlease review and complete your student registration form as soon as possible.\n\nRespectfully,\nNational TVET Registry Center`
+      };
+    case "acceptance_letter":
+      return {
+        subject: `Acceptance of Admission & Enrollment Confirmation - ${program}`,
+        body: `Dear ${name},\n\nThis confirms receipt and approval of your Acceptance of Admission for the ${program}.\n\nYou are now officially enrolled under the ${sector} track. Your assigned training provider is ${tsp}, located in ${state}.\n\nCongratulations and best regards,\nNational TVET Board`
+      };
+    case "reminder":
+      return {
+        subject: "Urgent Action Required: Provisional Admission Onboarding Deadline",
+        body: `Dear ${name},\n\nThis is an official administrative reminder from the National TVET board regarding your pending admission onboarding for ${skill}.\n\nPlease access the portal immediately and accept the pending provisional covenant letters to secure your slot at ${tsp}.\n\nRespectfully,\nNational TVET Registry Center`
+      };
+    case "missing_docs":
+      return {
+        subject: "Action Required: Missing Onboarding Documents Alert",
+        body: `Dear ${name},\n\nDuring our recent audit of your profile in ${state}, we noticed that some of your required identification or biometric files are missing. Can you please upload them to secure your registration for ${skill} as soon as possible to avoid forfeiture.\n\nRespectfully,\nAdmissions Compliance Team`
+      };
+    case "resumption":
+      return {
+        subject: `Notice of Training Resumption - ${tsp}`,
+        body: `Dear ${name},\n\nWe are pleased to notify you that active TVET training sessions for the ${program} (${skill}) are scheduled to resume shortly at ${tsp} in ${state}.\n\nPlease ensure you are present and have completed all initial onboarding deliverables before resumption.\n\nRespectfully,\nTraining Operations Desk\n${tsp}`
+      };
+    default:
+      return {
+        subject: "",
+        body: ""
+      };
+  }
+};
 
 export default function EligibleBeneficiariesWorkspace({
   session,
@@ -175,6 +276,18 @@ export default function EligibleBeneficiariesWorkspace({
 
   // Auditing Simulation & Role Management (Phase 1)
   const [debugRole, setDebugRole] = useState<"FED" | "STA" | "TSP" | "">("");
+  const [isAuditMode, setIsAuditMode] = useState<boolean>(false);
+
+  // Action Dropdown & Bulk Email states (Phases 3, 4, 5, 6)
+  const [showBulkEmailComposer, setShowBulkEmailComposer] = useState(false);
+  const [bulkEmailTemplate, setBulkEmailTemplate] = useState("custom");
+  const [bulkEmailSubject, setBulkEmailSubject] = useState("");
+  const [bulkEmailBody, setBulkEmailBody] = useState("");
+
+  const isRealSuperOrFedAdmin = useMemo(() => {
+    const r = session?.role?.toUpperCase() || "";
+    return ["SUPER_ADMIN", "FED_ADMIN"].includes(r);
+  }, [session]);
 
   const activeRole = useMemo(() => {
     if (debugRole) return debugRole;
@@ -531,6 +644,62 @@ export default function EligibleBeneficiariesWorkspace({
     }
   };
 
+  const handleGenerateAcceptanceSingle = async (b: any) => {
+    showToast(`Generating provisional acceptance letter template...`, "info");
+    try {
+      const res = await authFetch(`${API_BASE_URL}/api/beneficiaries/${b.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          admissionStatus: "Acceptance Letter Generated",
+          updatedAt: new Date().toISOString()
+        })
+      });
+      if (res.ok) {
+        showToast(`Provisional acceptance letter generated for ${b.fullName}.`, "success");
+        fetchBeneficiariesList();
+      } else {
+        showToast("Acceptance letter generation failed.", "error");
+      }
+    } catch (err: any) {
+      showToast(`Acceptance generation error: ${err.message}`, "error");
+    }
+  };
+
+  const handleSendAcceptanceSingle = async (b: any) => {
+    showToast(`Sending Acceptance Notification to ${b.email}...`, "info");
+    try {
+      const res = await authFetch(`${API_BASE_URL}/api/beneficiaries/${b.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          admissionStatus: "Approved",
+          status: ProgramStatus.VERIFIED,
+          updatedAt: new Date().toISOString()
+        })
+      });
+      
+      if (res.ok) {
+        await authFetch(`${API_BASE_URL}/api/email/test-send`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            recipient: b.email,
+            subject: "Official Admission Acceptance Confirmation - National TVET Portal",
+            body: `Dear ${b.fullName},\n\nWe are pleased to inform you that your provisional acceptance letter has been verified and processed by the National TVET board. You are now officially ENROLLED as a participant under the mobile hardware/cell repairs program.\n\nCongratulations and best regards,\nNational TVET Board`
+          })
+        });
+
+        showToast(`Acceptance Notification dispatched to ${b.fullName} successfully!`, "success");
+        fetchBeneficiariesList();
+      } else {
+        showToast("Outbound routing failed.", "error");
+      }
+    } catch (err: any) {
+      showToast(`Transmission error: ${err.message}`, "error");
+    }
+  };
+
   // --- COMPLIANCE ENGINE OPERATIONS (Phase 8) ---
   const handleSuspendComplianceSubmit = async () => {
     if (!complianceJustification.trim()) {
@@ -844,6 +1013,76 @@ export default function EligibleBeneficiariesWorkspace({
     fetchBeneficiariesList();
   };
 
+  // Custom Bulk Email Notification presets sender (Phase 4 & Phase 6)
+  const handleSendBulkCustomEmail = async () => {
+    const targets = enrichedBeneficiaries.filter(b => selectedRowIds.includes(b.id));
+    if (targets.length === 0) {
+      showToast("Please select at least one candidate row to send bulk emails.", "warning");
+      return;
+    }
+    if (!bulkEmailSubject.trim() || !bulkEmailBody.trim()) {
+      showToast("Both subject and body message are required for outbound dispatch.", "warning");
+      return;
+    }
+
+    setIsBulkDispatching(true);
+    let successCount = 0;
+    let failedCount = 0;
+
+    for (let i = 0; i < targets.length; i++) {
+      const b = targets[i];
+      setBulkDispatchStatus(`Transmitting custom communication ${i + 1} of ${targets.length} to ${b.fullName}...`);
+      try {
+        const program = b.program || b.programme || "IDEAS-TVET Program";
+        const sector = b.skill_sector || b.skillSector || "Information and Communication Technology";
+        const skill = b.skill || "Computer Hardware & Cell Phone Repairs";
+        const tspName = b.tsp || b.tsp_name || "Unique Nigeria Technology Ltd";
+
+        const mailBody = bulkEmailBody
+          .replace(/\[Name\]/g, b.fullName || "")
+          .replace(/\[beneficiary_name\]/g, b.fullName || "")
+          .replace(/\[email\]/g, b.email || "")
+          .replace(/\[Beneficiary ID\]/g, b.id || "")
+          .replace(/\[Programme\]/g, program)
+          .replace(/\[programme\]/g, program)
+          .replace(/\[Sector\]/g, sector)
+          .replace(/\[sector\]/g, sector)
+          .replace(/\[Skill\]/g, skill)
+          .replace(/\[skill\]/g, skill)
+          .replace(/\[TSP\]/g, tspName)
+          .replace(/\[tsp_name\]/g, tspName)
+          .replace(/\[State\]/g, b.state || "")
+          .replace(/\[state\]/g, b.state || "")
+          .replace(/\[LGA\]/g, b.city || "");
+
+        const res = await authFetch(`${API_BASE_URL}/api/email/test-send`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            recipient: b.email,
+            subject: bulkEmailSubject,
+            body: mailBody
+          })
+        });
+
+        if (res.ok) {
+          successCount++;
+        } else {
+          failedCount++;
+        }
+      } catch {
+        failedCount++;
+      }
+    }
+
+    setIsBulkDispatching(false);
+    setBulkDispatchStatus("");
+    setShowBulkEmailComposer(false);
+    showToast(`Bulk email transmission finalized: ${successCount} sent out, ${failedCount} failures logged.`, successCount > 0 ? "success" : "error");
+    setSelectedRowIds([]);
+    fetchBeneficiariesList();
+  };
+
   // Client-side secure CSV query view exporter (Phase 4)
   const exportFilterViewToCSV = () => {
     try {
@@ -1044,42 +1283,64 @@ export default function EligibleBeneficiariesWorkspace({
         </div>
 
         {/* Audit Simulation controls panel */}
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="bg-slate-50 border border-slate-200 p-1.5 rounded-lg flex items-center gap-1.5 font-mono text-[10px] font-bold shadow-xs">
-            <span className="text-[9px] uppercase text-slate-400 pl-1">Simulate Workspace:</span>
-            <button 
-              type="button" 
-              onClick={() => { setDebugRole("FED"); setViewMode("list"); }} 
-              className={`px-2 py-1 rounded font-bold transition-all ${activeRole === "FED" ? "bg-indigo-600 text-white shadow-xs" : "bg-white border hover:bg-slate-50 text-slate-600"}`}
-            >
-              FED
-            </button>
-            <button 
-              type="button" 
-              onClick={() => { setDebugRole("STA"); setViewMode("list"); }} 
-              className={`px-2 py-1 rounded font-bold transition-all ${activeRole === "STA" ? "bg-cyan-600 text-white shadow-xs" : "bg-white border hover:bg-slate-50 text-slate-600"}`}
-            >
-              STA
-            </button>
-            <button 
-              type="button" 
-              onClick={() => { setDebugRole("TSP"); setViewMode("list"); }} 
-              className={`px-2 py-1 rounded font-bold transition-all ${activeRole === "TSP" ? "bg-emerald-600 text-white shadow-xs" : "bg-white border hover:bg-slate-50 text-slate-600"}`}
-            >
-              TSP
-            </button>
-            {debugRole && (
-              <button 
-                type="button" 
-                onClick={() => { setDebugRole(""); setViewMode("list"); }} 
-                className="text-[9px] text-rose-500 hover:text-rose-700 font-bold px-1"
-                title="Reset simulation of session role"
-              >
-                Clear
-              </button>
+        {isRealSuperOrFedAdmin && (
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-slate-600 border border-slate-200 bg-white hover:bg-slate-50 px-2.5 py-1.5 rounded-lg transition-all shadow-xs">
+              <input 
+                type="checkbox"
+                checked={isAuditMode}
+                onChange={(e) => {
+                  setIsAuditMode(e.target.checked);
+                  if (!e.target.checked) {
+                    setDebugRole("");
+                    setViewMode("list");
+                  }
+                }}
+                className="rounded border-slate-305 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5"
+              />
+              <span className="font-mono text-[10px] uppercase font-bold tracking-wider">Audit Mode</span>
+            </label>
+
+            {isAuditMode && (
+              <div className="bg-slate-50 border border-slate-200 p-1.5 rounded-lg flex items-center gap-1.5 font-mono text-[10px] font-bold shadow-xs">
+                <span className="text-[9px] uppercase text-slate-400 pl-1">Simulate Workspace:</span>
+                <button 
+                  type="button" 
+                  onClick={() => { setDebugRole("FED"); setViewMode("list"); }} 
+                  className={`px-2 py-1 rounded font-bold transition-all ${activeRole === "FED" ? "bg-indigo-600 text-white shadow-xs" : "bg-white border hover:bg-slate-50 text-slate-600"}`}
+                >
+                  FED
+                </button>
+                <button 
+                  type="button" 
+                  onClick={() => { setDebugRole("STA"); setViewMode("list"); }} 
+                  className={`px-2 py-1 rounded font-bold transition-all ${activeRole === "STA" ? "bg-cyan-600 text-white shadow-xs" : "bg-white border hover:bg-slate-50 text-slate-605"}`}
+                >
+                  STA
+                </button>
+                <button 
+                  type="button" 
+                  onClick={() => { setDebugRole("TSP"); setViewMode("list"); }} 
+                  className={`px-2 py-1 rounded font-bold transition-all ${activeRole === "TSP" ? "bg-emerald-600 text-white shadow-xs" : "bg-white border hover:bg-slate-50 text-slate-600"}`}
+                >
+                  TSP
+                </button>
+                {debugRole && (
+                  <button 
+                    type="button" 
+                    onClick={() => { setDebugRole(""); setViewMode("list"); }} 
+                    className="text-[9px] text-rose-500 hover:text-rose-700 font-bold px-1"
+                    title="Reset simulation of session role"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
             )}
           </div>
-        
+        )}
+
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => fetchBeneficiariesList()}
             className="p-2 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg text-slate-500 font-bold text-xs cursor-pointer transition-colors"
@@ -1557,7 +1818,7 @@ export default function EligibleBeneficiariesWorkspace({
                       disabled={isBulkDispatching}
                       className="px-3 py-1.5 bg-indigo-100 hover:bg-indigo-200 border border-indigo-200 text-indigo-700 font-extrabold text-[11px] rounded-lg transition-colors cursor-pointer"
                     >
-                      Bulk Generate Letters
+                      Bulk Generate Offers
                     </button>
 
                     <button
@@ -1567,6 +1828,85 @@ export default function EligibleBeneficiariesWorkspace({
                     >
                       <Send className="w-3 h-3" />
                       {isBulkDispatching ? "Dispatching..." : "Bulk Send Offers"}
+                    </button>
+
+                    <button
+                      onClick={async () => {
+                        setIsBulkDispatching(true);
+                        let done = 0;
+                        for (const b of targets) {
+                          setBulkDispatchStatus(`Generating acceptance letter for ${b.fullName}...`);
+                          try {
+                            await authFetch(`${API_BASE_URL}/api/beneficiaries/${b.id}`, {
+                              method: "PUT",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({
+                                admissionStatus: "Acceptance Letter Generated",
+                                updatedAt: new Date().toISOString()
+                              })
+                            });
+                            done++;
+                          } catch {}
+                        }
+                        setIsBulkDispatching(false);
+                        setBulkDispatchStatus("");
+                        showToast(`Bulk Acceptance Letter Generation complete: ${done} records successfully processed.`, "success");
+                        fetchBeneficiariesList();
+                      }}
+                      disabled={isBulkDispatching}
+                      className="px-3 py-1.5 bg-sky-100 hover:bg-sky-200 border border-sky-205 text-sky-700 font-extrabold text-[11px] rounded-lg transition-colors cursor-pointer"
+                    >
+                      Bulk Acceptance Letters
+                    </button>
+
+                    <button
+                      onClick={() => setShowBulkEmailComposer(!showBulkEmailComposer)}
+                      disabled={isBulkDispatching}
+                      className="px-3 py-1.5 bg-amber-55 hover:bg-amber-100 border border-amber-200 text-amber-805 font-extrabold text-[11px] rounded-lg transition-colors cursor-pointer flex items-center gap-1"
+                    >
+                      <Mail className="w-3 h-3" /> Bulk Email Dispatch
+                    </button>
+
+                    <button
+                      onClick={async () => {
+                        const nextStatus = window.prompt("Enter new Admission Status to apply to selected candidates (e.g. DRAFT, APPROVED, VERIFIED, REJECTED, CONFIRMED):");
+                        if (!nextStatus) return;
+                        const cleanStatus = nextStatus.trim().toUpperCase();
+                        if (!["DRAFT", "APPROVED", "VERIFIED", "REJECTED", "CONFIRMED"].includes(cleanStatus)) {
+                          showToast("Invalid status. Choose from: DRAFT, APPROVED, VERIFIED, REJECTED, CONFIRMED", "warning");
+                          return;
+                        }
+                        setIsBulkDispatching(true);
+                        let done = 0;
+                        for (const b of targets) {
+                          setBulkDispatchStatus(`Updating status for ${b.fullName} to ${cleanStatus}...`);
+                          try {
+                            const bodyUpdate: any = {
+                              admissionStatus: cleanStatus,
+                              updatedAt: new Date().toISOString()
+                            };
+                            if (cleanStatus === "APPROVED" || cleanStatus === "CONFIRMED") {
+                              bodyUpdate.status = ProgramStatus.VERIFIED;
+                            } else if (cleanStatus === "REJECTED") {
+                              bodyUpdate.status = ProgramStatus.FLAGGED;
+                            }
+                            await authFetch(`${API_BASE_URL}/api/beneficiaries/${b.id}`, {
+                              method: "PUT",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify(bodyUpdate)
+                            });
+                            done++;
+                          } catch {}
+                        }
+                        setIsBulkDispatching(false);
+                        setBulkDispatchStatus("");
+                        showToast(`Bulk Status Updates complete: ${done} records updated to ${cleanStatus}.`, "success");
+                        fetchBeneficiariesList();
+                      }}
+                      disabled={isBulkDispatching}
+                      className="px-3 py-1.5 bg-purple-100 hover:bg-purple-200 border border-purple-200 text-purple-700 font-extrabold text-[11px] rounded-lg transition-colors cursor-pointer"
+                    >
+                      Bulk Status Updates
                     </button>
 
                     <button
@@ -1615,6 +1955,88 @@ export default function EligibleBeneficiariesWorkspace({
                     </button>
                   </div>
                 </div>
+
+                {/* Collapsible Bulk Email Composer card */}
+                {showBulkEmailComposer && (
+                  <div className="bg-white border border-amber-200 rounded-xl p-4 mt-3 space-y-3 shadow-xs">
+                    <span className="text-[10px] uppercase font-mono tracking-wider font-extrabold text-amber-805 block">
+                      En masse Email Broadcast Desk (All {total} Selected)
+                    </span>
+                    <div className="space-y-2 text-xs">
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-500 block mb-1 font-mono">Mail Template Preset</label>
+                        <select 
+                          value={bulkEmailTemplate}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setBulkEmailTemplate(val);
+                            // We use the first beneficiary as a preview example to build the preset
+                            const previewB = targets[0] || {};
+                            const content = getEmailTemplateContent(val, previewB);
+                            if (val !== "custom") {
+                              setBulkEmailSubject(content.subject);
+                              // We use the raw placeholder version for bulk sending so we do the replace dynamically per beneficiary!
+                              const rawContentTable = {
+                                "offer_letter": `Dear [Name],\n\nWe are pleased to offer you provisional admission to the [Programme] under the [Sector] sector. Your training will be conducted by [TSP] in [State].\n\nPlease review and complete your student registration form as soon as possible.\n\nRespectfully,\nNational TVET Registry Center`,
+                                "acceptance_letter": `Dear [Name],\n\nThis confirms receipt and approval of your Acceptance of Admission. You are now officially enrolled under the [Sector] track. Your assigned training provider is [TSP], located in [State].\n\nCongratulations and best regards,\nNational TVET Board`,
+                                "reminder": `Dear [Name],\n\nThis is an official administrative reminder from the National TVET board regarding your pending admission onboarding.\n\nPlease access the portal immediately and accept the pending provisional covenant letters to secure your slot at [TSP].\n\nRespectfully,\nNational TVET Registry Center`,
+                                "missing_docs": `Dear [Name],\n\nDuring our recent audit of your profile in [State], we noticed that some of your required files are missing. Can you please upload them as soon as possible.\n\nRespectfully,\nAdmissions Compliance Team`,
+                                "resumption": `Dear [Name],\n\nWe are pleased to notify you that active TVET training sessions are scheduled to resume shortly at [TSP] in [State].\n\nPlease ensure you are present and have completed all initial onboarding deliverables.\n\nRespectfully,\nTraining Operations Desk\n[TSP]`
+                              };
+                              setBulkEmailBody((rawContentTable as any)[val] || "");
+                            } else {
+                              setBulkEmailSubject("");
+                              setBulkEmailBody("");
+                            }
+                          }}
+                          className="w-full bg-white border border-slate-200 text-xs py-1.5 px-2 rounded-lg text-slate-705 cursor-pointer font-bold"
+                        >
+                          <option value="custom">Custom Message (No Template)</option>
+                          <option value="offer_letter">Offer Letter Template</option>
+                          <option value="acceptance_letter">Acceptance Letter Template</option>
+                          <option value="reminder">Admission Reminder Template</option>
+                          <option value="missing_docs">Missing Documents Reminder Template</option>
+                          <option value="resumption">Training Resumption Notice Template</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-500 block mb-1 font-mono">Broadcast Subject</label>
+                        <input 
+                          type="text" 
+                          placeholder="Broadcast email subject header..."
+                          value={bulkEmailSubject}
+                          onChange={(e) => setBulkEmailSubject(e.target.value)}
+                          className="w-full bg-white border border-slate-200 text-xs py-1.5 px-2.5 rounded-lg text-slate-705 font-bold focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-500 block mb-1 font-mono">Custom Body (Supports placeholders: [Name], [Beneficiary ID], [State], [LGA], [TSP])</label>
+                        <textarea 
+                          rows={4}
+                          placeholder="Type raw correspondence instructions here..."
+                          value={bulkEmailBody}
+                          onChange={(e) => setBulkEmailBody(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 text-xs p-2.5 rounded-lg text-slate-705 focus:outline-none font-mono"
+                        />
+                      </div>
+                      <div className="flex justify-end gap-2 pt-1 border-t border-slate-100">
+                        <button 
+                          onClick={() => setShowBulkEmailComposer(false)}
+                          className="text-[10.5px] font-bold text-slate-450 hover:text-slate-650 cursor-pointer px-2.5 py-1"
+                        >
+                          Cancel
+                        </button>
+                        <button 
+                          onClick={handleSendBulkCustomEmail}
+                          disabled={isBulkDispatching}
+                          className="px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-[11px] rounded-lg shadow-sm cursor-pointer disabled:opacity-50 transition-colors"
+                        >
+                          Dispatch Bulk Broadcast
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {/* Grid analytics layout */}
                 <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 w-full pt-1">
@@ -1802,135 +2224,203 @@ export default function EligibleBeneficiariesWorkspace({
                           })()}
                         </td>
                         <td className="p-3 text-center">
-                          <div className="flex items-center justify-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleOpenSnapshot(b);
-                              }}
-                              className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] rounded font-bold cursor-pointer transition-colors"
-                              title="Preview candidate brief"
-                            >
-                              Preview
-                            </button>
+                          <div className="flex items-center justify-center">
+                            <div className="relative inline-block text-left">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveActionMenuId(activeActionMenuId === b.id ? null : b.id);
+                                }}
+                                className="px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 text-[11px] rounded-lg font-bold cursor-pointer transition-colors inline-flex items-center gap-1.5 shadow-2xs"
+                                title="Manage candidate portfolio, offer dispatch, & governance controls"
+                              >
+                                Actions
+                                <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
+                              </button>
 
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleOpenProfileDrawer(b);
-                              }}
-                              className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-[10px] rounded font-bold cursor-pointer transition-colors"
-                              title="Explore Portfolio Details"
-                            >
-                              Profile
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleGenerateOfferSingle(b);
-                              }}
-                              className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-[10px] border border-emerald-200 rounded font-bold cursor-pointer transition-colors"
-                              title="Generate Provisional Offer"
-                            >
-                              Generate Offer
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleSendOfferSingle(b);
-                              }}
-                              className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-[10.5px] rounded-md font-extrabold cursor-pointer transition-all duration-150 inline-flex items-center gap-1 shadow-sm"
-                              title="Send Offer Letter Dispatch Email"
-                            >
-                              <Send className="w-3 h-3" />
-                              Send Offer
-                            </button>
-
-                            {/* FED LEVEL AUDIT OVERRIDES */}
-                            {isFedUser && (
-                              <div className="relative inline-block text-left">
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setActiveActionMenuId(activeActionMenuId === b.id ? null : b.id);
-                                  }}
-                                  className="px-2 py-1 bg-rose-50 border border-slate-200 text-rose-700 hover:bg-rose-100 font-bold text-[10px] rounded cursor-pointer transition-all flex items-center gap-1"
-                                  title="Administrative Oversight Operations"
+                              {activeActionMenuId === b.id && (
+                                <div 
+                                  className="absolute right-0 mt-1.5 w-60 bg-white border border-slate-200 rounded-xl shadow-xl z-50 py-1.5 text-left text-xs font-semibold text-slate-700 animate-in fade-in slide-in-from-top-2 duration-150"
+                                  onClick={(e) => e.stopPropagation()}
                                 >
-                                  FED Controls
-                                  <ChevronDown className="w-3 h-3" />
-                                </button>
-
-                                {activeActionMenuId === b.id && (
-                                  <div className="absolute right-0 mt-1 w-56 bg-white border border-slate-200 rounded-xl shadow-xl z-50 py-1.5 text-left text-xs font-semibold text-slate-705 animate-in fade-in slide-in-from-top-2 duration-150">
-                                    <div className="px-3 py-1 border-b border-slate-100 text-[10px] text-slate-400 font-mono uppercase tracking-wider font-extrabold block">
-                                      Oversight Governance
-                                    </div>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setActiveActionMenuId(null);
-                                        setComplianceTarget(b);
-                                        setComplianceJustification("");
-                                      }}
-                                      className="w-full px-3.5 py-1.5 hover:bg-slate-50 text-rose-600 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold font-mono"
-                                    >
-                                      <Scale className="w-3.5 h-3.5" />
-                                      Suspend Candidate
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setActiveActionMenuId(null);
-                                        handleEscalateCompliance(b);
-                                      }}
-                                      className="w-full px-3.5 py-1.5 hover:bg-slate-50 text-amber-600 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold font-mono"
-                                    >
-                                      <AlertTriangle className="w-3.5 h-3.5" />
-                                      Escalate Flag State
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setActiveActionMenuId(null);
-                                        setReassignForm({
-                                          firstName: b.firstName || b.first_name || "",
-                                          lastName: b.lastName || b.last_name || "",
-                                          state: b.state || "",
-                                          city: b.city || "",
-                                          tsp: b.tsp || "",
-                                          skillSector: b.skillSector || b.skill_sector || ""
-                                        });
-                                        setIsReassigning(b);
-                                      }}
-                                      className="w-full px-3.5 py-1.5 hover:bg-slate-50 hover:text-indigo-700 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold"
-                                    >
-                                      <RefreshCw className="w-3.5 h-3.5 text-indigo-505" />
-                                      Reassign TSP Affiliate
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setActiveActionMenuId(null);
-                                        setOverrideForm({ overrideStatus: "ELIGIBLE", reason: "" });
-                                        setIsOverriding(b);
-                                      }}
-                                      className="w-full px-3.5 py-1.5 hover:bg-slate-50 hover:text-indigo-750 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold"
-                                    >
-                                      <Sliders className="w-3.5 h-3.5 text-cyan-500" />
-                                      Override Eligibility
-                                    </button>
+                                  {/* Section 1: Core Operations */}
+                                  <div className="px-3 py-1 text-[9.5px] text-slate-400 font-mono uppercase tracking-wider font-extrabold block">
+                                    Core Operations
                                   </div>
-                                )}
-                              </div>
-                            )}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setActiveActionMenuId(null);
+                                      handleOpenSnapshot(b);
+                                    }}
+                                    className="w-full px-3 py-1.5 hover:bg-slate-50 hover:text-indigo-600 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold"
+                                  >
+                                    <Eye className="w-3.5 h-3.5 text-slate-400" />
+                                    Preview Profile Context
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setActiveActionMenuId(null);
+                                      handleOpenFullProfile(b);
+                                    }}
+                                    className="w-full px-3 py-1.5 hover:bg-slate-50 hover:text-indigo-600 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold"
+                                  >
+                                    <User className="w-3.5 h-3.5 text-slate-400" />
+                                    View Full Record
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setActiveActionMenuId(null);
+                                      setSelectedBeneficiary(b);
+                                      setViewMode("full-profile");
+                                      setActiveProfileTab("admission");
+                                    }}
+                                    className="w-full px-3 py-1.5 hover:bg-slate-50 hover:text-indigo-600 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold"
+                                  >
+                                    <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                                    View Admission Timeline
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setActiveActionMenuId(null);
+                                      handleOpenProfileDrawer(b);
+                                      setDrawerActiveTab("communications");
+                                    }}
+                                    className="w-full px-3 py-1.5 hover:bg-slate-50 hover:text-indigo-600 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold"
+                                  >
+                                    <History className="w-3.5 h-3.5 text-slate-400" />
+                                    Communication History
+                                  </button>
+
+                                  {/* Section 2: Admissions & Letters */}
+                                  <div className="px-3 py-1 mt-1.5 border-t border-slate-100/60 text-[9.5px] text-slate-400 font-mono uppercase tracking-wider font-extrabold block">
+                                    Admissions & Offer Letters
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setActiveActionMenuId(null);
+                                      handleGenerateOfferSingle(b);
+                                    }}
+                                    className="w-full px-3 py-1.5 hover:bg-slate-50 hover:text-indigo-600 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold"
+                                  >
+                                    <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                                    Generate Offer Letter
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setActiveActionMenuId(null);
+                                      handleSendOfferSingle(b);
+                                    }}
+                                    className="w-full px-3 py-1.5 hover:bg-slate-50 hover:text-indigo-600 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold"
+                                  >
+                                    <Send className="w-3.5 h-3.5 text-indigo-500" />
+                                    Send Offer Letter
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setActiveActionMenuId(null);
+                                      handleGenerateAcceptanceSingle(b);
+                                    }}
+                                    className="w-full px-3 py-1.5 hover:bg-slate-50 hover:text-indigo-600 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold"
+                                  >
+                                    <FileText className="w-3.5 h-3.5 text-slate-400" />
+                                    Generate Acceptance Letter
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setActiveActionMenuId(null);
+                                      handleSendAcceptanceSingle(b);
+                                    }}
+                                    className="w-full px-3 py-1.5 hover:bg-slate-50 hover:text-emerald-700 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold"
+                                  >
+                                    <Mail className="w-3.5 h-3.5 text-emerald-500" />
+                                    Send Acceptance & Enroll
+                                  </button>
+
+                                  {/* Section 3: FED Oversight Controls */}
+                                  {isFedUser && (
+                                    <>
+                                      <div className="px-3 py-1 mt-1.5 border-t border-slate-100/60 text-[9.5px] text-rose-500 font-mono uppercase tracking-wider font-extrabold block">
+                                        FED Oversight Controls
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setActiveActionMenuId(null);
+                                          setComplianceTarget(b);
+                                          setComplianceJustification("");
+                                        }}
+                                        className="w-full px-3.5 py-1.5 hover:bg-slate-50 text-rose-600 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold font-mono"
+                                      >
+                                        <Scale className="w-3.5 h-3.5" />
+                                        Suspend Candidate
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setActiveActionMenuId(null);
+                                          handleEscalateCompliance(b);
+                                        }}
+                                        className="w-full px-3.5 py-1.5 hover:bg-slate-50 text-amber-600 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold font-mono"
+                                      >
+                                        <AlertTriangle className="w-3.5 h-3.5" />
+                                        Escalate Flag State
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setActiveActionMenuId(null);
+                                          setReassignForm({
+                                            firstName: b.firstName || b.first_name || "",
+                                            lastName: b.lastName || b.last_name || "",
+                                            state: b.state || "",
+                                            city: b.city || "",
+                                            tsp: b.tsp || "",
+                                            skillSector: b.skillSector || b.skill_sector || ""
+                                          });
+                                          setIsReassigning(b);
+                                        }}
+                                        className="w-full px-3.5 py-1.5 hover:bg-slate-50 hover:text-indigo-700 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold"
+                                      >
+                                        <RefreshCw className="w-3.5 h-3.5 text-indigo-505" />
+                                        Reassign TSP Affiliate
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setActiveActionMenuId(null);
+                                          setOverrideForm({ overrideStatus: "ELIGIBLE", reason: "" });
+                                          setIsOverriding(b);
+                                        }}
+                                        className="w-full px-3.5 py-1.5 hover:bg-slate-50 hover:text-indigo-750 flex items-center gap-2 cursor-pointer text-left text-xs font-semibold"
+                                      >
+                                        <Sliders className="w-3.5 h-3.5 text-cyan-500" />
+                                        Override Eligibility
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setActiveActionMenuId(null);
+                                          handleGenerateOfferSingle(b);
+                                        }}
+                                        className="w-full px-3.5 py-1.5 hover:bg-slate-50 text-indigo-600 flex items-center gap-2 cursor-pointer text-left text-xs font-bold"
+                                      >
+                                        <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
+                                        Force Reissue Offer
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </td>
                       </tr>
@@ -2637,11 +3127,7 @@ export default function EligibleBeneficiariesWorkspace({
                       LIFECYCLE SNAPSHOT IMAGE
                     </span>
                     <div className="w-24 h-24 bg-slate-200 border border-slate-300 rounded-lg mx-auto flex items-center justify-center overflow-hidden">
-                      {selectedBeneficiary.photo ? (
-                        <img referrerPolicy="no-referrer" src={selectedBeneficiary.photo} alt="Candidate visual" className="w-full h-full object-cover" />
-                      ) : (
-                        <User className="w-10 h-10 text-slate-400" />
-                      )}
+                      <FullProfileImage b={selectedBeneficiary} className="w-full h-full" />
                     </div>
                     <p className="text-[9.5px] text-slate-450 italic mt-2">
                       Authorized biometric visual archive.
@@ -2782,11 +3268,7 @@ export default function EligibleBeneficiariesWorkspace({
                 {/* Visual Image details */}
                 <div className="text-center p-3 bg-slate-50 border border-slate-150 rounded-xl">
                   <div className="w-20 h-20 bg-slate-205 border border-slate-300 rounded-lg mx-auto overflow-hidden flex items-center justify-center">
-                    {selectedBeneficiary.photo ? (
-                      <img referrerPolicy="no-referrer" src={selectedBeneficiary.photo} alt="Visual snapshot" className="w-full h-full object-cover" />
-                    ) : (
-                      <User className="w-8 h-8 text-slate-450" />
-                    )}
+                    <FullProfileImage b={selectedBeneficiary} className="w-full h-full" />
                   </div>
                   <strong className="text-slate-808 font-bold text-xs mt-2 block">{selectedBeneficiary.fullName}</strong>
                   <span className="text-[10px] text-slate-450 font-mono mt-0.5 block italic">Verified Audit Photo</span>
@@ -3468,22 +3950,18 @@ export default function EligibleBeneficiariesWorkspace({
                           <select 
                             onChange={(e) => {
                               const val = e.target.value;
-                              if (val === "reminder") {
-                                setIndividualSubject("Urgent Action Required: Provisional Admission Onboarding Deadline");
-                                setIndividualBody(`Dear ${selectedBeneficiary.fullName},\n\nThis is an official administrative reminder from the National TVET board regarding your pending admission onboarding. Please access the portal immediately and accept the pending provisional covenant letters.\n\nRespectfully,\nNational TVET Registry Center\nIDEAS-TVET Project`);
-                              } else if (val === "notice") {
-                                setIndividualSubject("Placement Match Alignment: Mobile Hardware Repairs & Diagnostics");
-                                setIndividualBody(`Dear ${selectedBeneficiary.fullName},\n\nYour portfolio matching diagnostics are complete. You have been placed and aligned under the Mobile Hardware Repairs track at Owerri, Imo State under provider: Unique Technology Nig. Ltd.\n\nRespectfully,\nNational TVET Board`);
-                              } else {
-                                setIndividualSubject("");
-                                setIndividualBody("");
-                              }
+                              const content = getEmailTemplateContent(val, selectedBeneficiary);
+                              setIndividualSubject(content.subject);
+                              setIndividualBody(content.body);
                             }}
                             className="w-full bg-white border border-slate-200 text-xs py-1.5 px-2 rounded-lg text-slate-705 cursor-pointer font-bold"
                           >
                             <option value="">Custom Correspondence Message</option>
+                            <option value="offer_letter">Offer Letter Template</option>
+                            <option value="acceptance_letter">Acceptance Letter Template</option>
                             <option value="reminder">Admission Offer Acceptance Reminder Notice</option>
-                            <option value="notice">Accredited Skill Placement Match Alignment Notice</option>
+                            <option value="missing_docs">Missing Onboarding Documents Notice</option>
+                            <option value="resumption">Training Resumption Notice Template</option>
                           </select>
                         </div>
 
