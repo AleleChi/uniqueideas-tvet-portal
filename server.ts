@@ -919,6 +919,235 @@ app.post("/api/admissions/:id/unlock-form", requireAuth, requireRole(["SUPER_ADM
 app.post("/api/admissions/:id/regenerate-reference", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), protectInactiveBeneficiary, AdmissionController.regenerateReference);
 
 // ==========================================
+// GOVERNANCE SUBMISSIONS API ENDPOINTS (Phase 8)
+// ==========================================
+
+// Get list of all governance submissions scoped by tenant role
+app.get("/api/submissions", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Postgres database connection offline." });
+    }
+    
+    let query = `
+      SELECT gs.*, t.name as tsp_name, s.name as state_name
+      FROM governance_submissions gs
+      LEFT JOIN tsps t ON gs.tsp_id = t.id
+      LEFT JOIN states s ON gs.state_id = s.id
+    `;
+    const params: any[] = [];
+    
+    // Scoping check
+    if (req.user.role === "TSP" || req.user.role.startsWith("TSP")) {
+      query += " WHERE gs.tsp_id = $1";
+      params.push(req.user.tspId);
+    } else if (req.user.role === "STA" || req.user.role.startsWith("STA")) {
+      query += " WHERE gs.state_id = $1";
+      params.push(req.user.stateId);
+    }
+    
+    query += " ORDER BY gs.created_at DESC";
+    
+    const dbRes = await pool.query(query, params);
+    res.json({ success: true, count: dbRes.rows.length, submissions: dbRes.rows });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Create/Edit a governance submission
+app.post("/api/submissions", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id, title, reportType, period, payload } = req.body;
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database offline" });
+    }
+    
+    // Check if TSP user is calling. If another role, they are forbid from creating/editing
+    if (!req.user.role.startsWith("TSP") && req.user.role !== "SUPER_ADMIN" && req.user.role !== "ADMIN_OFFICER") {
+      return res.status(403).json({ error: "Only TSP providers or system operators are authorized to draft reports." });
+    }
+    
+    const tspId = req.user.tspId;
+    // Resolve TSP's state_id automatically
+    const tspRes = await pool.query("SELECT state_id FROM tsps WHERE id = $1", [tspId]);
+    const stateId = tspRes.rows.length > 0 ? tspRes.rows[0].state_id : null;
+    
+    if (id) {
+      // Edit mode: fetch existing to verify lock status (must be DRAFT or RETURNED)
+      const existRes = await pool.query("SELECT status, tsp_id FROM governance_submissions WHERE id = $1", [id]);
+      if (existRes.rows.length === 0) {
+        return res.status(404).json({ error: "Submission report not found" });
+      }
+      
+      const sub = existRes.rows[0];
+      if (sub.tsp_id !== tspId && req.user.role !== "SUPER_ADMIN") {
+        return res.status(403).json({ error: "Access Denied: Tenant isolation active. This report belongs to another developer organization." });
+      }
+      
+      if (sub.status !== "DRAFT" && sub.status !== "RETURNED" && req.user.role !== "SUPER_ADMIN") {
+        return res.status(400).json({ error: `State locked. Editing not permitted for reports with current status '${sub.status}'.` });
+      }
+      
+      await pool.query(
+        `UPDATE governance_submissions 
+         SET title = $1, report_type = $2, period = $3, payload = $4, updated_at = NOW() 
+         WHERE id = $5`,
+        [title, reportType, period, JSON.stringify(payload), id]
+      );
+      
+      await pool.query(
+        `INSERT INTO governance_audits (submission_id, action, actor_email, actor_role, from_status, to_status, remarks)
+         VALUES ($1, 'EDIT', $2, $3, $4, $4, 'Report contents updated by provider.')`,
+        [id, req.user.email, req.user.role, sub.status]
+      );
+      
+      res.json({ success: true, message: "Draft report updated successfully." });
+    } else {
+      // Create mode
+      const newIdRes = await pool.query(
+        `INSERT INTO governance_submissions (report_type, tsp_id, state_id, title, period, payload, status)
+         VALUES ($1, $2, $3, $4, $5, $6, 'DRAFT') RETURNING id`,
+        [reportType, tspId, stateId, title, period, JSON.stringify(payload)]
+      );
+      const newId = newIdRes.rows[0].id;
+      
+      await pool.query(
+        `INSERT INTO governance_audits (submission_id, action, actor_email, actor_role, to_status, remarks)
+         VALUES ($1, 'CREATE', $2, $3, 'DRAFT', 'Initial report draft compiled.')`,
+        [newId, req.user.email, req.user.role]
+      );
+      
+      res.json({ success: true, id: newId, message: "Draft report drafted successfully." });
+    }
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Perform transition on state machine
+app.post("/api/submissions/:id/transition", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    const { action, remarks } = req.body;
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database offline" });
+    }
+    
+    const subRes = await pool.query("SELECT * FROM governance_submissions WHERE id = $1", [id]);
+    if (subRes.rows.length === 0) {
+      return res.status(404).json({ error: "Report not found" });
+    }
+    const sub = subRes.rows[0];
+    const originalStatus = sub.status;
+    let targetStatus = originalStatus;
+    
+    // Check role authority
+    if (action === "SUBMIT") {
+      if (req.user.role !== "TSP" && !req.user.role.startsWith("TSP") && req.user.role !== "SUPER_ADMIN") {
+        return res.status(403).json({ error: "Only TSP providers can invoke SUBMIT action." });
+      }
+      if (originalStatus !== "DRAFT" && originalStatus !== "RETURNED") {
+        return res.status(400).json({ error: "Cannot submit report unless in DRAFT or RETURNED state." });
+      }
+      targetStatus = "SUBMITTED";
+      await pool.query(
+        "UPDATE governance_submissions SET status = $1, submitted_at = NOW(), submitted_by = $2, updated_at = NOW() WHERE id = $3",
+        [targetStatus, req.user.email, id]
+      );
+    } 
+    else if (action === "RECOMMEND" || action === "REVIEW") {
+      if (req.user.role !== "STA" && !req.user.role.startsWith("STA") && req.user.role !== "SUPER_ADMIN") {
+        return res.status(403).json({ error: "Only State Officers are permitted to review and RECOMMEND reports." });
+      }
+      if (originalStatus !== "SUBMITTED") {
+        return res.status(400).json({ error: "State Officers can only review and recommend reports that are in SUBMITTED state." });
+      }
+      targetStatus = "RECOMMENDED";
+      await pool.query(
+        "UPDATE governance_submissions SET status = $1, reviewed_at = NOW(), reviewed_by = $2, recommendation = $3, updated_at = NOW() WHERE id = $4",
+        [targetStatus, req.user.email, remarks || "State level oversight check complete. Recommended for final approval.", id]
+      );
+    } 
+    else if (action === "APPROVE") {
+      if (req.user.role !== "FED" && !req.user.role.startsWith("FED") && req.user.role !== "SUPER_ADMIN") {
+        return res.status(403).json({ error: "Only Federal Officials hold authority to final APPROVE submissions." });
+      }
+      targetStatus = "APPROVED";
+      await pool.query(
+        "UPDATE governance_submissions SET status = $1, approved_at = NOW(), approved_by = $2, updated_at = NOW() WHERE id = $3",
+        [targetStatus, req.user.email, id]
+      );
+    } 
+    else if (action === "LOCK") {
+      if (req.user.role !== "FED" && !req.user.role.startsWith("FED") && req.user.role !== "SUPER_ADMIN") {
+        return res.status(403).json({ error: "Only Federal Officials can LOCK submitted metrics." });
+      }
+      targetStatus = "LOCKED";
+      await pool.query("UPDATE governance_submissions SET status = $1, updated_at = NOW() WHERE id = $2", [targetStatus, id]);
+    } 
+    else if (action === "RETURN") {
+      // Either STA or FED can return!
+      if (!req.user.role.startsWith("STA") && !req.user.role.startsWith("FED") && req.user.role !== "SUPER_ADMIN") {
+        return res.status(403).json({ error: "Only State or Federal reviewing personnel can invoke RETURN command." });
+      }
+      targetStatus = "RETURNED";
+      await pool.query(
+        "UPDATE governance_submissions SET status = $1, rejection_reason = $2, updated_at = NOW() WHERE id = $3",
+        [targetStatus, remarks || "Report contents returned with request for corrections.", id]
+      );
+    } 
+    else if (action === "OVERRIDE") {
+      if (req.user.role !== "FED" && !req.user.role.startsWith("FED") && req.user.role !== "SUPER_ADMIN") {
+        return res.status(403).json({ error: "Security override authority is restricted as an exclusive FED-level privilege." });
+      }
+      const { overrideStatus } = req.body;
+      if (!overrideStatus) {
+        return res.status(400).json({ error: "overrideStatus is required for administrative state override action." });
+      }
+      targetStatus = overrideStatus;
+      await pool.query("UPDATE governance_submissions SET status = $1, updated_at = NOW() WHERE id = $2", [targetStatus, id]);
+    } 
+    else {
+      return res.status(400).json({ error: `Security exception: Action '${action}' is not valid on the governance state machine.` });
+    }
+    
+    // Log Audit Trail
+    await pool.query(
+      `INSERT INTO governance_audits (submission_id, action, actor_email, actor_role, from_status, to_status, remarks)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [id, action, req.user.email, req.user.role, originalStatus, targetStatus, remarks || `Oversight transition '${action}' successfully registered.`]
+    );
+    
+    res.json({ success: true, fromStatus: originalStatus, toStatus: targetStatus, message: `Report transitioned successfully via: ${action}` });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Retrieve audit logs for a governance submission
+app.get("/api/submissions/:id/audits", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    const pool = getPgPool();
+    if (!pool) {
+      return res.status(500).json({ error: "Database offline" });
+    }
+    
+    const dbRes = await pool.query(
+      "SELECT * FROM governance_audits WHERE submission_id = $1 ORDER BY created_at ASC",
+      [id]
+    );
+    res.json({ success: true, audits: dbRes.rows });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ==========================================
 // ADMISSIONS REPORTING API ENDPOINTS
 // ==========================================
 app.get("/api/reports/admissions/funnel", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"], ["view_reports"]), async (req: AuthenticatedRequest, res) => {
@@ -4325,7 +4554,7 @@ app.get("/api/toolkits/export-excel", requireAuth, async (req, res) => {
   }
 });
 
-app.get("/api/attendance/stats", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req, res) => {
+app.get("/api/attendance/stats", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req, res) => {
   try {
     const authReq = req as AuthenticatedRequest;
     const user = authReq.user;
@@ -4352,7 +4581,7 @@ app.get("/api/attendance/stats", requireAuth, requireRole(["SUPER_ADMIN", ...FED
   }
 });
 
-app.get("/api/attendance", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req, res) => {
+app.get("/api/attendance", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req, res) => {
   try {
     const authReq = req as AuthenticatedRequest;
     const user = authReq.user;
@@ -4386,7 +4615,7 @@ app.get("/api/attendance", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES
   }
 });
 
-app.post("/api/attendance", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+app.post("/api/attendance", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
     const { beneficiary_id, attendance_date, status, check_in_time, check_out_time, attendance_source } = req.body;
     if (!beneficiary_id || !attendance_date || !status) {
@@ -4426,7 +4655,7 @@ app.post("/api/attendance", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLE
   }
 });
 
-app.post("/api/attendance/bulk", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+app.post("/api/attendance/bulk", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
     const { records } = req.body;
     if (!records || !Array.isArray(records)) {
@@ -4845,7 +5074,7 @@ app.post("/api/tsp/attendance/bulk-mark", requireAuth, requireRole(["SUPER_ADMIN
   }
 });
 
-app.get("/api/attendance/compliance-report", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req, res) => {
+app.get("/api/attendance/compliance-report", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req, res) => {
   try {
     const authReq = req as AuthenticatedRequest;
     const user = authReq.user;
@@ -4901,9 +5130,15 @@ app.get("/api/attendance/compliance-report", requireAuth, requireRole(["SUPER_AD
     let paramIndex = 2;
     
     const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+    const isState = user && STA_ROLES.includes(user.role);
     if (user && !isFederal) {
-      queryStr += ` AND b.tsp_id = $${paramIndex++}`;
-      params.push(user.tspId);
+      if (isState) {
+        queryStr += ` AND b.state_id = $${paramIndex++}`;
+        params.push(user.stateId);
+      } else {
+        queryStr += ` AND b.tsp_id = $${paramIndex++}`;
+        params.push(user.tspId);
+      }
     }
     
     if (search) {
@@ -9026,6 +9261,39 @@ app.post("/api/documents/generate", requireAuth, requireRole(["SUPER_ADMIN", "AD
     }
 
     res.json({ success: true, document });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Delete / Destroy a generated document version, reverting back to the most recent superseded version (Phase 7)
+app.delete("/api/documents/:id", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Check repository record
+    const docRes = await executeQuery("SELECT beneficiary_id FROM generated_documents WHERE id = $1", [id]);
+    if (docRes.rows.length === 0) {
+      return res.status(404).json({ error: "Document record not found" });
+    }
+    
+    const bId = docRes.rows[0].beneficiary_id;
+    const hasAccess = await checkBeneficiaryAccess(req.user, bId);
+    if (!hasAccess) {
+      return res.status(403).json({ error: "Access Denied: Tenant isolation active." });
+    }
+    
+    const success = await DbRepo.deleteGeneratedDocument(id);
+    if (success) {
+      await DocumentService.logAuditAction(
+        req.user?.email || "SYSTEM",
+        "DOC_DESTROY",
+        `Deleted generated document ID ${id} for beneficiary physical registry ${bId}.`
+      );
+      res.json({ success: true, message: "Document variant destroyed successfully and historical superseded records sequentially reverted back to active state." });
+    } else {
+      res.status(500).json({ error: "Failure writing record rollback to registry DB tables." });
+    }
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

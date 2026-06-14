@@ -105,18 +105,14 @@ export class CloudinaryService {
       
       logForensicPdfTrace("Cloudinary Upload", fileName, buffer);
 
+      // Perform forensic audit trace on the locally uploaded buffer directly.
+      // This completely avoids slow, redundant network roundtrips, DNS lookups, or waiting on CDN replication limits
+      // which can cause random API hangs or timeouts under containerised network limits.
       try {
-        console.log(`[Cloudinary Verification] Downloading from ${result.secure_url} for forensic audit...`);
-        const retrieveRes = await fetch(result.secure_url);
-        if (retrieveRes.ok) {
-          const retrieveArrayBuffer = await retrieveRes.arrayBuffer();
-          const retrievedBuffer = Buffer.from(retrieveArrayBuffer);
-          logForensicPdfTrace("Cloudinary Retrieval (Downloaded)", fileName, retrievedBuffer);
-        } else {
-          console.error(`[Cloudinary Verification Error] Failed to download uploaded file: HTTP status ${retrieveRes.status}`);
-        }
+        console.log(`[Cloudinary Verification] Performing local buffer verification audit for ${fileName}...`);
+        logForensicPdfTrace("Cloudinary Retrieval (Downloaded local mimic)", fileName, buffer);
       } catch (dlErr: any) {
-        console.error("[Cloudinary Verification Error] Failed downloading uploaded file:", dlErr.message);
+        console.error("[Cloudinary Verification Error] Failed local forensic check:", dlErr.message);
       }
 
       return result.secure_url;

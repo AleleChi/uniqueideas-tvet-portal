@@ -405,7 +405,7 @@ export class DocumentService {
   /**
    * Internal auditor log helper
    */
-  private static async logAuditAction(username: string, action: string, details: string) {
+  public static async logAuditAction(username: string, action: string, details: string) {
     try {
       const newLog = {
         id: "log_" + Date.now() + "_" + Math.floor(Math.random() * 1000),

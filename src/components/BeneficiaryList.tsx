@@ -1112,7 +1112,7 @@ export function BeneficiaryList({
 
                     <td className="py-3 px-4">
                       <p className="font-sans font-bold text-slate-900 text-sm leading-normal">
-                        {b.lastName}, {b.firstName}
+                        {b.lastName || b.firstName ? `${b.lastName || ""}, ${b.firstName || ""}`.trim().replace(/^,|,$/, "") : (b.fullName && !b.fullName.includes("@") && !b.fullName.includes(".com") ? b.fullName : "Unknown Candidate")}
                       </p>
                       <div className="flex items-center gap-1.5 mt-1">
                         <span className="text-[10px] text-slate-400 font-mono tracking-wide">

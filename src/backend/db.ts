@@ -38,42 +38,62 @@ const DB_FILE = path.join(process.cwd(), "database_ideas_tvet.json");
 
 export function calculateAge(dob: string | undefined | null): number | null {
   if (!dob) return null;
-  const cleanDob = dob.trim();
+  const cleanDob = String(dob).trim();
   if (!cleanDob) return null;
-  
-  const parsed = Date.parse(cleanDob);
-  let date: Date;
-  if (!isNaN(parsed)) {
-    date = new Date(parsed);
-  } else {
-    // If Date.parse fails, try splitting by common formats
-    const parts = cleanDob.split(/[-/]/);
+
+  try {
+    let date: Date;
+    const parts = cleanDob.split(/[-/.]/);
     if (parts.length === 3) {
-      if (parts[0].length === 4) {
+      const p0 = parseInt(parts[0], 10);
+      const p1 = parseInt(parts[1], 10);
+      const p2 = parseInt(parts[2], 10);
+      
+      if (parts[0].length === 4 && !isNaN(p0) && !isNaN(p1) && !isNaN(p2)) {
         // YYYY-MM-DD
-        date = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
-      } else if (parts[2].length === 4) {
-        // DD-MM-YYYY or MM-DD-YYYY or DD/MM/YYYY
-        date = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+        date = new Date(p0, p1 - 1, p2);
+      } else if (parts[2].length === 4 && !isNaN(p0) && !isNaN(p1) && !isNaN(p2)) {
+        // DD/MM/YYYY or MM/DD/YYYY - let's interpret as DD/MM/YYYY for Nigerian standards
+        // unless p1 (month) > 12, which would imply p0 is month.
+        if (p0 > 12 && p1 <= 12) {
+          date = new Date(p2, p1 - 1, p0); // DD/MM/YYYY
+        } else if (p1 > 12 && p0 <= 12) {
+          date = new Date(p2, p0 - 1, p1); // MM/DD/YYYY
+        } else {
+          // Both are <= 12, default to DD/MM/YYYY per Nigerian standards
+          date = new Date(p2, p1 - 1, p0);
+        }
+      } else {
+        const parsed = Date.parse(cleanDob);
+        if (!isNaN(parsed)) {
+          date = new Date(parsed);
+        } else {
+          return null;
+        }
+      }
+    } else {
+      const parsed = Date.parse(cleanDob);
+      if (!isNaN(parsed)) {
+        date = new Date(parsed);
       } else {
         return null;
       }
-    } else {
+    }
+
+    if (isNaN(date.getTime())) {
       return null;
     }
-  }
 
-  if (isNaN(date.getTime())) {
+    const today = new Date();
+    let age = today.getFullYear() - date.getFullYear();
+    const m = today.getMonth() - date.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < date.getDate())) {
+      age--;
+    }
+    return age;
+  } catch {
     return null;
   }
-
-  const today = new Date();
-  let age = today.getFullYear() - date.getFullYear();
-  const m = today.getMonth() - date.getMonth();
-  if (m < 0 || (m === 0 && today.getDate() < date.getDate())) {
-    age--;
-  }
-  return age;
 }
 
 export function getDynamicEligibility(b: any): { age: number | null; eligibilityStatus: "ELIGIBLE" | "OVER_AGE" | "UNKNOWN_DOB" | "OVERRIDDEN" } {
@@ -1666,6 +1686,72 @@ export async function initDb(): Promise<void> {
 
       CREATE INDEX IF NOT EXISTS idx_email_logs_tracking_status ON email_logs(tracking_status);
       CREATE INDEX IF NOT EXISTS idx_email_logs_date_sent ON email_logs(date_sent);
+
+      -- Create branding_profiles table
+      CREATE TABLE IF NOT EXISTS branding_profiles (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        role_scope VARCHAR(50) NOT NULL, -- 'FED', 'STA', 'TSP'
+        state_id UUID REFERENCES states(id) ON DELETE CASCADE,
+        tsp_id UUID REFERENCES tsps(id) ON DELETE CASCADE,
+        logo_url TEXT,
+        letterhead_url TEXT,
+        signature_url TEXT,
+        stamp_url TEXT,
+        official_name VARCHAR(255),
+        accreditation_number VARCHAR(100),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      -- Create general_email_queue table
+      CREATE TABLE IF NOT EXISTS general_email_queue (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        beneficiary_id VARCHAR(50) REFERENCES beneficiaries(id) ON DELETE CASCADE,
+        recipient_email VARCHAR(255) NOT NULL,
+        subject VARCHAR(255) NOT NULL,
+        html_body TEXT NOT NULL,
+        attachments JSONB DEFAULT '[]'::jsonb,
+        status VARCHAR(50) DEFAULT 'QUEUED', -- QUEUED, PROCESSING, SENT, DELIVERED, FAILED
+        error_message TEXT,
+        attempts INTEGER DEFAULT 0,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      -- Create governance_submissions table
+      CREATE TABLE IF NOT EXISTS governance_submissions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        report_type VARCHAR(100) NOT NULL, -- 'ATTENDANCE', 'INVENTORY', 'ASSESSMENT', 'MONTHLY_REPORT', 'COMPLIANCE', 'GRADUATION'
+        tsp_id UUID REFERENCES tsps(id) ON DELETE CASCADE,
+        state_id UUID REFERENCES states(id) ON DELETE SET NULL,
+        title VARCHAR(255) NOT NULL,
+        period VARCHAR(100) NOT NULL,
+        payload JSONB DEFAULT '{}'::jsonb,
+        status VARCHAR(50) DEFAULT 'DRAFT', -- DRAFT, SUBMITTED, LOCKED, UNDER_REVIEW, APPROVED, RETURNED
+        submitted_at TIMESTAMP WITH TIME ZONE,
+        submitted_by VARCHAR(255),
+        reviewed_at TIMESTAMP WITH TIME ZONE,
+        reviewed_by VARCHAR(255),
+        recommendation TEXT,
+        approved_at TIMESTAMP WITH TIME ZONE,
+        approved_by VARCHAR(255),
+        rejection_reason TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      -- Create governance_audits table
+      CREATE TABLE IF NOT EXISTS governance_audits (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        submission_id UUID REFERENCES governance_submissions(id) ON DELETE CASCADE,
+        action VARCHAR(100) NOT NULL, -- 'CREATE', 'EDIT', 'SUBMIT', 'RECOMMEND', 'APPROVE', 'RETURN', 'OVERRIDE'
+        actor_email VARCHAR(255) NOT NULL,
+        actor_role VARCHAR(100) NOT NULL,
+        from_status VARCHAR(50),
+        to_status VARCHAR(50),
+        remarks TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
     `);
 
     // Ensure document_delivery_logs is bootstrapped independently
@@ -4511,8 +4597,8 @@ export class DbRepo {
           !!b.eligibilityOverride, b.eligibilityOverrideReason || "", b.eligibilityOverrideBy || "", b.eligibilityOverrideAt ? new Date(b.eligibilityOverrideAt) : null,
           b.certificationStatus || "NONE", b.certificateNumber || "", b.certificateIssuedAt ? new Date(b.certificateIssuedAt) : null, b.certificateIssuedBy || "", b.graduationBatch || "",
           !!b.alumniStatus, b.certificateReference || "", b.certificateVerificationCode || "", b.certificateDownloadCount || 0, b.certificateLastDownloadedAt ? new Date(b.certificateLastDownloadedAt) : null,
-          b.alumniEmploymentStatus || "", b.alumniEntrepreneurStatus || "", b.alumniBusinessName || "", b.alumniCurrentEmployer || "", b.tokenVersion || 1, b.workflowVersion || 1,
-          new Date(b.createdAt || Date.now()), new Date()
+          b.alumniEmploymentStatus || "", b.alumniEntrepreneurStatus || "", b.alumniBusinessName || "", b.alumniCurrentEmployer || "",
+          new Date(b.createdAt || Date.now()), new Date(), b.tokenVersion || 1, b.workflowVersion || 1
         ]
       );
 
@@ -5497,6 +5583,80 @@ export class DbRepo {
       }
     } catch (e) {
       console.error("[DB Repo] Failed to save generated document:", e);
+      return false;
+    }
+  }
+
+  /**
+   * Delete a generated document and restore the previous SUPERSEDED version to ACTIVE to preserve sequential history (Phase 7)
+   */
+  static async deleteGeneratedDocument(docId: string): Promise<boolean> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState() as any;
+      const idx = (state.generatedDocuments || []).findIndex((d: any) => d.id === docId);
+      if (idx === -1) return false;
+      const doc = state.generatedDocuments[idx];
+      const beneficiaryId = doc.beneficiaryId;
+      const documentType = doc.documentType;
+      const documentStatus = doc.documentStatus;
+      
+      // Remove it
+      state.generatedDocuments.splice(idx, 1);
+      
+      // Revert status of most recent SUPERSEDED document back to ACTIVE
+      if (documentStatus === "ACTIVE") {
+        const matching = state.generatedDocuments
+          .filter((d: any) => d.beneficiaryId === beneficiaryId && d.documentType === documentType && d.documentStatus === "SUPERSEDED")
+          .sort((a: any, b: any) => (b.version || 0) - (a.version || 0));
+        if (matching.length > 0) {
+          matching[0].documentStatus = "ACTIVE";
+        }
+      }
+      saveJsonState(state);
+      return true;
+    }
+    
+    try {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        
+        const docRes = await client.query("SELECT beneficiary_id, document_type, document_status FROM generated_documents WHERE id = $1", [docId]);
+        if (docRes.rows.length === 0) {
+          await client.query("ROLLBACK");
+          client.release();
+          return false;
+        }
+        
+        const { beneficiary_id, document_type, document_status } = docRes.rows[0];
+        
+        await client.query("DELETE FROM generated_documents WHERE id = $1", [docId]);
+        
+        if (document_status === "ACTIVE") {
+          const supersededDocs = await client.query(
+            "SELECT id FROM generated_documents WHERE beneficiary_id = $1 AND document_type = $2 AND document_status = 'SUPERSEDED' ORDER BY version DESC LIMIT 1",
+            [beneficiary_id, document_type]
+          );
+          if (supersededDocs.rows.length > 0) {
+            const revertId = supersededDocs.rows[0].id;
+            await client.query(
+              "UPDATE generated_documents SET document_status = 'ACTIVE' WHERE id = $1",
+              [revertId]
+            );
+          }
+        }
+        
+        await client.query("COMMIT");
+        client.release();
+        return true;
+      } catch (err) {
+        await client.query("ROLLBACK");
+        client.release();
+        throw err;
+      }
+    } catch (e) {
+      console.error("[DB Repo] Failed to delete generated document:", e);
       return false;
     }
   }
@@ -7388,7 +7548,7 @@ export class DbRepo {
 
         let isReachable = false;
         try {
-          const testRes = await fetch(urlToTest, { method: "HEAD" });
+          const testRes = await fetch(urlToTest, { method: "HEAD", signal: AbortSignal.timeout(3000) });
           if (testRes.status === 200 || (isCloudinaryUrl && testRes.status === 404)) {
             isReachable = true;
           }
@@ -7413,7 +7573,7 @@ export class DbRepo {
             for (const variant of variations) {
               if (variant === urlToTest) continue;
               try {
-                const variantRes = await fetch(variant, { method: "HEAD" });
+                const variantRes = await fetch(variant, { method: "HEAD", signal: AbortSignal.timeout(3000) });
                 if (variantRes.status === 200) {
                   foundUrl = variant;
                   break;
@@ -7480,7 +7640,7 @@ export class DbRepo {
 
         let isReachable = false;
         try {
-          const testRes = await fetch(urlToTest, { method: "HEAD" });
+          const testRes = await fetch(urlToTest, { method: "HEAD", signal: AbortSignal.timeout(3000) });
           if (testRes.status === 200 || (isCloudinaryUrl && testRes.status === 404)) {
             isReachable = true;
           }
@@ -7505,7 +7665,7 @@ export class DbRepo {
             for (const variant of variations) {
               if (variant === urlToTest) continue;
               try {
-                const variantRes = await fetch(variant, { method: "HEAD" });
+                const variantRes = await fetch(variant, { method: "HEAD", signal: AbortSignal.timeout(3000) });
                 if (variantRes.status === 200) {
                   foundUrl = variant;
                   break;

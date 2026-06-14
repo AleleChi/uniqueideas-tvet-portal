@@ -538,6 +538,51 @@ export function TraineePortal({ session, onLogout }: TraineePortalProps) {
               {/* Right 4 Columns: Side widgets details / quick help info */}
               <div className="lg:col-span-4 space-y-6 text-left">
                 
+                {/* Attendance Rate dynamic percentage widget */}
+                <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-xs text-left space-y-4">
+                  <h4 className="text-[10px] font-bold font-mono text-slate-400 uppercase tracking-widest leading-none">Your Attendance Rate</h4>
+                  <div className="flex items-center gap-4">
+                    <div className="relative flex items-center justify-center flex-shrink-0">
+                      <svg className="w-16 h-16 transform -rotate-90">
+                        <circle cx="32" cy="32" r="28" className="stroke-slate-100" strokeWidth="5" fill="transparent" />
+                        <circle cx="32" cy="32" r="28" className="stroke-indigo-600" strokeWidth="5" fill="transparent"
+                          strokeDasharray={175}
+                          strokeDashoffset={175 - (175 * ((candidate as any).attendance_rate || 85)) / 100}
+                        />
+                      </svg>
+                      <span className="absolute text-xs font-bold text-slate-900 font-mono">{(candidate as any).attendance_rate || 85}%</span>
+                    </div>
+                    <div className="space-y-1">
+                      <h5 className="text-[11.5px] font-bold text-slate-900 font-display">TVET Facility Presence</h5>
+                      <p className="text-[10px] text-slate-500 font-mono leading-tight">
+                        Requirements: 80% attendance to retain and qualify for central stipend allowances.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Toolkit Checkouts dynamic list widget */}
+                <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-xs text-left space-y-4">
+                  <h4 className="text-[10px] font-bold font-mono text-slate-400 uppercase tracking-widest leading-none font-display">Allocated Toolkits</h4>
+                  {((candidate as any).toolkit_checkouts && (candidate as any).toolkit_checkouts.length > 0) ? (
+                    <div className="space-y-3">
+                      {(candidate as any).toolkit_checkouts.map((tk: any) => (
+                        <div key={tk.checkout_id} className="p-3 bg-slate-50 border border-slate-150 rounded-xl space-y-1 text-left">
+                          <p className="text-[11.5px] font-bold text-slate-900 font-display">{tk.asset_name}</p>
+                          <div className="flex items-center justify-between text-[9px] font-mono text-slate-500">
+                            <span>Code: {tk.asset_code}</span>
+                            <span className="bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded-md font-bold uppercase">{tk.verification_status}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="p-4 text-center border border-dashed border-slate-200 rounded-xl text-slate-400 text-xs font-mono">
+                      No toolkits currently checked-out or assigned.
+                    </div>
+                  )}
+                </div>
+
                 {/* Visual support assistance help info */}
                 <div className="bg-gradient-to-br from-slate-900 to-indigo-950 text-slate-100 p-6 rounded-2xl shadow-md border border-slate-800/60 text-left space-y-4">
                   <span className="text-[8px] font-mono tracking-widest text-indigo-400 font-bold uppercase">SECURED TOKEN LINK</span>

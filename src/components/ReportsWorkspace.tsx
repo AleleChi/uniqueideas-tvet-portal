@@ -10,6 +10,7 @@ import { downloadWithAuth, authFetch } from "../utils/authFetch";
 import { AlbumGenerator } from "./AlbumGenerator";
 import { SecureBeneficiaryImage } from "./SecureBeneficiaryImage";
 import { PaginationControl } from "./PaginationControl";
+import GovernanceSubmissions from "./GovernanceSubmissions";
 
 interface ReportsWorkspaceProps {
   beneficiaries: Beneficiary[];
@@ -17,7 +18,7 @@ interface ReportsWorkspaceProps {
 }
 
 export function ReportsWorkspace({ beneficiaries, session }: ReportsWorkspaceProps) {
-  const [activeReportTab, setActiveReportTab] = useState<"excel" | "album" | "pdf" | "admissions" | "locations">("excel");
+  const [activeReportTab, setActiveReportTab] = useState<"excel" | "album" | "pdf" | "admissions" | "locations" | "governance">("excel");
   const isTspUser = session?.role === "TSP" || (session?.role && session?.role.startsWith("TSP"));
 
   // Enterprise Unified National Reporting Filters Hierarchy State
@@ -276,6 +277,18 @@ export function ReportsWorkspace({ beneficiaries, session }: ReportsWorkspacePro
           >
             <ImageIcon className="w-4 h-4 text-indigo-600" />
             Photo Album Registry
+          </button>
+
+          <button
+            onClick={() => setActiveReportTab("governance")}
+            className={`px-3.5 py-1.5 text-xs font-bold rounded-lg flex items-center gap-1.5 cursor-pointer transition ${
+              activeReportTab === "governance"
+                ? "bg-white text-indigo-950 shadow-sm"
+                : "text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            <CheckCircle2 className="w-4 h-4 text-indigo-600" />
+            Governance Submissions
           </button>
 
           {!isTspUser && (
@@ -1444,6 +1457,12 @@ export function ReportsWorkspace({ beneficiaries, session }: ReportsWorkspacePro
       {/* ----------------------------------------------------------------- */}
       {activeReportTab === "locations" && (
         <LocationOversightReportView session={session} beneficiaries={beneficiaries} />
+      )}
+
+      {activeReportTab === "governance" && (
+        <div className="bg-white p-6 rounded-2xl border border-slate-250 shadow-xs mt-4">
+          <GovernanceSubmissions session={session} />
+        </div>
       )}
 
     </div>

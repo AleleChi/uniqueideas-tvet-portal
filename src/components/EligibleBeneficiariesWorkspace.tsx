@@ -218,11 +218,52 @@ export default function EligibleBeneficiariesWorkspace({
   }, [fetchBeneficiariesList]);
 
   // Get dynamic age based on date of birth
-  const calculateAge = (dobString: string): number | null => {
+  const calculateAge = (dobString: any): number | null => {
     if (!dobString) return null;
+    const cleanDob = String(dobString).trim();
+    if (!cleanDob) return null;
+
     try {
-      const dob = new Date(dobString);
+      let dob: Date;
+      const parts = cleanDob.split(/[-/.]/);
+      if (parts.length === 3) {
+        const p0 = parseInt(parts[0], 10);
+        const p1 = parseInt(parts[1], 10);
+        const p2 = parseInt(parts[2], 10);
+        
+        if (parts[0].length === 4 && !isNaN(p0) && !isNaN(p1) && !isNaN(p2)) {
+          // YYYY-MM-DD
+          dob = new Date(p0, p1 - 1, p2);
+        } else if (parts[2].length === 4 && !isNaN(p0) && !isNaN(p1) && !isNaN(p2)) {
+          // DD/MM/YYYY or MM/DD/YYYY - let's interpret as DD/MM/YYYY for Nigerian standards
+          // unless p1 (month) > 12, which would imply p0 is month.
+          if (p0 > 12 && p1 <= 12) {
+            dob = new Date(p2, p1 - 1, p0); // DD/MM/YYYY
+          } else if (p1 > 12 && p0 <= 12) {
+            dob = new Date(p2, p0 - 1, p1); // MM/DD/YYYY
+          } else {
+            // Both are <= 12, default to DD/MM/YYYY per Nigerian standards
+            dob = new Date(p2, p1 - 1, p0);
+          }
+        } else {
+          const parsed = Date.parse(cleanDob);
+          if (!isNaN(parsed)) {
+            dob = new Date(parsed);
+          } else {
+            return null;
+          }
+        }
+      } else {
+        const parsed = Date.parse(cleanDob);
+        if (!isNaN(parsed)) {
+          dob = new Date(parsed);
+        } else {
+          return null;
+        }
+      }
+
       if (isNaN(dob.getTime())) return null;
+
       const today = new Date();
       let age = today.getFullYear() - dob.getFullYear();
       const monthDiff = today.getMonth() - dob.getMonth();
@@ -307,13 +348,24 @@ export default function EligibleBeneficiariesWorkspace({
     return beneficiaries.map(b => {
       const age = calculateAge(b.date_of_birth || b.dateOfBirth);
       const eligibility = calculateEligibility(b);
+
+      // Name resolution (Phase 3)
+      const hasConstituentName = !!(b.firstName || b.first_name || b.lastName || b.last_name);
+      let rawDisplayName = "";
+      if (hasConstituentName) {
+        rawDisplayName = `${b.firstName || b.first_name || ""} ${b.lastName || b.last_name || ""} ${b.otherName || b.other_name || b.otherNames || b.other_names || ""}`.replace(/\s+/g, " ").trim();
+      } else {
+        rawDisplayName = b.fullName || `${b.surname || ""} ${b.otherNames || b.other_names || ""}`.trim();
+      }
+      const displayName = rawDisplayName && !rawDisplayName.includes("@") && !rawDisplayName.includes(".com") ? rawDisplayName : "Candidate";
+
       return {
         ...b,
         age,
         ageBand: getAgeBand(age),
         calculatedEligibilityStatus: eligibility.status,
         eligibilityReasons: eligibility.reasons,
-        fullName: `${b.first_name || ""} ${b.other_name ? b.other_name + " " : ""}${b.last_name || ""}`.trim(),
+        fullName: displayName,
         offerStatus: b.admissionStatus || "DRAFT",
         emailLogsStatus: b.email_status || "Pending",
       };
@@ -1303,8 +1355,8 @@ export default function EligibleBeneficiariesWorkspace({
                 </div>
               )}
 
-              {/* LGA - Only for FED */}
-              {isFedUser && (
+              {/* LGA - Only for FED and STA */}
+              {(isFedUser || isStaUser) && (
                 <div>
                   <label className="text-[10px] font-bold text-slate-500 block mb-1">LGA Region</label>
                   <select
@@ -1318,8 +1370,8 @@ export default function EligibleBeneficiariesWorkspace({
                 </div>
               )}
 
-              {/* Sector - Only for FED */}
-              {isFedUser && (
+              {/* Sector - Only for FED and STA */}
+              {(isFedUser || isStaUser) && (
                 <div>
                   <label className="text-[10px] font-bold text-slate-500 block mb-1">Skill Sector</label>
                   <select
@@ -1359,8 +1411,8 @@ export default function EligibleBeneficiariesWorkspace({
                 </select>
               </div>
 
-              {/* FED TSP selector */}
-              {isFedUser && (
+              {/* FED or STA TSP selector */}
+              {(isFedUser || isStaUser) && (
                 <div>
                   <label className="text-[10px] font-bold text-slate-500 block mb-1">Training Provider</label>
                   <select
@@ -1624,7 +1676,7 @@ export default function EligibleBeneficiariesWorkspace({
                     <th className="p-3">Admission Link</th>
                     <th className="p-3">Eligibility Indicator</th>
                     <th className="p-3">Compliance Status</th>
-                    <th className="p-3 text-center">Roster Ops</th>
+                    <th className="p-3 text-center min-w-[340px]">Roster Ops</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-xs font-semibold text-slate-600">
@@ -1662,7 +1714,7 @@ export default function EligibleBeneficiariesWorkspace({
                           />
                         </td>
                         <td className="p-3 font-mono text-[10.5px] uppercase font-bold text-slate-450 select-all">
-                          {b.id?.slice(0, 12)}
+                          {b.id}
                         </td>
                         <td className="p-3">
                           <div className="flex items-center gap-2.5 text-left">
@@ -1675,9 +1727,9 @@ export default function EligibleBeneficiariesWorkspace({
                         </td>
                         <td className="p-3">
                           <div className="flex flex-col text-left font-mono">
-                            <span className="font-bold text-slate-700 leading-none">{b.gender}</span>
+                            <span className="font-bold text-slate-700 leading-none text-xs capitalize">{b.gender ? b.gender.toLowerCase() : "Unspecified"}</span>
                             <span className={`text-[10px] tracking-tight mt-1 ${b.age !== null && b.age > PREFERRED_AGE_MAX ? "text-amber-500 font-bold" : "text-slate-400"}`}>
-                              Age: {b.age || "Unknown"}
+                              {b.age !== null ? `${b.age} Years` : "DOB Not Available"}
                             </span>
                           </div>
                         </td>
@@ -1793,9 +1845,10 @@ export default function EligibleBeneficiariesWorkspace({
                                 e.stopPropagation();
                                 handleSendOfferSingle(b);
                               }}
-                              className="px-2 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] rounded font-bold cursor-pointer transition-colors"
+                              className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-[10.5px] rounded-md font-extrabold cursor-pointer transition-all duration-150 inline-flex items-center gap-1 shadow-sm"
                               title="Send Offer Letter Dispatch Email"
                             >
+                              <Send className="w-3 h-3" />
                               Send Offer
                             </button>
 
@@ -3251,26 +3304,75 @@ export default function EligibleBeneficiariesWorkspace({
                       </div>
                     </div>
 
-                    <div className="border border-slate-200 rounded-xl overflow-hidden shadow-xs">
-                      <div className="bg-slate-50 border-b p-3 font-mono text-[10px] font-extrabold text-slate-505 uppercase">
-                        Admission Milestones Tracking Chart
+                    {/* Premium Horizontal Lifecycle Progress Tracker */}
+                    <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
+                      <div className="text-[10px] font-mono font-extrabold text-slate-500 uppercase tracking-wider mb-4 border-b pb-2">
+                        Admission & Offer Letter Lifecycle Tracker
                       </div>
-                      <div className="p-4 divide-y divide-slate-100 text-xs font-semibold">
+                      <div className="relative flex items-center justify-between pb-2">
+                        {/* Background line connecting all nodes */}
+                        <div className="absolute left-4 right-4 top-1/2 h-0.5 bg-slate-100 -translate-y-1/2 -z-0" />
+                        
+                        {/* Active line progress */}
+                        <div 
+                          className="absolute left-4 top-1/2 h-0.5 bg-indigo-500 -translate-y-1/2 -z-0 transition-all duration-300" 
+                          style={{ 
+                            width: `${
+                              selectedBeneficiary.admissionStatus === "Approved" || selectedBeneficiary.admissionStatus === "APPROVED" || selectedBeneficiary.admissionStatus === "CONFIRMED" ? "100%" :
+                              selectedBeneficiary.admissionStatus === "Accepted" ? "75%" :
+                              selectedBeneficiary.admissionLetterSentAt ? "50%" :
+                              selectedBeneficiary.admissionLetterGeneratedAt || selectedBeneficiary.admissionStatus === "Admission Generated" ? "25%" :
+                              "0%"
+                            }` 
+                          }}
+                        />
+
                         {[
-                          { label: "1. Offer Document Compiled", checked: !!selectedBeneficiary.admissionRef || selectedBeneficiary.admissionStatus === "Admission Generated" || selectedBeneficiary.admissionStatus === "Accepted", desc: `Reference ID assigned: ${selectedBeneficiary.admissionRef || "IDEAS/TVET/ADM/Pending"}` },
-                          { label: "2. Offer Letter Transmitted (Email)", checked: selectedBeneficiary.admissionStatus === "Admission Sent" || selectedBeneficiary.admissionStatus === "Accepted", desc: "Successfully broadcasted via TVET secure SMTP" },
-                          { label: "3. Trainee Read Confirmation", checked: selectedBeneficiary.admissionStatus === "Accepted", desc: "Read receipt tracked on active portal checkpoint" },
-                          { label: "4. Trainee Acceptance Completed", checked: selectedBeneficiary.admissionStatus === "Accepted" || selectedBeneficiary.admissionStatus === "Approved" || selectedBeneficiary.admissionStatus === "APPROVED" || selectedBeneficiary.admissionStatus === "CONFIRMED", desc: "National covenant and terms accepted by candidate" },
-                          { label: "5. Admissions Confirmed", checked: selectedBeneficiary.admissionStatus === "Approved" || selectedBeneficiary.admissionStatus === "APPROVED" || selectedBeneficiary.admissionStatus === "CONFIRMED", desc: "Verification and clearance approved by FED admin" },
-                        ].map((m, idx) => (
-                          <div key={idx} className="flex items-center gap-3 py-2.5">
-                            <span className={`w-4.5 h-4.5 rounded-full flex items-center justify-center border text-[10px] font-black ${m.checked ? "bg-emerald-500 border-emerald-600 text-white" : "bg-slate-100 border-slate-200 text-slate-400"}`}>
+                          { 
+                            key: "PENDING", 
+                            label: "Draft/Pending", 
+                            active: true, 
+                            date: selectedBeneficiary.createdAt 
+                          },
+                          { 
+                            key: "GENERATED", 
+                            label: "Generated", 
+                            active: !selectedBeneficiary.admissionLetterGeneratedAt || selectedBeneficiary.admissionStatus === "Admission Generated" || selectedBeneficiary.admissionStatus === "Accepted" || selectedBeneficiary.admissionStatus === "Approved" || selectedBeneficiary.admissionStatus === "APPROVED" || selectedBeneficiary.admissionStatus === "CONFIRMED", 
+                            date: selectedBeneficiary.admissionLetterGeneratedAt 
+                          },
+                          { 
+                            key: "SENT", 
+                            label: "Sent", 
+                            active: !!selectedBeneficiary.admissionLetterSentAt || selectedBeneficiary.admissionStatus === "Accepted" || selectedBeneficiary.admissionStatus === "Approved" || selectedBeneficiary.admissionStatus === "APPROVED" || selectedBeneficiary.admissionStatus === "CONFIRMED", 
+                            date: selectedBeneficiary.admissionLetterSentAt 
+                          },
+                          { 
+                            key: "VIEWED", 
+                            label: "Viewed", 
+                            active: !!selectedBeneficiary.admissionFormViewedAt || selectedBeneficiary.admissionStatus === "Accepted" || selectedBeneficiary.admissionStatus === "Approved" || selectedBeneficiary.admissionStatus === "APPROVED" || selectedBeneficiary.admissionStatus === "CONFIRMED", 
+                            date: selectedBeneficiary.admissionFormViewedAt 
+                          },
+                          { 
+                            key: "ACCEPTED", 
+                            label: "Accepted", 
+                            active: selectedBeneficiary.admissionStatus === "Accepted" || selectedBeneficiary.admissionStatus === "Approved" || selectedBeneficiary.admissionStatus === "APPROVED" || selectedBeneficiary.admissionStatus === "CONFIRMED", 
+                            date: selectedBeneficiary.admissionFormConfirmedAt 
+                          },
+                          { 
+                            key: "ENROLLED", 
+                            label: "Enrolled", 
+                            active: selectedBeneficiary.admissionStatus === "Approved" || selectedBeneficiary.admissionStatus === "APPROVED" || selectedBeneficiary.admissionStatus === "CONFIRMED", 
+                            date: selectedBeneficiary.admissionFormConfirmedAt 
+                          }
+                        ].map((step, idx) => (
+                          <div key={idx} className="relative z-10 flex flex-col items-center">
+                            <span className={`w-7 h-7 rounded-full flex items-center justify-center border text-[10px] font-black ${step.active ? "bg-indigo-600 border-indigo-700 text-white shadow-sm" : "bg-white border-slate-200 text-slate-400"}`}>
                               ✓
                             </span>
-                            <div>
-                              <h4 className="text-[11px] font-bold text-slate-800 leading-tight">{m.label}</h4>
-                              <p className="text-[9.5px] text-slate-455 mt-0.5 font-mono">{m.desc}</p>
-                            </div>
+                            <span className="text-[9px] font-bold text-slate-700 mt-2 text-center whitespace-nowrap">{step.label}</span>
+                            <span className="text-[7.5px] font-mono text-slate-400 mt-0.5">
+                              {step.date ? new Date(step.date).toLocaleDateString("en-NG", { day: "numeric", month: "short" }) : "—"}
+                            </span>
                           </div>
                         ))}
                       </div>

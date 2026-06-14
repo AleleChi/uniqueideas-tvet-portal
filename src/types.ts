@@ -43,6 +43,7 @@ export interface Beneficiary {
   firstName: string;
   lastName: string;
   otherName?: string;
+  fullName?: string;
   gender: Gender;
   bvn: string;
   nin: string;
