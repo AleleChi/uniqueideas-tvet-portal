@@ -345,8 +345,17 @@ resendSend=${dispatchTime.toFixed(2)}ms
 total=${(prepTime + dispatchTime).toFixed(2)}ms`);
 
         if (error) {
+          const statusCode = (error as any).statusCode || (error as any).status;
+          let errorDetails = error.message || "Unknown Resend API error";
+          // Provide actionable guidance for the two most common Resend failures
+          if (statusCode === 403 || errorDetails.toLowerCase().includes("domain") || errorDetails.toLowerCase().includes("not verified")) {
+            errorDetails = `Resend rejected the email: the sender domain 'uniqueideas.dontechservicesconst.com' must be verified in your Resend dashboard before emails can be sent. Error: ${error.message}`;
+          } else if (statusCode === 401 || errorDetails.toLowerCase().includes("api key") || errorDetails.toLowerCase().includes("unauthorized")) {
+            errorDetails = `Resend API key is invalid or expired. Check RESEND_API_KEY in your Render environment variables. Error: ${error.message}`;
+          }
           console.error("[EmailService] Resend delivery error details:", error);
-          return { success: false, status: "Failed", errorDetails: error.message, apiResponse: error };
+          console.error(`[EmailService] Status: ${statusCode} | Recipient: ${emailTo}`);
+          return { success: false, status: "Failed", errorDetails, apiResponse: error };
         }
 
         console.log(`[Resend] Success: Formal admission dispatches successfully routed to ${emailTo}. Message ID: ${data?.id}`);
@@ -357,27 +366,18 @@ total=${(prepTime + dispatchTime).toFixed(2)}ms`);
       }
     }
 
-    // Gracefully disabled state or simulator mode fallback
-    try {
-      attachmentsList.forEach(a => {
-        const parts = a.content.split(",");
-        const base64Content = parts[1] || parts[0];
-        const buffer = Buffer.from(base64Content, "base64");
-        logForensicPdfTrace("Email Attachment (Simulated)", a.name, buffer);
-        console.log(`[EmailService Simulator] STAGE 6 - EMAIL ATTACHMENT LOG (SIMULATED):
-  Recipient: ${to}
-  Filename: ${a.name}
-  Attachment Size: ${buffer.length} bytes
-  MIME Type: application/pdf`);
-      });
-    } catch (err: any) {
-      console.error(`[Email Simulator] Email validation error:`, err.message);
-      return { success: false, status: "Failed", errorDetails: "Simulator pdf attachment check failed: " + err.message };
-    }
-
-    console.log(`[Resend] [SIMULATOR SUCCESS] Dispatched Admission Alert Email to: ${to}`);
-    console.log(`[Resend] [SIMULATOR SUCCESS] Attachments bundled: ${attachmentsList.map(a => `${a.name} (Size: ${Buffer.from(a.content.split(',')[1] || a.content.split(',')[0], 'base64').length} bytes)`).join(", ")}`);
-    return { success: true, status: "Delivered", errorDetails: "Sent via Simulator Connection (No Resend API Key configured)." };
+    //     // NO RESEND API KEY: Return a REAL failure, not a simulated success.
+    // Previously this returned { success: true } with no email sent, causing
+    // the UI to show "Sent" while the student received nothing.
+    // The operator must add RESEND_API_KEY to Render environment variables.
+    const missingKeyError = "Email delivery failed: RESEND_API_KEY is not configured. Add it to your Render environment variables and redeploy.";
+    console.error(`[EmailService] CRITICAL: ${missingKeyError}`);
+    console.error(`[EmailService] Intended recipient: ${to} | Student: ${studentName}`);
+    return {
+      success: false,
+      status: "Failed" as const,
+      errorDetails: missingKeyError
+    };
   }
 
   /**

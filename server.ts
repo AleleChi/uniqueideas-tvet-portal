@@ -15467,6 +15467,26 @@ async function startServer() {
     console.log("[BOOT] Static asset registration completed");
   }
 
+  // ─── ENVIRONMENT VALIDATION ─────────────────────────────────────────────────
+  // Print clear warnings at startup so missing config is obvious in Render logs.
+  const requiredEnvChecks = [
+    { key: "RESEND_API_KEY", label: "Resend email API key", impact: "Offer letters will NOT be emailed to students" },
+    { key: "DATABASE_URL", label: "PostgreSQL connection string", impact: "All data will fall back to JSON file storage" },
+    { key: "CLOUDINARY_CLOUD_NAME", label: "Cloudinary cloud name", impact: "PDF documents will use simulated URLs" },
+    { key: "JWT_SECRET", label: "JWT signing secret", impact: "Sessions will use insecure default key" },
+  ];
+  console.log("\n[BOOT] ════════════ ENVIRONMENT CONFIGURATION CHECK ════════════");
+  for (const check of requiredEnvChecks) {
+    const isSet = !!(process.env[check.key] && process.env[check.key]!.trim() !== "");
+    if (isSet) {
+      console.log(`[BOOT] ✓ ${check.key} — configured`);
+    } else {
+      console.error(`[BOOT] ✗ MISSING: ${check.key} (${check.label})`);
+      console.error(`[BOOT]   ↳ IMPACT: ${check.impact}`);
+    }
+  }
+  console.log("[BOOT] ═══════════════════════════════════════════════════════\n");
+
   console.log("[BOOT] app.listen reached");
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`[SYS] Server running on http://localhost:${PORT}`);
