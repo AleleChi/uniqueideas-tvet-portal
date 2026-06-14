@@ -1969,10 +1969,7 @@ app.get("/api/admissions/validate-token", async (req: any, res: any) => {
     if (sentTime) {
       const expiresTime = sentTime + (10 * 24 * 60 * 60 * 1000); // 10 days
       if (Date.now() > expiresTime) {
-        if (beneficiary.admissionStatus !== "EXPIRED") {
-          beneficiary.admissionStatus = "EXPIRED";
-          await DbRepo.upsertBeneficiary(beneficiary);
-        }
+        // NON-DESTRUCTIVE: Do not update status on disk in a validation handler
         return res.status(403).json({
           error: "OFFER_EXPIRED",
           message: "The 10-day provisional offer letter acceptance window has elapsed. This offer is permanently locked as EXPIRED and cannot be accessed."

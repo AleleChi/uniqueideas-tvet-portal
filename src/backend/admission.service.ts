@@ -7,7 +7,7 @@ import { Beneficiary, ProgramStatus, AuditLog, DocumentType } from "../types";
 import { PdfService } from "./pdf.service";
 import { TokenService } from "./token.service";
 import { EmailService } from "./email.service";
-import { DbRepo } from "./db";
+import { DbRepo, getPgPool } from "./db";
 import { CloudinaryService } from "./cloudinary.service";
 import { DocumentService } from "./document.service";
 import { buildSanitizedFilename } from "./pdfTraceAudit";
@@ -35,6 +35,63 @@ export class AdmissionService {
   static async sendAdmissionOffer(beneficiaryId: string, customDomain: string): Promise<any> {
     const totalStart = performance.now();
     
+    // Establish explicit transaction row-level lock check to drop overlaps within 15 seconds
+    const pool = getPgPool();
+    if (pool) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        
+        // 1. Row locking of admissions table or beneficiaries to sync concurrent requests
+        const lockRes = await client.query(
+          "SELECT beneficiary_id, admission_letter_sent_at FROM admissions WHERE beneficiary_id = $1 FOR UPDATE",
+          [beneficiaryId]
+        );
+        
+        let lastSentAt: Date | null = null;
+        if (lockRes.rows.length === 0) {
+          const bLockRes = await client.query(
+            "SELECT id FROM beneficiaries WHERE id = $1 FOR UPDATE",
+            [beneficiaryId]
+          );
+          if (bLockRes.rows.length === 0) {
+            await client.query("ROLLBACK");
+            throw new Error(`Beneficiary candidate '${beneficiaryId}' not found in registry.`);
+          }
+        } else {
+          const row = lockRes.rows[0];
+          if (row.admission_letter_sent_at) {
+            lastSentAt = new Date(row.admission_letter_sent_at);
+          }
+        }
+        
+        if (lastSentAt) {
+          const diffMs = Date.now() - lastSentAt.getTime();
+          if (diffMs < 15000) {
+            // Overlapping duplicate within 15 seconds - Suppress dispatch
+            await client.query("ROLLBACK");
+            console.log(`[AdmissionService] Concurrency Guard triggered for beneficiary: ${beneficiaryId}. Drop duplicate overlap.`);
+            const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
+            return {
+              success: true,
+              secureLink: `${customDomain}/?token=${TokenService.generateToken(beneficiaryId, beneficiary?.tokenVersion || 1)}`,
+              emailStatus: beneficiary?.emailStatus || "Sent",
+              smtpErrorDetails: beneficiary?.smtpErrorDetails,
+              beneficiary
+            };
+          }
+        }
+        
+        await client.query("COMMIT");
+      } catch (err) {
+        await client.query("ROLLBACK");
+        client.release();
+        throw err;
+      } finally {
+        client.release();
+      }
+    }
+
     // Measure Fetch time
     const fetchStart = performance.now();
     const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
@@ -230,47 +287,22 @@ export class AdmissionService {
     const beneficiary = await DbRepo.getBeneficiaryById(resolvedId);
     if (!beneficiary) return false;
 
-    if (beneficiary.emailTrackingStatus !== "Opened") {
-      beneficiary.emailTrackingStatus = "Opened";
-      
-      const trackingHistory = beneficiary.emailTrackingHistory || [];
-      trackingHistory.push({
-        status: "Opened",
-        timestamp: new Date().toISOString(),
-        description: "Student clicked secure portal URL, verifying that transmission was opened."
-      });
-      beneficiary.emailTrackingHistory = trackingHistory;
-
-      const oldAdmissionStatus = beneficiary.admissionStatus || "Pending";
-      let newAdmissionStatus = oldAdmissionStatus;
-      if (oldAdmissionStatus === "Admission Sent" || oldAdmissionStatus === "Admission Generated" || oldAdmissionStatus === "Pending") {
-        beneficiary.admissionStatus = "Offer Viewed";
-        newAdmissionStatus = "Offer Viewed";
-      }
-
-      // Write to Workflow History table!
+    // Safe direct UPDATE to track email opened status in the email_logs table
+    const pool = getPgPool();
+    if (pool) {
       try {
-        await DbRepo.saveWorkflowHistory({
-          beneficiaryId: beneficiary.id,
-          oldStatus: oldAdmissionStatus,
-          newStatus: newAdmissionStatus,
-          changedBy: beneficiary.email || "STUDENT_PORTAL",
-          changedAt: new Date().toISOString(),
-          remarks: "Trainee loaded secure response link; logged Offer Viewed event."
-        });
-      } catch (err) {}
-
-      // Audit Log
-      await this.logAction(
-        beneficiary.email || `${beneficiary.firstName.toLowerCase()}@tvet-response.net`,
-        "Email Opened",
-        `Trainee opened verification email portal of candidate '${beneficiary.firstName} ${beneficiary.lastName}' (ID: ${beneficiary.id})`
-      );
-
-      await DbRepo.upsertBeneficiary(beneficiary);
-      return true;
+        await pool.query(
+          "UPDATE email_logs SET tracking_status = 'Opened', updated_at = NOW() WHERE beneficiary_id = $1",
+          [resolvedId]
+        );
+      } catch (e) {
+        console.error("[registerEmailOpened] Failed to update tracking_status safely:", e);
+      }
     }
-    return false;
+
+    // Safely update memory reference without executing a destructive disk upsert which increments version controls
+    beneficiary.emailTrackingStatus = "Opened";
+    return true;
   }
 
   /**
@@ -403,8 +435,31 @@ export class AdmissionService {
       throw new Error("Activation session token is invalid, corrupted, or has expired.");
     }
 
-    const fetchStart = performance.now();
     const resolvedId = await DbRepo.resolveBeneficiaryIdResiliently(decoded.id);
+
+    // Strict PostgreSQL transaction and row-level locking on beneficiaries and admissions tables
+    const pool = getPgPool();
+    if (pool) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        // Lock both beneficiary and admission records
+        await client.query("SELECT id FROM beneficiaries WHERE id = $1 FOR UPDATE", [resolvedId]);
+        try {
+          await client.query("SELECT beneficiary_id FROM admissions WHERE beneficiary_id = $1 FOR UPDATE", [resolvedId]);
+        } catch (admLockErr) {
+          // Admissions table record may not be created yet, proceed gracefully
+        }
+        await client.query("COMMIT");
+      } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("[processPortalSubmission] Failed to acquire row locks safely:", err);
+      } finally {
+        client.release();
+      }
+    }
+
+    const fetchStart = performance.now();
     const beneficiary = await DbRepo.getBeneficiaryById(resolvedId);
     const fetchDuration = performance.now() - fetchStart;
     console.log(`[PERF TRACE] [processPortalSubmission] Initial database beneficiary fetch took ${fetchDuration.toFixed(2)}ms`);

@@ -38,12 +38,20 @@ export function logForensicPdfTrace(label: string, filename: string, buffer: Buf
 ======================================================================
 `);
 
-  // Extra validation check: confirm first 5 bytes are '%PDF-'
-  const sig = buffer.subarray(0, 5).toString("ascii");
-  if (sig !== "%PDF-") {
-    console.error(`[PDF INTEGRITY REJECTED] PDF binary corrupt at STAGE: ${label}. Starts with '${sig}' instead of '%PDF-'.`);
-    throw new Error(`PDF Integrity Violation: File ${filename} at stage ${label} does not begin with %PDF-`);
+  // Extra validation check: confirm first 5 bytes are '%PDF-' if it is a PDF document
+  const ext = filename.split(".").pop()?.toLowerCase();
+  const nonPdfExts = ["png", "jpg", "jpeg", "docx", "doc", "gif"];
+  const isPdf = !ext || !nonPdfExts.includes(ext);
+
+  if (isPdf) {
+    const sig = buffer.subarray(0, 5).toString("ascii");
+    if (sig !== "%PDF-") {
+      console.error(`[PDF INTEGRITY REJECTED] PDF binary corrupt at STAGE: ${label}. Starts with '${sig}' instead of '%PDF-'.`);
+      throw new Error(`PDF Integrity Violation: File ${filename} at stage ${label} does not begin with %PDF-`);
+    } else {
+      console.log(`[PDF INTEGRITY CONFIRMED] File ${filename} begins with valid '%PDF-' header at STAGE: ${label}.`);
+    }
   } else {
-    console.log(`[PDF INTEGRITY CONFIRMED] File ${filename} begins with valid '%PDF-' header at STAGE: ${label}.`);
+    console.log(`[FILE INTEGRITY CONFIRMED] Non-PDF file ${filename} (ext: ${ext}) bypasses PDF signature validation at STAGE: ${label}.`);
   }
 }
