@@ -401,8 +401,10 @@ export class AdmissionService {
       verificationCode: verificationCodeAcc,
     };
 
-    let admissionPdfBuffer: Buffer;
-    let acceptancePdfBuffer: Buffer;
+    let admissionPdfBuffer: Buffer | null = null;
+    let acceptancePdfBuffer: Buffer | null = null;
+    let pdfRendererUnavailable = false;
+    let pdfRendererReason = "";
 
     try {
       const chromePath = PdfService.resolveChromePath();
@@ -417,35 +419,25 @@ export class AdmissionService {
       admissionPdfBuffer = compiled[0];
       acceptancePdfBuffer = compiled[1];
     } catch (pdfErr: any) {
-      console.error("[AdmissionService] PDF generation failed during sendAdmissionOffer:", pdfErr.message || pdfErr);
-      return {
-        success: false,
-        error: "PDF_RENDER_UNAVAILABLE",
-        message: "Offer link is ready, but official letters could not be generated. Please retry PDF generation after renderer is restored.",
-        secureLink,
-        beneficiary
-      };
+      console.error("[AdmissionService] PDF generation failed during sendAdmissionOffer, falling back to secure-link-only email delivery:", pdfErr.message || pdfErr);
+      pdfRendererUnavailable = true;
+      pdfRendererReason = pdfErr.message || String(pdfErr);
     }
 
-    const isAdmissionRealPdf = admissionPdfBuffer && admissionPdfBuffer.length >= 4 && admissionPdfBuffer[0] === 0x25 && admissionPdfBuffer[1] === 0x50 && admissionPdfBuffer[2] === 0x44 && admissionPdfBuffer[3] === 0x46;
-    const isAcceptanceRealPdf = acceptancePdfBuffer && acceptancePdfBuffer.length >= 4 && acceptancePdfBuffer[0] === 0x25 && acceptancePdfBuffer[1] === 0x50 && acceptancePdfBuffer[2] === 0x44 && acceptancePdfBuffer[3] === 0x46;
+    const isAdmissionRealPdf = !pdfRendererUnavailable && admissionPdfBuffer && admissionPdfBuffer.length >= 4 && admissionPdfBuffer[0] === 0x25 && admissionPdfBuffer[1] === 0x50 && admissionPdfBuffer[2] === 0x44 && admissionPdfBuffer[3] === 0x46;
+    const isAcceptanceRealPdf = !pdfRendererUnavailable && acceptancePdfBuffer && acceptancePdfBuffer.length >= 4 && acceptancePdfBuffer[0] === 0x25 && acceptancePdfBuffer[1] === 0x50 && acceptancePdfBuffer[2] === 0x44 && acceptancePdfBuffer[3] === 0x46;
 
-    if (!isAdmissionRealPdf || !isAcceptanceRealPdf) {
-      throw new Error("Admission/Acceptance document compilation returned corrupted data frames.");
+    if (!pdfRendererUnavailable && (!isAdmissionRealPdf || !isAcceptanceRealPdf)) {
+      console.error("[AdmissionService] PDF verification failed, marked as unavailable");
+      pdfRendererUnavailable = true;
+      pdfRendererReason = "Corrupted PDF data frame signature verification failure.";
     }
 
-    const admissionAttachmentName = buildSanitizedFilename(beneficiary, "ADMISSION_LETTER", "pdf");
-    const acceptanceAttachmentName = buildSanitizedFilename(beneficiary, "ACCEPTANCE_LETTER", "pdf");
-
-    // Send the email instantly with in-memory buffers to maintain sub-second response times
-    const toEmail = beneficiary.email || "uniqueideasproject@gmail.com";
-    console.log(`[AdmissionService] Transmitting email instantly to: ${toEmail}`);
-    const emailSendStart = performance.now();
-    const mailResult = await EmailService.sendAdmissionEmail(
-      toEmail, 
-      `${beneficiary.firstName} ${beneficiary.lastName}`, 
-      secureLink,
-      [
+    const attachmentsList: Array<{ name: string; content: string; contentType: string }> = [];
+    if (!pdfRendererUnavailable && admissionPdfBuffer && acceptancePdfBuffer) {
+      const admissionAttachmentName = buildSanitizedFilename(beneficiary, "ADMISSION_LETTER", "pdf");
+      const acceptanceAttachmentName = buildSanitizedFilename(beneficiary, "ACCEPTANCE_LETTER", "pdf");
+      attachmentsList.push(
         {
           name: admissionAttachmentName,
           content: admissionPdfBuffer.toString("base64"),
@@ -456,71 +448,106 @@ export class AdmissionService {
           content: acceptancePdfBuffer.toString("base64"),
           contentType: "application/pdf"
         }
-      ]
+      );
+    }
+
+    // Send the email instantly with in-memory buffers to maintain sub-second response times
+    const toEmail = beneficiary.email || "uniqueideasproject@gmail.com";
+    console.log(`[AdmissionService] Transmitting email instantly to: ${toEmail}. PDFs attached: ${!pdfRendererUnavailable}`);
+    const emailSendStart = performance.now();
+    const mailResult = await EmailService.sendAdmissionEmail(
+      toEmail, 
+      `${beneficiary.firstName} ${beneficiary.lastName}`, 
+      secureLink,
+      attachmentsList
     );
     console.log(`[AdmissionService] Email transmission returned in ${(performance.now() - emailSendStart).toFixed(2)}ms`);
 
     let changeRemarks = "";
     if (mailResult.success) {
       beneficiary.emailStatus = "Sent";
-      if (!beneficiary.admissionStatus || beneficiary.admissionStatus === "Admission Generated") {
+      if (!beneficiary.admissionStatus || beneficiary.admissionStatus === "Admission Generated" || beneficiary.admissionStatus === "Pending") {
         beneficiary.admissionStatus = "Admission Sent";
       }
       beneficiary.admissionLetterSentAt = new Date().toISOString();
       beneficiary.smtpErrorDetails = undefined;
-      changeRemarks = "Admission offer letters successfully generated and sent instantly.";
+      if (pdfRendererUnavailable) {
+        changeRemarks = "Admission offer portal link successfully sent, but official PDFs are pending renderer restoration.";
+      } else {
+        changeRemarks = "Admission offer letters successfully generated and sent instantly.";
+      }
     } else {
       beneficiary.emailStatus = "Failed";
       beneficiary.smtpErrorDetails = mailResult.status;
-      changeRemarks = `Admission offer letters generated, email dispatch failed: ${mailResult.status}`;
+      if (pdfRendererUnavailable) {
+        changeRemarks = `Admission offer portal link email failed: ${mailResult.status}. PDFs pending renderer restoration.`;
+      } else {
+        changeRemarks = `Admission offer letters generated, email dispatch failed: ${mailResult.status}`;
+      }
     }
 
     // Predetermine Cloudinary URLs & document IDs immediately so the return object is instantly populated and complete
     const publicIdAdm = `beneficiary_${resolvedId}_admission_letter_v${nextVersionNum}`;
     const publicIdAcc = `beneficiary_${resolvedId}_acceptance_letter_v${nextAccLetterVerNum}`;
     
-    const admissionPdfUrl = `https://res.cloudinary.com/ideas-tvet/raw/upload/${publicIdAdm}.pdf`;
-    const acceptancePdfUrl = `https://res.cloudinary.com/ideas-tvet/raw/upload/${publicIdAcc}.pdf`;
+    const admissionPdfUrl = pdfRendererUnavailable ? "" : `https://res.cloudinary.com/ideas-tvet/raw/upload/${publicIdAdm}.pdf`;
+    const acceptancePdfUrl = pdfRendererUnavailable ? "" : `https://res.cloudinary.com/ideas-tvet/raw/upload/${publicIdAcc}.pdf`;
 
-    beneficiary.admissionLetterUrl = admissionPdfUrl;
-    beneficiary.acceptanceLetterUrl = acceptancePdfUrl;
+    // Only if pdf generated, we assign Cloudinary URLs to the beneficiary
+    if (!pdfRendererUnavailable) {
+      beneficiary.admissionLetterUrl = admissionPdfUrl;
+      beneficiary.acceptanceLetterUrl = acceptancePdfUrl;
 
-    const fName = (beneficiary.firstName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-    const lName = (beneficiary.lastName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-    const namePart = fName && lName ? `${fName}_${lName}` : `${(beneficiary.id || "TRAINEE").replace(/[^A-Z0-9-]/g, "")}`;
+      const fName = (beneficiary.firstName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const lName = (beneficiary.lastName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const namePart = fName && lName ? `${fName}_${lName}` : `${(beneficiary.id || "TRAINEE").replace(/[^A-Z0-9-]/g, "")}`;
 
-    // Append URLs to local lists in the returning entity
-    const currentVersions = beneficiary.admissionLetterVersions || [];
-    const newVersionItem = {
-      version: nextVersionNum,
-      url: admissionPdfUrl,
-      name: `${namePart}_ADMISSION_LETTER_v${nextVersionNum}.pdf`,
-      generatedAt: new Date().toISOString()
-    };
-    beneficiary.admissionLetterVersions = [...currentVersions, newVersionItem];
+      // Append URLs to local lists in the returning entity
+      const currentVersions = beneficiary.admissionLetterVersions || [];
+      const newVersionItem = {
+        version: nextVersionNum,
+        url: admissionPdfUrl,
+        name: `${namePart}_ADMISSION_LETTER_v${nextVersionNum}.pdf`,
+        generatedAt: new Date().toISOString()
+      };
+      beneficiary.admissionLetterVersions = [...currentVersions, newVersionItem];
 
-    const currentDocs = beneficiary.documentsList || [];
+      const currentDocs = beneficiary.documentsList || [];
+      const admissionDocId = `gdoc_${Date.now()}_adm`;
+      const acceptanceDocId = `gdoc_${Date.now()}_acc`;
+
+      beneficiary.documentsList = [
+        ...currentDocs,
+        {
+          id: admissionDocId,
+          name: `${namePart}_ADMISSION_LETTER.pdf`,
+          type: "admission",
+          url: admissionPdfUrl,
+          uploadedAt: new Date().toISOString(),
+          version: nextVersionNum
+        },
+        {
+          id: acceptanceDocId,
+          name: `${namePart}_ACCEPTANCE_LETTER.pdf`,
+          type: "acceptance",
+          url: acceptancePdfUrl,
+          uploadedAt: new Date().toISOString(),
+          version: nextAccLetterVerNum
+        }
+      ];
+    }
+
     const admissionDocId = `gdoc_${Date.now()}_adm`;
     const acceptanceDocId = `gdoc_${Date.now()}_acc`;
-
-    beneficiary.documentsList = [
-      ...currentDocs,
-      {
-        id: admissionDocId,
-        name: `${namePart}_ADMISSION_LETTER.pdf`,
-        type: "admission",
-        url: admissionPdfUrl,
-        uploadedAt: new Date().toISOString(),
-        version: nextVersionNum
-      }
-    ];
 
     const deliveryHistory = beneficiary.emailDeliveryHistory || [];
     const newDeliveryRecord = {
       dateSent: new Date().toISOString(),
       recipientEmail: toEmail,
       deliveryResult: mailResult.success ? ("Sent" as const) : ("Failed" as const),
-      smtpResponse: mailResult.success ? "Instant SMTP accepted" : (mailResult.status || "Transport Error")
+      smtpResponse: mailResult.success 
+        ? (pdfRendererUnavailable ? "Portal Link Sent (PDF Generation Pending)" : "Instant SMTP accepted with PDF Attachments")
+        : (mailResult.status || "Transport Error")
     };
     beneficiary.emailDeliveryHistory = [...deliveryHistory, newDeliveryRecord];
 
@@ -528,13 +555,15 @@ export class AdmissionService {
     console.log(`[AdmissionService] Offloading heavy Asset upload and Database Sync to post-dispatch background execution.`);
     
     (async () => {
-      // 1. Upload the buffers to Cloudinary in parallel background queue
-      await Promise.all([
-        CloudinaryService.uploadDocument(admissionPdfBuffer, publicIdAdm),
-        CloudinaryService.uploadDocument(acceptancePdfBuffer, publicIdAcc)
-      ]).catch(e => {
-        console.error("[AdmissionService Background Queue] Cloudinary storage bucket transfer warning:", e);
-      });
+      if (!pdfRendererUnavailable && admissionPdfBuffer && acceptancePdfBuffer) {
+        // 1. Upload the buffers to Cloudinary in parallel background queue
+        await Promise.all([
+          CloudinaryService.uploadDocument(admissionPdfBuffer, publicIdAdm),
+          CloudinaryService.uploadDocument(acceptancePdfBuffer, publicIdAcc)
+        ]).catch(e => {
+          console.error("[AdmissionService Background Queue] Cloudinary storage bucket transfer warning:", e);
+        });
+      }
 
       // 2. Perform database entry saves for the documents
       const newDocAdm = {
@@ -546,9 +575,10 @@ export class AdmissionService {
         generatedBy: "SYSTEM_ADMISSIONS",
         createdAt: new Date().toISOString(),
         verificationCode: verificationCodeAdm,
-        verificationStatus: "UNVERIFIED",
+        verificationStatus: pdfRendererUnavailable ? "PENDING" : "UNVERIFIED",
         verificationDate: "",
         emailDeliveryStatus: mailResult.success ? "Delivered" : "Failed",
+        documentStatus: pdfRendererUnavailable ? "PENDING_RENDER" : "ACTIVE"
       };
 
       const newDocAcc = {
@@ -560,9 +590,10 @@ export class AdmissionService {
         generatedBy: "SYSTEM_ADMISSIONS",
         createdAt: new Date().toISOString(),
         verificationCode: verificationCodeAcc,
-        verificationStatus: "UNVERIFIED",
+        verificationStatus: pdfRendererUnavailable ? "PENDING" : "UNVERIFIED",
         verificationDate: "",
         emailDeliveryStatus: "NOT_SENT",
+        documentStatus: pdfRendererUnavailable ? "PENDING_RENDER" : "ACTIVE"
       };
 
       await Promise.all([
@@ -587,8 +618,10 @@ export class AdmissionService {
         timestamp: new Date().toISOString(),
         username: "admission@uniqueideas.dontechservicesconst.com",
         role: "System Broker",
-        action: "Email Sent",
-        details: `Dispatched formal admission offer & PDFs to '${beneficiary.firstName} ${beneficiary.lastName}'. Delivery Status: ${mailResult.success ? 'Success' : 'Failed'}`
+        action: pdfRendererUnavailable ? "Email Sent (PDF Pending)" : "Email Sent",
+        details: pdfRendererUnavailable 
+          ? `Dispatched secure portal link to '${beneficiary.firstName} ${beneficiary.lastName}'. PDF generation is PENDING due to server renderer status.`
+          : `Dispatched formal admission offer & PDFs to '${beneficiary.firstName} ${beneficiary.lastName}'. Delivery Status: ${mailResult.success ? 'Success' : 'Failed'}`
       }).catch(() => {});
 
       // Conclude final state sync write to DB without overwriting concurrent updates (like token_version or admission_status changes)
@@ -616,6 +649,7 @@ export class AdmissionService {
 
     return { 
       success: mailResult.success, 
+      pdfRendererUnavailable,
       secureLink, 
       emailStatus: beneficiary.emailStatus, 
       smtpErrorDetails: beneficiary.smtpErrorDetails,

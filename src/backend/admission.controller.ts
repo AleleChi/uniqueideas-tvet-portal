@@ -111,12 +111,16 @@ export class AdmissionController {
 
       // Invoke the single-source-of-truth service for offer dispatch
       const outcome = await OfferService.sendOffer(beneficiaryId, customDomain);
-      if (outcome.error === "PDF_RENDER_UNAVAILABLE") {
+      if (outcome.pdfRendererUnavailable) {
         return res.status(200).json({
-          success: false,
-          error: "PDF_RENDER_UNAVAILABLE",
-          message: outcome.message || "Offer link is ready, but official letters could not be generated. Please retry PDF generation after renderer is restored.",
+          success: outcome.success,
+          pdfRendererUnavailable: true,
+          message: outcome.success 
+            ? "Offer link sent successfully. Official PDF attachments are pending because the PDF renderer is unavailable."
+            : `SMTP delivery failed: ${outcome.smtpErrorDetails || "Unknown SMTP error."} (PDF rendering is also pending)`,
           secureLink: outcome.secureLink,
+          emailStatus: outcome.emailStatus,
+          smtpErrorDetails: outcome.smtpErrorDetails,
           beneficiary: outcome.beneficiary
         });
       }
@@ -124,7 +128,7 @@ export class AdmissionController {
       return res.status(200).json({ 
         success: outcome.success, 
         message: outcome.success 
-          ? "Provisional offer generated, letter compiled, and notification email successfully queued."
+          ? "Provisional offer generated, letters compiled, and notification email successfully dispatched with PDF attachments."
           : `SMTP delivery failed: ${outcome.smtpErrorDetails || "Unknown SMTP error."}`,
         secureLink: outcome.secureLink,
         emailStatus: outcome.emailStatus,
