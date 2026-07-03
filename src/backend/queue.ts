@@ -2,6 +2,7 @@ import { DbRepo, getPgPool } from "./db";
 import { EmailService } from "./email.service";
 import { DocumentService } from "./document.service";
 import { TokenService } from "./token.service";
+import { AdmissionService } from "./admission.service";
 import { DocumentType } from "../types";
 
 export interface CampaignConfig {
@@ -146,9 +147,9 @@ export class EmailCampaignQueue {
 
         // Custom domain for portal links (Vite preview has current origin or we use default dev url)
         const customDomain = process.env.VITE_API_URL || "https://ais-dev-nsgofjneehq5yhv2fp247q-526547409209.europe-west1.run.app";
-        const tokenVersion = beneficiary.tokenVersion || 1;
-        const secureToken = TokenService.generateToken(beneficiary.id, tokenVersion);
-        const secureLink = `${customDomain}/?token=${secureToken}`;
+        const tokenRes = await AdmissionService.getOrCreateActiveOfferToken(beneficiary.id, customDomain);
+        const secureToken = tokenRes.secureToken;
+        const secureLink = tokenRes.secureLink;
 
         // Replace template placeholders
         let subject = template.subject

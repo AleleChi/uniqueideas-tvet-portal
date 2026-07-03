@@ -17,7 +17,7 @@ export interface Toast {
 
 interface NotificationContextProps {
   showToast: (message: string, type: ToastType) => void;
-  confirmDelete: (name: string, onConfirm: () => void) => void;
+  confirmDelete: (nameOrOptions: any, onConfirm?: () => void) => void;
 }
 
 const NotificationContext = createContext<NotificationContextProps | undefined>(undefined);
@@ -27,6 +27,8 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const [confirmState, setConfirmState] = useState<{
     isOpen: boolean;
     name: string;
+    title?: string;
+    message?: string;
     onConfirm: () => void;
   } | null>(null);
 
@@ -35,12 +37,28 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     setToasts((prev) => [...prev, { id, message, type }]);
   }, []);
 
-  const confirmDelete = useCallback((name: string, onConfirm: () => void) => {
+  const confirmDelete = useCallback((nameOrOptions: any, onConfirm?: () => void) => {
+    let name = "Target Item";
+    let title = "Delete Confirmation";
+    let message = "Are you sure you want to delete this item?";
+    let confirmFn = onConfirm || (() => {});
+
+    if (typeof nameOrOptions === "object" && nameOrOptions !== null) {
+      name = nameOrOptions.name || nameOrOptions.title || "Target Item";
+      if (nameOrOptions.title) title = nameOrOptions.title;
+      if (nameOrOptions.message) message = nameOrOptions.message;
+      if (nameOrOptions.onConfirm) confirmFn = nameOrOptions.onConfirm;
+    } else if (typeof nameOrOptions === "string") {
+      name = nameOrOptions;
+    }
+
     setConfirmState({
       isOpen: true,
       name,
+      title,
+      message,
       onConfirm: () => {
-        onConfirm();
+        confirmFn();
         setConfirmState(null);
       }
     });
@@ -105,10 +123,10 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
                 </div>
                 <div className="space-y-2 flex-grow text-left">
                   <h3 className="text-sm font-bold uppercase tracking-wider text-slate-800 font-display">
-                    Delete Confirmation
+                    {confirmState.title || "Delete Confirmation"}
                   </h3>
                   <p className="text-xs text-slate-500 font-medium leading-relaxed">
-                    Are you sure you want to delete this beneficiary?
+                    {confirmState.message || "Are you sure you want to delete this item?"}
                   </p>
                   <div className="bg-slate-50 border border-slate-100 p-2.5 rounded-lg">
                     <span className="text-[10px] font-bold text-slate-400 block font-mono uppercase">TARGET NAME:</span>

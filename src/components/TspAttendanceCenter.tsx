@@ -90,20 +90,13 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
   const [selectedState, setSelectedState] = useState("all");
   const [selectedTsp, setSelectedTsp] = useState("all");
   const [fedStats, setFedStats] = useState<any>({
-    nationalAttendanceRate: 85.4,
-    eligibleForStipend: 184,
-    atRisk: 15,
-    suspended: 8,
-    escalated: 5,
-    hoursLogged: 17280,
-    trends: [
-      { month: "Jan", rate: 82.5 },
-      { month: "Feb", rate: 83.1 },
-      { month: "Mar", rate: 84.8 },
-      { month: "Apr", rate: 85.0 },
-      { month: "May", rate: 85.6 },
-      { month: "Jun", rate: 86.2 }
-    ]
+    nationalAttendanceRate: 0,
+    eligibleForStipend: 0,
+    atRisk: 0,
+    suspended: 0,
+    escalated: 0,
+    hoursLogged: 0,
+    trends: []
   });
 
   // Role detection
@@ -111,11 +104,11 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
   const isFed = userRole === "SUPER_ADMIN" || FED_ROLES.includes(userRole);
 
   // Read-only static affiliation badges for TSP (Full sandbox lock)
-  const assignedState = "Imo";
-  const assignedLga = "Owerri Municipal";
-  const assignedTsp = "Unique Technology Nig. Ltd";
-  const assignedSector = "ICT";
-  const assignedSkill = "Computer Hardware repairs";
+  const assignedState = session?.state || "Imo";
+  const assignedLga = session?.lga || "Owerri Municipal";
+  const assignedTsp = session?.tspName || session?.organization || "Unique Technology Nig. Ltd";
+  const assignedSector = session?.sector || "ICT";
+  const assignedSkill = session?.skill || "Computer Hardware repairs";
 
   // Dynamic lists of states & TSPs for FED filters
   const availableStates = ["Imo", "Kano", "Lagos", "Delta", "Abia", "Enugu"];
@@ -359,13 +352,12 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
     });
 
     if (complianceRecords.length === 0 && trainees.length > 0) {
-      // Fallback simulation count if compliance snapshot has not loaded
       return {
         all: trainees.length,
-        eligible: Math.round(trainees.length * 0.8),
-        warning: Math.round(trainees.length * 0.1),
-        atRisk: Math.round(trainees.length * 0.05),
-        suspended: Math.round(trainees.length * 0.05)
+        eligible: 0,
+        warning: 0,
+        atRisk: 0,
+        suspended: 0
       };
     }
 
@@ -435,9 +427,9 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
       cohort: dailyRec?.cohort || "Batch 2026-C",
       program: dailyRec?.program || "IDEAS-TVET",
       skill_sector: dailyRec?.skill_sector || assignedSector,
-      stipend_status: compRec?.stipend_status || "ELIGIBLE",
-      attendance_percentage: compRec?.attendance_percentage || 90,
-      total_hours: compRec?.total_hours || (dailyRec?.hoursLogged ? dailyRec.hoursLogged : 114.0)
+      stipend_status: compRec?.stipend_status || "NO_RECORD",
+      attendance_percentage: compRec?.attendance_percentage !== undefined ? compRec.attendance_percentage : 0,
+      total_hours: compRec?.total_hours !== undefined ? compRec.total_hours : (dailyRec?.hoursLogged ? dailyRec.hoursLogged : 0)
     };
 
     setSelectedTraineeForDrawer(merged);
@@ -450,12 +442,40 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
   const lateCount = trainees.filter(t => t.attendanceStatus === "LATE").length;
   const overallRate = trainees.length > 0 ? Math.round((presentCount / trainees.length) * 100) : 100;
 
-  // Mock document export action triggers
-  const triggerExport = (format: string) => {
-    showToast(`Compiling detailed active attendance ledger dataset to ${format}...`, "info");
-    setTimeout(() => {
-      showToast(`Annex 9 Attendance Report (${format}) exported successfully.`, "success");
-    }, 1200);
+  // Real Annex 9 export action trigger
+  const triggerExport = async (format: string = "xlsx") => {
+    try {
+      showToast(`Compiling official Annex 9 attendance records (${format.toUpperCase()})...`, "info");
+      const endpoint = isFed ? "/api/annex9/export" : "/api/tsp/attendance/export-annex9";
+      const params = new URLSearchParams();
+      if (selectedMonth && selectedMonth !== "all") params.set("month", selectedMonth);
+      if (format === "csv") params.set("format", "csv");
+
+      const res = await fetch(`${endpoint}?${params.toString()}`, {
+        headers: {
+          "Authorization": `Bearer ${session?.token || ""}`
+        }
+      });
+
+      if (!res.ok) {
+        throw new Error("Failed to export Annex 9 workbook");
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const ext = format === "csv" ? "csv" : "xlsx";
+      a.download = `Annex_9_Attendance_${selectedMonth || "All"}.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      showToast(`Annex 9 Attendance Report exported successfully.`, "success");
+    } catch (err: any) {
+      console.error("Export failed:", err);
+      showToast(`Export error: ${err.message}`, "error");
+    }
   };
 
   return (
@@ -740,14 +760,22 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
         </div>
 
         {/* Global Toolbar */}
-        <div className="flex items-center gap-2 mb-2">
+        <div className="flex flex-wrap items-center gap-2 mb-2">
           <button
             type="button"
             onClick={() => triggerExport("xlsx")}
             className="px-3 py-1.5 border border-emerald-200 bg-emerald-50 hover:bg-emerald-100/50 text-emerald-800 text-xs font-bold rounded-lg flex items-center gap-1.5 transition cursor-pointer"
           >
             <FileSpreadsheet className="w-3.5 h-3.5" />
-            Official Annex 9 (.xlsx)
+            Export Annex 9 Attendance
+          </button>
+          <button
+            type="button"
+            onClick={() => triggerExport("csv")}
+            className="px-3 py-1.5 border border-indigo-200 bg-indigo-50 hover:bg-indigo-100/50 text-indigo-800 text-xs font-bold rounded-lg flex items-center gap-1.5 transition cursor-pointer"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5" />
+            Annex 9 Attendance (.csv)
           </button>
           <button
             type="button"

@@ -23,6 +23,13 @@ interface AdmissionsWorkspaceProps {
 }
 
 export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, admissionsSubTab }: AdmissionsWorkspaceProps) {
+  const userRole = session?.role || "";
+  const isFederal = userRole === "SUPER_ADMIN" || 
+                    ["FED", "FED_SUPER_ADMIN", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "FEDERAL_ME_OFFICER"].includes(userRole) ||
+                    userRole.startsWith("FED") ||
+                    userRole.startsWith("FEDERAL") ||
+                    !userRole; // Default to true if simulated or empty
+
   // Stats State
   const [stats, setStats] = useState<any | null>(null);
   const [loadingStats, setLoadingStats] = useState(true);
@@ -1065,18 +1072,20 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
             </select>
 
             {/* Geographical States */}
-            <select
-              value={stateFilter}
-              onChange={(e) => { setStateFilter(e.target.value); setPage(1); }}
-              className="bg-slate-50 hover:bg-slate-100 border border-slate-200 py-1.5 px-3 rounded-lg text-xs font-bold text-slate-600 cursor-pointer focus:outline-none min-h-[34px]"
-            >
-              <option value="all">Any State Location</option>
-              <option value="Imo State">Imo</option>
-              <option value="Kano State">Kano</option>
-              <option value="Lagos State">Lagos</option>
-              <option value="Enugu State">Enugu</option>
-              <option value="FCT Abuja">Abuja</option>
-            </select>
+            {isFederal && (
+              <select
+                value={stateFilter}
+                onChange={(e) => { setStateFilter(e.target.value); setPage(1); }}
+                className="bg-slate-50 hover:bg-slate-100 border border-slate-200 py-1.5 px-3 rounded-lg text-xs font-bold text-slate-600 cursor-pointer focus:outline-none min-h-[34px]"
+              >
+                <option value="all">Any State Location</option>
+                <option value="Imo State">Imo</option>
+                <option value="Kano State">Kano</option>
+                <option value="Lagos State">Lagos</option>
+                <option value="Enugu State">Enugu</option>
+                <option value="FCT Abuja">Abuja</option>
+              </select>
+            )}
 
             {/* Sector Tracks filter */}
             <select
@@ -1808,36 +1817,40 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
               </div>
 
               {/* Field 2: Geographical States */}
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-500 uppercase">State Location</label>
-                <select
-                  value={stateFilter}
-                  onChange={(e) => { setStateFilter(e.target.value); setPage(1); }}
-                  className="w-full bg-slate-50 hover:bg-slate-100 border border-slate-200 py-1.5 px-2.5 rounded-lg text-xs font-bold text-slate-600 cursor-pointer focus:outline-none min-h-[34px]"
-                >
-                  <option value="all">Any State</option>
-                  <option value="Imo State">Imo</option>
-                  <option value="Kano State">Kano</option>
-                  <option value="Lagos State">Lagos</option>
-                  <option value="Enugu State">Enugu</option>
-                  <option value="FCT Abuja">Abuja</option>
-                </select>
-              </div>
+              {isFederal && (
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase">State Location</label>
+                  <select
+                    value={stateFilter}
+                    onChange={(e) => { setStateFilter(e.target.value); setPage(1); }}
+                    className="w-full bg-slate-50 hover:bg-slate-100 border border-slate-200 py-1.5 px-2.5 rounded-lg text-xs font-bold text-slate-600 cursor-pointer focus:outline-none min-h-[34px]"
+                  >
+                    <option value="all">Any State</option>
+                    <option value="Imo State">Imo</option>
+                    <option value="Kano State">Kano</option>
+                    <option value="Lagos State">Lagos</option>
+                    <option value="Enugu State">Enugu</option>
+                    <option value="FCT Abuja">Abuja</option>
+                  </select>
+                </div>
+              )}
 
               {/* Field 3: TSP Provider */}
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-500 uppercase">By TSP Provider</label>
-                <select
-                  value={tspFilter}
-                  onChange={(e) => { setTspFilter(e.target.value); setPage(1); }}
-                  className="w-full bg-slate-50 hover:bg-slate-100 border border-slate-200 py-1.5 px-2.5 rounded-lg text-xs font-bold text-slate-600 cursor-pointer focus:outline-none min-h-[34px]"
-                >
-                  <option value="all">Any Training Provider</option>
-                  <option value="Innovation Technology">Innovation Tech Inst.</option>
-                  <option value="Federal Science and Technical College">FSTC Omo</option>
-                  <option value="Multi-Skill TVET Academy">Multi-Skill TVET</option>
-                </select>
-              </div>
+              {isFederal && (
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase">By TSP Provider</label>
+                  <select
+                    value={tspFilter}
+                    onChange={(e) => { setTspFilter(e.target.value); setPage(1); }}
+                    className="w-full bg-slate-50 hover:bg-slate-100 border border-slate-200 py-1.5 px-2.5 rounded-lg text-xs font-bold text-slate-600 cursor-pointer focus:outline-none min-h-[34px]"
+                  >
+                    <option value="all">Any Training Provider</option>
+                    <option value="Innovation Technology">Innovation Tech Inst.</option>
+                    <option value="Federal Science and Technical College">FSTC Omo</option>
+                    <option value="Multi-Skill TVET Academy">Multi-Skill TVET</option>
+                  </select>
+                </div>
+              )}
 
               {/* Field 4: Skill Sector Tracks */}
               <div className="space-y-1">

@@ -69,9 +69,11 @@ export class CloudinaryService {
         ? Buffer.from(fileContent.split(",")[1] || fileContent, "base64")
         : Buffer.from(fileContent, "base64");
 
+    const extension = fileName.includes(".") ? fileName.split(".").pop()?.toLowerCase() : "pdf";
+
     if (!isCloudinaryConfigured) {
       console.log(`[Cloudinary Simulation] Simulating secure upload for ${fileName}...`);
-      const mockUrl = `https://res.cloudinary.com/ideas-tvet/raw/upload/v${timestamp}/${folder}/${publicId}.pdf`;
+      const mockUrl = `https://res.cloudinary.com/ideas-tvet/raw/upload/v${timestamp}/${folder}/${publicId}.${extension}`;
       
       // Cache simulated raw uploads in global registry to bypass Cloudinary fetching 404s
       if (!(global as any).simulatedCloudinaryFiles) {
@@ -119,7 +121,7 @@ export class CloudinaryService {
     } catch (err: any) {
       console.error(`[Cloudinary] Real upload failed for ${fileName}:`, err.message || err);
       // Fallback on error to ensure non-blocking operation
-      const mockUrl = `https://res.cloudinary.com/ideas-tvet/raw/upload/v${timestamp}/${folder}/${publicId}_fallback.pdf`;
+      const mockUrl = `https://res.cloudinary.com/ideas-tvet/raw/upload/v${timestamp}/${folder}/${publicId}_fallback.${extension}`;
       
       if (!(global as any).simulatedCloudinaryFiles) {
         (global as any).simulatedCloudinaryFiles = new Map();

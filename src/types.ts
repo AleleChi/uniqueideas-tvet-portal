@@ -58,7 +58,7 @@ export interface Beneficiary {
   customFields: Record<string, string>;
 
   // Extended Lifecycle & Admission Workflow
-  admissionStatus?: "Draft" | "Pending" | "Admission Generated" | "Admission Sent" | "Offer Viewed" | "Acceptance Pending" | "Acceptance Uploaded" | "Under Review" | "Accepted" | "Enrolled" | "Training In Progress" | "Training Completed" | "Certified" | "Alumni" | "Acceptance Rejected" | "Admitted" | "EXPIRED";
+  admissionStatus?: "Draft" | "Pending" | "Admission Generated" | "Admission Sent" | "Offer Viewed" | "Acceptance Pending" | "Acceptance Uploaded" | "Under Review" | "Accepted" | "ACCEPTED" | "Enrolled" | "Training In Progress" | "Training Completed" | "Certified" | "Alumni" | "Acceptance Rejected" | "Admitted" | "EXPIRED" | "Acceptance Sent" | string;
   admissionRef?: string;
   admissionFormRef?: string;
   admissionLetterGeneratedAt?: string;
@@ -84,6 +84,10 @@ export interface Beneficiary {
     submissionDate?: string;
     digitalSignature?: string;
     signature?: string;
+    signature_name?: string;
+    signature_date?: string;
+    signature_image?: string;
+    accepted_at?: string;
   };
   acceptanceLetterUploaded?: boolean;
   acceptanceLetterUrl?: string; // base64 or mock url
@@ -101,6 +105,8 @@ export interface Beneficiary {
   certificateUrl?: string;
   tokenVersion?: number;
   workflowVersion?: number;
+  offerSentAt?: string;
+  offerExpiresAt?: string;
 
   // National Location Infrastructure UUID mappings
   state_id?: string | null;
@@ -303,9 +309,10 @@ export interface UserSession {
   isAuthenticated: boolean;
   username: string;
   email: string;
-  role: "SUPER_ADMIN" | "ADMIN_OFFICER" | "REVIEW_OFFICER" | "TRAINEE";
+  role: string;
   token?: string;
   beneficiaryId?: string;
+  profile_completed?: boolean;
 }
 
 export enum DocumentType {
@@ -507,5 +514,36 @@ export interface GraduateToolkit {
   createdAt?: string;
   updatedAt?: string;
 }
+
+export interface AttendanceRecord {
+  id?: string;
+  beneficiary_id: string;
+  attendance_date: string;
+  check_in_time?: string | null;
+  check_out_time?: string | null;
+  attendance_source?: string;
+  status?: string;
+  hours_logged?: number | string;
+  captured_by?: string;
+  remarks?: string;
+  created_at?: string;
+  updated_at?: string;
+  // Join fields when fetched via ledger/reports
+  first_name?: string;
+  last_name?: string;
+  gender?: string;
+  tvet_id?: string;
+  state?: string;
+  state_id?: string;
+  lga?: string;
+  lga_id?: string;
+  tsp?: string;
+  tsp_id?: string;
+  programme?: string;
+  skill?: string;
+  batch?: string;
+  cohort?: string;
+}
+
 
 

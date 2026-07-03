@@ -15,9 +15,10 @@ import GovernanceSubmissions from "./GovernanceSubmissions";
 interface ReportsWorkspaceProps {
   beneficiaries: Beneficiary[];
   session?: any;
+  onRefreshRoot?: () => Promise<void> | void;
 }
 
-export function ReportsWorkspace({ beneficiaries, session }: ReportsWorkspaceProps) {
+export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: ReportsWorkspaceProps) {
   const [activeReportTab, setActiveReportTab] = useState<"excel" | "album" | "pdf" | "admissions" | "locations" | "governance">("excel");
   const isTspUser = session?.role === "TSP" || (session?.role && session?.role.startsWith("TSP"));
 
@@ -73,8 +74,6 @@ export function ReportsWorkspace({ beneficiaries, session }: ReportsWorkspacePro
       setLoadingReport(true);
       setErrorReport(null);
       try {
-        const { authFetch } = await import("../utils/authFetch");
-        
         if (selectedAdmissionsReport === "funnel") {
           const res = await authFetch("/api/reports/admissions/funnel");
           if (!res.ok) throw new Error("Failed to load funnel stats");
@@ -163,7 +162,6 @@ export function ReportsWorkspace({ beneficiaries, session }: ReportsWorkspacePro
       
       if (format === "pdf") {
         // PDF opens print compiler in a new window with exact auth JWT header mapping
-        const { authFetch } = await import("../utils/authFetch");
         const token = sessionStorage.getItem("token");
         const urlWithAuth = `${endpoint}${endpoint.includes("?") ? "&" : "?"}token=${token}`;
         window.open(urlWithAuth, "_blank");

@@ -138,18 +138,17 @@ export class DocumentService {
     const expectedFilename = buildSanitizedFilename(beneficiary, documentType, "pdf");
     console.log(`[PIPELINE TRACE] STAGE 1 - PDF GENERATION: Generated buffer for candidate '${beneficiary.id}' (${beneficiary.firstName} ${beneficiary.lastName}). Expected filename: '${expectedFilename}'. Size: ${pdfBuffer.length} bytes.`);
 
-    // 3. Upload to Cloudinary — wrapped in try/catch so a missing or misconfigured
-    //    Cloudinary setup never blocks the email from being sent to the student.
-    //    The PDF buffer is still attached to the email even if the URL is a fallback.
+    // 3. Upload to Cloudinary with metadata context
     const cloudinaryStart = performance.now();
     const publicId = `beneficiary_${beneficiaryId}_${documentType.toLowerCase()}_v${nextVersion}`;
-    let pdfUrl: string;
+    let pdfUrl = "";
     try {
       const uploadResult = await CloudinaryService.uploadDocument(pdfBuffer, publicId);
-      pdfUrl = uploadResult || `https://res.cloudinary.com/simulation/image/upload/${publicId}.pdf`;
-    } catch (cloudErr: any) {
-      console.error(`[DocumentService] Cloudinary upload failed for ${documentType} — continuing with fallback URL so email still sends:`, cloudErr.message);
-      pdfUrl = `https://res.cloudinary.com/simulation/image/upload/${publicId}.pdf`;
+      pdfUrl = uploadResult || `https://res.cloudinary.com/ideas-tvet/raw/upload/${publicId}.pdf`;
+    } catch (uploadErr: any) {
+      console.error(`[DocumentService] Cloudinary Upload failed. Entering non-blocking graceful fallback. Error:`, uploadErr.message || uploadErr);
+      const timestamp = Date.now();
+      pdfUrl = `https://res.cloudinary.com/ideas-tvet/raw/upload/v${timestamp}/ideas_tvet/${publicId}_fallback.pdf`;
     }
     const cloudinaryDuration = performance.now() - cloudinaryStart;
     console.log(`[PERF TRACE] Cloudinary Upload [${documentType}] for candidate [${beneficiaryId}] took ${cloudinaryDuration.toFixed(2)}ms`);

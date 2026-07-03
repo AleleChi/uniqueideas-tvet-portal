@@ -47,6 +47,8 @@ interface TraineeProfile {
   still_on_portal?: boolean;
   still_attending?: boolean;
   portal_remarks?: string;
+  status?: string;
+  portal_active?: boolean | string;
 }
 
 interface AttendanceRecord {
@@ -98,6 +100,7 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
   const [stateFilter, setStateFilter] = useState("");
   const [skillFilter, setSkillFilter] = useState("");
   const [tspFilter, setTspFilter] = useState("");
+  const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split("T")[0]);
   
   // Data lists
   const [trainees, setTrainees] = useState<TraineeProfile[]>([]);
@@ -259,7 +262,7 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
   useEffect(() => {
     setPage(1);
     fetchCurrentTab();
-  }, [activeSubTab, searchQuery, stateFilter, skillFilter, tspFilter]);
+  }, [activeSubTab, searchQuery, stateFilter, skillFilter, tspFilter, selectedDate]);
 
   useEffect(() => {
     fetchCurrentTab();
@@ -697,13 +700,17 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
       } else if (activeSubTab === "attendance") {
         const query = new URLSearchParams({
           search: searchQuery,
+          date: selectedDate,
+          state: stateFilter,
+          skill: skillFilter,
+          tsp: tspFilter,
           page: String(page),
           limit: String(limit)
         }).toString();
-        const res = await authFetch(`/api/attendance?${query}`);
+        const res = await authFetch(`/api/attendance/ledger?${query}`);
         if (res.ok) {
           const data = await res.json();
-          setAttendance(data.attendance || []);
+          setAttendance(data.ledger || data.attendance || []);
           setTotalCount(data.total || 0);
         }
       } else if (activeSubTab === "portal") {
@@ -822,25 +829,56 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
 
   const handleMarkAttendance = async (beneficiary_id: string, status: string) => {
     try {
-      const today = new Date().toISOString().split("T")[0];
-      const res = await authFetch(`/api/attendance`, {
+      const targetDate = selectedDate || new Date().toISOString().split("T")[0];
+      const res = await authFetch(`/api/attendance/mark`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           beneficiary_id,
-          attendance_date: today,
+          attendance_date: targetDate,
           status,
-          check_in_time: status === "PRESENT" || status === "LATE" ? `${today}T08:00:00Z` : null,
-          check_out_time: status === "PRESENT" || status === "LATE" ? `${today}T16:05:00Z` : null,
+          check_in_time: status === "PRESENT" || status === "LATE" ? `${targetDate}T08:00:00Z` : null,
+          check_out_time: status === "PRESENT" || status === "LATE" ? `${targetDate}T16:05:00Z` : null,
           attendance_source: 'MANUAL'
         })
       });
       if (res.ok) {
-        showToast("Attendance ledger securely written.", "success");
+        showToast(`Attendance marked as ${status} for ${targetDate}.`, "success");
         fetchCurrentTab();
         fetchStats();
       } else {
-        showToast("Failed to save attendance record.", "error");
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error || "Failed to save attendance record.", "error");
+      }
+    } catch (e: any) {
+      showToast(e.message, "error");
+    }
+  };
+
+  const handleBulkMarkAttendance = async (status: "PRESENT" | "ABSENT") => {
+    if (attendance.length === 0) return;
+    try {
+      const targetDate = selectedDate || new Date().toISOString().split("T")[0];
+      const records = attendance.map(a => ({
+        beneficiary_id: a.beneficiary_id,
+        attendance_date: targetDate,
+        status,
+        check_in_time: status === "PRESENT" ? `${targetDate}T08:00:00Z` : null,
+        check_out_time: status === "PRESENT" ? `${targetDate}T16:00:00Z` : null,
+        attendance_source: 'MANUAL'
+      }));
+      const res = await authFetch(`/api/attendance/bulk-mark`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ records, attendance_date: targetDate })
+      });
+      if (res.ok) {
+        showToast(`Bulk marked ${attendance.length} trainees as ${status}.`, "success");
+        fetchCurrentTab();
+        fetchStats();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error || "Failed to bulk save attendance.", "error");
       }
     } catch (e: any) {
       showToast(e.message, "error");
@@ -961,7 +999,10 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
   const downloadAnnex9Workbook = async () => {
     try {
       showToast("Generating official Government Annex 9 Workbook...", "info");
-      const res = await authFetch("/api/annex9/export");
+      const params = new URLSearchParams();
+      if (stateFilter && stateFilter !== "all") params.set("state", stateFilter);
+      if (tspFilter && tspFilter !== "all") params.set("tspId", tspFilter);
+      const res = await authFetch(`/api/annex9/export?${params.toString()}`);
       if (!res.ok) {
         throw new Error("Failed to generate Excel download link");
       }
@@ -980,40 +1021,33 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
     }
   };
 
-  const handleExportData = (format: "csv" | "excel") => {
-    // Generate beautiful tabular layout for download
-    let dataHeaders: string[] = [];
-    let rows: any[] = [];
-    let filename = "";
-
-    if (activeSubTab === "registry") {
-      dataHeaders = ["TVET ID", "First Name", "Last Name", "Gender", "NIN", "BVN", "Skill", "TSP", "Guardian", "State", "Training Status"];
-      rows = trainees.map(t => [t.tvet_id, t.first_name, t.last_name, t.gender, t.nin, t.bvn, t.skill, t.tsp, t.guardian_name, t.state, t.training_status]);
-      filename = `Annex9_Trainee_Registry_${new Date().toISOString().split("T")[0]}`;
-    } else if (activeSubTab === "attendance") {
-      dataHeaders = ["TVET ID", "Name", "Date", "CheckIn", "CheckOut", "Status", "Source"];
-      rows = attendance.map(a => [a.tvet_id, `${a.first_name} ${a.last_name}`, a.attendance_date, a.check_in_time, a.check_out_time, a.status, a.attendance_source]);
-      filename = `Annex9_Attendance_Report_${new Date().toISOString().split("T")[0]}`;
-    } else if (activeSubTab === "portal") {
-      dataHeaders = ["TVET ID", "Name", "Skill", "Still On Portal", "Still Attending", "Last Verified", "Remarks"];
-      rows = portalList.map(p => [p.tvet_id, `${p.first_name} ${p.last_name}`, p.skill, p.still_on_portal ? "YES" : "NO", p.still_attending ? "YES" : "NO", p.last_verified_at, p.remarks]);
-      filename = `Annex9_Portal_Monitoring_Audit_${new Date().toISOString().split("T")[0]}`;
-    } else {
-      showToast("Excel/CSV export not supported on this workspace views.", "info");
-      return;
+  const handleExportData = async (format: "csv" | "excel") => {
+    if (format === "excel") {
+      return downloadAnnex9Workbook();
     }
+    try {
+      showToast(`Exporting official Annex 9 ${activeSubTab.toUpperCase()} records to CSV...`, "info");
+      const params = new URLSearchParams();
+      params.set("section", activeSubTab);
+      if (stateFilter && stateFilter !== "all") params.set("state", stateFilter);
+      if (tspFilter && tspFilter !== "all") params.set("tspId", tspFilter);
 
-    if (format === "csv" || format === "excel") {
-      const csvContent = "data:text/csv;charset=utf-8," 
-        + [dataHeaders.join(","), ...rows.map(e => e.map((val: any) => `"${String(val || '').replace(/"/g, '""')}"`).join(","))].join("\n");
-      const encodedUri = encodeURI(csvContent);
+      const res = await authFetch(`/api/annex9/export-csv?${params.toString()}`);
+      if (!res.ok) {
+        throw new Error("Failed to export CSV dataset");
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
-      link.setAttribute("href", encodedUri);
-      link.setAttribute("download", `${filename}.${format === "csv" ? "csv" : "csv"}`);
+      link.href = url;
+      link.setAttribute("download", `Annex9_${activeSubTab}_Report_${new Date().toISOString().split("T")[0]}.csv`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      showToast(`Exported ${rows.length} operational records successfully!`, "success");
+      window.URL.revokeObjectURL(url);
+      showToast(`Exported official operational records successfully!`, "success");
+    } catch (e: any) {
+      showToast(e.message || "Export failed", "error");
     }
   };
 
@@ -1301,7 +1335,7 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
           </div>
 
           {/* Advanced Multi-category dropdown filters */}
-          {activeSubTab === "registry" && (
+          {(activeSubTab === "registry" || activeSubTab === "attendance") && (
             <div className="flex flex-wrap items-center gap-2">
               <select
                 value={stateFilter}
@@ -1349,9 +1383,10 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
               <p className="text-xs text-slate-500 font-bold">Querying Secure Federal Data Directory...</p>
             </div>
           ) : trainees.length === 0 ? (
-            <div className="py-20 text-center text-slate-400">
+            <div className="py-20 text-center text-slate-500 max-w-md mx-auto">
               <HelpCircle className="w-8 h-8 mx-auto text-slate-300 mb-2" />
-              <p className="text-xs font-bold leading-relaxed">No matching operational trainee records found.</p>
+              <p className="text-sm font-bold text-slate-700">No matching operational trainee records found.</p>
+              <p className="text-xs text-slate-500 mt-1">Try resetting your state, skill sector, or status filters above, or search by name or TVET ID.</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -1514,7 +1549,7 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
 
           {attendanceViewMode === "ledger" ? (
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden text-left animate-in fade-in duration-300">
-              <div className="p-4 border-b flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div className="p-4 border-b flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
                   <h3 className="text-xs font-black uppercase text-slate-400 tracking-wider font-mono">
                     DAILY ATTENDANCE VERIFICATION LEDGER (ANNEX 9 - TAB 2)
@@ -1522,23 +1557,46 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
                   <p className="text-[10px] text-slate-500 mt-0.5 leading-none">Log inputs sync back directly to the secure relational audits.</p>
                 </div>
                 
-                <span className="text-xs font-bold text-slate-700 bg-slate-50 border px-3 py-1.5 rounded-xl font-mono">
-                  Target Reference: {stats.date || new Date().toISOString().split("T")[0]}
-                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => handleBulkMarkAttendance("PRESENT")}
+                    disabled={attendance.length === 0}
+                    className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold cursor-pointer transition disabled:opacity-50"
+                  >
+                    Mark All Present
+                  </button>
+                  <button
+                    onClick={() => handleBulkMarkAttendance("ABSENT")}
+                    disabled={attendance.length === 0}
+                    className="px-2.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold cursor-pointer transition disabled:opacity-50"
+                  >
+                    Mark All Absent
+                  </button>
+                  <label className="text-[10px] font-bold text-slate-500 uppercase font-mono ml-1">Select Date:</label>
+                  <input
+                    type="date"
+                    value={selectedDate}
+                    onChange={(e) => setSelectedDate(e.target.value)}
+                    className="text-xs font-bold text-slate-800 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl font-mono focus:outline-indigo-500 cursor-pointer"
+                  />
+                </div>
               </div>
 
               {loading ? (
                 <div className="py-24 text-center"><Loader2 className="w-8 h-8 text-indigo-600 animate-spin mx-auto animate-pulse" /></div>
               ) : attendance.length === 0 ? (
-                <div className="py-20 text-center text-slate-450 text-xs font-bold space-y-2">
-                  <Clock className="w-8 h-8 mx-auto text-slate-350" />
-                  <p>No active attendance checks loaded for this schedule.</p>
-                  <button
-                    onClick={handleBiometricSync}
-                    className="mx-auto px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold cursor-pointer hover:bg-indigo-700 flex items-center gap-1.5"
-                  >
-                    Connect Biometric Devices as Seed
-                  </button>
+                <div className="py-20 text-center text-slate-500 text-xs font-bold space-y-3 max-w-md mx-auto">
+                  <Clock className="w-8 h-8 mx-auto text-slate-300" />
+                  <p className="text-sm font-bold text-slate-700">No trainee attendance records match current filters.</p>
+                  <p className="text-xs text-slate-500 font-normal">If no attendance has been marked for {selectedDate}, trainees will display once active profiles match your selected state or TSP filters above.</p>
+                  <div className="flex items-center justify-center gap-2 pt-1">
+                    <button
+                      onClick={() => fetchCurrentTab()}
+                      className="px-4 py-2 bg-slate-100 text-slate-700 rounded-xl text-xs font-bold cursor-pointer hover:bg-slate-200"
+                    >
+                      Reload Register
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <div className="overflow-x-auto">

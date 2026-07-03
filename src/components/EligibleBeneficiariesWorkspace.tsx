@@ -561,18 +561,22 @@ export default function EligibleBeneficiariesWorkspace({
         })
       });
       if (res.ok) {
-        const payload = await res.json();
+        const payload = await res.json().catch(() => ({}));
         if (payload.success) {
           showToast(`Official offer letter dispatched to ${b.fullName} (${b.email}) successfully!`, "success");
           fetchBeneficiariesList();
         } else {
-          showToast(`SMTP Dispatch rejected: ${payload.error || "Check Resend Gateway Configuration"}`, "error");
+          console.error("Offer dispatch failed:", payload.error || payload.smtpErrorDetails);
+          showToast("Offer email could not be sent. Please retry or contact the administrator.", "error");
         }
       } else {
-        showToast("Outbound routing failed.", "error");
+        const err = await res.json().catch(() => ({}));
+        console.error("Backend error dispatching offer:", err);
+        showToast("Offer email could not be sent. Please retry or contact the administrator.", "error");
       }
     } catch (err: any) {
-      showToast(`Transmission error: ${err.message}`, "error");
+      console.error("Transmission error:", err);
+      showToast("Offer email could not be sent. Please retry or contact the administrator.", "error");
     }
   };
 
@@ -1254,7 +1258,7 @@ export default function EligibleBeneficiariesWorkspace({
         {isRealSuperOrFedAdmin && (
           <div className="flex flex-wrap items-center gap-2">
             <div className="bg-slate-50 border border-slate-200 p-1.5 rounded-lg flex items-center gap-1.5 font-mono text-[10px] font-bold shadow-xs">
-              <span className="text-[9px] uppercase text-slate-400 pl-1">Simulate Workspace:</span>
+              <span className="text-[9px] uppercase text-slate-400 pl-1">Preview Role View:</span>
               <button 
                 type="button" 
                 onClick={() => { setDebugRole("FED"); setViewMode("list"); }} 
@@ -3349,15 +3353,23 @@ export default function EligibleBeneficiariesWorkspace({
                             })
                           });
                           
-                          const data = await res.json();
-                          if (data.success) {
-                            showToast(`Provisional admission offer letter dispatched! Link: ${data.secureLink}`, "success");
-                            fetchBeneficiariesList();
+                          if (res.ok) {
+                            const data = await res.json().catch(() => ({}));
+                            if (data.success) {
+                              showToast(`Provisional admission offer letter dispatched! Link: ${data.secureLink || ""}`, "success");
+                              fetchBeneficiariesList();
+                            } else {
+                              console.error("Offer dispatch failed:", data.error || data.smtpErrorDetails);
+                              showToast("Offer email could not be sent. Please retry or contact the administrator.", "error");
+                            }
                           } else {
-                            showToast(`SMTP Mail Delivery failed: ${data.smtpErrorDetails || "Unknown SMTP error check."}`, "error");
+                            const errData = await res.json().catch(() => ({}));
+                            console.error("Backend error dispatching offer:", errData);
+                            showToast("Offer email could not be sent. Please retry or contact the administrator.", "error");
                           }
                         } catch (err: any) {
-                          showToast(`Error dispatching offer letter: ${err.message}`, "error");
+                          console.error("Error dispatching offer letter:", err);
+                          showToast("Offer email could not be sent. Please retry or contact the administrator.", "error");
                         } finally {
                           setSendingEmails(false);
                         }
@@ -3674,15 +3686,23 @@ export default function EligibleBeneficiariesWorkspace({
                                   origin: window.location.origin
                                 })
                               });
-                              const data = await res.json();
-                              if (data.success) {
-                                showToast(`Provisional offer of admission successfully dispatched to ${selectedBeneficiary.email}`, "success");
-                                fetchBeneficiariesList();
+                              if (res.ok) {
+                                const data = await res.json().catch(() => ({}));
+                                if (data.success) {
+                                  showToast(`Provisional offer of admission successfully dispatched to ${selectedBeneficiary.email}`, "success");
+                                  fetchBeneficiariesList();
+                                } else {
+                                  console.error("Offer dispatch failed:", data.error || data.smtpErrorDetails);
+                                  showToast("Offer email could not be sent. Please retry or contact the administrator.", "error");
+                                }
                               } else {
-                                showToast(`Mail dispatch failure`, "error");
+                                const errData = await res.json().catch(() => ({}));
+                                console.error("Backend error dispatching offer:", errData);
+                                showToast("Offer email could not be sent. Please retry or contact the administrator.", "error");
                               }
                             } catch (e: any) {
-                              showToast(e.message, "error");
+                              console.error("Error dispatching offer:", e);
+                              showToast("Offer email could not be sent. Please retry or contact the administrator.", "error");
                             } finally {
                               setSendingEmails(false);
                             }

@@ -42,6 +42,7 @@ interface Trainee {
   alumniEntrepreneurStatus?: string;
   alumniBusinessName?: string;
   alumniCurrentEmployer?: string;
+  certificateIssuedAt?: string;
 }
 
 interface CertificationCenterProps {
@@ -649,7 +650,9 @@ export function CertificationCenter({ session, onRefreshRoot }: CertificationCen
                                 )}
 
                                 {!t.isEligibleForCert && (!t.certificationStatus || t.certificationStatus === "NONE") && (
-                                  <HelpCircle className="w-4 h-4 text-slate-350 cursor-help" title="Disqualified: Ensure candidate registers are active, grade boundaries passed, and age checks compliant." />
+                                  <span title="Disqualified: Ensure candidate registers are active, grade boundaries passed, and age checks compliant.">
+                                    <HelpCircle className="w-4 h-4 text-slate-350 cursor-help" />
+                                  </span>
                                 )}
 
                               </div>
@@ -767,7 +770,7 @@ export function CertificationCenter({ session, onRefreshRoot }: CertificationCen
                   </>
                 ) : (
                   <>
-                    <sparkles className="w-4 h-4 text-white" />
+                    <Sparkles className="w-4 h-4 text-white" />
                     <span>Execute Batch Series</span>
                   </>
                 )}

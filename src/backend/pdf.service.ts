@@ -52,11 +52,128 @@ export class PdfService {
   }
 
   /**
+   * Safe direct in-memory fallback PDF compiler.
+   * Generates a valid standard PDF-1.4 file with perfectly wrapped readable text,
+   * completely ignoring external binary browser processes.
+   */
+  private static generateFallbackPdf(htmlContent: string, isLandscape: boolean = false): Buffer {
+    let text = htmlContent
+      .replace(/<style([\s\S]*?)<\/style>/gi, "")
+      .replace(/<script([\s\S]*?)<\/script>/gi, "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const wrapText = (str: string, maxLen: number = 75): string[] => {
+      const words = str.split(" ");
+      const lines: string[] = [];
+      let currentLine = "";
+
+      for (const word of words) {
+        if ((currentLine + " " + word).length > maxLen) {
+          lines.push(currentLine.trim());
+          currentLine = word;
+        } else {
+          currentLine = currentLine ? currentLine + " " + word : word;
+        }
+      }
+      if (currentLine) {
+        lines.push(currentLine.trim());
+      }
+      return lines;
+    };
+
+    const lines = wrapText(text, 78);
+
+    let streamContent = "BT\n/F1 11 Tf\n14 TL\n50 780 Td\n";
+    let yPosition = 780;
+    
+    for (const line of lines) {
+      const sanitizedLine = line
+        .replace(/\\/g, "\\\\")
+        .replace(/\(/g, "\\(")
+        .replace(/\)/g, "\\)");
+        
+      if (yPosition < 60) {
+        break; // Guard single fallback page overflow
+      }
+      streamContent += `(${sanitizedLine}) Tj T*\n`;
+      yPosition -= 14;
+    }
+    streamContent += "ET";
+
+    const pdfChunks: string[] = [];
+    pdfChunks.push("%PDF-1.4\n");
+    pdfChunks.push("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+    pdfChunks.push("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+    
+    const mediaBox = isLandscape ? "[0 0 842 595]" : "[0 0 595 842]";
+    pdfChunks.push(`3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox ${mediaBox} /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n`);
+    pdfChunks.push("4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n");
+    
+    const streamLength = Buffer.byteLength(streamContent, "utf-8");
+    pdfChunks.push(`5 0 obj\n<< /Length ${streamLength} >>\nstream\n${streamContent}\nendstream\nendobj\n`);
+    
+    let currentOffset = 0;
+    const offsets: number[] = [];
+    for (const chunk of pdfChunks) {
+      offsets.push(currentOffset);
+      currentOffset += Buffer.byteLength(chunk, "utf-8");
+    }
+
+    let xref = "xref\n0 6\n0000000000 65535 f \n";
+    for (let i = 1; i <= 5; i++) {
+      const offsetStr = String(offsets[i - 1]).padStart(10, "0");
+      xref += `${offsetStr} 00000 n \n`;
+    }
+    
+    const startXref = currentOffset;
+    pdfChunks.push(xref);
+    pdfChunks.push(`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${startXref}\n%%EOF\n`);
+
+    return Buffer.from(pdfChunks.join(""), "utf-8");
+  }
+
+  /**
    * Helper to render raw HTML content into a PDF Buffer using chromium / puppeteer.
    * If puppeteer fails due to sandbox or library limitations, it returns the HTML source buffer
    * as a graceful fallback.
    */
   public static async compileHtmlToPdfBuffer(htmlContent: string, isLandscape: boolean = false): Promise<Buffer> {
+    const timeoutMs = 20000; // 20s timeout for container cold-starts
+    let timer: NodeJS.Timeout | null = null;
+    
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error("PUPPETEER_TIMEOUT: Puppeteer compilation timed out after 20 seconds."));
+      }, timeoutMs);
+    });
+
+    try {
+      const result = await Promise.race([
+        PdfService.compileHtmlToPdfBufferInternal(htmlContent, isLandscape),
+        timeoutPromise
+      ]);
+      if (timer) clearTimeout(timer);
+      return result;
+    } catch (err: any) {
+      if (timer) clearTimeout(timer);
+      console.error(`[PdfService] compileHtmlToPdfBuffer failed or timed out:`, err);
+      // Prevent silent fallback to plain text for official documents and ensure proper error handling for renderer failures.
+      throw new Error(`PDF_RENDER_FAILED: HTML-to-PDF compilation failed. Details: ${err.message || String(err)}`);
+    }
+  }
+
+  /**
+   * Internal compile logic using puppeteer.
+   */
+  private static async compileHtmlToPdfBufferInternal(htmlContent: string, isLandscape: boolean = false): Promise<Buffer> {
     let puppeteerDefaultPath = "N/A";
     let defaultExists = false;
     try {
@@ -298,6 +415,25 @@ total=${totalTime.toFixed(2)}ms`);
       ? new Date(beneficiary.admissionLetterGeneratedAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }) 
       : new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
 
+    // Determine the letterhead priority logic (Consistent across Admission & Acceptance letters):
+    // 1. Active institution letterhead (activeLetterhead)
+    // 2. settings.admissionLetterheadUrl
+    // 3. settings.letterheadUrl
+    // 4. Default official government/TSP header
+    let letterheadUrl = "";
+    let isFullPage = false;
+
+    if (activeLetterhead) {
+      letterheadUrl = PdfService.getLetterheadBgUrl(activeLetterhead);
+      isFullPage = true;
+    } else if (settings.admissionLetterheadUrl) {
+      letterheadUrl = settings.admissionLetterheadUrl;
+      isFullPage = true;
+    } else if (settings.letterheadUrl) {
+      letterheadUrl = settings.letterheadUrl;
+      isFullPage = true;
+    }
+
     const htmlContent = `
       <!DOCTYPE html>
       <html lang="en">
@@ -305,7 +441,7 @@ total=${totalTime.toFixed(2)}ms`);
         <meta charset="UTF-8">
         <title>Admission Letter - Ref: ${admissionRef}</title>
         <style>
-          ${activeLetterhead ? `
+          ${isFullPage ? `
           @page {
             size: A4 portrait;
             margin: 0 !important;
@@ -366,40 +502,34 @@ total=${totalTime.toFixed(2)}ms`);
         <div class="border-frame" style="position: relative; z-index: 2; box-sizing: border-box;">
           ${settings.watermarkEnabled ? `<div class="watermark" style="z-index: 0;">${settings.watermarkText || "SECURED REGISTRY DOCUMENT"}</div>` : ""}
           
-          ${activeLetterhead ? `
+          ${isFullPage ? `
             <div class="letterhead-background" style="position: absolute; top: 0; left: 0; width: 210mm; height: 297mm; z-index: -1; pointer-events: none;">
-              <img src="${PdfService.getLetterheadBgUrl(activeLetterhead)}" style="width: 100%; height: 100%; object-fit: fill; opacity: 1.0;" referrerPolicy="no-referrer" />
+              <img src="${letterheadUrl}" style="width: 100%; height: 100%; object-fit: fill; opacity: 1.0;" referrerPolicy="no-referrer" />
             </div>
           ` : `
-            ${(settings.admissionLetterheadUrl || settings.letterheadUrl) ? `
-              <div style="text-align: center; margin-bottom: 20px; position: relative; z-index: 10; width: 100%;">
-                <img src="${settings.admissionLetterheadUrl || settings.letterheadUrl}" style="width: 100%; max-height: 90px; object-fit: contain; display: block;" referrerPolicy="no-referrer">
-              </div>
-            ` : `
-              <!-- DYNAMIC TSP TYPOGRAPHIC LETTERHEAD BRANDING -->
-              <div style="border-bottom: 3px solid #000000; padding-bottom: 10px; margin-bottom: 20px; position: relative; z-index: 10; font-family: Arial, sans-serif;">
-                <table style="width: 100%; border-collapse: collapse;">
-                  <tr>
-                    <td style="vertical-align: top; text-align: left;">
-                      <div style="margin-bottom: 4px;">
-                        <span style="background-color: #000000; color: #ffffff; font-size: 8px; font-weight: bold; padding: 2px 5px; border-radius: 2px; text-transform: uppercase; letter-spacing: 1.5px;">TSP PARTNER</span>
-                        <span style="font-size: 9px; color: #64748b; font-weight: bold; margin-left: 5px; text-transform: uppercase; letter-spacing: 0.5px;">IDEAS Project TVET Program</span>
-                      </div>
-                      <h2 style="font-size: 16px; font-weight: 900; color: #0f172a; margin: 0; text-transform: uppercase; letter-spacing: -0.5px;">
-                        ${settings.organizationName || beneficiary.tsp || "State TVET Board, Kano"}
-                      </h2>
-                      <p style="font-size: 10px; color: #475569; margin: 4px 0 0 0; font-weight: 600;">
-                        ${settings.contactAddress || "No. 45 Gwarzo Road, Kano State, Nigeria"}
-                      </p>
-                    </td>
-                    <td style="vertical-align: bottom; text-align: right; font-size: 9px; color: #475569; font-family: monospace; white-space: nowrap; line-height: 1.4;">
-                      <div>Phone: ${settings.contactPhone || "+234 803 123 4567"}</div>
-                      <div>Email: ${settings.contactEmail || "kano-tvet@ideas-initiative.org"}</div>
-                    </td>
-                  </tr>
-                </table>
-              </div>
-            `}
+            <!-- DYNAMIC TSP TYPOGRAPHIC LETTERHEAD BRANDING -->
+            <div style="border-bottom: 3px solid #000000; padding-bottom: 10px; margin-bottom: 20px; position: relative; z-index: 10; font-family: Arial, sans-serif;">
+              <table style="width: 100%; border-collapse: collapse;">
+                <tr>
+                  <td style="vertical-align: top; text-align: left;">
+                    <div style="margin-bottom: 4px;">
+                      <span style="background-color: #000000; color: #ffffff; font-size: 8px; font-weight: bold; padding: 2px 5px; border-radius: 2px; text-transform: uppercase; letter-spacing: 1.5px;">TSP PARTNER</span>
+                      <span style="font-size: 9px; color: #64748b; font-weight: bold; margin-left: 5px; text-transform: uppercase; letter-spacing: 0.5px;">IDEAS Project TVET Program</span>
+                    </div>
+                    <h2 style="font-size: 16px; font-weight: 900; color: #0f172a; margin: 0; text-transform: uppercase; letter-spacing: -0.5px;">
+                      ${settings.organizationName || beneficiary.tsp || "State TVET Board, Kano"}
+                    </h2>
+                    <p style="font-size: 10px; color: #475569; margin: 4px 0 0 0; font-weight: 600;">
+                      ${settings.contactAddress || "No. 45 Gwarzo Road, Kano State, Nigeria"}
+                    </p>
+                  </td>
+                  <td style="vertical-align: bottom; text-align: right; font-size: 9px; color: #475569; font-family: monospace; white-space: nowrap; line-height: 1.4;">
+                    <div>Phone: ${settings.contactPhone || "+234 803 123 4567"}</div>
+                    <div>Email: ${settings.contactEmail || "kano-tvet@ideas-initiative.org"}</div>
+                  </td>
+                </tr>
+              </table>
+            </div>
           `}
 
           <table class="metadata-table" style="position: relative; z-index: 10;">

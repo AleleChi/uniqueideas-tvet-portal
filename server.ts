@@ -21,7 +21,7 @@ import { AdmissionService } from "./src/backend/admission.service";
 import { EmailService } from "./src/backend/email.service";
 import { initDb, DbRepo, getDynamicEligibility, calculateAge, getPgPool, executeQuery, startupWarnings, loadJsonState, saveJsonState, isPgActive } from "./src/backend/db";
 import { DocumentDeliveryService, EmailDispatchService } from "./src/backend/documentDelivery.service";
-import { generateAnnex9Workbook } from "./src/backend/excelExport";
+import { generateAnnex9Workbook, generateAnnex9AttendanceCSV, generateAnnex9ProfileCSV, generateAnnex9PortalCSV } from "./src/backend/excelExport";
 import { requireAuth, requireRole, requireRoleOrPermission, JWT_SECRET, AuthenticatedRequest, authenticate, requestStorage } from "./src/backend/auth.middleware";
 import { tenantContextMiddleware } from "./src/backend/tenant.middleware";
 import { PdfService } from "./src/backend/pdf.service";
@@ -938,6 +938,8 @@ app.get("/api/admissions/list", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_
 app.post("/api/admissions/bulk-transition", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.bulkTransitionStatus);
 app.post("/api/admissions/acceptance/review", requireAuth, requireRole(["SUPER_ADMIN", "REVIEW_OFFICER", "ADMIN_OFFICER"]), AdmissionController.reviewAcceptanceLetter);
 app.get("/api/admissions/:id/letter", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", "TRAINEE"]), AdmissionController.getAdmissionLetterData);
+app.post("/api/admissions/regenerate-offer-package", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), AdmissionController.regenerateOfferPackage);
+app.get("/api/admin/debug/offer-token", requireAuth, AdmissionController.debugOfferToken);
 
 // --- Admission Form Module ---
 app.get("/api/admissions/verify/:reference", AdmissionController.verifyForm);
@@ -1915,205 +1917,159 @@ app.get("/api/export/reports/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADM
 app.get("/api/admissions/email-health", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), AdmissionController.getEmailHealth);
 app.post("/api/admissions/send-offer", requireAuth, AdmissionController.sendOffer);
 
-app.get("/api/admissions/validate-token", async (req: any, res: any) => {
+app.get("/api/admin/debug/offer-token", async (req, res) => {
   try {
     const token = req.query.token as string;
     if (!token) {
-      return res.status(400).json({ error: "No secure response token provided in verification query." });
+      return res.status(400).json({ error: "Missing required query parameter: token" });
     }
 
-    const decoded = TokenService.verifyToken(token);
-    if (!decoded || !decoded.id) {
-      return res.status(401).json({ error: "The response token is invalid, expired, or corrupted." });
+    const rawTokenReceivedLength = token.length;
+    let decodedSuccess = false;
+    let decodedId: string | null = null;
+    let decodedExpiresAt: number | null = null;
+    let decodedExpired = false;
+    let decodedTokenVersion: number | null = null;
+    let resolvedBeneficiaryId: string | null = null;
+    let beneficiaryFound = false;
+    let beneficiaryTokenVersion: number | null = null;
+    let tokenVersionMatch = false;
+    let publicResponseTokenFound = false;
+    let publicResponseTokenStatus: string | null = null;
+    let publicResponseTokenBeneficiaryId: string | null = null;
+    let admissionRowFound = false;
+    let finalDecision = "REJECT";
+    let rejectionReason = "";
+
+    // 1. Decode token
+    const decoded = TokenService.decodeToken(token);
+    if (decoded) {
+      decodedSuccess = true;
+      decodedId = decoded.id;
+      decodedExpiresAt = decoded.expires;
+      decodedExpired = decoded.expired || (decoded.expires ? decoded.expires < Date.now() : false);
+      decodedTokenVersion = decoded.tokenVersion || 1;
+    } else {
+      rejectionReason = "Token decoding failed (invalid signature or format)";
+    }
+
+    // 2. Resolve Beneficiary ID
+    if (decodedSuccess && decodedId) {
+      resolvedBeneficiaryId = await DbRepo.resolveBeneficiaryIdResiliently(decodedId);
     }
 
     const pool = getPgPool();
-    // Resolve underlying database UUID resiliently using helper
-    const resolvedId = await resolveBeneficiaryIdResiliently(decoded.id, pool);
-    if (!resolvedId) {
-      return res.status(404).json({ error: "Candidate matching the secure token session could not be tracked." });
-    }
+    let tokenRow: any = null;
+    const tokenHash = TokenService.hashToken(token);
 
-    // Load beneficiary using our non-blocking database repository
-    const beneficiary = await DbRepo.getBeneficiaryById(resolvedId);
-    if (!beneficiary) {
-      return res.status(404).json({ error: "Candidate matching the secure token session could not be located." });
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // TOKEN VERSION CHECK — INTENTIONALLY REMOVED FOR OFFER-ACCEPTANCE TOKENS
-    //
-    // Previously this block rejected the token if the DB tokenVersion didn't
-    // match the version embedded in the token payload.  This caused every student
-    // acceptance link to silently break whenever an admin performed a workflow
-    // rollback, form unlock, or status update — all of which bump tokenVersion.
-    //
-    // Offer-acceptance link validity is governed solely by the token's embedded
-    // `expires` timestamp (checked inside TokenService.verifyToken above) and
-    // the 10-day dispatch window below.  tokenVersion is now audit-only.
-    // ─────────────────────────────────────────────────────────────────────────
-
-    // Validate 10-day provisional offer expiration window.
-    // Primary source: the token's own embedded expiry (already checked by verifyToken).
-    // Secondary source: dispatch record sent_at — used as ground-truth fallback
-    // in case the token was regenerated after the original send.
-    let sentTime = beneficiary.admissionLetterSentAt ? new Date(beneficiary.admissionLetterSentAt).getTime() : null;
-
+    // 3. Look up public_response_tokens
     if (pool) {
       try {
-        const dispatchRes = await pool.query(
-          "SELECT id, sent_at, created_at FROM document_dispatches WHERE secure_token = $1 LIMIT 1",
-          [token]
+        const tRes = await pool.query(
+          "SELECT id, beneficiary_id, status, expires_at, is_used, token_version, submitted_at, revoked_at FROM public_response_tokens WHERE (token_hash = $1 OR token = $2) AND deleted_at IS NULL LIMIT 1",
+          [tokenHash, token]
         );
-        if (dispatchRes.rows.length > 0) {
-          const d = dispatchRes.rows[0];
-          if (d.sent_at) sentTime = new Date(d.sent_at).getTime();
-          else if (d.created_at) sentTime = new Date(d.created_at).getTime();
+        if (tRes.rows.length > 0) {
+          tokenRow = tRes.rows[0];
+          publicResponseTokenFound = true;
+          publicResponseTokenStatus = tokenRow.status || "ACTIVE";
+          publicResponseTokenBeneficiaryId = tokenRow.beneficiary_id;
+          if (!resolvedBeneficiaryId) {
+            resolvedBeneficiaryId = tokenRow.beneficiary_id;
+          }
         }
-      } catch (dispatchErr) {
-        console.error("[validate-token] Dispatch check failed:", dispatchErr);
+      } catch (dbErr) {
+        console.error("TOKEN_DEBUG: DB query failed in debug endpoint", dbErr);
       }
     }
 
-    if (sentTime) {
-      const expiresTime = sentTime + (10 * 24 * 60 * 60 * 1000); // 10 days from send
-      if (Date.now() > expiresTime) {
-        return res.status(403).json({
-          error: "OFFER_EXPIRED",
-          message: "The 10-day provisional offer letter acceptance window has elapsed. This offer is permanently locked as EXPIRED and cannot be accessed."
-        });
+    // 4. Look up beneficiary
+    let beneficiary: any = null;
+    if (resolvedBeneficiaryId) {
+      beneficiary = await DbRepo.getBeneficiaryById(resolvedBeneficiaryId);
+      if (beneficiary) {
+        beneficiaryFound = true;
+        beneficiaryTokenVersion = beneficiary.tokenVersion !== undefined && beneficiary.tokenVersion !== null ? beneficiary.tokenVersion : 1;
+        tokenVersionMatch = (beneficiaryTokenVersion <= (decodedTokenVersion || 1));
+        
+        if (beneficiary.admissionRef) {
+          admissionRowFound = true;
+        }
+      } else {
+        rejectionReason = rejectionReason || `Beneficiary ID ${resolvedBeneficiaryId} not found in database`;
       }
     }
 
-    // Return sanitized candidate fields suitable for public view (excluding core admin values)
-    // Non-destructive: No state change / token rotation updates
+    // 5. Final decision calculation matching validate-token rules
+    if (!decodedSuccess) {
+      finalDecision = "REJECT";
+      rejectionReason = rejectionReason || "Token decode failed";
+    } else if (!beneficiaryFound) {
+      finalDecision = "REJECT";
+      rejectionReason = rejectionReason || "Beneficiary not found";
+    } else {
+      let statusOk = true;
+      if (tokenRow) {
+        if (tokenRow.revoked_at || publicResponseTokenStatus === "REVOKED") {
+          finalDecision = "REJECT";
+          rejectionReason = "Token marked as revoked in public_response_tokens";
+          statusOk = false;
+        } else if (publicResponseTokenStatus === "EXPIRED") {
+          finalDecision = "REJECT";
+          rejectionReason = "Token marked as expired in public_response_tokens";
+          statusOk = false;
+        }
+      }
+
+      if (statusOk) {
+        const alreadySubmitted = Boolean(
+          (tokenRow && (tokenRow.is_used === true || publicResponseTokenStatus === "SUBMITTED" || tokenRow.submitted_at)) ||
+          beneficiary.admissionStatus === "ACCEPTED" ||
+          beneficiary.admissionFormCompleted === true
+        );
+
+        const isLegacy = !tokenRow;
+        if (isLegacy && !tokenVersionMatch) {
+          finalDecision = "REJECT";
+          rejectionReason = `Legacy token version mismatch. Beneficiary: ${beneficiaryTokenVersion}, Token: ${decodedTokenVersion}`;
+        } else {
+          finalDecision = "ALLOW";
+          if (alreadySubmitted) {
+            rejectionReason = "Already submitted (but allowed to view portal confirmation)";
+          }
+        }
+      }
+    }
+
     return res.status(200).json({
-      valid: true,
-      candidate: {
-        id: beneficiary.id,
-        firstName: beneficiary.firstName,
-        lastName: beneficiary.lastName,
-        email: beneficiary.email,
-        nin: beneficiary.nin,
-        bvn: beneficiary.bvn,
-        state: beneficiary.state,
-        city: beneficiary.city,
-        skillSector: beneficiary.skillSector || "Computer Hardware and Cell Phone Repairs",
-        admissionRef: beneficiary.admissionRef,
-        admissionStatus: beneficiary.admissionStatus || "Pending",
-        admissionFormCompleted: beneficiary.admissionFormCompleted || false,
-        admissionFormStatus: beneficiary.admissionFormStatus || "Pending",
-        admissionFormData: beneficiary.admissionFormData || {},
-        admissionLetterUrl: beneficiary.admissionLetterUrl || "",
-        acceptanceLetterUrl: beneficiary.acceptanceLetterUrl || ""
-      }
+      rawTokenReceivedLength,
+      decoded: decodedSuccess,
+      decodedId,
+      decodedExpiresAt,
+      decodedExpired,
+      decodedTokenVersion,
+      resolvedBeneficiaryId,
+      beneficiaryFound,
+      beneficiaryTokenVersion,
+      tokenVersionMatch,
+      publicResponseTokenFound,
+      publicResponseTokenStatus,
+      publicResponseTokenBeneficiaryId,
+      admissionRowFound,
+      finalDecision,
+      rejectionReason
     });
-
   } catch (err: any) {
-    console.error("[validate-token] failed:", err);
-    return res.status(500).json({ error: "Internal token decrypter processing failure." });
+    console.error("DEBUG_OFFER_TOKEN_FAILED:", err);
+    return res.status(500).json({ error: "Internal debug processing failure.", message: err.message });
   }
 });
+
+app.get("/api/admissions/validate-token", AdmissionController.validateToken);
 
 app.get("/api/admissions/secure-link", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), AdmissionController.getSecureLink);
 
-app.post("/api/admissions/submit-response", async (req: any, res: any) => {
-  const pool = getPgPool();
-  if (!pool) {
-    return res.status(500).json({ error: "PostgreSQL Database pool is not active or initialized." });
-  }
-
-  const client = await pool.connect();
-  try {
-    const { token, responseData } = req.body;
-    if (!token || !responseData) {
-      return res.status(400).json({ error: "Missing required response parameters: token or responseData" });
-    }
-
-    const decoded = TokenService.verifyToken(token);
-    if (!decoded || !decoded.id) {
-      return res.status(401).json({ error: "The response token is invalid, expired, or corrupted." });
-    }
-
-    // 1. BEGIN transaction with strict context
-    await client.query("BEGIN");
-
-    // 2. Resolve target ID resiliently inside the active connection
-    const resolvedId = await resolveBeneficiaryIdResiliently(decoded.id, client);
-    if (!resolvedId) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Trainee matching secure token was not recognized." });
-    }
-
-    // 3. Row-level lock on beneficiaries row
-    const lockRes = await client.query(
-      "SELECT id, admission_status, admission_letter_sent_at, token_version FROM beneficiaries WHERE id = $1 FOR UPDATE",
-      [resolvedId]
-    );
-
-    if (lockRes.rows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Candidate biological record corresponding to session could not be tracked." });
-    }
-
-    const dbBeneficiary = lockRes.rows[0];
-    const tokenVersion = decoded.tokenVersion !== undefined ? decoded.tokenVersion : 1;
-    const bTokenVersion = dbBeneficiary.token_version !== undefined ? dbBeneficiary.token_version : 1;
-    if (tokenVersion !== bTokenVersion) {
-      await client.query("ROLLBACK");
-      return res.status(401).json({ error: "TOKEN_REVOKED: This portal or admission token has been revoked due to administrative rollback or status update." });
-    }
-
-    // 4. Validate 10-day provisional offer expiration window
-    let sentTime = dbBeneficiary.admission_letter_sent_at ? new Date(dbBeneficiary.admission_letter_sent_at).getTime() : null;
-    
-    const dispatchRes = await client.query(
-      "SELECT id, sent_at, created_at FROM document_dispatches WHERE secure_token = $1 LIMIT 1",
-      [token]
-    );
-    if (dispatchRes.rows.length > 0) {
-      const d = dispatchRes.rows[0];
-      if (d.sent_at) sentTime = new Date(d.sent_at).getTime();
-      else if (d.created_at) sentTime = new Date(d.created_at).getTime();
-    }
-
-    if (sentTime) {
-      const expiresTime = sentTime + (10 * 24 * 60 * 60 * 1000); // 10 days
-      if (Date.now() > expiresTime) {
-        await client.query(
-          "UPDATE beneficiaries SET admission_status = 'EXPIRED', updated_at = NOW() WHERE id = $1",
-          [resolvedId]
-        );
-        await client.query("COMMIT");
-        return res.status(403).json({
-          error: "OFFER_EXPIRED",
-          message: "The 10-day provisional offer letter acceptance window has elapsed. This offer is permanently locked as EXPIRED and cannot be accessed."
-        });
-      }
-    }
-
-    // COMMIT to allow file upload/Cloudinary/PDF processing to happen without holding lock
-    await client.query("COMMIT");
-
-    // 5. Delegate processing to the AdmissionService logic
-    const outcome = await AdmissionService.processPortalSubmission(token, responseData);
-
-    return res.status(200).json({
-      success: true,
-      message: "Your e-Signature and admission enrollment profiles were successfully verified and logged.",
-      candidate: outcome.beneficiary
-    });
-
-  } catch (err: any) {
-    try {
-      await client.query("ROLLBACK");
-    } catch (rErr) {}
-    console.error("[inline-submit-response] failed:", err);
-    return res.status(500).json({ error: err.message || "Failed validating and persisting portal response." });
-  } finally {
-    client.release();
-  }
-});
+app.post("/api/admissions/submit-response", AdmissionController.submitResponse);
 function isValidTransition(oldStatus: string | undefined, newStatus: string): boolean {
   if (oldStatus === newStatus) return true;
   
@@ -2263,6 +2219,25 @@ app.get("/api/admissions/download-letter/:id", async (req, res) => {
     return sendDocumentResponse(res, pdfBuffer, beneficiary, "ADMISSION_LETTER", inline);
   } catch (e: any) {
     console.error("[GET /api/admissions/download-letter] Error compiling PDF document:", e);
+    return res.status(500).send(e.message);
+  }
+});
+
+// Public PDF Download Endpoint for Acceptance Letter
+app.get("/api/admissions/download-acceptance/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const inline = req.query.inline === "true";
+    const beneficiary = await DbRepo.getBeneficiaryById(id);
+    if (!beneficiary) {
+      return res.status(404).send("Beneficiary candidate not found");
+    }
+
+    const pdfBuffer = await PdfService.generateAcceptanceLetterPdf(beneficiary);
+
+    return sendDocumentResponse(res, pdfBuffer, beneficiary, "ACCEPTANCE_LETTER", inline);
+  } catch (e: any) {
+    console.error("[GET /api/admissions/download-acceptance] Error compiling PDF document:", e);
     return res.status(500).send(e.message);
   }
 });
@@ -3139,9 +3114,30 @@ app.post("/api/templates/repair", requireAuth, requireRole(["SUPER_ADMIN"]), asy
 
 // --- Annex 9 Trainee Operations Ecosystem Endpoints ---
 
-app.get("/api/trainees", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
+app.get("/api/trainees", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
-    const { search, state, skill, tsp, page, limit } = req.query;
+    const user = req.user;
+    let tenantIdStr: string | undefined;
+    let stateIdStr: string | undefined;
+    let tspIdStr: string | undefined;
+
+    const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+    const isState = user && STA_ROLES.includes(user.role);
+    const isTsp = user && TSP_ROLES.includes(user.role);
+
+    if (isTsp) {
+      tspIdStr = user!.tspId;
+      tenantIdStr = user!.tenantId;
+    } else if (isState) {
+      stateIdStr = user!.stateId;
+      tenantIdStr = user!.tenantId;
+    } else {
+      tenantIdStr = req.query.tenantId as string;
+      stateIdStr = req.query.stateId as string;
+      tspIdStr = req.query.tspId as string;
+    }
+
+    const { search, state, skill, tsp, status, lga, programme, batch, cohort, gender, page, limit } = req.query;
     const parsedPage = parseInt(page as string, 10) || 1;
     const parsedLimit = parseInt(limit as string, 10) || 20;
 
@@ -3149,7 +3145,16 @@ app.get("/api/trainees", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER
       search: search as string,
       state: state as string,
       skill: skill as string,
-      tsp: tsp as string,
+      tsp: tsp !== "all" ? (tsp as string || tspIdStr) : undefined,
+      status: status as string,
+      lga: lga as string,
+      programme: programme as string,
+      batch: batch as string,
+      cohort: cohort as string,
+      gender: gender as string,
+      tenantId: tenantIdStr,
+      stateId: stateIdStr,
+      tspId: tspIdStr !== "all" ? tspIdStr : undefined,
       page: parsedPage,
       limit: parsedLimit
     });
@@ -3159,7 +3164,7 @@ app.get("/api/trainees", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER
   }
 });
 
-app.get("/api/trainees/:beneficiaryId", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
+app.get("/api/trainees/:beneficiaryId", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
     const profile = await DbRepo.getTraineeProfileByBeneficiaryId(req.params.beneficiaryId);
     if (!profile) return res.status(404).json({ error: "Trainee profile not found" });
@@ -4835,7 +4840,7 @@ app.get("/api/attendance/stats", requireAuth, requireRole(["SUPER_ADMIN", ...FED
   }
 });
 
-app.get("/api/attendance", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req, res) => {
+app.get(["/api/attendance", "/api/attendance/ledger"], requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req, res) => {
   try {
     const authReq = req as AuthenticatedRequest;
     const user = authReq.user;
@@ -4844,34 +4849,52 @@ app.get("/api/attendance", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES
     let tspIdStr: string | undefined;
 
     const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
-    if (user && !isFederal) {
-      tenantIdStr = user.tenantId;
-      stateIdStr = user.stateId;
-      tspIdStr = user.tspId;
+    const isState = user && STA_ROLES.includes(user.role);
+    const isTsp = user && TSP_ROLES.includes(user.role);
+
+    if (isTsp) {
+      tspIdStr = user!.tspId;
+      tenantIdStr = user!.tenantId;
+    } else if (isState) {
+      stateIdStr = user!.stateId;
+      tenantIdStr = user!.tenantId;
+    } else {
+      tenantIdStr = req.query.tenantId as string;
+      stateIdStr = req.query.stateId as string;
+      tspIdStr = req.query.tspId as string;
     }
 
-    const { search, date, page, limit } = req.query;
+    const { search, date, month, state, lgaId, programme, skill, batch, cohort, gender, status, page, limit } = req.query;
     const parsedPage = parseInt(page as string, 10) || 1;
-    const parsedLimit = parseInt(limit as string, 10) || 1000; // default to larger for interactive daily views
+    const parsedLimit = parseInt(limit as string, 10) || 1000;
 
-    const data = await DbRepo.getTraineeAttendance({
-      search: search as string,
+    const data = await DbRepo.getAttendanceLedger({
       date: date as string,
-      page: parsedPage,
-      limit: parsedLimit,
+      month: month as string,
       tenantId: tenantIdStr,
       stateId: stateIdStr,
-      tspId: tspIdStr
+      state: state as string,
+      lgaId: lgaId as string,
+      tspId: tspIdStr !== "all" ? tspIdStr : undefined,
+      programme: programme as string,
+      skill: skill as string,
+      batch: batch as string,
+      cohort: cohort as string,
+      gender: gender as string,
+      status: status as string,
+      search: search as string,
+      page: parsedPage,
+      limit: parsedLimit,
     });
-    res.json(data);
+    res.json({ success: true, attendance: data.ledger, ledger: data.ledger, total: data.total });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
-app.post("/api/attendance", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+app.post(["/api/attendance", "/api/attendance/mark"], requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
-    const { beneficiary_id, attendance_date, status, check_in_time, check_out_time, attendance_source } = req.body;
+    const { beneficiary_id, attendance_date, status, check_in_time, check_out_time, attendance_source, remarks } = req.body;
     if (!beneficiary_id || !attendance_date || !status) {
       return res.status(400).json({ error: "Missing required parameters: beneficiary_id, attendance_date, status" });
     }
@@ -4887,54 +4910,57 @@ app.post("/api/attendance", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLE
     const record = await DbRepo.saveTraineeAttendance({
       beneficiary_id,
       attendance_date,
-      check_in_time,
-      check_out_time,
+      check_in_time: check_in_time || null,
+      check_out_time: check_out_time || null,
       attendance_source: attendance_source || 'MANUAL',
-      status
+      status,
+      captured_by: req.user?.email || 'SYSTEM',
+      remarks: remarks || null
     });
 
-    // Auto calculate compliance for the month
-    const monthStr = attendance_date.substring(0, 7); // "YYYY-MM"
+    const monthStr = attendance_date.substring(0, 7);
     await DbRepo.computeAndSaveStipendCompliance(beneficiary_id, monthStr);
 
     await logAction(
       req.user!.email,
-      "ATTENDANCE_UPDATED",
+      "ATTENDANCE_MARKED",
       `Marked attendance ${status} for ${name} on ${attendance_date}`
     );
 
     res.json({ success: true, record });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
-app.post("/api/attendance/bulk", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+app.post(["/api/attendance/bulk", "/api/attendance/bulk-mark"], requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
-    const { records } = req.body;
+    const { records, attendance_date } = req.body;
     if (!records || !Array.isArray(records)) {
       return res.status(400).json({ error: "Missing or invalid records parameter" });
     }
 
     const results: any[] = [];
     for (const rec of records) {
-      const { beneficiary_id, attendance_date, status, check_in_time, check_out_time, attendance_source } = rec;
-      if (!beneficiary_id || !attendance_date || !status) continue;
+      const recDate = rec.attendance_date || attendance_date;
+      const { beneficiary_id, status, check_in_time, check_out_time, attendance_source, remarks } = rec;
+      if (!beneficiary_id || !recDate || !status) continue;
 
       const hasAccess = await checkBeneficiaryAccess(req.user, beneficiary_id);
-      if (!hasAccess) continue; // Skip to guarantee isolation
+      if (!hasAccess) continue;
 
       const record = await DbRepo.saveTraineeAttendance({
         beneficiary_id,
-        attendance_date,
+        attendance_date: recDate,
         check_in_time: check_in_time || null,
         check_out_time: check_out_time || null,
         attendance_source: attendance_source || 'MANUAL',
-        status
+        status,
+        captured_by: req.user?.email || 'SYSTEM',
+        remarks: remarks || null
       });
 
-      // Recalculate monthly compliance
-      const monthStr = attendance_date.substring(0, 7);
+      const monthStr = recDate.substring(0, 7);
       await DbRepo.computeAndSaveStipendCompliance(beneficiary_id, monthStr);
 
       results.push(record);
@@ -4942,13 +4968,162 @@ app.post("/api/attendance/bulk", requireAuth, requireRole(["SUPER_ADMIN", ...FED
 
     await logAction(
       req.user!.email,
-      "BULK_ATTENDANCE_UPDATED",
+      "BULK_ATTENDANCE_MARKED",
       `Bulk updated ${results.length} attendance records`
     );
 
     res.json({ success: true, count: results.length, records: results });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/attendance/history/:beneficiaryId", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { beneficiaryId } = req.params;
+    const hasAccess = await checkBeneficiaryAccess(req.user, beneficiaryId);
+    if (!hasAccess) {
+      return res.status(403).json({ error: "Access Denied: Tenant isolation active." });
+    }
+    const history = await DbRepo.getAttendanceHistoryByBeneficiary(beneficiaryId);
+    res.json({ success: true, attendanceHistory: history });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete("/api/attendance/:id", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    const beneficiaryId = req.query.beneficiaryId as string;
+    const date = req.query.date as string;
+    
+    if (beneficiaryId) {
+      const hasAccess = await checkBeneficiaryAccess(req.user, beneficiaryId);
+      if (!hasAccess) {
+        return res.status(403).json({ error: "Access Denied: Tenant isolation active." });
+      }
+    }
+
+    const deleted = await DbRepo.deleteTraineeAttendance(id);
+    if (deleted && beneficiaryId && date) {
+      const monthStr = date.substring(0, 7);
+      await DbRepo.computeAndSaveStipendCompliance(beneficiaryId, monthStr);
+    }
+    await logAction(
+      req.user!.email,
+      "ATTENDANCE_DELETED",
+      `Deleted attendance record ${id}`
+    );
+    res.json({ success: true, deleted });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/attendance/compliance", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+    const isState = user && STA_ROLES.includes(user.role);
+    const isTsp = user && TSP_ROLES.includes(user.role);
+
+    let tspIdStr = req.query.tspId as string;
+    let stateIdStr = req.query.stateId as string;
+    if (isTsp) tspIdStr = user!.tspId || "";
+    if (isState) stateIdStr = user!.stateId || "";
+    if (tspIdStr === "all") tspIdStr = "";
+
+    const { month, search } = req.query;
+    const targetMonth = (month as string) || new Date().toISOString().substring(0, 7);
+
+    let queryStr = `
+      SELECT 
+        b.id, b.first_name, b.last_name, b.gender, b.program, b.skill_sector, b.tsp, b.state,
+        COALESCE(tp.tvet_id, 'ID-TVE-26-' || SUBSTRING(b.id, 1, 6)) as tvet_id,
+        COALESCE(da.present, 0) as present_days,
+        COALESCE(da.absent, 0) as absent_days,
+        COALESCE(da.late, 0) as late_days,
+        COALESCE(da.total_hours, 0) as total_hours
+      FROM beneficiaries b
+      LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
+      LEFT JOIN (
+        SELECT 
+          ta.beneficiary_id,
+          COUNT(CASE WHEN ta.status IN ('PRESENT', 'LATE') THEN 1 END)::int as present,
+          COUNT(CASE WHEN ta.status = 'ABSENT' THEN 1 END)::int as absent,
+          COUNT(CASE WHEN ta.status = 'LATE' THEN 1 END)::int as late,
+          SUM(COALESCE(ta.hours_logged, 0))::numeric as total_hours
+        FROM trainee_attendance ta
+        WHERE TO_CHAR(ta.attendance_date, 'YYYY-MM') = $1
+        GROUP BY ta.beneficiary_id
+      ) da ON b.id = da.beneficiary_id
+      WHERE b.deleted_at IS NULL AND b.status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI', 'GRADUATED', 'COMPLETED', 'ONBOARDED')
+    `;
+    const params: any[] = [targetMonth];
+    let pIdx = 2;
+
+    if (tspIdStr) {
+      queryStr += ` AND b.tsp_id = $${pIdx++}`;
+      params.push(tspIdStr);
+    }
+    if (stateIdStr) {
+      queryStr += ` AND b.state_id = $${pIdx++}`;
+      params.push(stateIdStr);
+    }
+    if (search) {
+      queryStr += ` AND (b.first_name ILIKE $${pIdx} OR b.last_name ILIKE $${pIdx} OR b.id ILIKE $${pIdx})`;
+      params.push(`%${search}%`);
+      pIdx++;
+    }
+
+    queryStr += ` ORDER BY b.last_name ASC, b.first_name ASC LIMIT 500`;
+    const result = await executeQuery(queryStr, params);
+
+    let expectedDays = 0;
+    if (tspIdStr) {
+      const expRes = await executeQuery(
+        `SELECT COUNT(DISTINCT ta.attendance_date)::int as count 
+         FROM trainee_attendance ta
+         JOIN beneficiaries b ON ta.beneficiary_id = b.id
+         WHERE b.tsp_id = $1 AND TO_CHAR(ta.attendance_date, 'YYYY-MM') = $2 AND b.deleted_at IS NULL`,
+        [tspIdStr, targetMonth]
+      );
+      expectedDays = expRes.rows[0]?.count || 0;
+    }
+
+    const records = result.rows.map(row => {
+      const present = parseInt(row.present_days || 0, 10);
+      const effExpected = expectedDays > 0 ? expectedDays : (present > 0 ? present : 0);
+      const attendance_percentage = effExpected > 0 ? parseFloat(((present / effExpected) * 100).toFixed(1)) : 0.0;
+      
+      let stipend_status = "SUSPENDED";
+      let stipend_reason = "No attendance records available yet.";
+      if (effExpected === 0 && present === 0) {
+        stipend_status = "NO_RECORD";
+      } else if (attendance_percentage >= 65.0) {
+        stipend_status = "ELIGIBLE";
+        stipend_reason = "Compliant class attendance logged.";
+      } else if (attendance_percentage >= 50.0) {
+        stipend_status = "WARNING";
+        stipend_reason = "Attendance below 65%.";
+      } else {
+        stipend_status = "SUSPENDED";
+        stipend_reason = "Attendance below 50%. Stipend suspended.";
+      }
+
+      return {
+        ...row,
+        expected_days: effExpected,
+        attendance_percentage,
+        stipend_status,
+        stipend_reason
+      };
+    });
+
+    res.json({ success: true, count: records.length, records });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -4963,28 +5138,37 @@ app.get("/api/tsp/attendance/dashboard", requireAuth, requireRole(["SUPER_ADMIN"
       return res.status(401).json({ error: "Unauthorized access: session context missing." });
     }
     
-    // Scoped only by TSP ID
-    const tspId = user.tspId || "00000000-0000-0000-0000-000000000001";
+    let tspId = (req.query.tspId as string) || "";
+    if (TSP_ROLES.includes(user.role)) {
+      tspId = user.tspId || "";
+    }
+    if (tspId === "all") tspId = "";
+
     const targetDate = (req.query.date as string) || new Date().toISOString().split("T")[0];
     const targetMonth = targetDate.substring(0, 7);
 
-    // 1. Total Active Trainees under this TSP
-    const traineesRes = await executeQuery(
-      `SELECT COUNT(*)::int as count FROM beneficiaries 
-       WHERE tsp_id = $1 AND deleted_at IS NULL AND status IN ('ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')`,
-      [tspId]
-    );
+    let traineesQuery = `SELECT COUNT(*)::int as count FROM beneficiaries WHERE deleted_at IS NULL AND status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI', 'GRADUATED', 'COMPLETED', 'ONBOARDED')`;
+    const traineesParams: any[] = [];
+    if (tspId) {
+      traineesQuery += ` AND tsp_id = $1`;
+      traineesParams.push(tspId);
+    }
+    const traineesRes = await executeQuery(traineesQuery, traineesParams);
     const totalTrainees = traineesRes.rows[0]?.count || 0;
 
-    // 2. Today's Attendance breakdown
-    const attendanceTodayRes = await executeQuery(
-      `SELECT ta.status, COUNT(*)::int as count, SUM(COALESCE(ta.hours_logged, 0)) as hours
-       FROM trainee_attendance ta
-       JOIN beneficiaries b ON ta.beneficiary_id = b.id
-       WHERE b.tsp_id = $1 AND ta.attendance_date = $2 AND b.deleted_at IS NULL
-       GROUP BY ta.status`,
-      [tspId, targetDate]
-    );
+    let attendanceTodayQuery = `
+      SELECT ta.status, COUNT(*)::int as count, SUM(COALESCE(ta.hours_logged, 0)) as hours
+      FROM trainee_attendance ta
+      JOIN beneficiaries b ON ta.beneficiary_id = b.id
+      WHERE ta.attendance_date = $1 AND b.deleted_at IS NULL
+    `;
+    const attParams: any[] = [targetDate];
+    if (tspId) {
+      attendanceTodayQuery += ` AND b.tsp_id = $2`;
+      attParams.push(tspId);
+    }
+    attendanceTodayQuery += ` GROUP BY ta.status`;
+    const attendanceTodayRes = await executeQuery(attendanceTodayQuery, attParams);
     
     let present = 0;
     let absent = 0;
@@ -5002,27 +5186,35 @@ app.get("/api/tsp/attendance/dashboard", requireAuth, requireRole(["SUPER_ADMIN"
 
     const attendanceRate = totalTrainees > 0 ? parseFloat((((present + late) / totalTrainees) * 100).toFixed(1)) : 0;
 
-    // 3. Expected days in this month is the count of distinct days with any attendance for this TSP
-    const expectedDaysRes = await executeQuery(
-      `SELECT COUNT(DISTINCT ta.attendance_date)::int as count 
-       FROM trainee_attendance ta
-       JOIN beneficiaries b ON ta.beneficiary_id = b.id
-       WHERE b.tsp_id = $1 AND TO_CHAR(ta.attendance_date, 'YYYY-MM') = $2 AND b.deleted_at IS NULL`,
-      [tspId, targetMonth]
-    );
+    let expQuery = `
+      SELECT COUNT(DISTINCT ta.attendance_date)::int as count 
+      FROM trainee_attendance ta
+      JOIN beneficiaries b ON ta.beneficiary_id = b.id
+      WHERE TO_CHAR(ta.attendance_date, 'YYYY-MM') = $1 AND b.deleted_at IS NULL
+    `;
+    const expParams: any[] = [targetMonth];
+    if (tspId) {
+      expQuery += ` AND b.tsp_id = $2`;
+      expParams.push(tspId);
+    }
+    const expectedDaysRes = await executeQuery(expQuery, expParams);
     const expectedDays = Math.max(expectedDaysRes.rows[0]?.count || 0, 1);
 
-    // Get compliance summary metrics of active beneficiaries
-    const complianceRes = await executeQuery(
-      `SELECT 
+    let complianceQuery = `
+      SELECT 
          b.id,
          COUNT(CASE WHEN ta.status IN ('PRESENT', 'LATE') THEN 1 END)::int as present_count
        FROM beneficiaries b
-       LEFT JOIN trainee_attendance ta ON b.id = ta.beneficiary_id AND TO_CHAR(ta.attendance_date, 'YYYY-MM') = $2
-       WHERE b.tsp_id = $1 AND b.deleted_at IS NULL AND b.status IN ('ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')
-       GROUP BY b.id`,
-      [tspId, targetMonth]
-    );
+       LEFT JOIN trainee_attendance ta ON b.id = ta.beneficiary_id AND TO_CHAR(ta.attendance_date, 'YYYY-MM') = $1
+       WHERE b.deleted_at IS NULL AND b.status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI', 'GRADUATED', 'COMPLETED', 'ONBOARDED')
+    `;
+    const compParams: any[] = [targetMonth];
+    if (tspId) {
+      complianceQuery += ` AND b.tsp_id = $2`;
+      compParams.push(tspId);
+    }
+    complianceQuery += ` GROUP BY b.id`;
+    const complianceRes = await executeQuery(complianceQuery, compParams);
 
     let totalCompliancePct = 0;
     let eligibleCount = 0;
@@ -5064,46 +5256,22 @@ app.get("/api/tsp/attendance/ledger", requireAuth, requireRole(["SUPER_ADMIN", .
     if (!user) {
       return res.status(401).json({ error: "Unauthorized access: session context missing." });
     }
-    const tspId = user.tspId || "00000000-0000-0000-0000-000000000001";
+    let tspId = (req.query.tspId as string) || "";
+    if (TSP_ROLES.includes(user.role)) {
+      tspId = user.tspId || "";
+    }
+    if (tspId === "all") tspId = "";
+
     const { date, search } = req.query;
     const targetDate = (date as string) || new Date().toISOString().split("T")[0];
 
-    let queryStr = `
-      SELECT 
-        b.id,
-        b.first_name,
-        b.last_name,
-        b.gender,
-        b.program,
-        b.skill_sector,
-        b.batch,
-        b.photo,
-        COALESCE(tp.tvet_id, 'ID-TVE-26-' || SUBSTRING(b.id, 1, 6)) as tvet_id,
-        ta.status as attendance_status,
-        ta.check_in_time,
-        ta.check_out_time,
-        ta.attendance_source,
-        ta.hours_logged,
-        ta.remarks
-      FROM beneficiaries b
-      LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
-      LEFT JOIN trainee_attendance ta ON b.id = ta.beneficiary_id AND ta.attendance_date = $2
-      WHERE b.tsp_id = $1 AND b.deleted_at IS NULL AND b.status IN ('ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')
-    `;
-
-    const params: any[] = [tspId, targetDate];
-    let paramIndex = 3;
-
-    if (search) {
-      queryStr += ` AND (b.first_name ILIKE $${paramIndex} OR b.last_name ILIKE $${paramIndex} OR b.id ILIKE $${paramIndex})`;
-      params.push(`%${search}%`);
-      paramIndex++;
-    }
-
-    queryStr += ` ORDER BY b.last_name ASC, b.first_name ASC`;
-
-    const result = await executeQuery(queryStr, params);
-    res.json({ success: true, count: result.rows.length, records: result.rows });
+    const data = await DbRepo.getAttendanceLedger({
+      date: targetDate,
+      tspId: tspId || undefined,
+      search: search as string,
+      limit: 1000
+    });
+    res.json({ success: true, count: data.ledger.length, records: data.ledger, ledger: data.ledger });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -5115,18 +5283,27 @@ app.get("/api/tsp/attendance/compliance", requireAuth, requireRole(["SUPER_ADMIN
     if (!user) {
       return res.status(401).json({ error: "Unauthorized access: session context missing." });
     }
-    const tspId = user.tspId || "00000000-0000-0000-0000-000000000001";
-    const { month, search } = req.query;
-    const targetMonth = (month as string) || "2026-06";
+    let tspId = (req.query.tspId as string) || "";
+    if (TSP_ROLES.includes(user.role)) {
+      tspId = user.tspId || "";
+    }
+    if (tspId === "all") tspId = "";
 
-    // Expected days in this month is the count of distinct days with any attendance for this TSP
-    const expectedDaysRes = await executeQuery(
-      `SELECT COUNT(DISTINCT ta.attendance_date)::int as count 
-       FROM trainee_attendance ta
-       JOIN beneficiaries b ON ta.beneficiary_id = b.id
-       WHERE b.tsp_id = $1 AND TO_CHAR(ta.attendance_date, 'YYYY-MM') = $2 AND b.deleted_at IS NULL`,
-      [tspId, targetMonth]
-    );
+    const { month, search } = req.query;
+    const targetMonth = (month as string) || new Date().toISOString().substring(0, 7);
+
+    let expQuery = `
+      SELECT COUNT(DISTINCT ta.attendance_date)::int as count 
+      FROM trainee_attendance ta
+      JOIN beneficiaries b ON ta.beneficiary_id = b.id
+      WHERE TO_CHAR(ta.attendance_date, 'YYYY-MM') = $1 AND b.deleted_at IS NULL
+    `;
+    const expParams: any[] = [targetMonth];
+    if (tspId) {
+      expQuery += ` AND b.tsp_id = $2`;
+      expParams.push(tspId);
+    }
+    const expectedDaysRes = await executeQuery(expQuery, expParams);
     const expectedDays = Math.max(expectedDaysRes.rows[0]?.count || 0, 1);
 
     let queryStr = `
@@ -5152,14 +5329,18 @@ app.get("/api/tsp/attendance/compliance", requireAuth, requireRole(["SUPER_ADMIN
           COUNT(CASE WHEN ta.status = 'LATE' THEN 1 END)::int as late,
           SUM(COALESCE(ta.hours_logged, 0))::numeric as total_hours
         FROM trainee_attendance ta
-        WHERE TO_CHAR(ta.attendance_date, 'YYYY-MM') = $2
+        WHERE TO_CHAR(ta.attendance_date, 'YYYY-MM') = $1
         GROUP BY ta.beneficiary_id
       ) da ON b.id = da.beneficiary_id
-      WHERE b.tsp_id = $1 AND b.deleted_at IS NULL AND b.status IN ('ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')
+      WHERE b.deleted_at IS NULL AND b.status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI', 'GRADUATED', 'COMPLETED', 'ONBOARDED')
     `;
+    const params: any[] = [targetMonth];
+    let paramIndex = 2;
 
-    const params: any[] = [tspId, targetMonth];
-    let paramIndex = 3;
+    if (tspId) {
+      queryStr += ` AND b.tsp_id = $${paramIndex++}`;
+      params.push(tspId);
+    }
 
     if (search) {
       queryStr += ` AND (b.first_name ILIKE $${paramIndex} OR b.last_name ILIKE $${paramIndex} OR b.id ILIKE $${paramIndex})`;
@@ -5207,39 +5388,25 @@ app.post("/api/tsp/attendance/mark", requireAuth, requireRole(["SUPER_ADMIN", ..
     if (!user) {
       return res.status(401).json({ error: "Unauthorized access: session context missing." });
     }
-    const tspId = user.tspId || "00000000-0000-0000-0000-000000000001";
     const { beneficiary_id, attendance_date, status, check_in_time, check_out_time, attendance_source, remarks } = req.body;
 
     if (!beneficiary_id || !attendance_date || !status) {
       return res.status(400).json({ error: "Missing required parameters: beneficiary_id, attendance_date, status" });
     }
 
-    // Tenant check
     const trainee = await DbRepo.getBeneficiaryById(beneficiary_id);
-    if (!trainee || trainee.tspId !== tspId) {
-      return res.status(403).json({ error: "Access Denied: Cross-TSP operation rejected." });
+    if (!trainee) {
+      return res.status(404).json({ error: "Trainee not found." });
     }
-
-    let hours_logged = 0;
-    if (check_in_time && check_out_time) {
-      try {
-        const checkIn = new Date(check_in_time).getTime();
-        const checkOut = new Date(check_out_time).getTime();
-        if (checkOut > checkIn) {
-          hours_logged = parseFloat(((checkOut - checkIn) / (1000 * 60 * 60)).toFixed(2));
-        }
-      } catch (e) {
-        // fallback
-      }
-    } else {
-      hours_logged = status === "PRESENT" || status === "LATE" ? 6.0 : 0.0;
+    if (TSP_ROLES.includes(user.role) && trainee.tspId !== user.tspId) {
+      return res.status(403).json({ error: "Access Denied: Cross-TSP operation rejected." });
     }
 
     const record = await DbRepo.saveTraineeAttendance({
       beneficiary_id,
       attendance_date,
-      check_in_time,
-      check_out_time,
+      check_in_time: check_in_time || null,
+      check_out_time: check_out_time || null,
       attendance_source: attendance_source || 'MANUAL',
       status,
       captured_by: user.email,
@@ -5267,8 +5434,7 @@ app.post("/api/tsp/attendance/bulk-mark", requireAuth, requireRole(["SUPER_ADMIN
     if (!user) {
       return res.status(401).json({ error: "Unauthorized access: session context missing." });
     }
-    const tspId = user.tspId || "00000000-0000-0000-0000-000000000001";
-    const { records } = req.body;
+    const { records, attendance_date } = req.body;
 
     if (!records || !Array.isArray(records)) {
       return res.status(400).json({ error: "Missing or invalid records parameter" });
@@ -5276,41 +5442,26 @@ app.post("/api/tsp/attendance/bulk-mark", requireAuth, requireRole(["SUPER_ADMIN
 
     const results: any[] = [];
     for (const rec of records) {
-      const { beneficiary_id, attendance_date, status, check_in_time, check_out_time, attendance_source, remarks } = rec;
-      if (!beneficiary_id || !attendance_date || !status) continue;
+      const recDate = rec.attendance_date || attendance_date;
+      const { beneficiary_id, status, check_in_time, check_out_time, attendance_source, remarks } = rec;
+      if (!beneficiary_id || !recDate || !status) continue;
 
       const trainee = await DbRepo.getBeneficiaryById(beneficiary_id);
-      if (!trainee || trainee.tspId !== tspId) {
-        continue; // isolation safeguard
-      }
-
-      let hours_logged = 0;
-      if (check_in_time && check_out_time) {
-        try {
-          const checkIn = new Date(check_in_time).getTime();
-          const checkOut = new Date(check_out_time).getTime();
-          if (checkOut > checkIn) {
-            hours_logged = parseFloat(((checkOut - checkIn) / (1000 * 60 * 60)).toFixed(2));
-          }
-        } catch (e) {
-          // fallback
-        }
-      } else {
-        hours_logged = status === "PRESENT" || status === "LATE" ? 6.0 : 0.0;
-      }
+      if (!trainee) continue;
+      if (TSP_ROLES.includes(user.role) && trainee.tspId !== user.tspId) continue;
 
       const record = await DbRepo.saveTraineeAttendance({
         beneficiary_id,
-        attendance_date,
-        check_in_time,
-        check_out_time,
+        attendance_date: recDate,
+        check_in_time: check_in_time || null,
+        check_out_time: check_out_time || null,
         attendance_source: attendance_source || 'MANUAL',
         status,
         captured_by: user.email,
         remarks: remarks || null
       });
 
-      const monthStr = attendance_date.substring(0, 7);
+      const monthStr = recDate.substring(0, 7);
       await DbRepo.computeAndSaveStipendCompliance(beneficiary_id, monthStr);
 
       results.push(record);
@@ -5606,37 +5757,29 @@ app.post("/api/attendance/import-csv", requireAuth, requireRole(["SUPER_ADMIN", 
   }
 });
 
-app.post("/api/biometric/sync", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.post("/api/biometric/sync", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
-    const { device } = req.body;
+    const { device, records } = req.body;
     const pool = getPgPool();
     if (!pool) return res.status(500).json({ error: "Postgres database is offline" });
 
-    // Fetch active trainees
-    const trainees = await pool.query(`
-      SELECT b.id as beneficiary_id 
-      FROM beneficiaries b
-      WHERE b.deleted_at IS NULL AND b.status IN ('ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')
-    `);
-    
-    const today = new Date().toISOString().split("T")[0];
-    
-    let synced = 0;
-    for (const t of trainees.rows) {
-      const isPresent = Math.random() > 0.15;
-      const status = isPresent ? (Math.random() > 0.85 ? "LATE" : "PRESENT") : "ABSENT";
-      const check_in_time = isPresent ? `${today}T08:${String(Math.floor(Math.random() * 20) + 10).padStart(2, "0")}:00Z` : null;
-      const check_out_time = isPresent ? `${today}T16:${String(Math.floor(Math.random() * 30)).padStart(2, "0")}:00Z` : null;
+    if (!records || !Array.isArray(records) || records.length === 0) {
+      return res.json({ success: true, count: 0, message: "No new device records pending sync." });
+    }
 
+    let synced = 0;
+    for (const r of records) {
+      if (!r.beneficiary_id || !r.attendance_date) continue;
+      const status = r.status || "PRESENT";
       await DbRepo.saveTraineeAttendance({
-        beneficiary_id: t.beneficiary_id,
-        attendance_date: today,
-        check_in_time,
-        check_out_time,
+        beneficiary_id: r.beneficiary_id,
+        attendance_date: r.attendance_date,
+        check_in_time: r.check_in_time || `${r.attendance_date}T08:00:00Z`,
+        check_out_time: r.check_out_time || `${r.attendance_date}T16:00:00Z`,
         attendance_source: 'BIOMETRIC',
         status,
-        captured_by: device || "ZKAccess 3.5 Terminal A",
-        remarks: isPresent ? "Biometric scan success" : "No biometric record found"
+        captured_by: device || r.captured_by || "ZKAccess 3.5 Terminal A",
+        remarks: r.remarks || "Biometric hardware sync"
       });
       synced++;
     }
@@ -5657,10 +5800,10 @@ app.post("/api/biometric/sync", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_
     await logAction(
       req.user!.email,
       "BIOMETRIC_IMPORT_COMPLETED",
-      `Biometric Sync completed from terminal ${device || "ZKAccess 3.5 Terminal A"}. Synced ${synced} trainees.`
+      `Biometric Sync completed from terminal ${device || "ZKAccess 3.5 Terminal A"}. Synced ${synced} records.`
     );
 
-    res.json({ success: true, count: synced });
+    res.json({ success: true, count: synced, message: `Successfully synced ${synced} biometric records.` });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -5904,7 +6047,7 @@ app.get("/api/annex9/readiness", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN
       FROM beneficiaries b
       LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
       LEFT JOIN portal_monitoring pm ON b.id = pm.beneficiary_id
-      WHERE b.deleted_at IS NULL AND b.status IN ('ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')
+      WHERE b.deleted_at IS NULL AND b.status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI', 'GRADUATED', 'COMPLETED', 'ONBOARDED')
     `);
 
     const readinessList = [];
@@ -6035,7 +6178,7 @@ app.get("/api/annex9/dashboard-stats", requireAuth, requireRole(["SUPER_ADMIN", 
       FROM beneficiaries b
       LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
       LEFT JOIN portal_monitoring pm ON b.id = pm.beneficiary_id
-      WHERE b.deleted_at IS NULL AND b.status IN ('ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')
+      WHERE b.deleted_at IS NULL AND b.status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI', 'GRADUATED', 'COMPLETED', 'ONBOARDED')
     `);
 
     const trainees = traineesRes.rows;
@@ -6374,9 +6517,27 @@ app.post("/api/annex9/run-action", requireAuth, requireRole(["SUPER_ADMIN", "ADM
 });
 
 // GET government Excel sheet export download
-app.get("/api/annex9/export", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.get("/api/annex9/export", requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
-    const workbook = await generateAnnex9Workbook();
+    const user = req.user;
+    const isFedOrSuper = user?.role === "SUPER_ADMIN" || (user?.role && FED_ROLES.includes(user.role));
+    const { state, tspId, month, startDate, endDate, skill, cohort, status } = req.query;
+
+    let effectiveTspId = typeof tspId === "string" && tspId !== "all" ? tspId : undefined;
+    if (!isFedOrSuper && user) {
+      effectiveTspId = user.tspId || undefined;
+    }
+
+    const workbook = await generateAnnex9Workbook({
+      state: typeof state === "string" && state !== "all" ? state : undefined,
+      tspId: effectiveTspId,
+      month: typeof month === "string" && month !== "all" ? month : undefined,
+      startDate: typeof startDate === "string" && startDate !== "" ? startDate : undefined,
+      endDate: typeof endDate === "string" && endDate !== "" ? endDate : undefined,
+      skill: typeof skill === "string" && skill !== "all" ? skill : undefined,
+      cohort: typeof cohort === "string" && cohort !== "all" ? cohort : undefined,
+      status: typeof status === "string" && status !== "all" ? status : undefined,
+    });
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -6390,6 +6551,105 @@ app.get("/api/annex9/export", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OF
   } catch (e: any) {
     console.error("Export error:", e);
     res.status(500).json({ error: "Failed to generate Excel export", details: e.message });
+  }
+});
+
+// GET CSV export for Annex 9 sections (attendance, profile, portal)
+app.get("/api/annex9/export-csv", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+    const isFedOrSuper = user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role);
+
+    let effectiveTspId = typeof req.query.tspId === "string" && req.query.tspId !== "all" ? req.query.tspId : undefined;
+    if (!isFedOrSuper) {
+      effectiveTspId = user.tspId || undefined;
+    }
+
+    const { section, state, month, startDate, endDate, skill, cohort, status } = req.query;
+    const options = {
+      state: typeof state === "string" && state !== "all" ? state : undefined,
+      tspId: effectiveTspId,
+      month: typeof month === "string" && month !== "all" ? month : undefined,
+      startDate: typeof startDate === "string" && startDate !== "" ? startDate : undefined,
+      endDate: typeof endDate === "string" && endDate !== "" ? endDate : undefined,
+      skill: typeof skill === "string" && skill !== "all" ? skill : undefined,
+      cohort: typeof cohort === "string" && cohort !== "all" ? cohort : undefined,
+      status: typeof status === "string" && status !== "all" ? status : undefined,
+    };
+
+    let csvContent = "";
+    let filename = "Annex9_Export.csv";
+    if (section === "attendance") {
+      csvContent = await generateAnnex9AttendanceCSV(options);
+      filename = `Annex9_Attendance_Export_${options.month || new Date().toISOString().split('T')[0]}.csv`;
+    } else if (section === "portal") {
+      csvContent = await generateAnnex9PortalCSV(options);
+      filename = `Annex9_Portal_Export_${options.month || new Date().toISOString().split('T')[0]}.csv`;
+    } else {
+      csvContent = await generateAnnex9ProfileCSV(options);
+      filename = `Annex9_Trainee_Registry_${new Date().toISOString().split('T')[0]}.csv`;
+    }
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(csvContent);
+  } catch (err: any) {
+    console.error("CSV export error:", err);
+    res.status(500).json({ error: "Failed to generate CSV export", details: err.message });
+  }
+});
+
+// GET TSP scoped Annex 9 attendance records export
+app.get("/api/tsp/attendance/export-annex9", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+    const isFedOrSuper = user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role);
+
+    let effectiveTspId = typeof req.query.tspId === "string" && req.query.tspId !== "all" ? req.query.tspId : undefined;
+    if (!isFedOrSuper) {
+      effectiveTspId = user.tspId || undefined;
+      if (!effectiveTspId) {
+        return res.status(403).json({ error: "TSP profile ID not found in session." });
+      }
+    }
+
+    const { month, startDate, endDate, skill, cohort, status, format } = req.query;
+    const options = {
+      tspId: effectiveTspId,
+      month: typeof month === "string" && month !== "all" ? month : undefined,
+      startDate: typeof startDate === "string" && startDate !== "" ? startDate : undefined,
+      endDate: typeof endDate === "string" && endDate !== "" ? endDate : undefined,
+      skill: typeof skill === "string" && skill !== "all" ? skill : undefined,
+      cohort: typeof cohort === "string" && cohort !== "all" ? cohort : undefined,
+      status: typeof status === "string" && status !== "all" ? status : undefined,
+    };
+
+    if (format === "csv") {
+      const csvContent = await generateAnnex9AttendanceCSV(options);
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="Annex_9_Attendance_Export_${options.month || new Date().toISOString().split('T')[0]}.csv"`
+      );
+      return res.send(csvContent);
+    } else {
+      const workbook = await generateAnnex9Workbook(options);
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="Annex_9_Attendance_Export_${options.month || new Date().toISOString().split('T')[0]}.xlsx"`
+      );
+      await workbook.xlsx.write(res);
+      res.end();
+    }
+  } catch (err: any) {
+    console.error("TSP Annex 9 export error:", err);
+    res.status(500).json({ error: "Failed to generate Annex 9 export", details: err.message });
   }
 });
 
@@ -15394,6 +15654,30 @@ app.delete("/api/training-centers/:id", requireAuth, async (req: any, res) => {
 async function startServer() {
   console.log("[BOOT] startServer entered");
   
+  // =========================================
+  // STARTUP ENVIRONMENT CHECK MATRIX
+  // =========================================
+  const resendKey = process.env.RESEND_API_KEY;
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+  const cloudApiKey = process.env.CLOUDINARY_API_KEY;
+  const cloudApiSecret = process.env.CLOUDINARY_API_SECRET;
+
+  console.log("================================================================================");
+  console.log("             IDEAS-TVET INTEGRATION ENGINE ENVIRONMENT VERIFICATION             ");
+  console.log("================================================================================");
+  console.log(`[ENV CHECK] RESEND_API_KEY:         ${resendKey ? "✓ CONFIGURED" : "✗ MISSING"}`);
+  console.log(`[ENV CHECK] CLOUDINARY_CLOUD_NAME:  ${cloudName ? "✓ CONFIGURED" : "✗ MISSING"}`);
+  console.log(`[ENV CHECK] CLOUDINARY_API_KEY:     ${cloudApiKey ? "✓ CONFIGURED" : "✗ MISSING"}`);
+  console.log(`[ENV CHECK] CLOUDINARY_API_SECRET:  ${cloudApiSecret ? "✓ CONFIGURED" : "✗ MISSING"}`);
+
+  if (!resendKey) {
+    console.error(`[CRITICAL] ✗ RESEND_API_KEY is missing! Transactional emails WILL FAIL to send.`);
+  }
+  if (!cloudName || !cloudApiKey || !cloudApiSecret) {
+    console.warn(`[WARNING]  ✗ Cloudinary settings are incomplete! Secure documents will fall back to simulation mode.`);
+  }
+  console.log("================================================================================");
+
   // Custom safe mode check
   const isSafeMode = process.env.SAFE_MODE === "true";
   if (isSafeMode) {
@@ -15466,26 +15750,6 @@ async function startServer() {
     });
     console.log("[BOOT] Static asset registration completed");
   }
-
-  // ─── ENVIRONMENT VALIDATION ─────────────────────────────────────────────────
-  // Print clear warnings at startup so missing config is obvious in Render logs.
-  const requiredEnvChecks = [
-    { key: "RESEND_API_KEY", label: "Resend email API key", impact: "Offer letters will NOT be emailed to students" },
-    { key: "DATABASE_URL", label: "PostgreSQL connection string", impact: "All data will fall back to JSON file storage" },
-    { key: "CLOUDINARY_CLOUD_NAME", label: "Cloudinary cloud name", impact: "PDF documents will use simulated URLs" },
-    { key: "JWT_SECRET", label: "JWT signing secret", impact: "Sessions will use insecure default key" },
-  ];
-  console.log("\n[BOOT] ════════════ ENVIRONMENT CONFIGURATION CHECK ════════════");
-  for (const check of requiredEnvChecks) {
-    const isSet = !!(process.env[check.key] && process.env[check.key]!.trim() !== "");
-    if (isSet) {
-      console.log(`[BOOT] ✓ ${check.key} — configured`);
-    } else {
-      console.error(`[BOOT] ✗ MISSING: ${check.key} (${check.label})`);
-      console.error(`[BOOT]   ↳ IMPACT: ${check.impact}`);
-    }
-  }
-  console.log("[BOOT] ═══════════════════════════════════════════════════════\n");
 
   console.log("[BOOT] app.listen reached");
   app.listen(PORT, "0.0.0.0", () => {

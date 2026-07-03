@@ -7,7 +7,7 @@ import { Request, Response } from "express";
 import { AdmissionService } from "./admission.service";
 import { TokenService } from "./token.service";
 import { EmailService } from "./email.service";
-import { DbRepo } from "./db";
+import { DbRepo, getPgPool } from "./db";
 import { DocumentService } from "./document.service";
 import { PdfService } from "./pdf.service";
 import { DocumentType, Beneficiary } from "../types";
@@ -16,6 +16,7 @@ import JSZip from "jszip";
 import { buildPublicUrl } from "../config/api";
 import { AuthenticatedRequest } from "./auth.middleware";
 import { OfferService } from "./offer.service";
+import { CloudinaryService } from "./cloudinary.service";
 
 
 export class AdmissionController {
@@ -52,7 +53,8 @@ export class AdmissionController {
       }
 
       // Query candidate database record first
-      const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
+      const resolvedId = await AdmissionController.resolveBeneficiaryIdResiliently(beneficiaryId);
+      const beneficiary = await DbRepo.getBeneficiaryById(resolvedId);
       if (!beneficiary) {
         return res.status(404).json({ error: `Beneficiary candidate '${beneficiaryId}' not found in registry.` });
       }
@@ -126,58 +128,290 @@ export class AdmissionController {
   }
 
   /**
+   * Translates incoming string references resiliently. If a custom tracking text like "IDEAS-2026-003"
+   * is provided, it automatically scans database profiles to return the accurate system UUID.
+   */
+  static async resolveBeneficiaryIdResiliently(idOrToken: any): Promise<string> {
+    if (!idOrToken) return idOrToken;
+    const cleanToken = String(idOrToken).trim();
+    // Check if it's already a valid UUID
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanToken)) {
+      return cleanToken;
+    }
+
+    // Otherwise, delegate to DbRepo's resilient resolver
+    try {
+      const resolved = await DbRepo.resolveBeneficiaryIdResiliently(cleanToken);
+      if (resolved) return resolved;
+    } catch (err) {
+      console.error("[AdmissionController.resolveBeneficiaryIdResiliently] DB lookup error:", err);
+    }
+    return cleanToken;
+  }
+
+  /**
    * Controller to check token validity and retrieve clean, non-sensitive biographical parameters of candidate
    * GET /api/admissions/validate-token
+   * Refactored as authoritative read-only check against public_response_tokens.
    */
   static async validateToken(req: Request, res: Response) {
+    let currentPhase = "TOKEN_RECEIVED";
+    let decodedId: string | null = null;
+    let resolvedId: string | null = null;
+    let decodedTokenVersion: number | null = null;
+
     try {
+      // ----------------------------------------------------
+      // PHASE 1: TOKEN_RECEIVED
+      // ----------------------------------------------------
+      currentPhase = "TOKEN_RECEIVED";
       const token = req.query.token as string;
       if (!token) {
-        return res.status(400).json({ error: "No secure response token provided in verification query." });
+        return res.status(400).json({
+          error: "TOKEN_INVALID",
+          phase: currentPhase,
+          message: "No secure response token provided in verification query."
+        });
       }
 
-      const decoded = TokenService.verifyToken(token);
-      if (!decoded || !decoded.id) {
-        return res.status(401).json({ error: "The response token is invalid, expired, or corrupted." });
+      const tokenHash = TokenService.hashToken(token);
+      const pool = getPgPool();
+
+      // ----------------------------------------------------
+      // PHASE 2: TOKEN_DECODE
+      // ----------------------------------------------------
+      currentPhase = "TOKEN_DECODE";
+      let decoded: any = null;
+      try {
+        decoded = TokenService.decodeToken(token);
+      } catch (decodeErr: any) {
+        console.error("TOKEN_DEBUG: [TOKEN_DECODE] decoding crashed:", decodeErr);
       }
 
-      // Resolve underlying database UUID resiliently
-      const resolvedId = await DbRepo.resolveBeneficiaryIdResiliently(decoded.id);
-      if (!resolvedId) {
-        return res.status(404).json({ error: "Candidate matching the secure token session could not be tracked." });
+      if (decoded) {
+        decodedId = decoded.id;
+        decodedTokenVersion = decoded.tokenVersion || 1;
       }
 
-      // Load beneficiary using our non-blocking database repository
-      const beneficiary = await DbRepo.getBeneficiaryById(resolvedId);
-
-      if (!beneficiary) {
-        return res.status(404).json({ error: "Candidate matching the secure token session could not be located." });
-      }
-
-      // Check token version (Phase 1)
-      const tokenVersion = decoded.tokenVersion !== undefined ? decoded.tokenVersion : 1;
-      const bTokenVersion = beneficiary.tokenVersion !== undefined ? beneficiary.tokenVersion : 1;
-      if (tokenVersion !== bTokenVersion) {
-        return res.status(401).json({ error: "TOKEN_REVOKED: This portal or admission token has been revoked due to administrative rollback or status update." });
-      }
-
-      // Check for 10-day link / offer expiration window
-      if (beneficiary.admissionLetterSentAt) {
-        const sentTime = new Date(beneficiary.admissionLetterSentAt).getTime();
-        const expiresTime = sentTime + (10 * 24 * 60 * 60 * 1000); // 10 days
-        if (Date.now() > expiresTime) {
-          // NON-DESTRUCTIVE: Do not execute disk writes like upsertBeneficiary inside a read operation.
-          return res.status(403).json({
-            error: "OFFER_EXPIRED",
-            message: "The 10-day provisional offer letter acceptance window has elapsed. This offer is permanently locked as EXPIRED and cannot be accessed."
-          });
+      // If token decoding completely failed, we check if we can find this token in public_response_tokens
+      let tokenRow: any = null;
+      if (pool) {
+        try {
+          const tRes = await pool.query(
+            "SELECT * FROM public_response_tokens WHERE (token_hash = $1 OR token = $2) AND deleted_at IS NULL LIMIT 1",
+            [tokenHash, token]
+          );
+          if (tRes.rows.length > 0) {
+            tokenRow = tRes.rows[0];
+          }
+        } catch (dbErr) {
+          console.error("TOKEN_DEBUG: [PUBLIC_RESPONSE_TOKEN_LOOKUP] pre-check query failed:", dbErr);
         }
       }
 
-      // NON-DESTRUCTIVE: Do not execute registerEmailOpened write cycles upon GET validation
-      // Return sanitized candidate fields suitable for public view (excluding core admin values if needed)
+      if (!decoded && !tokenRow) {
+        console.error("TOKEN_DEBUG: TOKEN_DECODE_FAILED (no valid payload and no database record found)");
+        return res.status(401).json({
+          error: "TOKEN_INVALID",
+          phase: currentPhase,
+          message: "We could not verify this link. Please contact your training provider.",
+          debug: {
+            phase: currentPhase,
+            decodedId: null,
+            resolvedBeneficiaryId: null,
+            tokenVersion: null,
+            errorMessage: "Token decoding failed and no corresponding DB entry found."
+          }
+        });
+      }
+
+      // ----------------------------------------------------
+      // PHASE 3: BENEFICIARY_ID_RESOLUTION
+      // ----------------------------------------------------
+      currentPhase = "BENEFICIARY_ID_RESOLUTION";
+      if (decodedId) {
+        resolvedId = await AdmissionController.resolveBeneficiaryIdResiliently(decodedId);
+      } else if (tokenRow) {
+        resolvedId = tokenRow.beneficiary_id;
+      }
+
+      if (!resolvedId) {
+        console.error("TOKEN_DEBUG: BENEFICIARY_ID_RESOLUTION failed");
+        return res.status(401).json({
+          error: "TOKEN_INVALID",
+          phase: currentPhase,
+          message: "We could not verify this link. Please contact your training provider.",
+          debug: {
+            phase: currentPhase,
+            decodedId,
+            resolvedBeneficiaryId: null,
+            tokenVersion: decodedTokenVersion,
+            errorMessage: "Could not resolve candidate ID from token payload."
+          }
+        });
+      }
+
+      // ----------------------------------------------------
+      // PHASE 4: BENEFICIARY_LOAD
+      // ----------------------------------------------------
+      currentPhase = "BENEFICIARY_LOAD";
+      const beneficiary = await DbRepo.getBeneficiaryById(resolvedId);
+      if (!beneficiary) {
+        console.error("TOKEN_DEBUG: BENEFICIARY_NOT_FOUND");
+        return res.status(404).json({
+          error: "BENEFICIARY_NOT_FOUND",
+          phase: currentPhase,
+          message: "The candidate profile could not be found. Please contact admissions support.",
+          debug: {
+            phase: currentPhase,
+            decodedId,
+            resolvedBeneficiaryId: resolvedId,
+            tokenVersion: decodedTokenVersion,
+            errorMessage: `Beneficiary ID ${resolvedId} not found in database.`
+          }
+        });
+      }
+
+      // ----------------------------------------------------
+      // PHASE 5: PUBLIC_RESPONSE_TOKEN_LOOKUP
+      // ----------------------------------------------------
+      currentPhase = "PUBLIC_RESPONSE_TOKEN_LOOKUP";
+      if (!tokenRow && pool) {
+        try {
+          const tRes = await pool.query(
+            "SELECT * FROM public_response_tokens WHERE (token_hash = $1 OR token = $2) AND deleted_at IS NULL LIMIT 1",
+            [tokenHash, token]
+          );
+          if (tRes.rows.length > 0) {
+            tokenRow = tRes.rows[0];
+          }
+        } catch (dbErr: any) {
+          console.error("TOKEN_DEBUG: [PUBLIC_RESPONSE_TOKEN_LOOKUP] Query failed:", dbErr);
+        }
+      }
+
+      // ----------------------------------------------------
+      // PHASE 6: TOKEN_STATUS_CHECK
+      // ----------------------------------------------------
+      currentPhase = "TOKEN_STATUS_CHECK";
+      let statusFromDB = "ACTIVE";
+
+      if (tokenRow) {
+        statusFromDB = tokenRow.status || "ACTIVE";
+
+        if (tokenRow.revoked_at || statusFromDB === "REVOKED") {
+          console.error("TOKEN_DEBUG: TOKEN_REVOKED");
+          await AdmissionService.logTokenEvent(resolvedId, "OFFER_TOKEN_REVOKED", token, "Token marked as revoked");
+          return res.status(401).json({
+            error: "TOKEN_REVOKED",
+            phase: currentPhase,
+            message: "This portal link is no longer active due to administrative status change or rollback.",
+            debug: {
+              phase: currentPhase,
+              decodedId,
+              resolvedBeneficiaryId: resolvedId,
+              tokenVersion: decodedTokenVersion,
+              errorMessage: "Token is marked as REVOKED."
+            }
+          });
+        }
+
+        if (statusFromDB === "EXPIRED") {
+          console.error("TOKEN_DEBUG: TOKEN_EXPIRED");
+          await AdmissionService.logTokenEvent(resolvedId, "OFFER_TOKEN_EXPIRED", token, "Offer explicitly marked as expired");
+          return res.status(403).json({
+            error: "TOKEN_EXPIRED",
+            phase: currentPhase,
+            message: "This offer link has expired. Please contact your training provider for a new link.",
+            debug: {
+              phase: currentPhase,
+              decodedId,
+              resolvedBeneficiaryId: resolvedId,
+              tokenVersion: decodedTokenVersion,
+              errorMessage: "Token is marked as EXPIRED."
+            }
+          });
+        }
+      } else {
+        // Compatibility creation of ACTIVE row if not found but token decodes and resolves
+        if (pool) {
+          try {
+            const expiresAt = beneficiary.offerExpiresAt ? new Date(beneficiary.offerExpiresAt) : new Date(Date.now() + 10 * 24 * 3600 * 1000);
+            const tokenVerToInsert = decodedTokenVersion || 1;
+            await pool.query(
+              `INSERT INTO public_response_tokens (
+                 beneficiary_id, token, token_hash, status, expires_at, is_used, purpose, token_version, created_at, updated_at
+               ) VALUES ($1, $2, $3, \'ACTIVE\', $4, false, \'OFFER_ACCEPTANCE\', $5, NOW(), NOW())
+               ON CONFLICT (token) DO NOTHING`,
+              [beneficiary.id, token, tokenHash, expiresAt, tokenVerToInsert]
+            );
+            const tRes = await pool.query(
+              "SELECT * FROM public_response_tokens WHERE (token_hash = $1 OR token = $2) AND deleted_at IS NULL LIMIT 1",
+              [tokenHash, token]
+            );
+            if (tRes.rows.length > 0) {
+              tokenRow = tRes.rows[0];
+              statusFromDB = tokenRow.status || "ACTIVE";
+            }
+          } catch (compatErr: any) {
+            console.error("TOKEN_DEBUG: [TOKEN_STATUS_CHECK] compatibility row insertion failed:", compatErr);
+          }
+        }
+      }
+
+      // Check legacy token version if tokenRow is STILL not found (e.g. SQLite or pool missing)
+      const bTokenVersion = beneficiary.tokenVersion !== undefined && beneficiary.tokenVersion !== null ? beneficiary.tokenVersion : 1;
+      const isLegacy = !tokenRow;
+      if (isLegacy && bTokenVersion > (decodedTokenVersion || 1)) {
+        console.error("TOKEN_DEBUG: TOKEN_VERSION_MISMATCH");
+        await AdmissionService.logTokenEvent(beneficiary.id, "OFFER_TOKEN_REVOKED", token, `Candidate tokenVersion (${bTokenVersion}) > Token version (${decodedTokenVersion})`);
+        return res.status(401).json({
+          error: "TOKEN_REVOKED",
+          phase: currentPhase,
+          message: "We could not verify this link. Please contact your training provider.",
+          debug: {
+            phase: currentPhase,
+            decodedId,
+            resolvedBeneficiaryId: resolvedId,
+            tokenVersion: decodedTokenVersion,
+            errorMessage: `Candidate tokenVersion (${bTokenVersion}) is greater than Token version (${decodedTokenVersion}).`
+          }
+        });
+      }
+
+      // ----------------------------------------------------
+      // PHASE 7: ADMISSION_ROW_LOOKUP
+      // ----------------------------------------------------
+      currentPhase = "ADMISSION_ROW_LOOKUP";
+      if (!beneficiary.admissionRef) {
+        console.warn(`TOKEN_DEBUG: [ADMISSION_ROW_LOOKUP] admissionRef not found for beneficiary ${resolvedId}`);
+      }
+
+      // ----------------------------------------------------
+      // PHASE 8: FINAL_PORTAL_RESPONSE
+      // ----------------------------------------------------
+      currentPhase = "FINAL_PORTAL_RESPONSE";
+      const alreadySubmitted = Boolean(
+        (tokenRow && (tokenRow.is_used === true || statusFromDB === "SUBMITTED" || tokenRow.submitted_at)) ||
+        beneficiary.admissionStatus === "ACCEPTED" ||
+        beneficiary.admissionFormCompleted === true
+      );
+
+      if (alreadySubmitted) {
+        console.log("TOKEN_DEBUG: TOKEN_ALREADY_SUBMITTED");
+      }
+
+      // Update opened_at timestamps asynchronously/harmlessly
+      if (pool) {
+        pool.query("UPDATE public_response_tokens SET opened_at = COALESCE(opened_at, NOW()) WHERE token = $1 OR token_hash = $2", [token, tokenHash]).catch(() => {});
+        pool.query("UPDATE document_dispatches SET opened_at = COALESCE(opened_at, NOW()) WHERE secure_token = $1", [token]).catch(() => {});
+      }
+
+      await AdmissionService.logTokenEvent(beneficiary.id, "OFFER_LINK_OPENED", token, alreadySubmitted ? "Link opened (Already Submitted)" : "Link opened (Active Offer)");
+
       return res.status(200).json({
         valid: true,
+        alreadySubmitted,
         candidate: {
           id: beneficiary.id,
           firstName: beneficiary.firstName,
@@ -197,9 +431,22 @@ export class AdmissionController {
           acceptanceLetterUrl: beneficiary.acceptanceLetterUrl || ""
         }
       });
+
     } catch (err: any) {
-      console.error("[AdmissionController] validateToken failed:", err);
-      return res.status(500).json({ error: "Internal token decrypter processing failure." });
+      console.error(`TOKEN_DEBUG: [Phase: ${currentPhase}] Global handler caught exception:`, err);
+      const errMsg = err.message || String(err);
+      return res.status(500).json({
+        error: "SERVER_ERROR",
+        phase: currentPhase,
+        message: "We could not complete link verification due to a server error. Please retry or contact your training provider.",
+        debug: {
+          phase: currentPhase,
+          decodedId: decodedId || null,
+          resolvedBeneficiaryId: resolvedId || null,
+          tokenVersion: decodedTokenVersion || null,
+          errorMessage: errMsg
+        }
+      });
     }
   }
 
@@ -293,13 +540,14 @@ export class AdmissionController {
       const safeOrigin = (typeof origin === "string" && !isPreviewOrLocal(origin)) ? origin : undefined;
       const customDomain = safeOrigin || buildPublicUrl("", req);
 
-      const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
+      const resolvedId = await AdmissionController.resolveBeneficiaryIdResiliently(beneficiaryId);
+      const beneficiary = await DbRepo.getBeneficiaryById(resolvedId);
       if (!beneficiary) {
         return res.status(404).json({ error: "Candidate matching the secure token session could not be located." });
       }
 
-      const secureToken = TokenService.generateToken(beneficiaryId, beneficiary.tokenVersion || 1);
-      const secureLink = `${customDomain}/?token=${secureToken}`;
+      const tokenRes = await AdmissionService.getOrCreateActiveOfferToken(resolvedId, customDomain);
+      const secureLink = tokenRes.secureLink;
 
       return res.status(200).json({ secureLink });
     } catch (err: any) {
@@ -341,6 +589,19 @@ export class AdmissionController {
         stateId,
         tspId
       });
+
+      // Clear out FED-level multi-organization aggregates for localized users
+      if (user && !isFederal && (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP"))) {
+        if (stats.byTsp) {
+          const val = stats.byTsp[tspId || ""] || stats.byTsp[Object.keys(stats.byTsp)[0]] || stats.summary.total || 0;
+          stats.byTsp = { [tspId || "assigned_tsp_center"]: val };
+        }
+        if (stats.byState) {
+          const val = stats.byState[stateId || ""] || stats.byState[Object.keys(stats.byState)[0]] || stats.summary.total || 0;
+          stats.byState = { [stateId || "assigned_state"]: val };
+        }
+      }
+
       return res.status(200).json(stats);
     } catch (err: any) {
       console.error("[AdmissionController] getAdmissionsStats failed:", err);
@@ -373,6 +634,10 @@ export class AdmissionController {
       const FED_ROLES = ["FED", "FED_SUPER_ADMIN", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "FEDERAL_ME_OFFICER"];
       const TSP_ROLES = ["TSP", "TSP_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"];
       const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+
+      let filterTsp = tsp;
+      let filterState = state;
+
       if (user && !isFederal) {
         tenantId = user.tenantId;
         stateId = user.stateId;
@@ -383,6 +648,10 @@ export class AdmissionController {
           if (!tspId) tspId = "00000000-0000-0000-0000-000000000001";
           if (!stateId) stateId = "state_imo_id_default";
           if (!tenantId) tenantId = "tsp_tenant_default";
+
+          // Force narrow scope filter to TSP user assigned center boundary
+          filterTsp = tspId;
+          filterState = "all";
         }
       }
 
@@ -392,8 +661,8 @@ export class AdmissionController {
         search,
         status,
         sector,
-        tsp,
-        state,
+        tsp: filterTsp,
+        state: filterState,
         tenantId,
         stateId,
         tspId,
@@ -437,7 +706,8 @@ export class AdmissionController {
         await Promise.all(
           chunk.map(async (id) => {
             try {
-              const b = await DbRepo.getBeneficiaryById(id);
+              const resolvedId = await AdmissionController.resolveBeneficiaryIdResiliently(id);
+              const b = await DbRepo.getBeneficiaryById(resolvedId);
               if (!b) {
                 throw new Error("Candidate not found inside registry.");
               }
@@ -474,7 +744,7 @@ export class AdmissionController {
 
               await DbRepo.upsertBeneficiary(b);
               await DbRepo.saveWorkflowHistory({
-                beneficiaryId: id,
+                beneficiaryId: resolvedId,
                 oldStatus: oldStatusStr,
                 newStatus: statusToSave,
                 changedBy: operatorUser,
@@ -489,7 +759,7 @@ export class AdmissionController {
                 username: operatorUser,
                 role: (req as any).user?.role || "System Admin",
                 action: "ADMISSIONS_WORKFLOW_RECONCILE",
-                details: `Transited candidate '${id}' from '${oldStatusStr}' to '${statusToSave}'. Remarks: ${reason || "none"}`
+                details: `Transited candidate '${resolvedId}' from '${oldStatusStr}' to '${statusToSave}'. Remarks: ${reason || "none"}`
               });
 
               results.successCount++;
@@ -520,7 +790,8 @@ export class AdmissionController {
   static async getAdmissionLetterData(req: Request, res: Response) {
     try {
       const { id } = req.params;
-      const b = await DbRepo.getBeneficiaryById(id);
+      const resolvedId = await AdmissionController.resolveBeneficiaryIdResiliently(id);
+      const b = await DbRepo.getBeneficiaryById(resolvedId);
       if (!b) {
         return res.status(404).json({ error: "Candidate profile not found in registry." });
       }
@@ -560,7 +831,7 @@ export class AdmissionController {
         username: operatorUser,
         role: (req as any).user?.role || "System Admin",
         action: "ADMISSIONS_LETTER_VIEW",
-        details: `Dispatched structured letters preview dataset for candidate ID '${id}' (${candidateName})`
+        details: `Dispatched structured letters preview dataset for candidate ID '${resolvedId}' (${candidateName})`
       });
 
       return res.status(200).json(payload);
@@ -630,12 +901,13 @@ export class AdmissionController {
       const operatorUser = (req as any).user?.email || "SYSTEM";
       const user = (req as any).user;
 
+      const resolvedId = await AdmissionController.resolveBeneficiaryIdResiliently(id);
       // Trainee Ownership Gate Check
-      if (user && user.role === "TRAINEE" && user.beneficiaryId !== id) {
+      if (user && user.role === "TRAINEE" && user.beneficiaryId !== resolvedId) {
         return res.status(403).json({ error: "Access Denied." });
       }
 
-      const candidate = await DbRepo.getBeneficiaryById(id);
+      const candidate = await DbRepo.getBeneficiaryById(resolvedId);
       if (!candidate) {
         return res.status(404).json({ error: "Candidate admissions record was not located." });
       }
@@ -646,7 +918,7 @@ export class AdmissionController {
       }
 
       // Generate the official document buffer via DocumentService
-      const { document } = await DocumentService.generateDocumentWithBuffer(id, DocumentType.ADMISSION_FORM, operatorUser, true);
+      const { document } = await DocumentService.generateDocumentWithBuffer(resolvedId, DocumentType.ADMISSION_FORM, operatorUser, true);
 
       // Mutate admissions fields for status progression: GENERATED (not yet completed/verified)
       candidate.admissionFormGeneratedAt = new Date().toISOString();
@@ -658,7 +930,7 @@ export class AdmissionController {
 
       // Log Event in workflow history (FORM_GENERATED)
       await DbRepo.saveWorkflowHistory({
-        beneficiaryId: id,
+        beneficiaryId: resolvedId,
         oldStatus: "NOT_GENERATED",
         newStatus: "GENERATED",
         changedBy: operatorUser,
@@ -673,7 +945,7 @@ export class AdmissionController {
         username: operatorUser,
         role: (req as any).user?.role || "SYSTEM",
         action: "ADMISSIONS_FORM_GENERATED",
-        details: `Generated official registry admission form for beneficiary '${id}'. Form URL: ${document.pdfUrl}`
+        details: `Generated official registry admission form for beneficiary '${resolvedId}'. Form URL: ${document.pdfUrl}`
       });
 
       return res.status(200).json({
@@ -696,12 +968,13 @@ export class AdmissionController {
       const { id } = req.params;
       const user = (req as any).user;
 
+      const resolvedId = await AdmissionController.resolveBeneficiaryIdResiliently(id);
       // Trainee Ownership Gate Check
-      if (user && user.role === "TRAINEE" && user.beneficiaryId !== id) {
+      if (user && user.role === "TRAINEE" && user.beneficiaryId !== resolvedId) {
         return res.status(403).json({ error: "Access Denied." });
       }
 
-      const candidate = await DbRepo.getBeneficiaryById(id);
+      const candidate = await DbRepo.getBeneficiaryById(resolvedId);
       if (!candidate) {
         return res.status(404).json({ error: "Candidate admissions record not found." });
       }
@@ -723,7 +996,7 @@ export class AdmissionController {
       if (statusUpdated) {
         await DbRepo.upsertBeneficiary(candidate);
         await DbRepo.saveWorkflowHistory({
-          beneficiaryId: id,
+          beneficiaryId: resolvedId,
           oldStatus,
           newStatus: candidate.admissionFormStatus,
           changedBy: (req as any).user?.email || "TRAINEE",
@@ -752,12 +1025,13 @@ export class AdmissionController {
       const operatorUser = (req as any).user?.email || "SYSTEM";
       const user = (req as any).user;
 
+      const resolvedId = await AdmissionController.resolveBeneficiaryIdResiliently(id);
       // Trainee Ownership Gate Check
-      if (user && user.role === "TRAINEE" && user.beneficiaryId !== id) {
+      if (user && user.role === "TRAINEE" && user.beneficiaryId !== resolvedId) {
         return res.status(403).json({ error: "Access Denied." });
       }
 
-      const candidate = await DbRepo.getBeneficiaryById(id);
+      const candidate = await DbRepo.getBeneficiaryById(resolvedId);
       if (!candidate) {
         return res.status(404).json({ error: "Candidate admissions record was not located." });
       }
@@ -799,7 +1073,7 @@ export class AdmissionController {
       await DbRepo.upsertBeneficiary(candidate);
 
       await DbRepo.saveWorkflowHistory({
-        beneficiaryId: id,
+        beneficiaryId: resolvedId,
         oldStatus,
         newStatus: "IN_PROGRESS",
         changedBy: operatorUser,
@@ -828,12 +1102,13 @@ export class AdmissionController {
       const operatorUser = (req as any).user?.email || "TRAINEE";
       const user = (req as any).user;
 
+      const resolvedId = await AdmissionController.resolveBeneficiaryIdResiliently(id);
       // Trainee Ownership Gate Check
-      if (user && user.role === "TRAINEE" && user.beneficiaryId !== id) {
+      if (user && user.role === "TRAINEE" && user.beneficiaryId !== resolvedId) {
         return res.status(403).json({ error: "Access Denied." });
       }
 
-      const candidate = await DbRepo.getBeneficiaryById(id);
+      const candidate = await DbRepo.getBeneficiaryById(resolvedId);
       if (!candidate) {
         return res.status(404).json({ error: "Candidate admissions record was not located." });
       }
@@ -888,7 +1163,7 @@ export class AdmissionController {
 
       // Log Event in workflow history (FORM_CONFIRMED)
       await DbRepo.saveWorkflowHistory({
-        beneficiaryId: id,
+        beneficiaryId: resolvedId,
         oldStatus,
         newStatus: "CONFIRMED",
         changedBy: operatorUser,
@@ -905,7 +1180,7 @@ export class AdmissionController {
 
       // Log Event in workflow history (FORM_LOCKED)
       await DbRepo.saveWorkflowHistory({
-        beneficiaryId: id,
+        beneficiaryId: resolvedId,
         oldStatus: "CONFIRMED",
         newStatus: "LOCKED",
         changedBy: "SYSTEM",
@@ -920,7 +1195,7 @@ export class AdmissionController {
         username: operatorUser,
         role: (req as any).user?.role || "SYSTEM",
         action: "ADMISSIONS_FORM_CONFIRMED",
-        details: `Trainee form parameters officially verified and locked for beneficiary '${id}'`
+        details: `Trainee form parameters officially verified and locked for beneficiary '${resolvedId}'`
       });
 
       return res.status(200).json({
@@ -943,12 +1218,13 @@ export class AdmissionController {
       const { id } = req.params;
       const user = (req as any).user;
 
+      const resolvedId = await AdmissionController.resolveBeneficiaryIdResiliently(id);
       // Trainee Ownership Gate Check
-      if (user && user.role === "TRAINEE" && user.beneficiaryId !== id) {
+      if (user && user.role === "TRAINEE" && user.beneficiaryId !== resolvedId) {
         return res.status(403).send("Access Denied.");
       }
 
-      const candidate = await DbRepo.getBeneficiaryById(id);
+      const candidate = await DbRepo.getBeneficiaryById(resolvedId);
       if (!candidate) {
         return res.status(404).send("Candidate not found.");
       }
@@ -973,7 +1249,7 @@ export class AdmissionController {
       if (statusUpdated) {
         await DbRepo.upsertBeneficiary(candidate);
         await DbRepo.saveWorkflowHistory({
-          beneficiaryId: id,
+          beneficiaryId: resolvedId,
           oldStatus,
           newStatus: candidate.admissionFormStatus,
           changedBy: (req as any).user?.email || "TRAINEE",
@@ -1034,7 +1310,8 @@ export class AdmissionController {
       const { id } = req.params;
       const operatorUser = (req as any).user?.email || "SYSTEM";
 
-      const candidate = await DbRepo.getBeneficiaryById(id);
+      const resolvedId = await AdmissionController.resolveBeneficiaryIdResiliently(id);
+      const candidate = await DbRepo.getBeneficiaryById(resolvedId);
       if (!candidate) {
         return res.status(404).json({ error: "Candidate admissions record was not located." });
       }
@@ -1047,12 +1324,12 @@ export class AdmissionController {
       candidate.admissionFormStatus = "IN_PROGRESS";
       candidate.admissionFormCompleted = false;
 
-      // Phase 1 / Phase 4 - Increment token and workflow versions on unlock form
-      candidate.tokenVersion = oldTokenVersion + 1;
+      // Preserve tokenVersion so original student onboarding email links remain valid!
+      candidate.tokenVersion = oldTokenVersion;
       candidate.workflowVersion = oldWorkflowVersion + 1;
 
       // Phase 3 - Archive any active forms or letters
-      await DbRepo.archiveActiveDocuments(id);
+      await DbRepo.archiveActiveDocuments(resolvedId);
 
       await DbRepo.upsertBeneficiary(candidate);
 
@@ -1060,7 +1337,7 @@ export class AdmissionController {
       const ipStr = Array.isArray(ipAddress) ? ipAddress[0] : ipAddress;
 
       await DbRepo.saveWorkflowHistory({
-        beneficiaryId: id,
+        beneficiaryId: resolvedId,
         oldStatus,
         newStatus: "IN_PROGRESS",
         changedBy: operatorUser,
@@ -1082,7 +1359,7 @@ export class AdmissionController {
         action: "ADMISSIONS_FORM_UNLOCKED",
         ipAddress: ipStr,
         details: [
-          `Unlocked official registration form for beneficiary '${id}'`,
+          `Unlocked official registration form for beneficiary '${resolvedId}'`,
           `Old Status: ${oldStatus}`,
           `New Status: IN_PROGRESS`,
           `Token Version: ${oldTokenVersion} -> ${candidate.tokenVersion}`,
@@ -1110,12 +1387,13 @@ export class AdmissionController {
       const { id } = req.params;
       const user = (req as any).user;
 
+      const resolvedId = await AdmissionController.resolveBeneficiaryIdResiliently(id);
       // Trainee Ownership Gate Check
-      if (user && user.role === "TRAINEE" && user.beneficiaryId !== id) {
+      if (user && user.role === "TRAINEE" && user.beneficiaryId !== resolvedId) {
         return res.status(403).send("Access Denied.");
       }
 
-      const candidate = await DbRepo.getBeneficiaryById(id);
+      const candidate = await DbRepo.getBeneficiaryById(resolvedId);
       if (!candidate) {
         return res.status(404).send("Candidate not found.");
       }
@@ -1445,6 +1723,306 @@ export class AdmissionController {
     } catch (err: any) {
       console.error("[AdmissionController] regenerateReference failed:", err);
       return res.status(500).json({ error: "Failed to regenerate reference: " + err.message });
+    }
+  }
+
+  /**
+   * Controller to truly regenerate the offer letter and acceptance form package.
+   * Creates a fresh token version, generates updated PDFs, uploads to CDN, updates version histories.
+   * POST /api/admissions/regenerate-offer-package
+   */
+  static async regenerateOfferPackage(req: Request, res: Response) {
+    try {
+      const { beneficiaryId, origin } = req.body;
+      if (!beneficiaryId || typeof beneficiaryId !== "string") {
+        return res.status(400).json({ error: "Missing required parameter: beneficiaryId" });
+      }
+
+      const resolvedId = await AdmissionController.resolveBeneficiaryIdResiliently(beneficiaryId);
+      const beneficiary = await DbRepo.getBeneficiaryById(resolvedId);
+      if (!beneficiary) {
+        return res.status(404).json({ error: "Candidate admissions record was not located in registry." });
+      }
+
+      // Automatically construct origin domain if not provided, sanitizing out any preview environments
+      const isPreviewOrLocal = (url: any): boolean => {
+        if (!url || typeof url !== "string") return true;
+        const l = url.toLowerCase();
+        return (
+          l.includes("aistudio") ||
+          l.includes("google") ||
+          l.includes("run.app") ||
+          l.includes("localhost") ||
+          l.includes("127.0.0.1") ||
+          l.includes("sandbox") ||
+          l.includes("ais-dev") ||
+          l.includes("ais-pre") ||
+          l.includes("my_app_url")
+        );
+      };
+
+      const safeOrigin = (typeof origin === "string" && !isPreviewOrLocal(origin)) ? origin : undefined;
+      const customDomain = safeOrigin || buildPublicUrl("", req);
+
+      // Do not increment token_version when regenerating offer (per Part 3 rules)
+      const pool = getPgPool();
+      const currentTokenVerNum = beneficiary.tokenVersion || 1;
+      
+      if (pool) {
+        await pool.query(
+          "UPDATE beneficiaries SET token_version = $1, updated_at = NOW() WHERE id = $2",
+          [currentTokenVerNum, resolvedId]
+        );
+      } else {
+        beneficiary.tokenVersion = currentTokenVerNum;
+        await DbRepo.upsertBeneficiary(beneficiary);
+      }
+
+      // Create a fresh ACTIVE token
+      const secureToken = await AdmissionService.createPublicResponseToken(resolvedId, "OFFER_ACCEPTANCE");
+      const secureLink = `${customDomain}/?token=${secureToken}`;
+      const tokenExpiresAt = new Date(Date.now() + 10 * 24 * 3600 * 1000).toISOString();
+
+      // Retrieve latest sequential versions
+      const latestVersion = await DbRepo.getLatestDocumentVersion(resolvedId, DocumentType.ADMISSION_LETTER);
+      const nextVersionNum = latestVersion + 1;
+
+      const latestAccVersion = await DbRepo.getLatestDocumentVersion(resolvedId, DocumentType.ACCEPTANCE_LETTER);
+      const nextAccLetterVerNum = latestAccVersion + 1;
+
+      // Compile unique validation codes
+      const prefixAdm = "TVET-ADM";
+      const hexAdm = Math.floor(Math.random() * 16777215).toString(16).toUpperCase().padStart(6, "0");
+      const verificationCodeAdm = `${prefixAdm}-${hexAdm}`;
+
+      const prefixAcc = "TVET-ACC";
+      const hexAcc = Math.floor(Math.random() * 16777215).toString(16).toUpperCase().padStart(6, "0");
+      const verificationCodeAcc = `${prefixAcc}-${hexAcc}`;
+
+      // Refresh beneficiary fields
+      beneficiary.tokenVersion = currentTokenVerNum;
+      beneficiary.admissionLetterGeneratedAt = new Date().toISOString();
+
+      const metaAdm = {
+        watermarkText: "SECURED REGISTRY",
+        watermarkEnabled: false,
+        qrDataUrl: "",
+        verificationCode: verificationCodeAdm,
+      };
+      
+      const metaAcc = {
+        watermarkText: "SECURED REGISTRY",
+        watermarkEnabled: false,
+        qrDataUrl: "",
+        verificationCode: verificationCodeAcc,
+      };
+
+      // Generate the fresh PDFs in memory
+      const [admissionPdfBuffer, acceptancePdfBuffer] = await Promise.all([
+        PdfService.generateAdmissionLetterPdf(beneficiary, metaAdm) as Promise<Buffer>,
+        PdfService.generateAcceptanceLetterPdf(beneficiary, metaAcc) as Promise<Buffer>
+      ]);
+
+      const publicIdAdm = `beneficiary_${resolvedId}_admission_letter_v${nextVersionNum}`;
+      const publicIdAcc = `beneficiary_${resolvedId}_acceptance_letter_v${nextAccLetterVerNum}`;
+      
+      const admissionPdfUrl = `https://res.cloudinary.com/ideas-tvet/raw/upload/${publicIdAdm}.pdf`;
+      const acceptancePdfUrl = `https://res.cloudinary.com/ideas-tvet/raw/upload/${publicIdAcc}.pdf`;
+
+      // Upload synchronously to Cloudinary so links work immediately on refresh
+      await Promise.all([
+        CloudinaryService.uploadDocument(admissionPdfBuffer, publicIdAdm),
+        CloudinaryService.uploadDocument(acceptancePdfBuffer, publicIdAcc)
+      ]).catch(e => {
+        console.error("[AdmissionController.regenerateOfferPackage] Cloudinary Upload warning:", e);
+      });
+
+      // Save documents to DB ledger
+      const admissionDocId = `gdoc_${Date.now()}_adm`;
+      const acceptanceDocId = `gdoc_${Date.now()}_acc`;
+      const operatorUsername = (req as any).user?.username || "ADMIN_OPERATOR";
+
+      const newDocAdm = {
+        id: admissionDocId,
+        beneficiaryId: resolvedId,
+        documentType: DocumentType.ADMISSION_LETTER,
+        version: nextVersionNum,
+        pdfUrl: admissionPdfUrl,
+        generatedBy: operatorUsername,
+        createdAt: new Date().toISOString(),
+        verificationCode: verificationCodeAdm,
+        verificationStatus: "UNVERIFIED",
+        verificationDate: "",
+        emailDeliveryStatus: "NOT_SENT",
+      };
+
+      const newDocAcc = {
+        id: acceptanceDocId,
+        beneficiaryId: resolvedId,
+        documentType: DocumentType.ACCEPTANCE_LETTER,
+        version: nextAccLetterVerNum,
+        pdfUrl: acceptancePdfUrl,
+        generatedBy: operatorUsername,
+        createdAt: new Date().toISOString(),
+        verificationCode: verificationCodeAcc,
+        verificationStatus: "UNVERIFIED",
+        verificationDate: "",
+        emailDeliveryStatus: "NOT_SENT",
+      };
+
+      await Promise.all([
+        DbRepo.saveGeneratedDocument(newDocAdm),
+        DbRepo.saveGeneratedDocument(newDocAcc)
+      ]);
+
+      // Update beneficiary metadata
+      beneficiary.admissionLetterUrl = admissionPdfUrl;
+      beneficiary.acceptanceLetterUrl = acceptancePdfUrl;
+
+      const fName = (beneficiary.firstName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const lName = (beneficiary.lastName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const namePart = fName && lName ? `${fName}_${lName}` : `${(beneficiary.id || "TRAINEE").replace(/[^A-Z0-9-]/g, "")}`;
+
+      const currentVersions = beneficiary.admissionLetterVersions || [];
+      beneficiary.admissionLetterVersions = [
+        ...currentVersions,
+        {
+          version: nextVersionNum,
+          url: admissionPdfUrl,
+          name: `${namePart}_ADMISSION_LETTER_v${nextVersionNum}.pdf`,
+          generatedAt: new Date().toISOString()
+        }
+      ];
+
+      const currentDocs = beneficiary.documentsList || [];
+      beneficiary.documentsList = [
+        ...currentDocs,
+        {
+          id: admissionDocId,
+          name: `${namePart}_ADMISSION_LETTER.pdf`,
+          type: "admission",
+          url: admissionPdfUrl,
+          uploadedAt: new Date().toISOString(),
+          version: nextVersionNum
+        },
+        {
+          id: acceptanceDocId,
+          name: `${namePart}_ACCEPTANCE_LETTER.pdf`,
+          type: "acceptance",
+          url: acceptancePdfUrl,
+          uploadedAt: new Date().toISOString(),
+          version: nextAccLetterVerNum
+        }
+      ];
+
+      const originalAdmissionStatus = beneficiary.admissionStatus || "Pending";
+      beneficiary.admissionStatus = "Admission Generated";
+      beneficiary.updatedAt = new Date().toISOString();
+
+      await DbRepo.upsertBeneficiary(beneficiary);
+
+      // Workflow & audit records
+      await DbRepo.saveWorkflowHistory({
+        beneficiaryId: resolvedId,
+        oldStatus: originalAdmissionStatus,
+        newStatus: "Admission Generated",
+        changedBy: operatorUsername,
+        changedAt: new Date().toISOString(),
+        remarks: "Regenerated official offer letters with updated configurations."
+      }).catch(() => {});
+
+      await DbRepo.saveAuditLog({
+        id: "log_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+        timestamp: new Date().toISOString(),
+        username: operatorUsername,
+        role: "Operator",
+        action: "Offer Package Regenerated",
+        details: `Regenerated and compiled official offer letter package for candidate: ${beneficiary.firstName} ${beneficiary.lastName}.`
+      }).catch(() => {});
+
+      const updatedBeneficiary = await DbRepo.getBeneficiaryById(resolvedId);
+
+      return res.status(200).json({
+        success: true,
+        secureLink,
+        tokenExpiresAt,
+        admissionDocumentVersion: nextVersionNum,
+        acceptanceDocumentVersion: nextAccLetterVerNum,
+        admissionPdfUrl,
+        acceptancePdfUrl,
+        beneficiary: updatedBeneficiary
+      });
+    } catch (err: any) {
+      console.error("[AdmissionController.regenerateOfferPackage] Critical error:", err);
+      return res.status(500).json({ error: err.message || "Failed to regenerate offer package." });
+    }
+  }
+
+  /**
+   * Diagnostic Endpoint for FED-level & SUPER_ADMIN operations auditing
+   * GET /api/admin/debug/offer-token?token=...
+   */
+  static async debugOfferToken(req: Request, res: Response) {
+    try {
+      const user = (req as any).user;
+      const FED_ROLES = ["FED", "FED_SUPER_ADMIN", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "FEDERAL_ME_OFFICER"];
+      const isFed = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role) || (typeof user.role === "string" && user.role.startsWith("FED")));
+      
+      if (!isFed) {
+        return res.status(403).json({ error: "Forbidden: This diagnostic endpoint is restricted as an exclusive FED-level privilege." });
+      }
+
+      const token = req.query.token as string;
+      if (!token) {
+        return res.status(400).json({ error: "Missing required query parameter: token" });
+      }
+
+      const tokenHash = TokenService.hashToken(token);
+      const pool = getPgPool();
+      let tokenRow: any = null;
+      let dispatchRow: any = null;
+
+      if (pool) {
+        const tRes = await pool.query("SELECT * FROM public_response_tokens WHERE token_hash = $1 OR token = $2 LIMIT 1", [tokenHash, token]);
+        if (tRes.rows.length > 0) {
+          tokenRow = tRes.rows[0];
+        }
+
+        const dRes = await pool.query("SELECT * FROM document_dispatches WHERE secure_token = $1 LIMIT 1", [token]);
+        if (dRes.rows.length > 0) {
+          dispatchRow = dRes.rows[0];
+        }
+      }
+
+      const decoded = TokenService.decodeToken(token) as any;
+      const secureDiagnosis: any = {
+        existsInPublicResponseTokens: !!tokenRow,
+        existsInDocumentDispatches: !!dispatchRow,
+        tokenDecodes: !!decoded,
+        tokenDecodedExpiry: decoded ? new Date(decoded.expires).toISOString() : null,
+        decodedBeneficiaryIdSafe: decoded ? `${decoded.id.substring(0, 8)}-xxxx` : null,
+        decodedTokenVersion: decoded ? decoded.tokenVersion || 1 : null,
+        rowStatus: tokenRow ? tokenRow.status || "ACTIVE" : null,
+        rowExpiresAt: tokenRow && tokenRow.expires_at ? new Date(tokenRow.expires_at).toISOString() : null,
+        rowOpenedAt: tokenRow && tokenRow.opened_at ? new Date(tokenRow.opened_at).toISOString() : null,
+        rowUsedAt: tokenRow && tokenRow.used_at ? new Date(tokenRow.used_at).toISOString() : null,
+        rowBeneficiaryIdSafe: tokenRow ? `${tokenRow.beneficiary_id.substring(0, 8)}-xxxx` : null,
+        rowTokenVersion: tokenRow ? tokenRow.token_version || 1 : null,
+      };
+
+      if (decoded && tokenRow) {
+        secureDiagnosis.beneficiaryIdMatch = decoded.id === tokenRow.beneficiary_id;
+        const beneficiary = await DbRepo.getBeneficiaryById(tokenRow.beneficiary_id);
+        if (beneficiary) {
+          secureDiagnosis.beneficiaryCurrentTokenVersion = beneficiary.tokenVersion || 1;
+          secureDiagnosis.versionMismatch = (decoded.tokenVersion || 1) < (beneficiary.tokenVersion || 1);
+        }
+      }
+
+      return res.status(200).json({ success: true, diagnosis: secureDiagnosis });
+    } catch (err: any) {
+      console.error("[AdmissionController.debugOfferToken] Diagnostic error:", err);
+      return res.status(500).json({ error: "Internal diagnostic processing failure: " + err.message });
     }
   }
 }

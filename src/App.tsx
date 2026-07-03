@@ -21,15 +21,46 @@ import { SecureDocumentPortal } from "./components/SecureDocumentPortal";
 import { CertificateVerification } from "./components/CertificateVerification";
 import { SkeletonLoader } from "./components/SkeletonLoader";
 import BulkCommunications from "./components/BulkCommunications";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
-const ReportsWorkspace = React.lazy(() => import("./components/ReportsWorkspace").then(module => ({ default: module.ReportsWorkspace })));
-const AuditTrail = React.lazy(() => import("./components/AuditTrail").then(module => ({ default: module.AuditTrail })));
-const SettingsWorkspace = React.lazy(() => import("./components/SettingsWorkspace").then(module => ({ default: module.SettingsWorkspace })));
-const IAMWorkspace = React.lazy(() => import("./components/IAMWorkspace").then(module => ({ default: module.IAMWorkspace })));
-const EligibilityCenter = React.lazy(() => import("./components/EligibilityCenter").then(module => ({ default: module.EligibilityCenter })));
-const CertificationCenter = React.lazy(() => import("./components/CertificationCenter").then(module => ({ default: module.CertificationCenter })));
-const TraineeOperationsView = React.lazy(() => import("./components/TraineeOperations").then(module => ({ default: module.TraineeOperationsView })));
-const ToolkitsAssetsCenter = React.lazy(() => import("./components/ToolkitsAssetsCenter").then(module => ({ default: module.ToolkitsAssetsCenter })));
+function lazyWithRetry<T extends { [key: string]: any }>(
+  importFunc: () => Promise<T>,
+  exportName: keyof T
+) {
+  return React.lazy(async () => {
+    let attempts = 0;
+    while (attempts < 3) {
+      try {
+        const module = await importFunc();
+        sessionStorage.removeItem("lazy_reload_attempted");
+        return { default: module[exportName] };
+      } catch (error) {
+        attempts++;
+        if (attempts >= 3) {
+          console.error(`Failed to dynamically import module after 3 attempts:`, error);
+          const hasReloaded = sessionStorage.getItem("lazy_reload_attempted");
+          if (!hasReloaded) {
+            sessionStorage.setItem("lazy_reload_attempted", "true");
+            window.location.reload();
+            return new Promise(() => {});
+          }
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 800 * attempts));
+      }
+    }
+    throw new Error("Failed to load component");
+  });
+}
+
+const ReportsWorkspace = lazyWithRetry(() => import("./components/ReportsWorkspace"), "ReportsWorkspace");
+const AuditTrail = lazyWithRetry(() => import("./components/AuditTrail"), "AuditTrail");
+const SettingsWorkspace = lazyWithRetry(() => import("./components/SettingsWorkspace"), "SettingsWorkspace");
+const IAMWorkspace = lazyWithRetry(() => import("./components/IAMWorkspace"), "IAMWorkspace");
+const EligibilityCenter = lazyWithRetry(() => import("./components/EligibilityCenter"), "EligibilityCenter");
+const CertificationCenter = lazyWithRetry(() => import("./components/CertificationCenter"), "CertificationCenter");
+const TraineeOperationsView = lazyWithRetry(() => import("./components/TraineeOperations"), "TraineeOperationsView");
+const ToolkitsAssetsCenter = lazyWithRetry(() => import("./components/ToolkitsAssetsCenter"), "ToolkitsAssetsCenter");
 import { TrainingOutcomes } from "./components/TrainingOutcomes";
 import ImpactEvidence from "./components/ImpactEvidence";
 import { ExecutiveMAndECenter } from "./components/ExecutiveMAndECenter";
@@ -81,7 +112,7 @@ export default function App() {
       return null;
     }
   });
-  const [activeTab, setActiveTab ] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility" | "trainee-operations" | "certification" | "outcomes" | "evidence" | "toolkits" | "executive-m-and-e" | "quality-accreditation" | "communications" | "locations" | "tsp-profile" | "organizations" | "system-status" | "restoration-center" | "email-audit" | "eligible-beneficiaries" | "attendance-center">("dashboard");
+  const [activeTab, setActiveTab ] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility" | "trainee-operations" | "certification" | "outcomes" | "evidence" | "toolkits" | "executive-m-and-e" | "quality-accreditation" | "communications" | "locations" | "tsp-profile" | "organizations" | "system-status" | "restoration-center" | "email-audit" | "eligible-beneficiaries" | "attendance-center" | "financials-roi">("dashboard");
   const [admissionsSubTab, setAdmissionsSubTab] = useState<"dashboard" | "letters" | "forms" | "acceptance" | "dispatches">("dashboard");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [registryViewMode, setRegistryViewMode] = useState<"list" | "details" | "create">("list");
@@ -932,7 +963,7 @@ export default function App() {
     } else if (path === "/federal/internship" || path === "federal/internship") {
       fedChild = <InternshipPage />;
     } else if (path === "/federal/employment" || path === "federal/employment") {
-      fedChild = <TrainingOutcomes session={session} toast={showToast} />;
+      fedChild = <TrainingOutcomes session={session} toast={{ success: (m) => showToast(m, "success"), error: (m) => showToast(m, "error") }} />;
     } else if (path === "/federal/documents" || path === "federal/documents") {
       fedChild = <DocumentsCenter />;
     } else if (path === "/federal/communications" || path === "federal/communications") {
@@ -997,7 +1028,9 @@ export default function App() {
           session={session}
           handleLogout={handleLogout}
         >
-          {fedChild}
+          <ErrorBoundary fallbackLabel="Failed to load Federal workspace">
+            {fedChild}
+          </ErrorBoundary>
         </FederalLayout>
       </LocationProvider>
     );
@@ -1042,7 +1075,9 @@ export default function App() {
           session={session}
           handleLogout={handleLogout}
         >
-          {staChild}
+          <ErrorBoundary fallbackLabel="Failed to load State workspace">
+            {staChild}
+          </ErrorBoundary>
         </StateLayout>
       </LocationProvider>
     );
@@ -1162,8 +1197,8 @@ export default function App() {
 
         {/* Content scroll block container */}
         <main className="flex-grow p-6 sm:p-8">
-          
-          {activeTab === "dashboard" && (
+          <ErrorBoundary fallbackLabel="Failed to load TSP workspace">
+            {activeTab === "dashboard" && (
             <Dashboard 
               beneficiaries={beneficiaries} 
               session={session}
@@ -1240,7 +1275,7 @@ export default function App() {
           {activeTab === "outcomes" && (
             <TrainingOutcomes 
               session={session} 
-              toast={showToast} 
+              toast={{ success: (m) => showToast(m, "success"), error: (m) => showToast(m, "error") }} 
             />
           )}
 
@@ -1413,7 +1448,7 @@ export default function App() {
               <SettingsWorkspace session={session} />
             </React.Suspense>
           )}
-
+          </ErrorBoundary>
         </main>
       </div>
 

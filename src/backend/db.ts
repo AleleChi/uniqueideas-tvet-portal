@@ -190,6 +190,7 @@ export function getPgPool(): pg.Pool | null {
       connectionTimeoutMillis: 20000, // Increased to 20 seconds to survive serverless/Neon database coldstarts
       max: 15, // Keep connection count reasonable
       idleTimeoutMillis: 30000, // Close idle connections after 30 seconds
+      keepAlive: true, // Prevent intermediate firewalls/proxies from timing out idle connections
     });
     isPgActive = true;
     
@@ -260,6 +261,11 @@ export async function executeQuery(
 
 export async function assertTenantContext(options?: { systemContext?: boolean }) {
   if (options?.systemContext === true) {
+    return;
+  }
+  const store = requestStorage.getStore();
+  if (!store || !store.dbClient) {
+    // Query is running in a background job, timer, or post-response async queue outside active tenant middleware
     return;
   }
   const res = await executeQuery(`
@@ -498,6 +504,8 @@ const SCHEMA_DDL = `
     acceptance_letter_checked_by VARCHAR(255),
     acceptance_letter_checked_at TIMESTAMP WITH TIME ZONE,
     acceptance_letter_remarks TEXT,
+    offer_sent_at TIMESTAMP WITH TIME ZONE,
+    offer_expires_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP WITH TIME ZONE
@@ -625,8 +633,18 @@ const SCHEMA_DDL = `
     id SERIAL PRIMARY KEY,
     beneficiary_id VARCHAR(50) REFERENCES beneficiaries(id) ON DELETE CASCADE,
     token TEXT UNIQUE NOT NULL,
+    token_hash TEXT,
+    status VARCHAR(50) DEFAULT 'ACTIVE',
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
     is_used BOOLEAN DEFAULT false,
+    purpose VARCHAR(50) DEFAULT 'OFFER_ACCEPTANCE',
+    used_at TIMESTAMP WITH TIME ZONE NULL,
+    opened_at TIMESTAMP WITH TIME ZONE NULL,
+    submitted_at TIMESTAMP WITH TIME ZONE NULL,
+    revoked_at TIMESTAMP WITH TIME ZONE NULL,
+    revoked_reason TEXT NULL,
+    token_version INT DEFAULT 1,
+    metadata JSONB DEFAULT '{}'::jsonb,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP WITH TIME ZONE
@@ -710,7 +728,6 @@ const SCHEMA_DDL = `
   CREATE INDEX IF NOT EXISTS idx_attendance_beneficiary_id ON attendance_logs(beneficiary_id) WHERE deleted_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_acceptance_beneficiary_id ON acceptance_letters(beneficiary_id) WHERE deleted_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_email_logs_beneficiary_id ON email_logs(beneficiary_id) WHERE deleted_at IS NULL;
-  CREATE INDEX IF NOT EXISTS idx_tokens_token ON public_response_tokens(token) WHERE deleted_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE deleted_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token);
   CREATE INDEX IF NOT EXISTS idx_generated_documents_beneficiary_id ON generated_documents(beneficiary_id);
@@ -1482,6 +1499,8 @@ export async function initDb(): Promise<void> {
       ALTER TABLE admissions ADD COLUMN IF NOT EXISTS acceptance_letter_checked_by VARCHAR(255);
       ALTER TABLE admissions ADD COLUMN IF NOT EXISTS acceptance_letter_checked_at TIMESTAMP WITH TIME ZONE;
       ALTER TABLE admissions ADD COLUMN IF NOT EXISTS acceptance_letter_remarks TEXT;
+      ALTER TABLE admissions ADD COLUMN IF NOT EXISTS offer_sent_at TIMESTAMP WITH TIME ZONE;
+      ALTER TABLE admissions ADD COLUMN IF NOT EXISTS offer_expires_at TIMESTAMP WITH TIME ZONE;
       
       ALTER TABLE admissions ADD COLUMN IF NOT EXISTS admission_form_completed BOOLEAN DEFAULT false;
       ALTER TABLE admissions ADD COLUMN IF NOT EXISTS admission_form_status VARCHAR(50) DEFAULT 'Pending';
@@ -1491,6 +1510,24 @@ export async function initDb(): Promise<void> {
       ALTER TABLE admissions ADD COLUMN IF NOT EXISTS admission_form_viewed_at TIMESTAMP WITH TIME ZONE;
       ALTER TABLE admissions ADD COLUMN IF NOT EXISTS admission_form_pdf_url TEXT;
       ALTER TABLE admissions ADD COLUMN IF NOT EXISTS admission_form_ref VARCHAR(100) UNIQUE;
+      
+      ALTER TABLE public_response_tokens ADD COLUMN IF NOT EXISTS purpose VARCHAR(50) DEFAULT 'OFFER_ACCEPTANCE';
+      ALTER TABLE public_response_tokens ADD COLUMN IF NOT EXISTS token_hash TEXT;
+      ALTER TABLE public_response_tokens ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'ACTIVE';
+      ALTER TABLE public_response_tokens ADD COLUMN IF NOT EXISTS used_at TIMESTAMP WITH TIME ZONE NULL;
+      ALTER TABLE public_response_tokens ADD COLUMN IF NOT EXISTS opened_at TIMESTAMP WITH TIME ZONE NULL;
+      ALTER TABLE public_response_tokens ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMP WITH TIME ZONE NULL;
+      ALTER TABLE public_response_tokens ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMP WITH TIME ZONE NULL;
+      ALTER TABLE public_response_tokens ADD COLUMN IF NOT EXISTS revoked_reason TEXT NULL;
+      ALTER TABLE public_response_tokens ADD COLUMN IF NOT EXISTS token_version INT DEFAULT 1;
+      ALTER TABLE public_response_tokens ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
+      ALTER TABLE public_response_tokens ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE NULL;
+      
+      CREATE INDEX IF NOT EXISTS idx_tokens_token ON public_response_tokens(token) WHERE deleted_at IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_tokens_token_hash ON public_response_tokens(token_hash) WHERE deleted_at IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_tokens_beneficiary_id ON public_response_tokens(beneficiary_id) WHERE deleted_at IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_tokens_status ON public_response_tokens(status) WHERE deleted_at IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_tokens_expires_at ON public_response_tokens(expires_at) WHERE deleted_at IS NULL;
       
       -- Tenancy Columns
       ALTER TABLE states ADD COLUMN IF NOT EXISTS code VARCHAR(10);
@@ -2272,7 +2309,7 @@ export async function initDb(): Promise<void> {
             state,
             COALESCE(tsp, '')
           FROM beneficiaries
-          WHERE status IN ('ADMITTED', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')
+          WHERE status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI', 'GRADUATED', 'COMPLETED', 'ONBOARDED')
           ON CONFLICT (beneficiary_id) DO NOTHING;
         `);
 
@@ -2289,7 +2326,7 @@ export async function initDb(): Promise<void> {
             TRUE,
             'Auto-initialized'
           FROM beneficiaries
-          WHERE status IN ('ADMITTED', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')
+          WHERE status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI', 'GRADUATED', 'COMPLETED', 'ONBOARDED')
           ON CONFLICT (beneficiary_id) DO NOTHING;
         `);
         console.log("[DB] Backfill of trainee profiles completed successfully.");
@@ -3709,31 +3746,51 @@ export class DbRepo {
     const conn = activeConnection || getPgPool();
     if (conn) {
       try {
-        // 1. Check direct beneficiaries ID or custom fields (tvet_id or reference_number)
-        const resBenef = await conn.query(
-          "SELECT id FROM beneficiaries WHERE id = $1 OR custom_fields->>'tvet_id' = $1 OR custom_fields->>'reference_number' = $1 LIMIT 1",
-          [cleanToken]
-        );
-        if (resBenef.rows.length > 0) {
-          return resBenef.rows[0].id;
+        const terms = [cleanToken];
+        const match = cleanToken.match(/^IDEAS-(\d{4})-(\d+)$/i);
+        if (match) {
+          const year = match[1];
+          const numStr = match[2];
+          const paddedNum = numStr.padStart(3, "0");
+          terms.push(`IDEAS/TVET/ADM/${paddedNum}/${year}`);
         }
 
-        // 2. Check trainee_profiles for tvet_id
-        const resProfile = await conn.query(
-          "SELECT beneficiary_id FROM trainee_profiles WHERE tvet_id = $1 LIMIT 1",
-          [cleanToken]
-        );
-        if (resProfile.rows.length > 0) {
-          return resProfile.rows[0].beneficiary_id;
-        }
+        for (const term of terms) {
+          // 1. Check direct beneficiaries ID or custom fields (tvet_id or reference_number)
+          const resBenef = await conn.query(
+            "SELECT id FROM beneficiaries WHERE id = $1 OR custom_fields->>'tvet_id' = $1 OR custom_fields->>'reference_number' = $1 LIMIT 1",
+            [term]
+          );
+          if (resBenef.rows.length > 0) {
+            return resBenef.rows[0].id;
+          }
 
-        // 3. Check admissions fields
-        const resAdm = await conn.query(
-          "SELECT beneficiary_id FROM admissions WHERE admission_ref = $1 OR admission_form_ref = $1 LIMIT 1",
-          [cleanToken]
-        );
-        if (resAdm.rows.length > 0) {
-          return resAdm.rows[0].beneficiary_id;
+          // 2. Check trainee_profiles for tvet_id
+          const resProfile = await conn.query(
+            "SELECT beneficiary_id FROM trainee_profiles WHERE tvet_id = $1 LIMIT 1",
+            [term]
+          );
+          if (resProfile.rows.length > 0) {
+            return resProfile.rows[0].beneficiary_id;
+          }
+
+          // 3. Check admissions fields
+          const resAdm = await conn.query(
+            "SELECT beneficiary_id FROM admissions WHERE admission_ref = $1 OR admission_form_ref = $1 LIMIT 1",
+            [term]
+          );
+          if (resAdm.rows.length > 0) {
+            return resAdm.rows[0].beneficiary_id;
+          }
+
+          // 4. Check generated_documents
+          const resGenDoc = await conn.query(
+            "SELECT beneficiary_id FROM generated_documents WHERE id = $1 OR verification_code = $1 LIMIT 1",
+            [term]
+          );
+          if (resGenDoc.rows.length > 0) {
+            return resGenDoc.rows[0].beneficiary_id;
+          }
         }
       } catch (e) {
         console.error("[DbRepo.resolveBeneficiaryIdResiliently] DB lookup error:", e);
@@ -3943,7 +4000,7 @@ export class DbRepo {
                adm.admission_status, adm.admission_ref, adm.admission_form_ref, adm.admission_letter_generated_at, 
                adm.admission_letter_sent_at, adm.admission_form_completed, adm.admission_form_status, 
                adm.training_progress, adm.admission_form_generated_at, adm.admission_form_confirmed_at,
-               adm.admission_form_viewed_at, adm.admission_form_pdf_url
+               adm.admission_form_viewed_at, adm.admission_form_pdf_url, adm.offer_sent_at, adm.offer_expires_at
         FROM beneficiaries b
         LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
         ${whereStr}
@@ -4065,6 +4122,8 @@ export class DbRepo {
           admissionFormViewedAt: row.admission_form_viewed_at ? row.admission_form_viewed_at.toISOString() : undefined,
           admissionFormPdfUrl: row.admission_form_pdf_url || "",
           trainingProgress: row.training_progress || {},
+          offerSentAt: row.offer_sent_at ? row.offer_sent_at.toISOString() : undefined,
+          offerExpiresAt: row.offer_expires_at ? row.offer_expires_at.toISOString() : undefined,
 
           acceptanceLetterUploaded: accVersions.length > 0,
           acceptanceLetterUrl: row.acceptance_letter_url || (accVersions.length > 0 ? accVersions[accVersions.length - 1].url : undefined),
@@ -4126,7 +4185,9 @@ export class DbRepo {
    * Retrieves a single beneficiary profile using its unique identifier.
    * Performs an optimized single query with child record hydration.
    */
-  static async getBeneficiaryById(id: string, options?: { systemContext?: boolean }): Promise<Beneficiary | null> {
+  static async getBeneficiaryById(rawId: string, options?: { systemContext?: boolean }): Promise<Beneficiary | null> {
+    const id = await DbRepo.resolveBeneficiaryIdResiliently(rawId);
+    if (!id) return null;
     const pool = getPgPool();
     if (!pool || !isPgActive) {
       const state = loadJsonState();
@@ -4168,7 +4229,8 @@ export class DbRepo {
                 admission_form_data, admission_letter_versions, admission_form_versions, training_progress,
                 acceptance_letter_uploaded_at, acceptance_letter_status, acceptance_letter_url,
                 acceptance_letter_checked_by, acceptance_letter_checked_at, acceptance_letter_remarks,
-                admission_form_generated_at, admission_form_confirmed_at, admission_form_viewed_at, admission_form_pdf_url
+                admission_form_generated_at, admission_form_confirmed_at, admission_form_viewed_at, admission_form_pdf_url,
+                offer_sent_at, offer_expires_at
          FROM admissions
          WHERE beneficiary_id = $1 AND deleted_at IS NULL`,
         [id]
@@ -4277,6 +4339,8 @@ export class DbRepo {
         admissionLetterVersions: adm.admission_letter_versions || [],
         admissionFormVersions: adm.admission_form_versions || [],
         trainingProgress: adm.training_progress || {},
+        offerSentAt: adm.offer_sent_at ? adm.offer_sent_at.toISOString() : undefined,
+        offerExpiresAt: adm.offer_expires_at ? adm.offer_expires_at.toISOString() : undefined,
 
         acceptanceLetterUploaded: accVersions.length > 0,
         acceptanceLetterUrl: adm.acceptance_letter_url || row.acceptance_letter_url || (accVersions.length > 0 ? accVersions[accVersions.length - 1].url : undefined),
@@ -4655,8 +4719,8 @@ export class DbRepo {
            admission_letter_sent_at, admission_form_completed, admission_form_status, 
            admission_form_data, admission_letter_versions, admission_form_versions, 
            training_progress, admission_form_generated_at, admission_form_confirmed_at,
-           admission_form_viewed_at, admission_form_pdf_url, created_at, updated_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW())
+           admission_form_viewed_at, admission_form_pdf_url, offer_sent_at, offer_expires_at, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), NOW())
          ON CONFLICT (beneficiary_id) DO UPDATE SET
            admission_status = EXCLUDED.admission_status,
            admission_ref = EXCLUDED.admission_ref,
@@ -4673,6 +4737,8 @@ export class DbRepo {
            admission_form_confirmed_at = EXCLUDED.admission_form_confirmed_at,
            admission_form_viewed_at = EXCLUDED.admission_form_viewed_at,
            admission_form_pdf_url = EXCLUDED.admission_form_pdf_url,
+           offer_sent_at = EXCLUDED.offer_sent_at,
+           offer_expires_at = EXCLUDED.offer_expires_at,
            updated_at = NOW()`,
         [
           b.id,
@@ -4690,7 +4756,9 @@ export class DbRepo {
           b.admissionFormGeneratedAt ? new Date(b.admissionFormGeneratedAt) : null,
           b.admissionFormConfirmedAt ? new Date(b.admissionFormConfirmedAt) : null,
           b.admissionFormViewedAt ? new Date(b.admissionFormViewedAt) : null,
-          b.admissionFormPdfUrl || null
+          b.admissionFormPdfUrl || null,
+          b.offerSentAt ? new Date(b.offerSentAt) : null,
+          b.offerExpiresAt ? new Date(b.offerExpiresAt) : null
         ]
       );
 
@@ -7759,6 +7827,15 @@ export class DbRepo {
     state?: string;
     skill?: string;
     tsp?: string;
+    status?: string;
+    lga?: string;
+    programme?: string;
+    batch?: string;
+    cohort?: string;
+    gender?: string;
+    tenantId?: string;
+    stateId?: string;
+    tspId?: string;
     page?: number;
     limit?: number;
     systemContext?: boolean;
@@ -7768,13 +7845,26 @@ export class DbRepo {
       return { profiles: [], total: 0 };
     }
 
-    const { search, state, skill, tsp, page = 1, limit = 20 } = params;
+    const { search, state, skill, tsp, status, lga, programme, batch, cohort, gender, page = 1, limit = 20 } = params;
     await assertTenantContext(params);
     const offset = (page - 1) * limit;
 
-    let whereClause = "WHERE b.deleted_at IS NULL AND b.status IN ('ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')";
+    let whereClause = "WHERE b.deleted_at IS NULL AND b.status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI', 'GRADUATED', 'COMPLETED', 'ONBOARDED')";
     const values: any[] = [];
     let valIndex = 1;
+
+    if (params.tenantId) {
+      whereClause += ` AND b.tenant_id = $${valIndex++}`;
+      values.push(params.tenantId);
+    }
+    if (params.stateId) {
+      whereClause += ` AND b.state_id = $${valIndex++}`;
+      values.push(params.stateId);
+    }
+    if (params.tspId) {
+      whereClause += ` AND b.tsp_id = $${valIndex++}`;
+      values.push(params.tspId);
+    }
 
     if (search) {
       whereClause += ` AND (
@@ -7790,22 +7880,51 @@ export class DbRepo {
       valIndex++;
     }
 
-    if (state) {
-      whereClause += ` AND b.state = $${valIndex}`;
-      values.push(state);
+    if (state && state !== "all" && state !== "ALL") {
+      whereClause += ` AND b.state ILIKE $${valIndex++}`;
+      values.push(`%${state}%`);
+    }
+
+    if (skill && skill !== "all" && skill !== "ALL") {
+      whereClause += ` AND b.skill_sector ILIKE $${valIndex++}`;
+      values.push(`%${skill}%`);
+    }
+
+    if (tsp && tsp !== "all" && tsp !== "ALL") {
+      whereClause += ` AND b.tsp ILIKE $${valIndex++}`;
+      values.push(`%${tsp}%`);
+    }
+
+    if (status && status !== "all" && status !== "ALL") {
+      whereClause += ` AND UPPER(b.status) = UPPER($${valIndex++})`;
+      values.push(status);
+    }
+
+    if (lga && lga !== "all" && lga !== "ALL") {
+      whereClause += ` AND (b.city ILIKE $${valIndex} OR b.lga ILIKE $${valIndex})`;
+      values.push(`%${lga}%`);
       valIndex++;
     }
 
-    if (skill) {
-      whereClause += ` AND b.skill_sector = $${valIndex}`;
-      values.push(skill);
+    if (programme && programme !== "all" && programme !== "ALL") {
+      whereClause += ` AND b.program ILIKE $${valIndex++}`;
+      values.push(`%${programme}%`);
+    }
+
+    if (batch && batch !== "all" && batch !== "ALL") {
+      whereClause += ` AND (b.batch ILIKE $${valIndex} OR tp.batch_id ILIKE $${valIndex})`;
+      values.push(`%${batch}%`);
       valIndex++;
     }
 
-    if (tsp) {
-      whereClause += ` AND b.tsp = $${valIndex}`;
-      values.push(tsp);
-      valIndex++;
+    if (cohort && cohort !== "all" && cohort !== "ALL") {
+      whereClause += ` AND tp.cohort_id ILIKE $${valIndex++}`;
+      values.push(`%${cohort}%`);
+    }
+
+    if (gender && gender !== "all" && gender !== "ALL") {
+      whereClause += ` AND b.gender ILIKE $${valIndex++}`;
+      values.push(`%${gender}%`);
     }
 
     try {
@@ -8000,7 +8119,7 @@ export class DbRepo {
     const { search, date, page = 1, limit = 20 } = params;
     const offset = (page - 1) * limit;
 
-    let whereClause = "WHERE b.deleted_at IS NULL AND b.status IN ('ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')";
+    let whereClause = "WHERE b.deleted_at IS NULL AND b.status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI', 'GRADUATED', 'COMPLETED', 'ONBOARDED')";
     const values: any[] = [];
     let valIndex = 1;
 
@@ -8078,6 +8197,174 @@ export class DbRepo {
     }
   }
 
+  static async getAttendanceLedger(params: {
+    date?: string;
+    month?: string;
+    tenantId?: string;
+    stateId?: string;
+    state?: string;
+    lgaId?: string;
+    lga?: string;
+    tspId?: string;
+    programme?: string;
+    skill?: string;
+    batch?: string;
+    cohort?: string;
+    gender?: string;
+    status?: string;
+    search?: string;
+    page?: number;
+    limit?: number;
+  }): Promise<{ ledger: any[]; total: number }> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) return { ledger: [], total: 0 };
+
+    try {
+      const { page = 1, limit = 50, date, month, search, status } = params;
+      const offset = (page - 1) * limit;
+
+      let joinOn = `b.id = ta.beneficiary_id`;
+      const joinParams: any[] = [];
+      let pIdx = 1;
+
+      if (date) {
+        joinOn += ` AND ta.attendance_date = $${pIdx++}`;
+        joinParams.push(date);
+      } else if (month) {
+        joinOn += ` AND TO_CHAR(ta.attendance_date, 'YYYY-MM') = $${pIdx++}`;
+        joinParams.push(month);
+      }
+
+      let whereClause = `WHERE b.deleted_at IS NULL AND b.status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI', 'GRADUATED', 'COMPLETED', 'ONBOARDED')`;
+      const values = [...joinParams];
+
+      if (params.tenantId) {
+        whereClause += ` AND b.tenant_id = $${pIdx++}`;
+        values.push(params.tenantId);
+      }
+      if (params.stateId) {
+        whereClause += ` AND b.state_id = $${pIdx++}`;
+        values.push(params.stateId);
+      }
+      if (params.state && params.state !== "all") {
+        whereClause += ` AND b.state ILIKE $${pIdx++}`;
+        values.push(`%${params.state}%`);
+      }
+      if (params.lgaId) {
+        whereClause += ` AND b.lga_id = $${pIdx++}`;
+        values.push(params.lgaId);
+      }
+      if (params.lga && params.lga !== "all") {
+        whereClause += ` AND (b.city ILIKE $${pIdx} OR b.lga ILIKE $${pIdx})`;
+        values.push(`%${params.lga}%`);
+        pIdx++;
+      }
+      if (params.tspId) {
+        whereClause += ` AND b.tsp_id = $${pIdx++}`;
+        values.push(params.tspId);
+      }
+      if (params.programme && params.programme !== "all") {
+        whereClause += ` AND b.program ILIKE $${pIdx++}`;
+        values.push(`%${params.programme}%`);
+      }
+      if (params.skill && params.skill !== "all") {
+        whereClause += ` AND b.skill_sector ILIKE $${pIdx++}`;
+        values.push(`%${params.skill}%`);
+      }
+      if (params.batch && params.batch !== "all") {
+        whereClause += ` AND (b.batch ILIKE $${pIdx} OR tp.batch_id ILIKE $${pIdx})`;
+        values.push(`%${params.batch}%`);
+        pIdx++;
+      }
+      if (params.cohort && params.cohort !== "all") {
+        whereClause += ` AND tp.cohort_id ILIKE $${pIdx++}`;
+        values.push(`%${params.cohort}%`);
+      }
+      if (params.gender && params.gender !== "all") {
+        whereClause += ` AND b.gender ILIKE $${pIdx++}`;
+        values.push(`%${params.gender}%`);
+      }
+      if (search) {
+        whereClause += ` AND (b.first_name ILIKE $${pIdx} OR b.last_name ILIKE $${pIdx} OR b.id ILIKE $${pIdx})`;
+        values.push(`%${search}%`);
+        pIdx++;
+      }
+      if (status && status !== "all" && status !== "ALL") {
+        if (status === "UNMARKED" || status === "UNLOGGED") {
+          whereClause += ` AND ta.id IS NULL`;
+        } else {
+          whereClause += ` AND UPPER(ta.status) = UPPER($${pIdx++})`;
+          values.push(status);
+        }
+      }
+
+      const countQuery = `
+        SELECT COUNT(*)::int as count
+        FROM beneficiaries b
+        LEFT JOIN trainee_attendance ta ON ${joinOn}
+        LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
+        ${whereClause}
+      `;
+      const countRes = await executeQuery(countQuery, values);
+      const total = countRes.rows[0]?.count || 0;
+
+      const dataQuery = `
+        SELECT 
+          b.id as beneficiary_id,
+          b.first_name,
+          b.last_name,
+          b.gender,
+          b.state,
+          b.state_id,
+          b.lga,
+          b.lga_id,
+          b.tsp,
+          b.tsp_id,
+          b.program as programme,
+          b.skill_sector as skill,
+          COALESCE(tp.tvet_id, 'ID-TVE-26-' || SUBSTRING(b.id, 1, 6)) as tvet_id,
+          tp.batch_id as batch,
+          tp.cohort_id as cohort,
+          ta.id as attendance_id,
+          COALESCE(ta.attendance_date::text, ${date ? `'${date}'` : 'NULL'}) as attendance_date,
+          COALESCE(ta.status, 'UNMARKED') as status,
+          COALESCE(ta.status, 'UNMARKED') as attendance_status,
+          ta.check_in_time,
+          ta.check_out_time,
+          ta.hours_logged,
+          ta.attendance_source,
+          ta.remarks,
+          ta.captured_by
+        FROM beneficiaries b
+        LEFT JOIN trainee_attendance ta ON ${joinOn}
+        LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
+        ${whereClause}
+        ORDER BY b.last_name ASC, b.first_name ASC
+        LIMIT $${pIdx++} OFFSET $${pIdx++}
+      `;
+      const res = await executeQuery(dataQuery, [...values, limit, offset]);
+      return { ledger: res.rows, total };
+    } catch (e) {
+      console.error("[DB Repo] getAttendanceLedger error:", e);
+      return { ledger: [], total: 0 };
+    }
+  }
+
+  static async getAttendanceHistoryByBeneficiary(beneficiaryId: string): Promise<any[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) return [];
+    try {
+      const res = await executeQuery(
+        `SELECT * FROM trainee_attendance WHERE beneficiary_id = $1 ORDER BY attendance_date DESC`,
+        [beneficiaryId]
+      );
+      return res.rows;
+    } catch (e) {
+      console.error("[DB Repo] getAttendanceHistoryByBeneficiary error:", e);
+      return [];
+    }
+  }
+
   static async saveTraineeAttendance(record: {
     beneficiary_id: string;
     attendance_date: string;
@@ -8091,15 +8378,20 @@ export class DbRepo {
     const pool = getPgPool();
     if (!pool || !isPgActive) return null;
     try {
-      let hours_logged = 0;
-      const cleanStatus = (record.status || "").toUpperCase();
-      if (cleanStatus === "PRESENT" || cleanStatus === "LATE") {
+      const validStatuses = ["PRESENT", "ABSENT", "LATE", "EXCUSED", "HOLIDAY", "FIELDWORK"];
+      const cleanStatus = (record.status || "PRESENT").toUpperCase();
+      if (!validStatuses.includes(cleanStatus)) {
+        throw new Error(`Invalid status '${record.status}'. Must be one of: ${validStatuses.join(", ")}`);
+      }
+
+      let hours_logged = 0.00;
+      if (["PRESENT", "LATE", "FIELDWORK"].includes(cleanStatus)) {
         hours_logged = 6.00;
         if (record.check_in_time && record.check_out_time) {
           try {
             const checkIn = new Date(record.check_in_time).getTime();
             const checkOut = new Date(record.check_out_time).getTime();
-            if (checkOut > checkIn) {
+            if (!isNaN(checkIn) && !isNaN(checkOut) && checkOut > checkIn) {
               hours_logged = parseFloat(((checkOut - checkIn) / (1000 * 60 * 60)).toFixed(2));
             }
           } catch (e) {
@@ -8120,7 +8412,7 @@ export class DbRepo {
           remarks,
           hours_logged,
           updated_at
-        ) VALUES ($1, $2, $3, $4, COALESCE($5, 'MANUAL'), COALESCE($6, 'PRESENT'), $7, $8, $9, NOW())
+        ) VALUES ($1, $2, $3, $4, COALESCE($5, 'MANUAL'), $6, $7, $8, $9, NOW())
         ON CONFLICT (beneficiary_id, attendance_date) DO UPDATE SET
           check_in_time = EXCLUDED.check_in_time,
           check_out_time = EXCLUDED.check_out_time,
@@ -8137,7 +8429,7 @@ export class DbRepo {
         record.check_in_time,
         record.check_out_time,
         record.attendance_source,
-        record.status,
+        cleanStatus,
         record.captured_by || null,
         record.remarks || null,
         hours_logged
@@ -8146,6 +8438,18 @@ export class DbRepo {
     } catch (e) {
       console.error("[DB Repo] saveTraineeAttendance error:", e);
       return null;
+    }
+  }
+
+  static async deleteTraineeAttendance(id: string): Promise<boolean> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) return false;
+    try {
+      await pool.query(`DELETE FROM trainee_attendance WHERE id = $1`, [id]);
+      return true;
+    } catch (e) {
+      console.error("[DB Repo] deleteTraineeAttendance error:", e);
+      return false;
     }
   }
 
@@ -8166,7 +8470,7 @@ export class DbRepo {
     }
     const targetDate = dateStr || new Date().toISOString().split("T")[0];
     try {
-      let activeQuery = `SELECT COUNT(*) as count FROM beneficiaries WHERE status IN ('ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI') AND deleted_at IS NULL`;
+      let activeQuery = `SELECT COUNT(*) as count FROM beneficiaries WHERE status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI', 'GRADUATED', 'COMPLETED', 'ONBOARDED') AND deleted_at IS NULL`;
       const activeParams: any[] = [];
       let activeIndex = 1;
 
@@ -8340,7 +8644,7 @@ export class DbRepo {
     const { search, page = 1, limit = 20 } = params;
     const offset = (page - 1) * limit;
 
-    let whereClause = "WHERE b.deleted_at IS NULL AND b.status IN ('ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI')";
+    let whereClause = "WHERE b.deleted_at IS NULL AND b.status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI', 'GRADUATED', 'COMPLETED', 'ONBOARDED')";
     const values: any[] = [];
     let valIndex = 1;
 
@@ -10555,6 +10859,9 @@ export class DbRepo {
     const pool = getPgPool();
     if (!pool || !isPgActive) return null;
     try {
+      const benRes = await executeQuery(`SELECT tsp_id FROM beneficiaries WHERE id = $1`, [beneficiaryId]);
+      const tspId = benRes.rows[0]?.tsp_id;
+
       const attRes = await executeQuery(
         `SELECT status, hours_logged, attendance_date 
          FROM trainee_attendance 
@@ -10581,26 +10888,33 @@ export class DbRepo {
         }
       }
       
-      // Compute expected training days in month
-      const totalTrainingDaysRes = await executeQuery(
-        `SELECT COUNT(DISTINCT attendance_date)::int as count 
-         FROM trainee_attendance 
-         WHERE TO_CHAR(attendance_date, 'YYYY-MM') = $1`,
-        [monthStr]
-      );
-      let expected_days = totalTrainingDaysRes.rows[0]?.count || 0;
-      if (expected_days === 0) {
-        expected_days = Math.max(rows.length, 20);
+      // Compute expected training days in month scoped to this trainee's TSP
+      let expected_days = 0;
+      if (tspId) {
+        const totalTrainingDaysRes = await executeQuery(
+          `SELECT COUNT(DISTINCT ta.attendance_date)::int as count 
+           FROM trainee_attendance ta
+           JOIN beneficiaries b ON ta.beneficiary_id = b.id
+           WHERE b.tsp_id = $1 AND TO_CHAR(ta.attendance_date, 'YYYY-MM') = $2`,
+          [tspId, monthStr]
+        );
+        expected_days = totalTrainingDaysRes.rows[0]?.count || 0;
+      }
+      if (expected_days === 0 && rows.length > 0) {
+        expected_days = rows.length;
       }
       
-      const attendance_percentage = expected_days > 0 
+      const attendance_percentage = expected_days > 0 && rows.length > 0
         ? parseFloat(((present_days / expected_days) * 100).toFixed(1)) 
         : 0.0;
         
       let stipend_status = "ELIGIBLE";
       let stipend_reason = "Compliant class attendance logged.";
       
-      if (attendance_percentage < 30) {
+      if (rows.length === 0 || attendance_percentage === 0) {
+        stipend_status = "NO_RECORD";
+        stipend_reason = "No attendance records available yet.";
+      } else if (attendance_percentage < 30) {
         stipend_status = "ESCALATED";
         stipend_reason = "Critical: Attendance is below 30%. Immediate escalation active.";
       } else if (attendance_percentage < 50) {

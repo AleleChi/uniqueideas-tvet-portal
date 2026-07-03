@@ -48,7 +48,7 @@ interface BeneficiaryDetailsProps {
   onUpdate: (data: Partial<Beneficiary>) => Promise<void>;
   onDelete?: () => void;
   session?: { username?: string; role?: string; email?: string } | null;
-  initialTab?: "overview" | "admission" | "acceptance" | "forms" | "documents" | "training" | "audits" | "communications" | "workflow" | "guardian" | "banking" | "verification" | "governance";
+  initialTab?: "overview" | "admission" | "acceptance" | "forms" | "documents" | "training" | "attendance" | "audits" | "communications" | "workflow" | "guardian" | "banking" | "verification" | "governance";
 }
 
 export function BeneficiaryDetails({
@@ -63,7 +63,7 @@ export function BeneficiaryDetails({
 }: BeneficiaryDetailsProps) {
   
   const { showToast: globalShowToast, confirmDelete } = useNotification();
-  const [activeTab, setActiveTab ] = useState<"overview" | "admission" | "acceptance" | "forms" | "documents" | "training" | "audits" | "communications" | "workflow" | "guardian" | "banking" | "verification" | "governance">(initialTab || "overview");
+  const [activeTab, setActiveTab ] = useState<"overview" | "admission" | "acceptance" | "forms" | "documents" | "training" | "attendance" | "audits" | "communications" | "workflow" | "guardian" | "banking" | "verification" | "governance">(initialTab || "overview");
 
   useEffect(() => {
     if (initialTab) {
@@ -127,6 +127,100 @@ export function BeneficiaryDetails({
   const toasts: any[] = [];
   const setToasts = (val: any) => {};
   const [previewDoc, setPreviewDoc] = useState<any | null>(null);
+  const [previewObjectUrl, setPreviewObjectUrl] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState<boolean>(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    let localObjUrl: string | null = null;
+
+    if (!previewDoc) {
+      setPreviewError(null);
+      return;
+    }
+
+    const getSafePdfUrl = (doc: any, isDownload: boolean = false) => {
+      if (!doc || !doc.pdfUrl) return "";
+      let url = doc.pdfUrl;
+      if (url.startsWith("/api")) {
+        url = `${API_BASE_URL}${url}`;
+      }
+      if (url.includes("simulation") || url.includes("/ideas-tvet/raw/upload") || url.includes("/api/documents/download")) {
+        const typeTag = doc.documentType === "ADMISSION_LETTER" ? "admission"
+                      : doc.documentType === "ACCEPTANCE_LETTER" ? "acceptance"
+                      : doc.documentType === "ENROLLMENT_CONFIRMATION" ? "enrollment"
+                      : doc.documentType === "COMPLETION_CERTIFICATE" ? "certificate"
+                      : doc.documentType === "ADMISSION_FORM" ? "form"
+                      : "document";
+        return `${API_BASE_URL}/api/documents/download/${beneficiary.id}/${typeTag}?format=pdf&inline=${!isDownload}`;
+      }
+      return isDownload ? url.replace("inline=true", "inline=false") : url;
+    };
+
+    const fetchPdf = async () => {
+      setPreviewLoading(true);
+      setPreviewError(null);
+      try {
+        const url = getSafePdfUrl(previewDoc, false);
+        const response = await authFetch(url);
+        if (!response.ok) {
+          throw new Error(`Failed to load document (${response.status} ${response.statusText})`);
+        }
+        
+        const contentType = response.headers.get("Content-Type") || "";
+        if (!contentType.toLowerCase().includes("application/pdf")) {
+          const text = await response.text();
+          let errMessage = "Received invalid response format from server instead of PDF.";
+          try {
+            const parsed = JSON.parse(text);
+            errMessage = parsed.error || parsed.message || errMessage;
+          } catch {
+            if (text.includes("Authentication required") || text.includes("Please log in")) {
+              errMessage = "Authentication required. Please log in.";
+            } else if (text.trim().length > 0 && text.trim().length < 250) {
+              errMessage = text.trim();
+            }
+          }
+          throw new Error(errMessage);
+        }
+
+        const blob = await response.blob();
+        if (blob.size === 0) {
+          throw new Error("The retrieved PDF document was empty (0 bytes).");
+        }
+
+        const objUrl = URL.createObjectURL(blob);
+        localObjUrl = objUrl;
+
+        if (active) {
+          setPreviewObjectUrl(objUrl);
+        } else {
+          URL.revokeObjectURL(objUrl);
+        }
+      } catch (err: any) {
+        if (active) {
+          console.error("[PREVIEW_ERROR]:", err);
+          setPreviewError(err.message || "An error occurred while loading the PDF document.");
+        }
+      } finally {
+        if (active) {
+          setPreviewLoading(false);
+        }
+      }
+    };
+
+    fetchPdf();
+
+    return () => {
+      active = false;
+      if (localObjUrl) {
+        URL.revokeObjectURL(localObjUrl);
+      }
+      setPreviewObjectUrl(null);
+    };
+  }, [previewDoc, beneficiary.id]);
+
   const [ledgerSearch, setLedgerSearch] = useState("");
   const [ledgerFilter, setLedgerFilter] = useState("ALL");
   const [generatingAll, setGeneratingAll] = useState<boolean>(false);
@@ -865,7 +959,8 @@ export function BeneficiaryDetails({
       const res = await authFetch(`/api/admissions/secure-link?beneficiaryId=${beneficiary.id}&origin=${encodeURIComponent(window.location.origin)}`);
       if (res.ok) {
         const data = await res.json();
-        copyToClipboard(data.secureLink);
+        const safeLink = String(data.secureLink || "").trim();
+        copyToClipboard(safeLink);
         setCopiedLink(true);
         setTimeout(() => setCopiedLink(false), 2000);
         showToast("Secure response link copied to clipboard successfully!", "success");
@@ -967,6 +1062,23 @@ export function BeneficiaryDetails({
   // Attendance log inputs
   const [attendanceDate, setAttendanceDate] = useState(new Date().toISOString().split("T")[0]);
   const [attendanceStatus, setAttendanceStatus] = useState<"Present" | "Absent" | "Excused">("Present");
+  const [realAttendanceRecords, setRealAttendanceRecords] = useState<any[]>([]);
+
+  const fetchRealAttendance = async () => {
+    try {
+      const res = await authFetch(`/api/attendance/history/${beneficiary.id}`);
+      if (res.ok) {
+        const data = await res.json();
+        setRealAttendanceRecords(data.attendanceHistory || []);
+      }
+    } catch (e) {
+      console.error("Failed to load attendance history:", e);
+    }
+  };
+
+  useEffect(() => {
+    fetchRealAttendance();
+  }, [beneficiary.id, activeTab]);
 
   // Load audit logs strictly for this candidate
   useEffect(() => {
@@ -1106,14 +1218,29 @@ export function BeneficiaryDetails({
 
   // Admission Workflow Triggers
   const generateAdmissionLetter = async () => {
-    const admissionRef = `IDEAS/TVET/ADM/${beneficiary.id.split("-").pop()}/${new Date().getFullYear()}`;
-    await onUpdate({
-      admissionStatus: "Admission Generated",
-      admissionRef,
-      admissionLetterGeneratedAt: new Date().toISOString(),
-      status: ProgramStatus.VERIFIED
-    });
-    await logActionToBackend("ADMISSION_LETTER_GENERATE", `Generated official TVET admission offer letter (Ref: ${admissionRef}) for candidate ID ${beneficiary.id}`);
+    setIsUpdatingLetter(true);
+    try {
+      const res = await authFetch("/api/admissions/regenerate-offer-package", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ beneficiaryId: beneficiary.id })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        if (data.beneficiary) {
+          await onUpdate(data.beneficiary);
+        }
+        showToast("Offer letter package regenerated successfully!", "success");
+        await logActionToBackend("ADMISSION_LETTER_GENERATE", `Regenerated official TVET admission offer package for candidate ID ${beneficiary.id}`);
+      } else {
+        showToast(data.error || "Failed to regenerate offer package.", "error");
+      }
+    } catch (e: any) {
+      console.error(e);
+      showToast("Network error regenerating offer package.", "error");
+    } finally {
+      setIsUpdatingLetter(false);
+    }
   };
 
   const sendAdmissionLetter = async () => {
@@ -1140,24 +1267,30 @@ export function BeneficiaryDetails({
       });
 
       if (res.ok) {
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         if (data.success) {
           setEmailStatus("sent");
-          await onUpdate(data.beneficiary);
-          showToast(`Offer letter dispatched successfully! Student Link: ${data.secureLink}`, "success");
+          if (data.beneficiary) {
+            await onUpdate(data.beneficiary);
+          }
+          showToast(`Offer letter dispatched successfully! Student Link: ${data.secureLink || ""}`, "success");
         } else {
           setEmailStatus("idle");
-          await onUpdate(data.beneficiary);
-          showToast(`SMTP Delivery Failed: ${data.smtpErrorDetails || "Unknown SMTP error check."}`, "error");
+          if (data.beneficiary) {
+            await onUpdate(data.beneficiary);
+          }
+          console.error("Offer dispatch failed:", data.error || data.smtpErrorDetails);
+          showToast("Offer email could not be sent. Please retry or contact the administrator.", "error");
         }
       } else {
-        const err = await res.json();
-        showToast(err.error || "Failed to trigger automated offer dispatch.", "error");
+        const err = await res.json().catch(() => ({}));
+        console.error("Backend error dispatching offer:", err);
+        showToast("Offer email could not be sent. Please retry or contact the administrator.", "error");
         setEmailStatus("idle");
       }
     } catch (e) {
-      console.error(e);
-      showToast("A system network error occurred while dispatching the offer.", "error");
+      console.error("Network error dispatching offer:", e);
+      showToast("Offer email could not be sent. Please retry or contact the administrator.", "error");
       setEmailStatus("idle");
     }
   };
@@ -1217,70 +1350,51 @@ export function BeneficiaryDetails({
   // Logging Daily Attendance
   const addAttendanceLog = async () => {
     if (!attendanceDate) return;
-    
-    const newLog = {
-      id: "att_" + Date.now(),
-      date: attendanceDate,
-      status: attendanceStatus,
-      hoursLogged: attendanceStatus === "Present" ? 6 : 0 // Each standard lab day counts as 6 contact hours
-    };
+    try {
+      const apiStatus = attendanceStatus.toUpperCase();
+      const res = await authFetch("/api/attendance/mark", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          beneficiary_id: beneficiary.id,
+          attendance_date: attendanceDate,
+          status: apiStatus,
+          check_in_time: apiStatus === "PRESENT" || apiStatus === "LATE" ? `${attendanceDate}T08:00:00Z` : null,
+          check_out_time: apiStatus === "PRESENT" || apiStatus === "LATE" ? `${attendanceDate}T16:00:00Z` : null,
+          attendance_source: "MANUAL"
+        })
+      });
 
-    const currentLogs = beneficiary.attendanceLogs || [];
-    
-    // Check if duplicate date
-    if (currentLogs.some(l => l.date === attendanceDate)) {
-      showToast("An attendance record already exists for the selected date. Please choose another date or delete the existing record.", "warning");
-      return;
-    }
-
-    const updatedLogs = [newLog, ...currentLogs];
-    
-    // Recalculate hours
-    const totalHrs = updatedLogs.reduce((acc, curr) => acc + curr.hoursLogged, 0);
-    const requiredHours = 90;
-    
-    let complStatus: "Not Started" | "In Progress" | "Completed" = "In Progress";
-    let bStatus = beneficiary.status;
-    let admissionFlowStatus = beneficiary.admissionStatus || "Enrolled";
-
-    if (totalHrs >= requiredHours) {
-      complStatus = "Completed";
-      bStatus = ProgramStatus.VERIFIED; // Completed profiles verified
-      admissionFlowStatus = "Training Completed";
-    }
-
-    await onUpdate({
-      attendanceLogs: updatedLogs,
-      admissionStatus: admissionFlowStatus,
-      status: bStatus,
-      trainingProgress: {
-        totalRequiredHours: requiredHours,
-        hoursCompleted: totalHrs,
-        completionStatus: complStatus,
-        grade: totalHrs >= requiredHours ? "A (Excellent)" : undefined
+      if (res.ok) {
+        showToast("Attendance saved securely to database.", "success");
+        await fetchRealAttendance();
+        await logActionToBackend("ATTENDANCE_LOGGED", `Logged daily attendance for Trainee (${attendanceStatus}) for date: ${attendanceDate}.`);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error || "Failed to mark attendance.", "error");
       }
-    });
-
-    await logActionToBackend("ATTENDANCE_LOGGED", `Logged daily attendance for Trainee (${attendanceStatus}) for date: ${attendanceDate}. Progress accumulated: ${totalHrs}/${requiredHours} hours.`);
+    } catch (e: any) {
+      showToast(e.message || "Network error marking attendance", "error");
+    }
   };
 
   const removeAttendanceLog = async (id: string, date: string) => {
     if (!confirm(`Are you sure you want to remove the attendance log for date ${date}?`)) return;
-    
-    const updatedLogs = (beneficiary.attendanceLogs || []).filter(l => l.id !== id);
-    const totalHrs = updatedLogs.reduce((acc, curr) => acc + curr.hoursLogged, 0);
-    const requiredHours = 90;
-
-    await onUpdate({
-      attendanceLogs: updatedLogs,
-      trainingProgress: {
-        totalRequiredHours: requiredHours,
-        hoursCompleted: totalHrs,
-        completionStatus: totalHrs >= requiredHours ? "Completed" : totalHrs > 0 ? "In Progress" : "Not Started"
+    try {
+      const res = await authFetch(`/api/attendance/${id}?beneficiaryId=${beneficiary.id}&date=${date}`, {
+        method: "DELETE"
+      });
+      if (res.ok) {
+        showToast("Attendance record removed.", "success");
+        await fetchRealAttendance();
+        await logActionToBackend("ATTENDANCE_REMOVED", `Deleted daily attendance log record from date: ${date}. Candidate ID: ${beneficiary.id}`);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error || "Failed to remove record.", "error");
       }
-    });
-
-    await logActionToBackend("ATTENDANCE_REMOVED", `Deleted daily attendance log record from date: ${date}. Candidate ID: ${beneficiary.id}`);
+    } catch (e: any) {
+      showToast(e.message || "Network error removing attendance", "error");
+    }
   };
 
   // Generate simple printable view for A4 letter
@@ -1398,38 +1512,33 @@ export function BeneficiaryDetails({
             </div>
 
             {/* Content Body */}
-            <div className="flex-1 bg-slate-100 relative p-2 min-h-0">
-              {(() => {
-                const getSafePdfUrl = (doc: any, isDownload: boolean = false) => {
-                  if (!doc || !doc.pdfUrl) return "";
-                  const url = doc.pdfUrl;
-                  if (url.includes("simulation") || url.includes("/ideas-tvet/raw/upload")) {
-                    const typeTag = doc.documentType === "ADMISSION_LETTER" ? "admission"
-                                  : doc.documentType === "ACCEPTANCE_LETTER" ? "acceptance"
-                                  : doc.documentType === "ENROLLMENT_CONFIRMATION" ? "enrollment"
-                                  : doc.documentType === "COMPLETION_CERTIFICATE" ? "certificate"
-                                  : doc.documentType === "ADMISSION_FORM" ? "form"
-                                  : "document";
-                    return `${API_BASE_URL}/api/documents/download/${beneficiary.id}/${typeTag}?format=pdf&inline=${!isDownload}`;
-                  }
-                  return isDownload ? url.replace("inline=true", "inline=false") : url;
-                };
-
-                const safePreviewUrl = getSafePdfUrl(previewDoc, false);
-                const safeDownloadUrl = getSafePdfUrl(previewDoc, true);
-
-                return (
-                  <>
-                    <iframe
-                      title="PDF Document Preview"
-                      src={safePreviewUrl}
-                      className="w-full h-full border-0 rounded-lg shadow-inner"
-                    />
-                    {/* Inject these URLs dynamically into the footer control block */}
-                    <span id="safe-preview-link-marker" data-preview={safePreviewUrl} data-download={safeDownloadUrl} className="hidden" />
-                  </>
-                );
-              })()}
+            <div className="flex-1 bg-slate-100 relative p-2 min-h-0 flex flex-col items-center justify-center">
+              {previewLoading && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-100/90 z-10 gap-2">
+                  <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+                  <span className="text-xs font-semibold text-slate-600 font-mono uppercase tracking-wider">Compiling & Loading PDF...</span>
+                </div>
+              )}
+              {previewError && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-red-50 text-red-800 p-4 z-10 text-center gap-3">
+                  <AlertTriangle className="w-8 h-8 text-red-500 animate-bounce" />
+                  <div className="text-xs font-bold font-mono">PREVIEW COMPILATION ERROR</div>
+                  <div className="text-xs font-mono max-w-md bg-white border border-red-200 p-3 rounded shadow-xs overflow-auto max-h-40">{previewError}</div>
+                  <button
+                    onClick={() => {
+                      setPreviewDoc({ ...previewDoc });
+                    }}
+                    className="mt-2 bg-indigo-600 hover:bg-indigo-750 text-white font-bold text-xs px-4 py-2 rounded-lg cursor-pointer transition"
+                  >
+                    Retry Loading
+                  </button>
+                </div>
+              )}
+              <iframe
+                title="PDF Document Preview"
+                src={previewObjectUrl || "about:blank"}
+                className="w-full h-full border-0 rounded-lg shadow-inner"
+              />
             </div>
 
             {/* Footer Metadata & Actions */}
@@ -1441,25 +1550,17 @@ export function BeneficiaryDetails({
 
               <div className="flex items-center gap-2 w-full sm:w-auto">
                 <a
-                  href={(() => {
-                    const el = document.getElementById("safe-preview-link-marker");
-                    return el ? el.getAttribute("data-preview") || previewDoc.pdfUrl : previewDoc.pdfUrl;
-                  })()}
+                  href={previewObjectUrl || "#"}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex-1 sm:flex-none text-center bg-slate-150 hover:bg-slate-200 border border-slate-200 text-slate-700 font-bold px-3.5 py-2 rounded-lg cursor-pointer transition"
+                  className={`flex-1 sm:flex-none text-center bg-slate-150 hover:bg-slate-200 border border-slate-200 text-slate-700 font-bold px-3.5 py-2 rounded-lg cursor-pointer transition ${!previewObjectUrl ? "pointer-events-none opacity-50" : ""}`}
                 >
                   Open In New Tab
                 </a>
                 <a
-                  href={(() => {
-                    const el = document.getElementById("safe-preview-link-marker");
-                    return el ? el.getAttribute("data-download") || (previewDoc.pdfUrl ? previewDoc.pdfUrl.replace("inline=true", "inline=false") : "#") : (previewDoc.pdfUrl ? previewDoc.pdfUrl.replace("inline=true", "inline=false") : "#");
-                  })()}
+                  href={previewObjectUrl || "#"}
                   download={`${(beneficiary.firstName || "TRAINEE").toUpperCase()}_${(beneficiary.lastName || "").toUpperCase()}_${(previewDoc.documentType || "DOCUMENT").toUpperCase()}.pdf`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex-1 sm:flex-none text-center bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-3.5 py-2 rounded-lg cursor-pointer transition shadow-xs"
+                  className={`flex-1 sm:flex-none text-center bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-3.5 py-2 rounded-lg cursor-pointer transition shadow-xs ${!previewObjectUrl ? "pointer-events-none opacity-50" : ""}`}
                 >
                   Download PDF
                 </a>
@@ -2046,6 +2147,8 @@ export function BeneficiaryDetails({
               { id: "acceptance", label: "ACCEPTANCE" },
               { id: "forms", label: "FORMS" },
               { id: "documents", label: "DOCUMENTS" },
+              { id: "training", label: "TRAINING" },
+              { id: "attendance", label: "ATTENDANCE" },
               { id: "communications", label: "COMMUNICATIONS" },
               { id: "workflow", label: "WORKFLOW" },
               { id: "audits", label: "AUDIT LOGS" },
@@ -3202,7 +3305,7 @@ export function BeneficiaryDetails({
                   <input
                     type="checkbox"
                     id="medDec"
-                    checked={formFields.medicalDeclaration}
+                    checked={Boolean(formFields.medicalDeclaration)}
                     disabled={beneficiary.admissionFormCompleted || beneficiary.admissionFormStatus === "LOCKED"}
                     onChange={(e) => setFormFields({ ...formFields, medicalDeclaration: e.target.checked })}
                     className="h-4 w-4 rounded text-indigo-600 focus:ring-indigo-550 focus:ring-indigo-500 border-slate-300 disabled:opacity-60"
@@ -4064,18 +4167,21 @@ export function BeneficiaryDetails({
                                     Preview
                                   </button>
                                   <span className="text-slate-205 text-slate-200">|</span>
-                                  <a
-                                    href={doc.pdfUrl}
-                                    download={`document_${doc.id}.pdf`}
-                                    onClick={() => {
+                                  <button
+                                    type="button"
+                                    onClick={async (e) => {
+                                      e.preventDefault();
                                       trackDocumentActivity(doc.id, "Downloaded", beneficiary.email || "Candidate Profile", "Downloaded PDF File format successfully");
+                                      try {
+                                        await downloadWithAuth(doc.pdfUrl, `document_${doc.id}.pdf`);
+                                      } catch (err: any) {
+                                        showToast("Download failed: " + err.message, "error");
+                                      }
                                     }}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-slate-650 text-slate-600 hover:text-slate-800 font-bold hover:underline"
+                                    className="text-slate-650 text-slate-600 hover:text-slate-800 font-bold hover:underline bg-transparent border-0 inline-block p-0 cursor-pointer"
                                   >
                                     Download
-                                  </a>
+                                  </button>
                                   <span className="text-slate-205 text-slate-200">|</span>
                                   <button
                                     type="button"
@@ -4167,22 +4273,47 @@ export function BeneficiaryDetails({
             </div>
           )}
 
-          {/* TAB 6: TRAINING PANEL */}
-          {activeTab === "training" && (
+          {/* TAB: DEDICATED ATTENDANCE PANEL */}
+          {activeTab === "attendance" && (
             <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs text-left space-y-6 duration-300 animate-in fade-in font-sans">
-              
               <div className="flex justify-between items-center pb-2 border-b border-slate-100">
-                <h4 className="font-display font-bold text-slate-900 text-xs uppercase">
-                  Classroom Engagement & Training Milestones Tracker
-                </h4>
-                {hoursPercent >= 100 && (
-                  <div className="animate-bounce bg-yellow-500 text-slate-950 text-[10px] font-bold px-2 py-0.5 rounded shadow-sm flex items-center gap-1">
-                    <Award className="w-3.5 h-3.5" /> CERTIFICATE UNLOCKED
-                  </div>
-                )}
+                <div>
+                  <h4 className="font-display font-bold text-slate-900 text-xs uppercase tracking-wider">
+                    Trainee Attendance History & Biometric Audit
+                  </h4>
+                  <p className="text-[11px] text-slate-500 mt-0.5">Real-time attendance logs and device synchronizations.</p>
+                </div>
               </div>
 
-              {/* GRID */}
+              {/* KPI Summary Cards */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 font-mono">
+                <div className="bg-slate-50 border border-slate-200 p-3.5 rounded-xl">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase block">Total Days Logged</span>
+                  <span className="text-lg font-black text-slate-900">{realAttendanceRecords.length}</span>
+                </div>
+                <div className="bg-emerald-50/50 border border-emerald-200 p-3.5 rounded-xl">
+                  <span className="text-[10px] font-bold text-emerald-600 uppercase block">Present / Late</span>
+                  <span className="text-lg font-black text-emerald-800">
+                    {realAttendanceRecords.filter(r => r.status === "PRESENT" || r.status === "LATE").length}
+                  </span>
+                </div>
+                <div className="bg-rose-50/50 border border-rose-200 p-3.5 rounded-xl">
+                  <span className="text-[10px] font-bold text-rose-600 uppercase block">Absent Days</span>
+                  <span className="text-lg font-black text-rose-800">
+                    {realAttendanceRecords.filter(r => r.status === "ABSENT").length}
+                  </span>
+                </div>
+                <div className="bg-indigo-50/50 border border-indigo-200 p-3.5 rounded-xl">
+                  <span className="text-[10px] font-bold text-indigo-600 uppercase block">Attendance Yield</span>
+                  <span className="text-lg font-black text-indigo-900">
+                    {realAttendanceRecords.length > 0 
+                      ? ((realAttendanceRecords.filter(r => r.status === "PRESENT" || r.status === "LATE").length / realAttendanceRecords.length) * 100).toFixed(1) 
+                      : "0.0"}%
+                  </span>
+                </div>
+              </div>
+
+              {/* GRID: Manual Entry & History Table */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 
                 {/* ATTENDANCE CONTROL PANEL */}
@@ -4237,46 +4368,57 @@ export function BeneficiaryDetails({
                   </div>
                 </div>
 
-                {/* RECORD LOGS MATRIX */}
+                {/* RECORD LOGS TABLE */}
                 <div className="md:col-span-2 space-y-3">
-                  <span className="text-[10px] font-bold text-slate-400 font-mono uppercase block">Daily Attendance Records Timeline</span>
+                  <span className="text-[10px] font-bold text-slate-400 font-mono uppercase block">Attendance History Entries</span>
 
-                  {attendanceLogs.length === 0 ? (
+                  {realAttendanceRecords.length === 0 ? (
                     <div className="py-14 text-center border rounded-xl border-dashed border-slate-200 text-slate-400 font-mono text-[10px] uppercase font-bold flex flex-col items-center justify-center">
                       <span>No Attendance logs reported yet</span>
                     </div>
                   ) : (
-                    <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[220px] overflow-y-auto">
+                    <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[320px] overflow-y-auto">
                       <table className="w-full text-left border-collapse font-mono text-xs">
                         <thead>
                           <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold">
-                            <th className="p-2.5 px-4 text-[9px]">DATE</th>
-                            <th className="p-2.5 px-4 text-[9px]">ENGAGEMENT TIER</th>
-                            <th className="p-2.5 px-4 text-[9px]">CREDIT HOURS</th>
-                            <th className="p-2.5 px-4 text-[9px] text-right">ACTION</th>
+                            <th className="p-2.5 px-3 text-[9px]">DATE</th>
+                            <th className="p-2.5 px-3 text-[9px]">STATUS</th>
+                            <th className="p-2.5 px-3 text-[9px]">SOURCE / TIMESTAMPS</th>
+                            <th className="p-2.5 px-3 text-[9px]">HOURS</th>
+                            <th className="p-2.5 px-3 text-[9px] text-right">ACTION</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 text-slate-600">
-                          {attendanceLogs.map((log) => (
+                          {realAttendanceRecords.map((log) => (
                             <tr key={log.id} className="hover:bg-slate-50/50">
-                              <td className="p-2 px-4 uppercase font-bold text-slate-800">{new Date(log.date).toLocaleDateString("en-GB")}</td>
-                              <td className="p-2 px-4">
-                                <span className={`px-1.5 py-0.5 rounded text-[8px] font-extrabold uppercase ${
-                                  log.status === "Present" 
-                                    ? "bg-emerald-50 text-emerald-700" 
-                                    : log.status === "Absent" 
-                                    ? "bg-rose-50 text-rose-700" 
-                                    : "bg-amber-50 text-amber-700"
+                              <td className="p-2.5 px-3 font-bold text-slate-800">{new Date(log.attendance_date).toLocaleDateString("en-GB")}</td>
+                              <td className="p-2.5 px-3">
+                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold uppercase ${
+                                  log.status === "PRESENT" 
+                                    ? "bg-emerald-50 text-emerald-700 border border-emerald-100" 
+                                    : log.status === "ABSENT" 
+                                    ? "bg-rose-50 text-rose-700 border border-rose-100" 
+                                    : "bg-amber-50 text-amber-700 border border-amber-100"
                                 }`}>
                                   {log.status}
                                 </span>
                               </td>
-                              <td className="p-2 px-4">{log.hoursLogged} Hours</td>
-                              <td className="p-2 px-4 text-right">
+                              <td className="p-2.5 px-3 text-[10px]">
+                                <div className="font-bold text-slate-700 uppercase flex items-center gap-1">
+                                  {log.attendance_source || "MANUAL"}
+                                </div>
+                                {log.attendance_source === "BIOMETRIC" || log.check_in_time || log.check_out_time ? (
+                                  <div className="text-[9px] text-slate-450 mt-0.5">
+                                    In: {log.check_in_time ? new Date(log.check_in_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "--:--"} | Out: {log.check_out_time ? new Date(log.check_out_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "--:--"}
+                                  </div>
+                                ) : null}
+                              </td>
+                              <td className="p-2.5 px-3 font-bold">{log.hours_logged || 0} hrs</td>
+                              <td className="p-2.5 px-3 text-right">
                                 <button
                                   type="button"
-                                  onClick={() => removeAttendanceLog(log.id, log.date)}
-                                  className="text-rose-500 hover:text-rose-750 text-[10px] font-bold"
+                                  onClick={() => removeAttendanceLog(log.id, log.attendance_date)}
+                                  className="text-rose-500 hover:text-rose-700 text-[10px] font-bold"
                                 >
                                   Delete
                                 </button>
@@ -4288,7 +4430,40 @@ export function BeneficiaryDetails({
                     </div>
                   )}
                 </div>
+              </div>
+            </div>
+          )}
 
+          {/* TAB 6: TRAINING PANEL */}
+          {activeTab === "training" && (
+            <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs text-left space-y-6 duration-300 animate-in fade-in font-sans">
+              
+              <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+                <h4 className="font-display font-bold text-slate-900 text-xs uppercase">
+                  Classroom Engagement & Training Milestones Tracker
+                </h4>
+                {hoursPercent >= 100 && (
+                  <div className="animate-bounce bg-yellow-500 text-slate-950 text-[10px] font-bold px-2 py-0.5 rounded shadow-sm flex items-center gap-1">
+                    <Award className="w-3.5 h-3.5" /> CERTIFICATE UNLOCKED
+                  </div>
+                )}
+              </div>
+
+              {/* GRID */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Attendance Log & Biometric Records</span>
+                    <p className="text-xs font-semibold text-slate-700 mt-0.5">Manage daily units and check-in audit records.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("attendance")}
+                    className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-700 transition cursor-pointer"
+                  >
+                    Open Attendance Tab
+                  </button>
+                </div>
               </div>
               
               {/* CERTIFICATE SECTION */}
@@ -5472,14 +5647,20 @@ export function BeneficiaryDetails({
                           </div>
 
                           {ver.pdfUrl && (
-                            <a
-                              href={ver.pdfUrl}
-                              target="_blank"
-                              rel="noreferrer"
+                            <button
+                              type="button"
+                              onClick={async (e) => {
+                                e.preventDefault();
+                                try {
+                                  await downloadWithAuth(ver.pdfUrl, `document_v${ver.version || 1}.pdf`);
+                                } catch (err: any) {
+                                  showToast("Download failed: " + err.message, "error");
+                                }
+                              }}
                               className="text-[10.5px] font-bold font-mono text-indigo-750 hover:text-indigo-900 border border-slate-250 bg-white hover:bg-slate-50 px-2.5 py-1.5 rounded flex items-center gap-0.5 shadow-2xs cursor-pointer"
                             >
                               Download <Download className="h-3 w-3" />
-                            </a>
+                            </button>
                           )}
                         </div>
                       ))

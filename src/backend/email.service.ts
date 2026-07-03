@@ -299,85 +299,84 @@ export class EmailService {
       </div>
     `;
 
-    if (resend) {
-      try {
-        const prepStart = globalThis.performance ? globalThis.performance.now() : Date.now();
-        const emailTo = to || "uniqueideasproject@gmail.com";
-        const formattedAttachments = attachmentsList.map(a => {
-          const parts = a.content.split(",");
-          const base64Content = parts[1] || parts[0];
-          const buffer = Buffer.from(base64Content, "base64");
-          
-          logForensicPdfTrace("Email Attachment", a.name, buffer);
+    if (!resend) {
+      console.error("[EmailService] RESEND_API_KEY environment variable is not configured. Aborting email dispatch.");
+      return {
+        success: false,
+        status: "Failed",
+        errorDetails: "RESEND_API_KEY is not configured in the runtime environment variables on Render. Please configure a valid RESEND_API_KEY to enable automated document delivery."
+      };
+    }
 
-          // Priority 2 requirement: Explicitly log recipient, filename, and attachment size
-          console.log(`[EmailService] STAGE 6 - EMAIL ATTACHMENT LOG:
-  Recipient: ${emailTo}
-  Filename: ${a.name}
-  Attachment Size: ${buffer.length} bytes
-  MIME Type: application/pdf`);
+    try {
+      const prepStart = globalThis.performance ? globalThis.performance.now() : Date.now();
+      const emailTo = to || "uniqueideasproject@gmail.com";
+      const formattedAttachments = attachmentsList.map(a => {
+        const parts = a.content.split(",");
+        const base64Content = parts[1] || parts[0];
+        const buffer = Buffer.from(base64Content, "base64");
+        
+        logForensicPdfTrace("Email Attachment", a.name, buffer);
 
-          return {
-            filename: a.name,
-            content: buffer,
-            contentType: "application/pdf"
-          };
-        });
-        const prepEnd = globalThis.performance ? globalThis.performance.now() : Date.now();
-        const prepTime = prepEnd - prepStart;
+        // Priority 2 requirement: Explicitly log recipient, filename, and attachment size
+        console.log(`[EmailService] STAGE 6 - EMAIL ATTACHMENT LOG:
+Recipient: ${emailTo}
+Filename: ${a.name}
+Attachment Size: ${buffer.length} bytes
+MIME Type: application/pdf`);
 
-        const fromEmail = "IDEAS TVET <admission@uniqueideas.dontechservicesconst.com>";
+        return {
+          filename: a.name,
+          content: buffer,
+          contentType: "application/pdf"
+        };
+      });
+      const prepEnd = globalThis.performance ? globalThis.performance.now() : Date.now();
+      const prepTime = prepEnd - prepStart;
 
-        const dispatchStart = globalThis.performance ? globalThis.performance.now() : Date.now();
-        const { data, error } = await resend.emails.send({
-          from: fromEmail,
-          to: emailTo,
-          subject: emailSubject,
-          html: emailHtml,
-          attachments: formattedAttachments
-        });
-        const dispatchEnd = globalThis.performance ? globalThis.performance.now() : Date.now();
-        const dispatchTime = dispatchEnd - dispatchStart;
+      const fromEmail = "IDEAS TVET <admission@uniqueideas.dontechservicesconst.com>";
 
-        console.log(`[EMAIL-PROFILE]
+      const dispatchStart = globalThis.performance ? globalThis.performance.now() : Date.now();
+      const { data, error } = await resend.emails.send({
+        from: fromEmail,
+        to: emailTo,
+        subject: emailSubject,
+        html: emailHtml,
+        attachments: formattedAttachments
+      });
+      const dispatchEnd = globalThis.performance ? globalThis.performance.now() : Date.now();
+      const dispatchTime = dispatchEnd - dispatchStart;
+
+      console.log(`[EMAIL-PROFILE]
 prepAttachments=${prepTime.toFixed(2)}ms
 resendSend=${dispatchTime.toFixed(2)}ms
 total=${(prepTime + dispatchTime).toFixed(2)}ms`);
 
-        if (error) {
-          const statusCode = (error as any).statusCode || (error as any).status;
-          let errorDetails = error.message || "Unknown Resend API error";
-          // Provide actionable guidance for the two most common Resend failures
-          if (statusCode === 403 || errorDetails.toLowerCase().includes("domain") || errorDetails.toLowerCase().includes("not verified")) {
-            errorDetails = `Resend rejected the email: the sender domain 'uniqueideas.dontechservicesconst.com' must be verified in your Resend dashboard before emails can be sent. Error: ${error.message}`;
-          } else if (statusCode === 401 || errorDetails.toLowerCase().includes("api key") || errorDetails.toLowerCase().includes("unauthorized")) {
-            errorDetails = `Resend API key is invalid or expired. Check RESEND_API_KEY in your Render environment variables. Error: ${error.message}`;
-          }
-          console.error("[EmailService] Resend delivery error details:", error);
-          console.error(`[EmailService] Status: ${statusCode} | Recipient: ${emailTo}`);
-          return { success: false, status: "Failed", errorDetails, apiResponse: error };
+      if (error) {
+        console.error("[EmailService] Resend delivery error details:", error);
+        const statusCode = (error as any).statusCode || (error as any).status || 400;
+        let mappedMessage = error.message || "Unknown SMTP / Resend delivery error.";
+        if (statusCode === 403) {
+          mappedMessage = "Domain verification failed in Resend console for uniqueideas.dontechservicesconst.com";
+        } else if (statusCode === 401) {
+          mappedMessage = "Invalid or expired RESEND_API_KEY";
         }
-
-        console.log(`[Resend] Success: Formal admission dispatches successfully routed to ${emailTo}. Message ID: ${data?.id}`);
-        return { success: true, status: "Delivered", messageId: data?.id || undefined, apiResponse: data };
-      } catch (err: any) {
-        console.error(`[Resend] Email dispatch exception:`, err);
-        return { success: false, status: "Failed", errorDetails: err.message || String(err), apiResponse: err };
+        return { success: false, status: "Failed", errorDetails: mappedMessage, apiResponse: error };
       }
-    }
 
-    //     // NO RESEND API KEY: Return a REAL failure, not a simulated success.
-    // Previously this returned { success: true } with no email sent, causing
-    // the UI to show "Sent" while the student received nothing.
-    // The operator must add RESEND_API_KEY to Render environment variables.
-    const missingKeyError = "Email delivery failed: RESEND_API_KEY is not configured. Add it to your Render environment variables and redeploy.";
-    console.error(`[EmailService] CRITICAL: ${missingKeyError}`);
-    console.error(`[EmailService] Intended recipient: ${to} | Student: ${studentName}`);
-    return {
-      success: false,
-      status: "Failed" as const,
-      errorDetails: missingKeyError
-    };
+      console.log(`[Resend] Success: Formal admission dispatches successfully routed to ${emailTo}. Message ID: ${data?.id}`);
+      return { success: true, status: "Delivered", messageId: data?.id || undefined, apiResponse: data };
+    } catch (err: any) {
+      console.error(`[Resend] Email dispatch exception:`, err);
+      const statusCode = err.statusCode || err.status || 500;
+      let mappedMessage = err.message || String(err);
+      if (statusCode === 403) {
+        mappedMessage = "Domain verification failed in Resend console for uniqueideas.dontechservicesconst.com";
+      } else if (statusCode === 401) {
+        mappedMessage = "Invalid or expired RESEND_API_KEY";
+      }
+      return { success: false, status: "Failed", errorDetails: mappedMessage, apiResponse: err };
+    }
   }
 
   /**

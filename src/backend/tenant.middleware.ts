@@ -84,6 +84,13 @@ export async function tenantContextMiddleware(
           }
         } catch (releaseErr) {
           console.error("[TenantMiddleware] Error releasing PostgreSQL client:", releaseErr);
+        } finally {
+          if (store && store.dbClient === client) {
+            store.dbClient = null;
+          }
+          if (req.dbClient === client) {
+            req.dbClient = undefined;
+          }
         }
       }
     };
@@ -115,6 +122,14 @@ export async function tenantContextMiddleware(
           client.release();
         } catch (releaseErr) {
           console.error("[TenantMiddleware] Error releasing client during error path:", releaseErr);
+        } finally {
+          const store = requestStorage.getStore();
+          if (store && store.dbClient === client) {
+            store.dbClient = null;
+          }
+          if (req.dbClient === client) {
+            req.dbClient = undefined;
+          }
         }
       }
     }

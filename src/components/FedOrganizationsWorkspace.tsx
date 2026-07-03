@@ -25,6 +25,7 @@ interface State {
   id: string;
   name: string;
   code: string;
+  state_code?: string;
 }
 
 interface LGA {
@@ -56,6 +57,10 @@ interface TSP {
   created_at: string;
   suspended_at?: string;
   suspension_reason?: string;
+  activation_token_hash?: string;
+  activation_expires_at?: string;
+  activated_at?: string;
+  programme_manager?: string;
 }
 
 // Enterprise Mock Reports structure linked dynamically to TSPs

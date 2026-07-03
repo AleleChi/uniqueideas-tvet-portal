@@ -19,6 +19,8 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
   const [candidate, setCandidate] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [errorType, setErrorType] = useState<string | null>(null);
+  const [isAlreadySubmitted, setIsAlreadySubmitted] = useState(false);
 
   // Form Fields State
   const [emergencyName, setEmergencyName] = useState("");
@@ -51,6 +53,12 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
           const data = await res.json();
           setCandidate(data.candidate);
           
+          if (data.alreadySubmitted || data.candidate.admissionStatus === "ACCEPTED" || data.candidate.admissionFormCompleted === true) {
+            setIsAlreadySubmitted(true);
+            setLoading(false);
+            return;
+          }
+
           // Seed initial draft fields if student had some cached data
           if (data.candidate.admissionFormData) {
             const fd = data.candidate.admissionFormData;
@@ -63,10 +71,33 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
           }
         } else {
           const err = await res.json();
-          setValidationError(err.error || "The link credentials have expired or are unrecognized.");
+          const errType = err.error || "";
+          const errMsg = err.message || "";
+          setErrorType(errType);
+
+          if (res.status === 500 || errType === "SERVER_ERROR") {
+            setErrorType("SERVER_ERROR");
+            setValidationError("We could not complete link verification due to a server error. Please retry or contact your training provider.");
+          } else if (errType === "TOKEN_EXPIRED" || errType === "OFFER_EXPIRED" || errType === "OFFER_WINDOW_EXPIRED") {
+            setErrorType("TOKEN_EXPIRED");
+            setValidationError(errMsg || "This offer link has expired. Please contact your training provider for a new link.");
+          } else if (errType === "TOKEN_REVOKED") {
+            setErrorType("TOKEN_REVOKED");
+            setValidationError(errMsg || "This portal link is no longer active due to administrative status change or rollback.");
+          } else if (errType === "TOKEN_SUBMITTED" || errType === "TOKEN_ALREADY_SUBMITTED" || errType === "ALREADY_SUBMITTED") {
+            setErrorType("TOKEN_SUBMITTED");
+            setValidationError(errMsg || "Your acceptance has already been submitted.");
+          } else if (errType === "BENEFICIARY_NOT_FOUND" || errType === "TOKEN_INVALID") {
+            setErrorType("TOKEN_INVALID");
+            setValidationError(errMsg || "The candidate profile could not be found or activation link is invalid.");
+          } else {
+            setErrorType("TOKEN_INVALID");
+            setValidationError(errMsg || "We could not verify this link. Please contact your training provider.");
+          }
         }
       } catch (e) {
-        setValidationError("Could not complete token gateway verification.");
+        setErrorType("SERVER_ERROR");
+        setValidationError("We could not complete link verification due to a server error. Please retry or contact your training provider.");
       } finally {
         setLoading(false);
       }
@@ -80,45 +111,18 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
     window.open(`${API_BASE_URL}/api/admissions/download-letter/${candidate.id}`, "_blank");
   };
 
+  const triggerAcceptanceTemplateDownload = () => {
+    if (!candidate) return;
+    window.open(`${API_BASE_URL}/api/admissions/download-acceptance/${candidate.id}`, "_blank");
+  };
+
   const triggerAcceptanceLetterDownload = () => {
     if (!candidate) return;
     if (candidate.acceptanceLetterUrl) {
       window.open(candidate.acceptanceLetterUrl, "_blank");
       return;
     }
-
-    const htmlContent = `
-      <html>
-        <head>
-          <title>Admission Acceptance Form - ${candidate.id}</title>
-          <style>
-            body { font-family: 'Times New Roman', serif; padding: 50px; line-height: 1.6; color: #1e293b; max-width: 800px; margin: 0 auto; }
-            .header { text-align: center; border-bottom: 2px solid #0f172a; padding-bottom: 10px; margin-bottom: 25px; }
-            .title { text-align: center; font-size: 16px; font-weight: bold; background: #e2e8f0; padding: 8px; border: 1px solid #cbd5e1; }
-          </style>
-        </head>
-        <body>
-          <div class="header">
-            <h1 style="font-size: 22px; margin: 0;">Unique Technology Nig. Ltd</h1>
-            <p style="font-size: 11px; margin: 3px 0; color: #64748b;">FEDERAL MINISTRY OF EDUCATION TVET SECTOR</p>
-          </div>
-          <div class="title">OFFER ACCEPTANCE & ENROLLMENT ATTESTATION CONTRACT</div>
-          <br>
-          <p>I, <strong>${candidate.firstName.toUpperCase()} ${candidate.lastName.toUpperCase()}</strong> (ID: ${candidate.id}), do hereby declare full acceptance of the offer into the Computer Hardware & repairs skill cohort.</p>
-          <p>I pledge to conform to all class protocols, attend mandatory biometrics loggers daily, and maintain a minimum of 90 classroom hours.</p>
-          <br><br><br>
-          <div style="display: flex; justify-content: space-between;">
-            <div style="border-top: 1px solid #475569; width: 45%; text-align: center; padding-top: 4px;">Trainee Ink / E-Signature</div>
-            <div style="border-top: 1px solid #475569; width: 45%; text-align: center; padding-top: 4px;">Verified Hub Seal</div>
-          </div>
-        </body>
-      </html>
-    `;
-    const blob = new Blob([htmlContent], { type: "text/html" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `IDEAS_TVET_Acceptance_Form_Template_${candidate.id}.html`;
-    link.click();
+    window.open(`${API_BASE_URL}/api/admissions/download-acceptance/${candidate.id}`, "_blank");
   };
 
   // E-Signature Drawing Logic
@@ -282,7 +286,19 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
   }
 
   if (validationError) {
-    const isExpired = validationError.toLowerCase().includes("expire");
+    let headingText = "Activation Link Invalid";
+    if (errorType === "SERVER_ERROR") {
+      headingText = "Verification Server Error";
+    } else if (errorType === "TOKEN_EXPIRED") {
+      headingText = "Activation Link Expired";
+    } else if (errorType === "TOKEN_REVOKED") {
+      headingText = "Activation Link Revoked";
+    } else if (errorType === "TOKEN_SUBMITTED") {
+      headingText = "Activation Link Already Submitted";
+    } else if (validationError.toLowerCase().includes("expired") || validationError.toLowerCase().includes("expire")) {
+      headingText = "Activation Link Expired";
+    }
+
     return (
       <div className="h-screen w-screen flex flex-col justify-center items-center bg-slate-900 text-white font-sans px-6">
         <div className="max-w-md w-full text-center space-y-6 bg-slate-950 p-8 border border-rose-950 rounded-2xl shadow-2xl">
@@ -291,16 +307,41 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
           </div>
           <div className="space-y-2">
             <h2 className="text-lg font-bold font-sans text-rose-400 uppercase tracking-wide">
-              {isExpired ? "Activation Link Expired" : "Activation Link Invalid"}
+              {headingText}
             </h2>
             <p className="text-slate-400 text-xs leading-relaxed">
-              {isExpired ? (
-                "This activation link has expired. Request a new activation email."
-              ) : (
-                "This activation link is invalid. Please contact your programme administrator."
-              )}
+              {validationError}
             </p>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (isAlreadySubmitted) {
+    return (
+      <div className="h-screen w-screen flex flex-col justify-center items-center bg-slate-900 text-white font-sans px-6">
+        <div className="max-w-md w-full text-center space-y-6 bg-slate-950 p-8 border border-emerald-950 rounded-2xl shadow-2xl">
+          <div className="mx-auto w-12 h-12 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+            <FileCheck className="w-6 h-6" />
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-lg font-bold font-sans text-emerald-400 uppercase tracking-wide">
+              Acceptance Submitted
+            </h2>
+            <p className="text-slate-400 text-xs leading-relaxed">
+              Your acceptance has already been submitted.
+            </p>
+          </div>
+          {candidate && (
+            <div className="p-4 bg-slate-900 border border-slate-800 rounded-lg text-left text-[11px] font-sans space-y-2 text-slate-400">
+              <div>• Student: <strong>{candidate.firstName} {candidate.lastName}</strong></div>
+              <div>• Status: <span className="text-emerald-400 font-bold">ACCEPTED</span></div>
+            </div>
+          )}
+          <p className="text-[10px] text-slate-500 font-mono">
+            You may safely close this response tab now.
+          </p>
         </div>
       </div>
     );
@@ -334,6 +375,149 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
             You may safely close this response tab now.
           </p>
         </div>
+      </div>
+    );
+  }
+
+  if (candidate && (
+    String(candidate.admissionStatus).toUpperCase() === "ACCEPTED" || 
+    String(candidate.admissionStatus).toUpperCase() === "ACCEPTANCE UPLOADED" || 
+    candidate.admissionFormCompleted
+  )) {
+    return (
+      <div className="min-h-screen w-screen bg-slate-900 text-slate-100 flex flex-col font-sans antialiased pb-12">
+        {/* Header Banner */}
+        <header className="bg-slate-950 border-b border-slate-800 px-6 py-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 sticky top-0 z-50">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-indigo-600 rounded-lg text-white">
+              <Sparkles className="w-5 h-5" />
+            </div>
+            <div>
+              <h1 className="font-bold text-sm tracking-wide text-slate-200 uppercase font-sans">
+                Unique Technology Nig. Ltd
+              </h1>
+              <p className="text-[10px] font-mono text-slate-400 font-bold uppercase tracking-widest mt-0.5">
+                Federal FME IDEAS-TVET Skills Registry Gateway
+              </p>
+            </div>
+          </div>
+          <div className="bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-800 flex items-center gap-2 self-start sm:self-auto">
+            <span className="h-2 w-2 rounded-full bg-emerald-400" />
+            <span className="text-[10px] font-mono font-bold text-indigo-400">
+              PORTAL SECURED • SUBMISSION ARCHIVED
+            </span>
+          </div>
+        </header>
+
+        {/* Main Content Container */}
+        <main className="max-w-2xl w-full mx-auto px-6 mt-12 flex-grow space-y-8">
+          
+          <div className="bg-slate-950 border border-slate-800 rounded-3xl p-8 sm:p-10 text-center space-y-8 shadow-2xl relative overflow-hidden">
+            <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-emerald-500 via-indigo-500 to-indigo-600" />
+            
+            <div className="mx-auto w-16 h-16 rounded-full bg-emerald-950 flex items-center justify-center text-emerald-400 border border-emerald-900">
+              <FileCheck className="w-8 h-8 animate-pulse" />
+            </div>
+
+            <div className="space-y-3">
+              <span className="text-[10px] px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-bold tracking-widest uppercase font-mono">
+                Admission Finalized
+              </span>
+              <h2 className="text-xl font-bold font-sans text-slate-100 tracking-tight">
+                Offer Acceptance Response Received
+              </h2>
+              <p className="text-slate-400 text-xs leading-relaxed max-w-lg mx-auto">
+                Welcome on board, <strong className="text-slate-200">{candidate.firstName} {candidate.lastName}</strong>! Your supplemental student profile is verified, and the signed offer acceptance contract has been successfully cataloged under standard Federal registry protocols.
+              </p>
+            </div>
+
+            {/* Candidate Details & Status Card */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-left space-y-4">
+              <div className="flex items-center gap-2 text-slate-350 font-bold uppercase tracking-wider text-[10px] pb-2 border-b border-slate-800">
+                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Certified Enrollment Profile</span>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-y-4 gap-x-2 text-xs">
+                <div>
+                  <span className="block text-[10px] text-slate-500 font-mono uppercase">Student Reg ID</span>
+                  <span className="font-bold text-slate-350 font-mono">{candidate.id}</span>
+                </div>
+                <div>
+                  <span className="block text-[10px] text-slate-500 font-mono uppercase">Assigned Course</span>
+                  <span className="font-bold text-slate-350">{candidate.skillSector || "Computer Repairs Cohort"}</span>
+                </div>
+                <div>
+                  <span className="block text-[10px] text-slate-500 font-mono uppercase">Admission Status</span>
+                  <span className="font-bold text-emerald-400 uppercase">{candidate.admissionStatus || "Accepted"}</span>
+                </div>
+                <div>
+                  <span className="block text-[10px] text-slate-500 font-mono uppercase">Form Verification</span>
+                  <span className="font-bold text-emerald-400">COMPLETED & LOCKED</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Next Steps Card */}
+            <div className="border border-slate-850 bg-slate-900/50 rounded-2xl p-6 text-left space-y-4">
+              <div className="flex items-center gap-2 text-indigo-400 font-bold uppercase tracking-wider text-[10px] pb-2 border-b border-indigo-950">
+                <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Next Onboarding Procedures</span>
+              </div>
+              
+              <div className="space-y-3.5 text-xs text-slate-400">
+                <div className="flex gap-3">
+                  <span className="h-5 w-5 rounded-full bg-slate-800 text-[10px] font-bold font-mono flex items-center justify-center text-slate-400 shrink-0 mt-0.5">
+                    1
+                  </span>
+                  <div>
+                    <h5 className="font-bold text-slate-300">Biometric Verification Log</h5>
+                    <p className="text-[11px] text-slate-500 leading-relaxed mt-0.5">
+                      On your first day, walk up to the Unique Technology Nig. Ltd center registration workspace to register your finger logger credentials.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <span className="h-5 w-5 rounded-full bg-slate-800 text-[10px] font-bold font-mono flex items-center justify-center text-slate-400 shrink-0 mt-0.5">
+                    2
+                  </span>
+                  <div>
+                    <h5 className="font-bold text-slate-300">Official Passport Upload</h5>
+                    <p className="text-[11px] text-slate-500 leading-relaxed mt-0.5">
+                      The portal will prompt the final photo and ID cards step during centre-led biometric scheduling. Keep standard white background passport image copies ready.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex flex-col sm:flex-row gap-4 justify-center pt-2">
+              <button
+                type="button"
+                onClick={triggerAdmissionLetterDownload}
+                className="py-2.5 px-6 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold uppercase tracking-wider transition active:scale-95 cursor-pointer flex items-center justify-center gap-2 shadow-md"
+              >
+                <ArrowDownToLine className="w-4 h-4" />
+                <span>Download Admission Offer</span>
+              </button>
+              
+              <button
+                type="button"
+                onClick={triggerAcceptanceLetterDownload}
+                className="py-2.5 px-6 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-bold uppercase tracking-wider transition active:scale-95 cursor-pointer flex items-center justify-center gap-2 border border-slate-700"
+              >
+                <ArrowDownToLine className="w-4 h-4" />
+                <span>Download Acceptance Copy</span>
+              </button>
+            </div>
+
+            <p className="text-[10px] text-slate-500 font-mono">
+              Federal TVET Digital Registry System • Secure Transaction ID: {candidate.id || "TRAINEE"}
+            </p>
+          </div>
+        </main>
       </div>
     );
   }
@@ -441,7 +625,7 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
                 </div>
                 <button
                   type="button"
-                  onClick={triggerAcceptanceLetterDownload}
+                  onClick={triggerAcceptanceTemplateDownload}
                   className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg transition active:scale-95 cursor-pointer flex items-center justify-center"
                   title="Download Acceptance Form Template"
                 >
