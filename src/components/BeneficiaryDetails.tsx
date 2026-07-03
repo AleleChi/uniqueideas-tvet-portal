@@ -1233,7 +1233,11 @@ export function BeneficiaryDetails({
         showToast("Offer letter package regenerated successfully!", "success");
         await logActionToBackend("ADMISSION_LETTER_GENERATE", `Regenerated official TVET admission offer package for candidate ID ${beneficiary.id}`);
       } else {
-        showToast(data.error || "Failed to regenerate offer package.", "error");
+        if (data.error === "PDF_RENDER_UNAVAILABLE" || (data.error && data.error.includes("PDF_RENDER_UNAVAILABLE"))) {
+          showToast("PDF renderer is not available on the server. The offer was not regenerated. Please retry after renderer setup is complete.", "error");
+        } else {
+          showToast(data.error || "Failed to regenerate offer package.", "error");
+        }
       }
     } catch (e: any) {
       console.error(e);
@@ -1280,7 +1284,11 @@ export function BeneficiaryDetails({
             await onUpdate(data.beneficiary);
           }
           console.error("Offer dispatch failed:", data.error || data.smtpErrorDetails);
-          showToast("Offer email could not be sent. Please retry or contact the administrator.", "error");
+          if (data.error === "PDF_RENDER_UNAVAILABLE") {
+            showToast(data.message || "Offer link is ready, but official letters could not be generated. Please retry PDF generation after renderer is restored.", "error");
+          } else {
+            showToast("Offer email could not be sent. Please retry or contact the administrator.", "error");
+          }
         }
       } else {
         const err = await res.json().catch(() => ({}));

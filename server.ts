@@ -2204,6 +2204,7 @@ app.post("/api/admissions/transition-status", requireAuth, requireRoleOrPermissi
 app.post("/api/admissions/approve-acceptance", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", "REVIEW_OFFICER"], ["approve_admissions"]), AdmissionController.approveAcceptance);
 app.post("/api/admissions/reject-acceptance", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", "REVIEW_OFFICER"], ["reject_admissions"]), AdmissionController.rejectAcceptance);
 app.post("/api/admissions/:beneficiaryId/render-acceptance-pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.retryRenderAcceptancePdf);
+app.post("/api/admissions/:beneficiaryId/render-offer-documents", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.renderOfferDocuments);
 
 // PDF Download Endpoint with application/pdf and .pdf extension
 app.get("/api/admissions/download-letter/:id", async (req, res) => {
@@ -8983,6 +8984,21 @@ app.get("/api/diagnostics/dob", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_
   }
 });
 
+// PDF Renderer Diagnostics for system administrators and FED roles
+app.get("/api/system/pdf-renderer-health", requireAuth, requireRole(["SUPER_ADMIN", "FED", "FED_SUPER_ADMIN", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "FEDERAL_ME_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const health = await PdfService.checkRendererHealth();
+    res.json(health);
+  } catch (err: any) {
+    res.status(500).json({
+      available: false,
+      executablePath: "",
+      cacheDir: process.env.PUPPETEER_CACHE_DIR || "/opt/render/.cache/puppeteer",
+      reason: `Health probe failed: ${err.message || String(err)}`
+    });
+  }
+});
+
 // System & Tenant Diagnostics for observability and multi-tenancy verification
 app.get("/api/system/tenant-health", requireAuth, requireRole(["SUPER_ADMIN"]), async (req: AuthenticatedRequest, res) => {
   try {
@@ -15678,6 +15694,27 @@ async function startServer() {
     console.warn(`[WARNING]  ✗ Cloudinary settings are incomplete! Secure documents will fall back to simulation mode.`);
   }
   console.log("================================================================================");
+
+  // =========================================
+  // PDF RENDERER DIAGNOSTICS
+  // =========================================
+  try {
+    const cacheDir = process.env.PUPPETEER_CACHE_DIR || "/opt/render/.cache/puppeteer";
+    const resolvedPath = PdfService.resolveChromePath();
+    const exists = resolvedPath ? fs.existsSync(resolvedPath) : false;
+    
+    console.log("================================================================================");
+    console.log("                           PDF RENDERER DIAGNOSTICS                             ");
+    console.log("================================================================================");
+    console.log(`[PDF CHECK] Puppeteer Package Loaded:  ✓ YES`);
+    console.log(`[PDF CHECK] Executable Path Resolved:  ${resolvedPath || "✗ NOT RESOLVED"}`);
+    console.log(`[PDF CHECK] Executable Path Exists:    ${exists ? "✓ YES" : "✗ NO"}`);
+    console.log(`[PDF CHECK] Cache Directory:           ${cacheDir}`);
+    console.log(`[PDF CHECK] PDF Renderer Status:       ${resolvedPath && exists ? "AVAILABLE" : "UNAVAILABLE"}`);
+    console.log("================================================================================");
+  } catch (pdfDiagErr: any) {
+    console.error("[BOOT] Failed running PDF Renderer Diagnostics:", pdfDiagErr);
+  }
 
   // Custom safe mode check
   const isSafeMode = process.env.SAFE_MODE === "true";

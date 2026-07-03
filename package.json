@@ -9,7 +9,7 @@
     "start": "node dist/server.cjs",
     "clean": "rm -rf dist dist-server",
     "lint": "tsc --noEmit",
-    "postinstall": "puppeteer browsers install chrome"
+    "postinstall": "npx puppeteer browsers install chrome"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

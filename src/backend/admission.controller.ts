@@ -111,6 +111,16 @@ export class AdmissionController {
 
       // Invoke the single-source-of-truth service for offer dispatch
       const outcome = await OfferService.sendOffer(beneficiaryId, customDomain);
+      if (outcome.error === "PDF_RENDER_UNAVAILABLE") {
+        return res.status(200).json({
+          success: false,
+          error: "PDF_RENDER_UNAVAILABLE",
+          message: outcome.message || "Offer link is ready, but official letters could not be generated. Please retry PDF generation after renderer is restored.",
+          secureLink: outcome.secureLink,
+          beneficiary: outcome.beneficiary
+        });
+      }
+
       return res.status(200).json({ 
         success: outcome.success, 
         message: outcome.success 
@@ -498,6 +508,212 @@ export class AdmissionController {
     } catch (err: any) {
       console.error("[AdmissionController] retryRenderAcceptancePdf failed:", err);
       return res.status(500).json({ error: err.message || "Failed retrying acceptance PDF generation." });
+    }
+  }
+
+  /**
+   * Admin endpoint to manually trigger regeneration of offer documents (admission & acceptance letters)
+   * without altering the acceptance status or duplicate records.
+   * POST /api/admissions/:beneficiaryId/render-offer-documents
+   */
+  static async renderOfferDocuments(req: Request, res: Response) {
+    try {
+      const { beneficiaryId } = req.params;
+      if (!beneficiaryId) {
+        return res.status(400).json({ error: "Missing required parameter: beneficiaryId" });
+      }
+
+      const resolvedId = await AdmissionController.resolveBeneficiaryIdResiliently(beneficiaryId);
+      const beneficiary = await DbRepo.getBeneficiaryById(resolvedId);
+      if (!beneficiary) {
+        return res.status(404).json({ error: "Candidate admissions record was not located in registry." });
+      }
+
+      // Check if PDF renderer is available
+      const chromePath = PdfService.resolveChromePath();
+      if (!chromePath) {
+        return res.status(200).json({
+          success: false,
+          error: "PDF_RENDER_UNAVAILABLE",
+          message: "PDF rendering is temporarily unavailable on the server. Please check the renderer health."
+        });
+      }
+
+      // Retrieve latest sequential versions
+      const latestVersion = await DbRepo.getLatestDocumentVersion(resolvedId, DocumentType.ADMISSION_LETTER);
+      const nextVersionNum = latestVersion + 1;
+
+      const latestAccVersion = await DbRepo.getLatestDocumentVersion(resolvedId, DocumentType.ACCEPTANCE_LETTER);
+      const nextAccLetterVerNum = latestAccVersion + 1;
+
+      // Compile unique validation codes
+      const prefixAdm = "TVET-ADM";
+      const hexAdm = Math.floor(Math.random() * 16777215).toString(16).toUpperCase().padStart(6, "0");
+      const verificationCodeAdm = `${prefixAdm}-${hexAdm}`;
+
+      const prefixAcc = "TVET-ACC";
+      const hexAcc = Math.floor(Math.random() * 16777215).toString(16).toUpperCase().padStart(6, "0");
+      const verificationCodeAcc = `${prefixAcc}-${hexAcc}`;
+
+      const metaAdm = {
+        watermarkText: "SECURED REGISTRY",
+        watermarkEnabled: false,
+        qrDataUrl: "",
+        verificationCode: verificationCodeAdm,
+      };
+      
+      const metaAcc = {
+        watermarkText: "SECURED REGISTRY",
+        watermarkEnabled: false,
+        qrDataUrl: "",
+        verificationCode: verificationCodeAcc,
+      };
+
+      // Generate PDF buffers
+      let admissionPdfBuffer: Buffer;
+      let acceptancePdfBuffer: Buffer;
+      try {
+        const compiled = await Promise.all([
+          PdfService.generateAdmissionLetterPdf(beneficiary, metaAdm) as Promise<Buffer>,
+          PdfService.generateAcceptanceLetterPdf(beneficiary, metaAcc) as Promise<Buffer>
+        ]);
+        admissionPdfBuffer = compiled[0];
+        acceptancePdfBuffer = compiled[1];
+      } catch (pdfErr: any) {
+        return res.status(200).json({
+          success: false,
+          error: "PDF_RENDER_UNAVAILABLE",
+          message: `PDF rendering failed: ${pdfErr.message || String(pdfErr)}`
+        });
+      }
+
+      const publicIdAdm = `beneficiary_${resolvedId}_admission_letter_v${nextVersionNum}`;
+      const publicIdAcc = `beneficiary_${resolvedId}_acceptance_letter_v${nextAccLetterVerNum}`;
+      
+      const admissionPdfUrl = `https://res.cloudinary.com/ideas-tvet/raw/upload/${publicIdAdm}.pdf`;
+      const acceptancePdfUrl = `https://res.cloudinary.com/ideas-tvet/raw/upload/${publicIdAcc}.pdf`;
+
+      // Upload to Cloudinary
+      await Promise.all([
+        CloudinaryService.uploadDocument(admissionPdfBuffer, publicIdAdm),
+        CloudinaryService.uploadDocument(acceptancePdfBuffer, publicIdAcc)
+      ]).catch(e => {
+        console.error("[AdmissionController.renderOfferDocuments] Cloudinary Upload warning:", e);
+      });
+
+      // Save documents to DB ledger
+      const admissionDocId = `gdoc_${Date.now()}_adm`;
+      const acceptanceDocId = `gdoc_${Date.now()}_acc`;
+      const operatorUsername = (req as any).user?.username || "ADMIN_OPERATOR";
+
+      const newDocAdm = {
+        id: admissionDocId,
+        beneficiaryId: resolvedId,
+        documentType: DocumentType.ADMISSION_LETTER,
+        version: nextVersionNum,
+        pdfUrl: admissionPdfUrl,
+        generatedBy: operatorUsername,
+        createdAt: new Date().toISOString(),
+        verificationCode: verificationCodeAdm,
+        verificationStatus: "UNVERIFIED",
+        verificationDate: "",
+        emailDeliveryStatus: "NOT_SENT",
+      };
+
+      const newDocAcc = {
+        id: acceptanceDocId,
+        beneficiaryId: resolvedId,
+        documentType: DocumentType.ACCEPTANCE_LETTER,
+        version: nextAccLetterVerNum,
+        pdfUrl: acceptancePdfUrl,
+        generatedBy: operatorUsername,
+        createdAt: new Date().toISOString(),
+        verificationCode: verificationCodeAcc,
+        verificationStatus: "UNVERIFIED",
+        verificationDate: "",
+        emailDeliveryStatus: "NOT_SENT",
+      };
+
+      await Promise.all([
+        DbRepo.saveGeneratedDocument(newDocAdm),
+        DbRepo.saveGeneratedDocument(newDocAcc)
+      ]);
+
+      // Update beneficiary metadata without resetting status or deleting data
+      beneficiary.admissionLetterUrl = admissionPdfUrl;
+      beneficiary.acceptanceLetterUrl = acceptancePdfUrl;
+
+      const fName = (beneficiary.firstName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const lName = (beneficiary.lastName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const namePart = fName && lName ? `${fName}_${lName}` : `${(beneficiary.id || "TRAINEE").replace(/[^A-Z0-9-]/g, "")}`;
+
+      const currentVersions = beneficiary.admissionLetterVersions || [];
+      beneficiary.admissionLetterVersions = [
+        ...currentVersions,
+        {
+          version: nextVersionNum,
+          url: admissionPdfUrl,
+          name: `${namePart}_ADMISSION_LETTER_v${nextVersionNum}.pdf`,
+          generatedAt: new Date().toISOString()
+        }
+      ];
+
+      const currentDocs = beneficiary.documentsList || [];
+      beneficiary.documentsList = [
+        ...currentDocs,
+        {
+          id: admissionDocId,
+          name: `${namePart}_ADMISSION_LETTER.pdf`,
+          type: "admission",
+          url: admissionPdfUrl,
+          uploadedAt: new Date().toISOString(),
+          version: nextVersionNum
+        },
+        {
+          id: acceptanceDocId,
+          name: `${namePart}_ACCEPTANCE_LETTER.pdf`,
+          type: "acceptance",
+          url: acceptancePdfUrl,
+          uploadedAt: new Date().toISOString(),
+          version: nextAccLetterVerNum
+        }
+      ];
+
+      beneficiary.updatedAt = new Date().toISOString();
+      await DbRepo.upsertBeneficiary(beneficiary);
+
+      // Save history and audit
+      await DbRepo.saveWorkflowHistory({
+        beneficiaryId: resolvedId,
+        oldStatus: beneficiary.admissionStatus || "Admission Sent",
+        newStatus: beneficiary.admissionStatus || "Admission Sent",
+        changedBy: operatorUsername,
+        changedAt: new Date().toISOString(),
+        remarks: "Manually retried document generation for offer package."
+      }).catch(() => {});
+
+      await DbRepo.saveAuditLog({
+        id: "log_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+        timestamp: new Date().toISOString(),
+        username: operatorUsername,
+        role: "Operator",
+        action: "Offer Documents Render Retried",
+        details: `Manually regenerated and compiled official offer letter documents for candidate: ${beneficiary.firstName} ${beneficiary.lastName}.`
+      }).catch(() => {});
+
+      const updatedBeneficiary = await DbRepo.getBeneficiaryById(resolvedId);
+
+      return res.status(200).json({
+        success: true,
+        admissionDocumentVersion: nextVersionNum,
+        acceptanceDocumentVersion: nextAccLetterVerNum,
+        admissionPdfUrl,
+        acceptancePdfUrl,
+        beneficiary: updatedBeneficiary
+      });
+    } catch (err: any) {
+      console.error("[AdmissionController.renderOfferDocuments] Error:", err);
+      return res.status(500).json({ error: err.message || "Failed to render offer documents." });
     }
   }
 
@@ -1846,10 +2062,33 @@ export class AdmissionController {
       };
 
       // Generate the fresh PDFs in memory
-      const [admissionPdfBuffer, acceptancePdfBuffer] = await Promise.all([
-        PdfService.generateAdmissionLetterPdf(beneficiary, metaAdm) as Promise<Buffer>,
-        PdfService.generateAcceptanceLetterPdf(beneficiary, metaAcc) as Promise<Buffer>
-      ]);
+      let admissionPdfBuffer: Buffer;
+      let acceptancePdfBuffer: Buffer;
+
+      try {
+        const chromePath = PdfService.resolveChromePath();
+        if (!chromePath) {
+          throw new Error("PDF_RENDER_UNAVAILABLE: PDF renderer is not configured or Chrome binary is missing on Render.");
+        }
+
+        const compiled = await Promise.all([
+          PdfService.generateAdmissionLetterPdf(beneficiary, metaAdm) as Promise<Buffer>,
+          PdfService.generateAcceptanceLetterPdf(beneficiary, metaAcc) as Promise<Buffer>
+        ]);
+        admissionPdfBuffer = compiled[0];
+        acceptancePdfBuffer = compiled[1];
+      } catch (pdfErr: any) {
+        console.error("[AdmissionController.regenerateOfferPackage] PDF renderer is unavailable or failed:", pdfErr.message || pdfErr);
+        // Clean return: Still generated token, but didn't overwrite existing PDFs or corrupt records
+        return res.status(200).json({
+          success: false,
+          error: "PDF_RENDER_UNAVAILABLE",
+          message: "Offer link was prepared, but official PDF rendering is temporarily unavailable.",
+          secureLink,
+          tokenExpiresAt,
+          beneficiary
+        });
+      }
 
       const publicIdAdm = `beneficiary_${resolvedId}_admission_letter_v${nextVersionNum}`;
       const publicIdAcc = `beneficiary_${resolvedId}_acceptance_letter_v${nextAccLetterVerNum}`;

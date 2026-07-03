@@ -401,10 +401,31 @@ export class AdmissionService {
       verificationCode: verificationCodeAcc,
     };
 
-    const [admissionPdfBuffer, acceptancePdfBuffer] = await Promise.all([
-      PdfService.generateAdmissionLetterPdf(beneficiary, metaAdm) as Promise<Buffer>,
-      PdfService.generateAcceptanceLetterPdf(beneficiary, metaAcc) as Promise<Buffer>
-    ]);
+    let admissionPdfBuffer: Buffer;
+    let acceptancePdfBuffer: Buffer;
+
+    try {
+      const chromePath = PdfService.resolveChromePath();
+      if (!chromePath) {
+        throw new Error("PDF_RENDER_UNAVAILABLE: PDF renderer is not configured or Chrome binary is missing on Render.");
+      }
+
+      const compiled = await Promise.all([
+        PdfService.generateAdmissionLetterPdf(beneficiary, metaAdm) as Promise<Buffer>,
+        PdfService.generateAcceptanceLetterPdf(beneficiary, metaAcc) as Promise<Buffer>
+      ]);
+      admissionPdfBuffer = compiled[0];
+      acceptancePdfBuffer = compiled[1];
+    } catch (pdfErr: any) {
+      console.error("[AdmissionService] PDF generation failed during sendAdmissionOffer:", pdfErr.message || pdfErr);
+      return {
+        success: false,
+        error: "PDF_RENDER_UNAVAILABLE",
+        message: "Offer link is ready, but official letters could not be generated. Please retry PDF generation after renderer is restored.",
+        secureLink,
+        beneficiary
+      };
+    }
 
     const isAdmissionRealPdf = admissionPdfBuffer && admissionPdfBuffer.length >= 4 && admissionPdfBuffer[0] === 0x25 && admissionPdfBuffer[1] === 0x50 && admissionPdfBuffer[2] === 0x44 && admissionPdfBuffer[3] === 0x46;
     const isAcceptanceRealPdf = acceptancePdfBuffer && acceptancePdfBuffer.length >= 4 && acceptancePdfBuffer[0] === 0x25 && acceptancePdfBuffer[1] === 0x50 && acceptancePdfBuffer[2] === 0x44 && acceptancePdfBuffer[3] === 0x46;
