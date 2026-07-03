@@ -1277,23 +1277,29 @@ export function BeneficiaryDetails({
           if (data.beneficiary) {
             await onUpdate(data.beneficiary);
           }
-          showToast(`Offer letter dispatched successfully! Student Link: ${data.secureLink || ""}`, "success");
+          if (data.pdfRendererUnavailable) {
+            showToast("Offer email sent with secure link. Official PDF attachments are pending until the renderer is restored.", "warning");
+          } else {
+            showToast(`Offer letter dispatched successfully! Student Link: ${data.secureLink || ""}`, "success");
+          }
         } else {
           setEmailStatus("idle");
           if (data.beneficiary) {
             await onUpdate(data.beneficiary);
           }
           console.error("Offer dispatch failed:", data.error || data.smtpErrorDetails);
-          if (data.error === "PDF_RENDER_UNAVAILABLE") {
+          if (data.pdfRendererUnavailable) {
+            showToast("Offer link was prepared, but email delivery failed.", "error");
+          } else if (data.error === "PDF_RENDER_UNAVAILABLE") {
             showToast(data.message || "Offer link is ready, but official letters could not be generated. Please retry PDF generation after renderer is restored.", "error");
           } else {
-            showToast("Offer email could not be sent. Please retry or contact the administrator.", "error");
+            showToast("Offer link was prepared, but email delivery failed.", "error");
           }
         }
       } else {
         const err = await res.json().catch(() => ({}));
         console.error("Backend error dispatching offer:", err);
-        showToast("Offer email could not be sent. Please retry or contact the administrator.", "error");
+        showToast("Offer link was prepared, but email delivery failed.", "error");
         setEmailStatus("idle");
       }
     } catch (e) {

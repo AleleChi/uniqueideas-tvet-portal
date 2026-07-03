@@ -202,15 +202,11 @@ export class PdfService {
     // 3. Check puppeteer.executablePath()
     try {
       const resolved = puppeteer.executablePath();
-      if (typeof resolved === "string") {
-        if (resolved && fs.existsSync(resolved)) {
-          return resolved;
-        }
-      } else if (resolved && typeof (resolved as any).then === "function") {
-        // It's a promise, we cannot resolve it synchronously here, skip or defer
+      if (typeof resolved === "string" && resolved && fs.existsSync(resolved)) {
+        return resolved;
       }
     } catch (e) {
-      console.warn("[PdfService] Error resolving puppeteer.executablePath():", e);
+      console.warn("[PdfService] Error checking exists on puppeteer.executablePath():", e);
     }
 
     // 4. Fallback recursive search inside Render cache directory
@@ -220,7 +216,29 @@ export class PdfService {
       return foundChrome;
     }
 
-    // 5. Hardcoded common system fallback paths
+    // 5. Search inside User Home Cache Directory
+    try {
+      const homeCacheDir = path.join(os.homedir(), ".cache", "puppeteer");
+      const foundInHome = findChromeInDir(homeCacheDir);
+      if (foundInHome) {
+        return foundInHome;
+      }
+    } catch (e) {
+      // Ignore home cache directory read errors
+    }
+
+    // 6. Search inside Current Working Directory Cache
+    try {
+      const cwdCacheDir = path.join(process.cwd(), ".cache", "puppeteer");
+      const foundInCwd = findChromeInDir(cwdCacheDir);
+      if (foundInCwd) {
+        return foundInCwd;
+      }
+    } catch (e) {
+      // Ignore cwd cache directory read errors
+    }
+
+    // 7. Hardcoded common system fallback paths
     const fallbacks = [
       "/usr/bin/google-chrome",
       "/usr/bin/chromium-browser",
@@ -230,6 +248,16 @@ export class PdfService {
       if (fs.existsSync(p)) {
         return p;
       }
+    }
+
+    // 8. Last resort fallback: return default puppeteer.executablePath() directly
+    try {
+      const resolved = puppeteer.executablePath();
+      if (typeof resolved === "string" && resolved) {
+        return resolved;
+      }
+    } catch (e) {
+      // Ignore
     }
 
     return null;
