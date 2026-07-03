@@ -464,12 +464,40 @@ export class AdmissionController {
       const outcome = await AdmissionService.processPortalSubmission(token, responseData);
       return res.status(200).json({
         success: true,
-        message: "Your e-Signature and admission enrollment profiles were successfully verified and logged.",
-        candidate: outcome.beneficiary
+        message: outcome.warning || "Your e-Signature and admission enrollment profiles were successfully verified and logged.",
+        candidate: outcome.beneficiary,
+        warning: outcome.warning || null
       });
     } catch (err: any) {
       console.error("[AdmissionController] submitResponse failed:", err);
       return res.status(500).json({ error: err.message || "Failed validating and persisting portal response." });
+    }
+  }
+
+  /**
+   * Controller for administrator retry of acceptance letter PDF generation
+   * POST /api/admissions/:beneficiaryId/render-acceptance-pdf
+   */
+  static async retryRenderAcceptancePdf(req: Request, res: Response) {
+    try {
+      const { beneficiaryId } = req.params;
+      const authReq = req as AuthenticatedRequest;
+      const adminUser = authReq.user?.email || "SYSTEM_ADMIN";
+
+      if (!beneficiaryId) {
+        return res.status(400).json({ error: "Missing parameter: beneficiaryId" });
+      }
+
+      const outcome = await AdmissionService.retryRenderAcceptancePdf(beneficiaryId, adminUser);
+      return res.status(200).json({
+        success: true,
+        message: "Successfully generated and registered official signed acceptance PDF.",
+        beneficiary: outcome.beneficiary,
+        document: outcome.document
+      });
+    } catch (err: any) {
+      console.error("[AdmissionController] retryRenderAcceptancePdf failed:", err);
+      return res.status(500).json({ error: err.message || "Failed retrying acceptance PDF generation." });
     }
   }
 

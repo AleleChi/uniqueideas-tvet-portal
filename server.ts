@@ -2203,6 +2203,7 @@ app.post("/api/admissions/transition-status", requireAuth, requireRoleOrPermissi
 
 app.post("/api/admissions/approve-acceptance", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", "REVIEW_OFFICER"], ["approve_admissions"]), AdmissionController.approveAcceptance);
 app.post("/api/admissions/reject-acceptance", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", "REVIEW_OFFICER"], ["reject_admissions"]), AdmissionController.rejectAcceptance);
+app.post("/api/admissions/:beneficiaryId/render-acceptance-pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.retryRenderAcceptancePdf);
 
 // PDF Download Endpoint with application/pdf and .pdf extension
 app.get("/api/admissions/download-letter/:id", async (req, res) => {

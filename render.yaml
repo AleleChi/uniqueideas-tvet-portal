@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: ideas-tvet-portal
+    env: node
+    plan: standard
+    buildCommand: "npm install && npx puppeteer browsers install chrome && npm run build"
+    startCommand: "npm run start"
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PUPPETEER_CACHE_DIR
+        value: /opt/render/.cache/puppeteer

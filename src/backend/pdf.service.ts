@@ -174,25 +174,72 @@ export class PdfService {
    * Internal compile logic using puppeteer.
    */
   private static async compileHtmlToPdfBufferInternal(htmlContent: string, isLandscape: boolean = false): Promise<Buffer> {
-    let puppeteerDefaultPath = "N/A";
-    let defaultExists = false;
-    try {
-      const resolved = puppeteer.executablePath();
-      if (typeof resolved === "string") {
-        puppeteerDefaultPath = resolved;
-      } else {
-        puppeteerDefaultPath = await resolved;
+    const findChromeInDir = (dir: string): string | null => {
+      if (!fs.existsSync(dir)) return null;
+      try {
+        const files = fs.readdirSync(dir);
+        for (const file of files) {
+          const fullPath = path.join(dir, file);
+          const stat = fs.statSync(fullPath);
+          if (stat.isDirectory()) {
+            const found = findChromeInDir(fullPath);
+            if (found) return found;
+          } else if (file === "chrome" && (stat.mode & 0o111)) {
+            return fullPath;
+          }
+        }
+      } catch (e) {
+        // Ignore folder read errors
       }
-      defaultExists = fs.existsSync(puppeteerDefaultPath);
-    } catch (e: any) {
-      puppeteerDefaultPath = "Error resolving: " + e.message;
+      return null;
+    };
+
+    let executablePathToUse: string | undefined = undefined;
+
+    // 1. Check process.env.PUPPETEER_EXECUTABLE_PATH
+    if (process.env.PUPPETEER_EXECUTABLE_PATH && fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
+      executablePathToUse = process.env.PUPPETEER_EXECUTABLE_PATH;
+    }
+    // 2. Check process.env.CHROME_PATH
+    else if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) {
+      executablePathToUse = process.env.CHROME_PATH;
+    }
+    // 3. Check puppeteer.executablePath()
+    else {
+      try {
+        const resolved = puppeteer.executablePath();
+        const p = typeof resolved === "string" ? resolved : await resolved;
+        if (p && fs.existsSync(p)) {
+          executablePathToUse = p;
+        }
+      } catch (e) {
+        console.warn("[PdfService] Error resolving puppeteer.executablePath():", e);
+      }
     }
 
-    // Determine custom verified executable if it exists
-    let customExecutablePath: string | undefined = undefined;
-    const envPath = process.env.CHROME_PATH || process.env.PUPPETEER_EXECUTABLE_PATH;
-    if (envPath && fs.existsSync(envPath)) {
-      customExecutablePath = envPath;
+    // 4. Fallback recursive search inside Render cache directory
+    if (!executablePathToUse) {
+      const renderCacheDir = process.env.PUPPETEER_CACHE_DIR || "/opt/render/.cache/puppeteer";
+      console.log(`[PdfService] Scanning ${renderCacheDir} recursively for chrome executable...`);
+      const foundChrome = findChromeInDir(renderCacheDir);
+      if (foundChrome) {
+        executablePathToUse = foundChrome;
+      }
+    }
+
+    // 5. Hardcoded common system fallback paths
+    if (!executablePathToUse) {
+      const fallbacks = [
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium"
+      ];
+      for (const p of fallbacks) {
+        if (fs.existsSync(p)) {
+          executablePathToUse = p;
+          break;
+        }
+      }
     }
 
     console.log("[PdfService] ==============================================");
@@ -202,19 +249,21 @@ export class PdfService {
     console.log(`[PdfService] - NODE_ENV: ${process.env.NODE_ENV}`);
     console.log(`[PdfService] - PUPPETEER_CACHE_DIR: ${process.env.PUPPETEER_CACHE_DIR || "N/A"}`);
     console.log(`[PdfService] - PUPPETEER_EXECUTABLE_PATH: ${process.env.PUPPETEER_EXECUTABLE_PATH || "N/A"}`);
-    console.log(`[PdfService] - puppeteer.executablePath(): ${puppeteerDefaultPath}`);
-    console.log(`[PdfService] - fs.existsSync(puppeteer.executablePath()): ${defaultExists}`);
-    console.log(`[PdfService] - Custom verified path: ${customExecutablePath || "None (Using Puppeteer Default)"}`);
-    console.log(`[PdfService] - launch mode: ${customExecutablePath ? "custom" : "default"}`);
+    console.log(`[PdfService] - Resolved Chrome path to use: ${executablePathToUse || "NOT FOUND"}`);
     console.log("[PdfService] ==============================================");
+
+    if (!executablePathToUse) {
+      throw new Error("PDF_RENDER_UNAVAILABLE: Chrome/Chromium executable binary not found in expected paths or Render cache. PDF rendering is currently unavailable.");
+    }
 
     const totalStart = globalThis.performance ? globalThis.performance.now() : Date.now();
     let launchStart = totalStart;
     let browser: any = null;
     try {
-      console.log(`[PdfService] Launching Puppeteer browser...`);
+      console.log(`[PdfService] Launching Puppeteer browser with: ${executablePathToUse}`);
       const launchOptions: any = {
         headless: true,
+        executablePath: executablePathToUse,
         args: [
           "--no-sandbox",
           "--disable-setuid-sandbox",
@@ -223,16 +272,12 @@ export class PdfService {
         ]
       };
 
-      if (customExecutablePath) {
-        launchOptions.executablePath = customExecutablePath;
-      }
-
       launchStart = globalThis.performance ? globalThis.performance.now() : Date.now();
       browser = await puppeteer.launch(launchOptions);
       console.log("[PdfService] Puppeteer browser launch SUCCESS.");
     } catch (launchErr: any) {
       console.error("[PdfService] Puppeteer browser launch FAILURE:", launchErr.message || launchErr);
-      throw new Error(`BROWSER_LAUNCH_FAILED: Chrome browser binary could not be loaded or executed. Details: ${launchErr.message}`);
+      throw new Error(`PDF_RENDER_UNAVAILABLE: Chrome browser binary could not be loaded or executed. Details: ${launchErr.message}`);
     }
 
     const launchEnd = globalThis.performance ? globalThis.performance.now() : Date.now();

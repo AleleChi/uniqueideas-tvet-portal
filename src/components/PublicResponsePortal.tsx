@@ -43,6 +43,7 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
   // Submission Flow Parameters
   const [submitting, setSubmitting] = useState(false);
   const [submissionSuccess, setSubmissionSuccess] = useState(false);
+  const [submissionWarning, setSubmissionWarning] = useState<string | null>(null);
 
   // Validate Secure Token on Mount
   useEffect(() => {
@@ -259,6 +260,10 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
       });
 
       if (res.ok) {
+        const data = await res.json();
+        if (data.warning) {
+          setSubmissionWarning(data.warning);
+        }
         setSubmissionSuccess(true);
       } else {
         const err = await res.json();
@@ -362,6 +367,19 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
               Thank you, <strong>{candidate.firstName} {candidate.lastName}</strong>! Your signed acceptance documentation and student profile details have been successfully certified by the federal TVET registry.
             </p>
           </div>
+
+          {submissionWarning && (
+            <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl text-left text-xs text-amber-300 space-y-1">
+              <div className="font-bold flex items-center gap-1.5 uppercase tracking-wider text-[10px]">
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+                <span>Notice: Official PDF Render Queued</span>
+              </div>
+              <p className="text-[11px] leading-relaxed text-amber-200">
+                {submissionWarning}
+              </p>
+            </div>
+          )}
+
           <div className="p-4 bg-slate-900 border border-slate-800 rounded-lg text-left text-[11px] font-sans space-y-2 text-slate-400">
             <div className="flex items-center gap-2 text-slate-350 font-bold uppercase tracking-wider text-[10px] pb-1 border-b border-slate-800">
               <Check className="w-3.5 h-3.5 text-emerald-400" />

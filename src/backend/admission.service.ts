@@ -750,7 +750,7 @@ export class AdmissionService {
    * Leverages flexible file signature matching, accepting image uploads (.png, .jpg, .jpeg)
    * and Word documents (.docx) alongside vector PDFs securely.
    */
-  static async processPortalSubmission(token: string, formData: any): Promise<{ success: boolean; beneficiary: Beneficiary }> {
+  static async processPortalSubmission(token: string, formData: any): Promise<{ success: boolean; beneficiary: Beneficiary; warning?: string }> {
     const totalStart = performance.now();
     const decoded = TokenService.verifyToken(token);
     if (!decoded || !decoded.id) {
@@ -908,15 +908,20 @@ export class AdmissionService {
       accepted_at: acceptedAt
     };
 
+    beneficiary.admissionStatus = "ACCEPTED";
+    beneficiary.status = ProgramStatus.PENDING_PHOTO;
+    beneficiary.updatedAt = new Date().toISOString();
+
+    // STEP 1: Persist the core candidate data first
     await DbRepo.upsertBeneficiary(beneficiary);
 
     const docProcessStart = performance.now();
     let signedAcceptanceUrl = "";
     let registeredDocId = "";
     let nextAccLetterVer = (beneficiary.acceptanceLetterVersions || []).length + 1;
-
-    // Flexible File Ingress: Accepting image forms (.png .jpg .jpeg) and Word documents (.docx) alongside vector PDFs
     let extension = "pdf";
+
+    // STEP 2: Save uploaded acceptance file if present
     if (formData.uploadedAcceptanceLetter) {
       console.log("[AdmissionService] Custom hand-signed file upload detected.");
       
@@ -965,56 +970,71 @@ export class AdmissionService {
         verificationDate: "",
         emailDeliveryStatus: "NOT_SENT",
       });
-    } else {
-      console.log("[AdmissionService] Generating Acceptance Letter via Puppeteer compile process.");
-      const { document: acceptanceDoc2 } = await DocumentService.generateDocumentWithBuffer(
-        beneficiary.id,
-        DocumentType.ACCEPTANCE_LETTER,
-        "STUDENT_PORTAL",
-        true
-      );
-      signedAcceptanceUrl = acceptanceDoc2.pdfUrl;
-      registeredDocId = acceptanceDoc2.id;
-      nextAccLetterVer = acceptanceDoc2.version;
+
+      // Update beneficiary's list since a custom file was uploaded directly
+      beneficiary.acceptanceLetterUploaded = true;
+      beneficiary.acceptanceLetterUrl = signedAcceptanceUrl;
+      beneficiary.acceptanceLetterUploadedAt = new Date().toISOString();
+
+      const fName2 = (beneficiary.firstName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const lName2 = (beneficiary.lastName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const namePart2 = fName2 && lName2 ? `${fName2}_${lName2}` : `${(beneficiary.id || "TRAINEE").replace(/[^A-Z0-9-]/g, "")}`;
+
+      const currentAccLetters = beneficiary.acceptanceLetterVersions || [];
+      beneficiary.acceptanceLetterVersions = [
+        ...currentAccLetters,
+        {
+          version: nextAccLetterVer,
+          url: signedAcceptanceUrl,
+          name: `${namePart2}_ACCEPTANCE_LETTER_v${nextAccLetterVer}.${extension}`,
+          uploadedAt: new Date().toISOString()
+        }
+      ];
+
+      const currentDocs2 = beneficiary.documentsList || [];
+      beneficiary.documentsList = [
+        ...currentDocs2,
+        {
+          id: registeredDocId,
+          name: `${namePart2}_ACCEPTANCE_LETTER.${extension}`,
+          type: "acceptance",
+          url: signedAcceptanceUrl,
+          uploadedAt: new Date().toISOString(),
+          version: nextAccLetterVer
+        }
+      ];
+
+      await DbRepo.upsertBeneficiary(beneficiary);
     }
-    console.log(`[PERF TRACE] Acceptance letter compile completed in ${(performance.now() - docProcessStart).toFixed(2)}ms`);
 
-    const fName2 = (beneficiary.firstName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-    const lName2 = (beneficiary.lastName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-    const namePart2 = fName2 && lName2 ? `${fName2}_${lName2}` : `${(beneficiary.id || "TRAINEE").replace(/[^A-Z0-9-]/g, "")}`;
+    // STEP 3: Update admissions.acceptance_letter_status = 'SUBMITTED' and admissions.admission_status = 'Accepted'
+    if (pool) {
+      await pool.query(
+        `UPDATE admissions 
+         SET acceptance_letter_status = 'SUBMITTED', 
+             admission_status = 'Accepted', 
+             updated_at = NOW() 
+         WHERE beneficiary_id = $1 AND deleted_at IS NULL`,
+        [beneficiary.id]
+      ).catch((err) => {
+        console.error("[AdmissionService] Failed updating admissions.acceptance_letter_status and admission_status:", err);
+      });
+    }
 
-    beneficiary.acceptanceLetterUploaded = true;
-    beneficiary.acceptanceLetterUrl = signedAcceptanceUrl;
-    beneficiary.acceptanceLetterUploadedAt = new Date().toISOString();
+    // STEP 4: Mark public_response_tokens status SUBMITTED / is_used = true
+    if (pool) {
+      const tokenHash = TokenService.hashToken(token);
+      await pool.query(
+        `UPDATE public_response_tokens 
+         SET is_used = true, status = 'SUBMITTED', used_at = NOW(), submitted_at = NOW(), updated_at = NOW() 
+         WHERE token = $1 OR token_hash = $2`,
+        [token, tokenHash]
+      ).catch((err) => {
+        console.error("[AdmissionService] Failed marking public token as used:", err);
+      });
+    }
 
-    const currentAccLetters = beneficiary.acceptanceLetterVersions || [];
-    beneficiary.acceptanceLetterVersions = [
-      ...currentAccLetters,
-      {
-        version: nextAccLetterVer,
-        url: signedAcceptanceUrl,
-        name: `${namePart2}_ACCEPTANCE_LETTER_v${nextAccLetterVer}.${extension}`,
-        uploadedAt: new Date().toISOString()
-      }
-    ];
-
-    const currentDocs2 = beneficiary.documentsList || [];
-    beneficiary.documentsList = [
-      ...currentDocs2,
-      {
-        id: registeredDocId,
-        name: `${namePart2}_ACCEPTANCE_LETTER.${extension}`,
-        type: "acceptance",
-        url: signedAcceptanceUrl,
-        uploadedAt: new Date().toISOString(),
-        version: nextAccLetterVer
-      }
-    ];
-
-    beneficiary.admissionStatus = "ACCEPTED";
-    beneficiary.status = ProgramStatus.PENDING_PHOTO;
-    beneficiary.updatedAt = new Date().toISOString();
-
+    // STEP 4.5: Save Workflow History & log initial actions
     try {
       await DbRepo.saveWorkflowHistory({
         beneficiaryId: beneficiary.id,
@@ -1032,20 +1052,216 @@ export class AdmissionService {
       `Student ${beneficiary.firstName} ${beneficiary.lastName} (ID: ${beneficiary.id}) uploaded signed terms.`
     );
 
-    await DbRepo.upsertBeneficiary(beneficiary);
-
-    if (pool) {
-      const tokenHash = TokenService.hashToken(token);
-      pool.query(
-        `UPDATE public_response_tokens 
-         SET is_used = true, status = 'SUBMITTED', used_at = NOW(), submitted_at = NOW(), updated_at = NOW() 
-         WHERE token = $1 OR token_hash = $2`,
-        [token, tokenHash]
-      ).catch(() => {});
-    }
     await this.logTokenEvent(beneficiary.id, "OFFER_ACCEPTANCE_SUBMITTED", token, "Candidate successfully submitted acceptance letter and form");
 
+    // STEP 5: Then attempt PDF generation POST-COMMIT if there is no uploaded file
+    let pdfWarningMessage = "";
+    if (!formData.uploadedAcceptanceLetter) {
+      console.log("[AdmissionService] Generating Acceptance Letter via Puppeteer compile process (POST-COMMIT).");
+      const fName2 = (beneficiary.firstName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const lName2 = (beneficiary.lastName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const namePart2 = fName2 && lName2 ? `${fName2}_${lName2}` : `${(beneficiary.id || "TRAINEE").replace(/[^A-Z0-9-]/g, "")}`;
+
+      try {
+        const { document: acceptanceDoc2 } = await DocumentService.generateDocumentWithBuffer(
+          beneficiary.id,
+          DocumentType.ACCEPTANCE_LETTER,
+          "STUDENT_PORTAL",
+          true
+        );
+        signedAcceptanceUrl = acceptanceDoc2.pdfUrl;
+        registeredDocId = acceptanceDoc2.id;
+        nextAccLetterVer = acceptanceDoc2.version;
+
+        // Update beneficiary with compiled document status and save
+        beneficiary.acceptanceLetterUploaded = true;
+        beneficiary.acceptanceLetterUrl = signedAcceptanceUrl;
+        beneficiary.acceptanceLetterUploadedAt = new Date().toISOString();
+
+        const currentAccLetters = beneficiary.acceptanceLetterVersions || [];
+        beneficiary.acceptanceLetterVersions = [
+          ...currentAccLetters,
+          {
+            version: nextAccLetterVer,
+            url: signedAcceptanceUrl,
+            name: `${namePart2}_ACCEPTANCE_LETTER_v${nextAccLetterVer}.${extension}`,
+            uploadedAt: new Date().toISOString()
+          }
+        ];
+
+        const currentDocs2 = beneficiary.documentsList || [];
+        beneficiary.documentsList = [
+          ...currentDocs2,
+          {
+            id: registeredDocId,
+            name: `${namePart2}_ACCEPTANCE_LETTER.${extension}`,
+            type: "acceptance",
+            url: signedAcceptanceUrl,
+            uploadedAt: new Date().toISOString(),
+            version: nextAccLetterVer
+          }
+        ];
+
+        // Save again to sync pdf details
+        await DbRepo.upsertBeneficiary(beneficiary);
+
+        // Also update admissions.acceptance_letter_url with the generated URL if successful
+        if (pool && signedAcceptanceUrl) {
+          await pool.query(
+            `UPDATE admissions 
+             SET acceptance_letter_url = $1, acceptance_letter_uploaded_at = NOW() 
+             WHERE beneficiary_id = $2 AND deleted_at IS NULL`,
+            [signedAcceptanceUrl, beneficiary.id]
+          ).catch(() => {});
+        }
+      } catch (pdfErr: any) {
+        console.error("[AdmissionService] PDF generation failed post-commit, entering fallback/retry mode:", pdfErr);
+        // Log PDF_RENDER_FAILED internally
+        await this.logTokenEvent(beneficiary.id, "PDF_RENDER_FAILED", token, `Acceptance PDF generation failed: ${pdfErr.message || pdfErr}`);
+        
+        // Save a placeholder document record with FAILED_RENDER or PENDING_RENDER status
+        const docId = `gdoc_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+        const prefix = "TVET-ACC";
+        const hex = Math.floor(Math.random() * 16777215).toString(16).toUpperCase().padStart(6, "0");
+        registeredDocId = docId;
+        signedAcceptanceUrl = ""; // No URL since PDF wasn't generated
+        
+        await DbRepo.saveGeneratedDocument({
+          id: docId,
+          beneficiaryId: beneficiary.id,
+          documentType: DocumentType.ACCEPTANCE_LETTER,
+          version: nextAccLetterVer,
+          pdfUrl: "", 
+          generatedBy: "STUDENT_PORTAL",
+          createdAt: new Date().toISOString(),
+          verificationCode: `${prefix}-${hex}`,
+          verificationStatus: "FAILED_RENDER",
+          verificationDate: "",
+          emailDeliveryStatus: "NOT_SENT",
+        });
+
+        // Update beneficiary with failed/pending PDF record
+        beneficiary.acceptanceLetterUploaded = true;
+        beneficiary.acceptanceLetterUrl = "";
+        beneficiary.acceptanceLetterUploadedAt = new Date().toISOString();
+
+        const currentAccLetters = beneficiary.acceptanceLetterVersions || [];
+        beneficiary.acceptanceLetterVersions = [
+          ...currentAccLetters,
+          {
+            version: nextAccLetterVer,
+            url: "",
+            name: `${namePart2}_ACCEPTANCE_LETTER_v${nextAccLetterVer}_PENDING.${extension}`,
+            uploadedAt: new Date().toISOString()
+          }
+        ];
+
+        const currentDocs2 = beneficiary.documentsList || [];
+        beneficiary.documentsList = [
+          ...currentDocs2,
+          {
+            id: registeredDocId,
+            name: `${namePart2}_ACCEPTANCE_LETTER_PENDING.${extension}`,
+            type: "acceptance",
+            url: "",
+            uploadedAt: new Date().toISOString(),
+            version: nextAccLetterVer
+          }
+        ];
+
+        // Save again to sync fields
+        await DbRepo.upsertBeneficiary(beneficiary);
+        
+        pdfWarningMessage = "Your acceptance was submitted successfully. The official PDF is being generated and will be available shortly.";
+      }
+    }
+    console.log(`[PERF TRACE] Acceptance letter compile completed/handled in ${(performance.now() - docProcessStart).toFixed(2)}ms`);
+
     console.log(`[PERF TRACE] processPortalSubmission completed overall in ${(performance.now() - totalStart).toFixed(2)}ms`);
-    return { success: true, beneficiary };
+    return { success: true, beneficiary, warning: pdfWarningMessage || undefined };
+  }
+
+  /**
+   * Retries generating the official signed acceptance PDF for a student
+   */
+  static async retryRenderAcceptancePdf(beneficiaryId: string, adminUser: string): Promise<{ beneficiary: Beneficiary; document: any }> {
+    const pool = getPgPool();
+    const resolvedId = (await AdmissionService.resolveBeneficiaryIdResiliently(beneficiaryId, pool)) || beneficiaryId;
+    const beneficiary = await DbRepo.getBeneficiaryById(resolvedId);
+    if (!beneficiary) {
+      throw new Error("Candidate record could not be found.");
+    }
+
+    if (!beneficiary.admissionFormCompleted && !beneficiary.digitalSignature) {
+      throw new Error("Candidate has not submitted their acceptance or signed the offer contract yet.");
+    }
+
+    console.log("[AdmissionService] Retrying Acceptance Letter PDF generation.");
+    const { document: acceptanceDoc } = await DocumentService.generateDocumentWithBuffer(
+      beneficiary.id,
+      DocumentType.ACCEPTANCE_LETTER,
+      adminUser,
+      true
+    );
+
+    const signedAcceptanceUrl = acceptanceDoc.pdfUrl;
+    const registeredDocId = acceptanceDoc.id;
+    const nextAccLetterVer = acceptanceDoc.version;
+
+    const fName = (beneficiary.firstName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const lName = (beneficiary.lastName || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const namePart = fName && lName ? `${fName}_${lName}` : `${(beneficiary.id || "TRAINEE").replace(/[^A-Z0-9-]/g, "")}`;
+
+    beneficiary.acceptanceLetterUploaded = true;
+    beneficiary.acceptanceLetterUrl = signedAcceptanceUrl;
+    beneficiary.acceptanceLetterUploadedAt = new Date().toISOString();
+
+    const currentAccLetters = beneficiary.acceptanceLetterVersions || [];
+    beneficiary.acceptanceLetterVersions = [
+      ...currentAccLetters,
+      {
+        version: nextAccLetterVer,
+        url: signedAcceptanceUrl,
+        name: `${namePart}_ACCEPTANCE_LETTER_v${nextAccLetterVer}.pdf`,
+        uploadedAt: new Date().toISOString()
+      }
+    ];
+
+    const currentDocs = beneficiary.documentsList || [];
+    beneficiary.documentsList = [
+      ...currentDocs.filter(d => d.id !== registeredDocId),
+      {
+        id: registeredDocId,
+        name: `${namePart}_ACCEPTANCE_LETTER.pdf`,
+        type: "acceptance",
+        url: signedAcceptanceUrl,
+        uploadedAt: new Date().toISOString(),
+        version: nextAccLetterVer
+      }
+    ];
+
+    beneficiary.updatedAt = new Date().toISOString();
+
+    await DbRepo.upsertBeneficiary(beneficiary);
+
+    // Update admissions.acceptance_letter_status to SUBMITTED if it's currently Pending/Failed/NOT_SUBMITTED
+    if (pool) {
+      const currentAdm = await pool.query("SELECT acceptance_letter_status FROM admissions WHERE beneficiary_id = $1", [beneficiary.id]);
+      const currentStatus = currentAdm.rows[0]?.acceptance_letter_status || "Pending";
+      const newStatus = (currentStatus === "Pending" || currentStatus === "NOT_SUBMITTED" || currentStatus === "FAILED_RENDER" || currentStatus === "PENDING_RENDER") 
+        ? "SUBMITTED" 
+        : currentStatus;
+
+      await pool.query(
+        `UPDATE admissions 
+         SET acceptance_letter_status = $1, acceptance_letter_url = $2, acceptance_letter_uploaded_at = NOW(), updated_at = NOW() 
+         WHERE beneficiary_id = $3 AND deleted_at IS NULL`,
+        [newStatus, signedAcceptanceUrl, beneficiary.id]
+      ).catch((err) => {
+        console.error("[AdmissionService] Failed to update admissions acceptance letter status/url:", err);
+      });
+    }
+
+    return { beneficiary, document: acceptanceDoc };
   }
 }
