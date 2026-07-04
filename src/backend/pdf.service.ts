@@ -52,6 +52,53 @@ export class PdfService {
   }
 
   /**
+   * Unified loader to resolve the official letterhead according to user priority:
+   * 
+   * For admission/offer letter:
+   * 1. settings.admissionLetterheadUrl
+   * 2. active institution letterhead
+   * 3. settings.letterheadUrl
+   * 4. generated default official header (fallback)
+   * 
+   * For acceptance letter:
+   * 1. settings.acceptanceLetterheadUrl
+   * 2. active institution letterhead
+   * 3. settings.letterheadUrl
+   * 4. generated default official header (fallback)
+   */
+  public static async resolveOfficialLetterhead(
+    documentType: "admission" | "acceptance",
+    beneficiary: Beneficiary
+  ): Promise<{ url: string; isFullPage: boolean }> {
+    const settings = await this.getSettings();
+    const activeLetterhead = await DbRepo.getActiveLetterhead();
+
+    if (documentType === "admission") {
+      if (settings.admissionLetterheadUrl) {
+        return { url: settings.admissionLetterheadUrl, isFullPage: false };
+      }
+      if (activeLetterhead) {
+        return { url: PdfService.getLetterheadBgUrl(activeLetterhead), isFullPage: true };
+      }
+      if (settings.letterheadUrl) {
+        return { url: settings.letterheadUrl, isFullPage: false };
+      }
+    } else {
+      if (settings.acceptanceLetterheadUrl) {
+        return { url: settings.acceptanceLetterheadUrl, isFullPage: false };
+      }
+      if (activeLetterhead) {
+        return { url: PdfService.getLetterheadBgUrl(activeLetterhead), isFullPage: true };
+      }
+      if (settings.letterheadUrl) {
+        return { url: settings.letterheadUrl, isFullPage: false };
+      }
+    }
+
+    return { url: "", isFullPage: false };
+  }
+
+  /**
    * Safe direct in-memory fallback PDF compiler.
    * Generates a valid standard PDF-1.4 file with perfectly wrapped readable text,
    * completely ignoring external binary browser processes.
@@ -363,11 +410,17 @@ export class PdfService {
       const setContentTime = (globalThis.performance ? globalThis.performance.now() : Date.now()) - setContentStart;
       
       const pdfGenerationStart = globalThis.performance ? globalThis.performance.now() : Date.now();
+      const hasZeroMargin = htmlContent.includes("margin: 0 !important") || htmlContent.includes("margin: 0;");
       const pdfBuffer = await page.pdf({
         format: "A4",
         landscape: isLandscape,
         printBackground: true,
-        margin: {
+        margin: hasZeroMargin ? {
+          top: "0",
+          bottom: "0",
+          left: "0",
+          right: "0"
+        } : {
           top: "15mm",
           bottom: "15mm",
           left: "15mm",
@@ -523,31 +576,16 @@ total=${totalTime.toFixed(2)}ms`);
    */
   static async generateAdmissionLetterPdf(beneficiary: Beneficiary, meta?: any, returnHtml: boolean = false): Promise<Buffer | string> {
     const settings = await this.getSettings();
-    const activeLetterhead = await DbRepo.getActiveLetterhead();
     const admissionRef = beneficiary.admissionRef || `IDEAS/TVET/ADM/${beneficiary.id.split("-").pop()}/${new Date().getFullYear()}`;
     const genderSalutation = beneficiary.gender && String(beneficiary.gender).toUpperCase() === "FEMALE" ? "Miss" : "Mr";
     const dateStr = beneficiary.admissionLetterGeneratedAt 
       ? new Date(beneficiary.admissionLetterGeneratedAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }) 
       : new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
 
-    // Determine the letterhead priority logic (Consistent across Admission & Acceptance letters):
-    // 1. Active institution letterhead (activeLetterhead)
-    // 2. settings.admissionLetterheadUrl
-    // 3. settings.letterheadUrl
-    // 4. Default official government/TSP header
-    let letterheadUrl = "";
-    let isFullPage = false;
-
-    if (activeLetterhead) {
-      letterheadUrl = PdfService.getLetterheadBgUrl(activeLetterhead);
-      isFullPage = true;
-    } else if (settings.admissionLetterheadUrl) {
-      letterheadUrl = settings.admissionLetterheadUrl;
-      isFullPage = true;
-    } else if (settings.letterheadUrl) {
-      letterheadUrl = settings.letterheadUrl;
-      isFullPage = true;
-    }
+    // Determine the letterhead priority using the unified resolver:
+    const letterheadResult = await PdfService.resolveOfficialLetterhead("admission", beneficiary);
+    const letterheadUrl = letterheadResult.url;
+    const isFullPage = letterheadResult.isFullPage;
 
     const htmlContent = `
       <!DOCTYPE html>
@@ -571,7 +609,7 @@ total=${totalTime.toFixed(2)}ms`);
           }
           .border-frame {
             border: none !important;
-            padding: 40mm 20mm 30mm 20mm !important;
+            padding: 38mm 15mm 15mm 15mm !important;
             margin: 0 !important;
             border-radius: 0 !important;
             width: 210mm;
@@ -580,19 +618,19 @@ total=${totalTime.toFixed(2)}ms`);
             position: relative;
           }
           ` : `
-          @page { size: A4; margin: 15mm; }
-          body { font-family: 'Times New Roman', Times, serif; color: #0f172a; line-height: 1.5; margin: 0; padding: 10px; background-color: #ffffff; }
-          .border-frame { border: 1px solid #e2e8f0; padding: 25px; border-radius: 4px; min-height: 250mm; position: relative; }
+          @page { size: A4; margin: 10mm; }
+          body { font-family: 'Times New Roman', Times, serif; color: #0f172a; line-height: 1.4; margin: 0; padding: 5px; background-color: #ffffff; }
+          .border-frame { border: 1px solid #e2e8f0; padding: 20px; border-radius: 4px; min-height: 260mm; position: relative; }
           `}
           .logo-header-table { width: 100%; border-collapse: collapse; margin-bottom: 5px; }
           .logo-header-table td { vertical-align: middle; padding: 0; }
-          .divider-line { border-bottom: 3px double #000000; width: 100%; margin: 10px 0 15px 0; }
-          .metadata-table { width: 100%; border-collapse: collapse; margin-top: 15px; margin-bottom: 20px; font-size: 13px; }
-          .metadata-table td { padding: 4px 0; }
-          .letter-title { text-align: left; font-size: 14px; font-weight: bold; text-transform: uppercase; margin: 15px 0 15px 0; text-decoration: underline; color: #000000; letter-spacing: 0.5px; }
+          .divider-line { border-bottom: 3px double #000000; width: 100%; margin: 8px 0 12px 0; }
+          .metadata-table { width: 100%; border-collapse: collapse; margin-top: 8px; margin-bottom: 12px; font-size: 13px; }
+          .metadata-table td { padding: 3px 0; }
+          .letter-title { text-align: left; font-size: 14px; font-weight: bold; text-transform: uppercase; margin: 10px 0 10px 0; text-decoration: underline; color: #000000; letter-spacing: 0.5px; }
           .letter-content { font-size: 13px; text-align: justify; }
-          .letter-content p { margin: 12px 0; text-indent: 0; }
-          .signatures { margin-top: 40px; page-break-inside: avoid; }
+          .letter-content p { margin: 8px 0; text-indent: 0; }
+          .signatures { margin-top: 25px; page-break-inside: avoid; }
           .footer-note { text-align: center; font-size: 8.5px; color: #94a3b8; position: absolute; bottom: 15px; width: 100%; left: 0; font-family: Arial, sans-serif; letter-spacing: 0.5px; }
           ${settings.watermarkEnabled ? `
           .watermark {
@@ -622,29 +660,35 @@ total=${totalTime.toFixed(2)}ms`);
               <img src="${letterheadUrl}" style="width: 100%; height: 100%; object-fit: fill; opacity: 1.0;" referrerPolicy="no-referrer" />
             </div>
           ` : `
-            <!-- DYNAMIC TSP TYPOGRAPHIC LETTERHEAD BRANDING -->
-            <div style="border-bottom: 3px solid #000000; padding-bottom: 10px; margin-bottom: 20px; position: relative; z-index: 10; font-family: Arial, sans-serif;">
-              <table style="width: 100%; border-collapse: collapse;">
-                <tr>
-                  <td style="vertical-align: top; text-align: left;">
-                    <div style="margin-bottom: 4px;">
-                      <span style="background-color: #000000; color: #ffffff; font-size: 8px; font-weight: bold; padding: 2px 5px; border-radius: 2px; text-transform: uppercase; letter-spacing: 1.5px;">TSP PARTNER</span>
-                      <span style="font-size: 9px; color: #64748b; font-weight: bold; margin-left: 5px; text-transform: uppercase; letter-spacing: 0.5px;">IDEAS Project TVET Program</span>
-                    </div>
-                    <h2 style="font-size: 16px; font-weight: 900; color: #0f172a; margin: 0; text-transform: uppercase; letter-spacing: -0.5px;">
-                      ${settings.organizationName || beneficiary.tsp || "State TVET Board, Kano"}
-                    </h2>
-                    <p style="font-size: 10px; color: #475569; margin: 4px 0 0 0; font-weight: 600;">
-                      ${settings.contactAddress || "No. 45 Gwarzo Road, Kano State, Nigeria"}
-                    </p>
-                  </td>
-                  <td style="vertical-align: bottom; text-align: right; font-size: 9px; color: #475569; font-family: monospace; white-space: nowrap; line-height: 1.4;">
-                    <div>Phone: ${settings.contactPhone || "+234 803 123 4567"}</div>
-                    <div>Email: ${settings.contactEmail || "kano-tvet@ideas-initiative.org"}</div>
-                  </td>
-                </tr>
-              </table>
-            </div>
+            ${letterheadUrl ? `
+              <div style="text-align: center; margin-bottom: 25px; position: relative; z-index: 10; width: 100%;">
+                <img src="${letterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
+              </div>
+            ` : `
+              <!-- DYNAMIC TSP TYPOGRAPHIC LETTERHEAD BRANDING -->
+              <div style="border-bottom: 3px solid #000000; padding-bottom: 10px; margin-bottom: 20px; position: relative; z-index: 10; font-family: Arial, sans-serif;">
+                <table style="width: 100%; border-collapse: collapse;">
+                  <tr>
+                    <td style="vertical-align: top; text-align: left;">
+                      <div style="margin-bottom: 4px;">
+                        <span style="background-color: #000000; color: #ffffff; font-size: 8px; font-weight: bold; padding: 2px 5px; border-radius: 2px; text-transform: uppercase; letter-spacing: 1.5px;">TSP PARTNER</span>
+                        <span style="font-size: 9px; color: #64748b; font-weight: bold; margin-left: 5px; text-transform: uppercase; letter-spacing: 0.5px;">IDEAS Project TVET Program</span>
+                      </div>
+                      <h2 style="font-size: 16px; font-weight: 900; color: #0f172a; margin: 0; text-transform: uppercase; letter-spacing: -0.5px;">
+                        ${settings.organizationName || beneficiary.tsp || "State TVET Board, Kano"}
+                      </h2>
+                      <p style="font-size: 10px; color: #475569; margin: 4px 0 0 0; font-weight: 600;">
+                        ${settings.contactAddress || "No. 45 Gwarzo Road, Kano State, Nigeria"}
+                      </p>
+                    </td>
+                    <td style="vertical-align: bottom; text-align: right; font-size: 9px; color: #475569; font-family: monospace; white-space: nowrap; line-height: 1.4;">
+                      <div>Phone: ${settings.contactPhone || "+234 803 123 4567"}</div>
+                      <div>Email: ${settings.contactEmail || "kano-tvet@ideas-initiative.org"}</div>
+                    </td>
+                  </tr>
+                </table>
+              </div>
+            `}
           `}
 
           <table class="metadata-table" style="position: relative; z-index: 10;">
@@ -667,7 +711,7 @@ total=${totalTime.toFixed(2)}ms`);
             <p>The training will take place at <strong>${settings.trainingVenue || settings.contactAddress || "Government Technical College (GTC), Kano"}</strong><br>From <strong>${settings.trainingStartDate || "October 12, 2026"}</strong> To <strong>${settings.trainingEndDate || "December 18, 2026"}</strong>.</p>
             
             <p style="margin-bottom: 4px;">As a participant in this program, you are expected to:</p>
-            <ul style="list-style-type: none; padding-left: 15px; margin-top: 2px; margin-bottom: 12px;">
+            <ul style="list-style-type: none; padding-left: 15px; margin-top: 2px; margin-bottom: 8px;">
               <li style="margin-bottom: 4px;">• Attend all training sessions and activities (at least 65% monthly attendance)</li>
               <li style="margin-bottom: 4px;">• Participate in class discussions</li>
               <li style="margin-bottom: 4px;">• Adhere to the Training Service Provider's rules and regulations</li>
@@ -678,7 +722,7 @@ total=${totalTime.toFixed(2)}ms`);
             <p>Kindly confirm your acceptance of this admission with an acceptance letter to this effect.</p>
           </div>
 
-          <table style="width: 100%; margin-top: 35px; border-collapse: collapse; page-break-inside: avoid; position: relative; z-index: 10;">
+          <table style="width: 100%; margin-top: 20px; border-collapse: collapse; page-break-inside: avoid; position: relative; z-index: 10;">
             <tr>
               <td style="vertical-align: top; text-align: left;">
                 <p style="font-size: 13px; margin: 0 0 15px 0;">Kind regards</p>
@@ -723,7 +767,6 @@ total=${totalTime.toFixed(2)}ms`);
    */
   static async generateAcceptanceLetterPdf(beneficiary: Beneficiary, meta?: any, returnHtml: boolean = false): Promise<Buffer | string> {
     const settings = await this.getSettings();
-    const activeLetterhead = await DbRepo.getActiveLetterhead();
     const dateStr = beneficiary.acceptanceLetterUploadedAt
       ? new Date(beneficiary.acceptanceLetterUploadedAt).toLocaleDateString("en-GB")
       : new Date().toLocaleDateString("en-GB");
@@ -737,6 +780,11 @@ total=${totalTime.toFixed(2)}ms`);
       ? new Date(beneficiary.acceptanceLetterUploadedAt).toISOString()
       : new Date().toISOString();
 
+    // Determine the letterhead priority using the unified resolver:
+    const letterheadResult = await PdfService.resolveOfficialLetterhead("acceptance", beneficiary);
+    const letterheadUrl = letterheadResult.url;
+    const isFullPage = letterheadResult.isFullPage;
+
     const htmlContent = `
       <!DOCTYPE html>
       <html lang="en">
@@ -744,7 +792,7 @@ total=${totalTime.toFixed(2)}ms`);
         <meta charset="UTF-8">
         <title>Offer Acceptance Letter - Candidate: ${beneficiary.id}</title>
         <style>
-          ${activeLetterhead ? `
+          ${isFullPage ? `
           @page {
             size: A4 portrait;
             margin: 0 !important;
@@ -759,7 +807,7 @@ total=${totalTime.toFixed(2)}ms`);
           }
           .border-frame {
             border: none !important;
-            padding: 40mm 20mm 30mm 20mm !important;
+            padding: 38mm 15mm 15mm 15mm !important;
             margin: 0 !important;
             border-radius: 0 !important;
             width: 210mm;
@@ -768,16 +816,16 @@ total=${totalTime.toFixed(2)}ms`);
             position: relative;
           }
           ` : `
-          @page { size: A4; margin: 20mm; }
-          body { font-family: 'Times New Roman', Times, serif; color: #011627; line-height: 1.6; margin: 0; padding: 0; background-color: #ffffff; }
-          .border-frame { border: 1.5px solid #2e7d32; padding: 35px; border-radius: 6px; min-height: 240mm; position: relative; box-sizing: border-box; }
+          @page { size: A4; margin: 10mm; }
+          body { font-family: 'Times New Roman', Times, serif; color: #011627; line-height: 1.4; margin: 0; padding: 0; background-color: #ffffff; }
+          .border-frame { border: 1.5px solid #2e7d32; padding: 20px; border-radius: 6px; min-height: 260mm; position: relative; box-sizing: border-box; }
           `}
-          .divider-line { border-bottom: 2px solid #2e7d32; margin-top: 10px; margin-bottom: 25px; width: 100%; }
-          .title-box { text-align: center; font-size: 15px; font-weight: bold; background: #e8f5e9; padding: 10px; text-transform: uppercase; margin-bottom: 30px; border: 1px solid #a5d6a7; color: #1b5e20; letter-spacing: 0.5px; }
-          .declarative-text { font-size: 14px; text-align: justify; margin-top: 30px; line-height: 1.8; }
-          .declarative-text p { margin-bottom: 20px; }
+          .divider-line { border-bottom: 2px solid #2e7d32; margin-top: 8px; margin-bottom: 12px; width: 100%; }
+          .title-box { text-align: center; font-size: 14px; font-weight: bold; background: #e8f5e9; padding: 8px; text-transform: uppercase; margin-bottom: 15px; border: 1px solid #a5d6a7; color: #1b5e20; letter-spacing: 0.5px; }
+          .declarative-text { font-size: 13px; text-align: justify; margin-top: 15px; line-height: 1.5; }
+          .declarative-text p { margin-bottom: 10px; }
           .field-line { border-bottom: 1px solid #111111; font-weight: bold; padding: 0 8px; color: #1b5e20; }
-          .footer-note { text-align: center; font-size: 8px; color: #727272; position: absolute; bottom: 20px; width: calc(100% - 70px); left: 35px; font-family: Arial, sans-serif; border-top: 1px solid #e0e0e0; padding-top: 8px; }
+          .footer-note { text-align: center; font-size: 8px; color: #727272; position: absolute; bottom: 15px; width: calc(100% - 30px); left: 15px; font-family: Arial, sans-serif; border-top: 1px solid #e0e0e0; padding-top: 8px; }
           ${meta?.watermarkEnabled ? `
           .watermark {
             position: absolute;
@@ -801,18 +849,14 @@ total=${totalTime.toFixed(2)}ms`);
         <div class="border-frame" style="position: relative; z-index: 2; box-sizing: border-box;">
           ${meta?.watermarkEnabled ? `<div class="watermark" style="z-index: 0;">${meta.watermarkText || "SECURED REGISTRY DOCUMENT"}</div>` : ""}
           
-          ${activeLetterhead ? `
+          ${isFullPage ? `
             <div class="letterhead-background" style="position: absolute; top: 0; left: 0; width: 210mm; height: 297mm; z-index: -1; pointer-events: none;">
-              <img src="${PdfService.getLetterheadBgUrl(activeLetterhead)}" style="width: 100%; height: 100%; object-fit: fill; opacity: 1.0;" referrerPolicy="no-referrer" />
+              <img src="${letterheadUrl}" style="width: 100%; height: 100%; object-fit: fill; opacity: 1.0;" referrerPolicy="no-referrer" />
             </div>
           ` : `
-            ${settings.acceptanceLetterheadUrl ? `
+            ${letterheadUrl ? `
               <div style="text-align: center; margin-bottom: 25px; position: relative; z-index: 10; width: 100%;">
-                <img src="${settings.acceptanceLetterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
-              </div>
-            ` : settings.letterheadUrl ? `
-              <div style="text-align: center; margin-bottom: 25px; position: relative; z-index: 10; width: 100%;">
-                <img src="${settings.letterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
+                <img src="${letterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
               </div>
             ` : `
               <!-- THREE-LOGO GOVERNMENT HEADER FALLBACK -->
@@ -854,40 +898,40 @@ total=${totalTime.toFixed(2)}ms`);
             </p>
           </div>
 
-          <div style="margin-top: 50px; font-size: 14px; position: relative; z-index: 10;">
+          <div style="margin-top: 15px; font-size: 13px; position: relative; z-index: 10;">
             <p>Yours faithfully,</p>
           </div>
 
-          <table style="width: 100%; margin-top: 40px; border-collapse: collapse; version: 1.0; position: relative; z-index: 10; page-break-inside: avoid;">
+          <table style="width: 100%; margin-top: 15px; border-collapse: collapse; version: 1.0; position: relative; z-index: 10; page-break-inside: avoid;">
             <tr>
               <td style="width: 55%; vertical-align: top;">
-                <div style="width: 85%; border-bottom: 1px solid #111111; height: 50px; position: relative;">
+                <div style="width: 85%; border-bottom: 1px solid #111111; height: 40px; position: relative;">
                   ${signatureSrc ? `
-                    <img src="${signatureSrc}" style="max-height: 48px; max-width: 90%; position: absolute; bottom: 1px; left: 15px;" referrerPolicy="no-referrer" />
+                    <img src="${signatureSrc}" style="max-height: 38px; max-width: 90%; position: absolute; bottom: 1px; left: 15px;" referrerPolicy="no-referrer" />
                   ` : `
-                    <span style="font-family: 'Brush Script MT', 'Georgia', cursive, serif; font-size: 22px; color: #1b5e20; position: absolute; bottom: 3px; left: 15px;">
+                    <span style="font-family: 'Brush Script MT', 'Georgia', cursive, serif; font-size: 20px; color: #1b5e20; position: absolute; bottom: 3px; left: 15px;">
                       ${signatureInput || `${beneficiary.firstName} ${beneficiary.lastName}`}
                     </span>
                   `}
                 </div>
-                <p style="margin-top: 8px; font-size: 12px; font-family: Arial, sans-serif; color: #424242; font-weight: bold; text-transform: uppercase;">Trainee Signature</p>
-                <p style="font-size: 11px; font-family: Arial, sans-serif; color: #727272; margin-top: 1px;">Candidate Name: ${beneficiary.firstName} ${beneficiary.lastName}</p>
-                <p style="font-size: 9px; font-family: monospace; color: #727272; margin-top: 1px;">ID: ${beneficiary.id} • SECURE VERIFIED: ${verificationTime}</p>
+                <p style="margin-top: 6px; font-size: 11px; font-family: Arial, sans-serif; color: #424242; font-weight: bold; text-transform: uppercase;">Trainee Signature</p>
+                <p style="font-size: 10px; font-family: Arial, sans-serif; color: #727272; margin-top: 1px;">Candidate Name: ${beneficiary.firstName} ${beneficiary.lastName}</p>
+                <p style="font-size: 8px; font-family: monospace; color: #727272; margin-top: 1px;">ID: ${beneficiary.id} • SECURE VERIFIED: ${verificationTime}</p>
               </td>
               <td style="width: 45%; vertical-align: top;">
-                <div style="width: 85%; border-bottom: 1px solid #111111; height: 50px; position: relative;">
-                  <span style="font-family: monospace; font-size: 14px; font-weight: bold; position: absolute; bottom: 5px; left: 5px;">
+                <div style="width: 85%; border-bottom: 1px solid #111111; height: 40px; position: relative;">
+                  <span style="font-family: monospace; font-size: 13px; font-weight: bold; position: absolute; bottom: 5px; left: 5px;">
                     ${dateStr}
                   </span>
                 </div>
-                <p style="margin-top: 8px; font-size: 12px; font-family: Arial, sans-serif; color: #424242; font-weight: bold; text-transform: uppercase;">Date</p>
+                <p style="margin-top: 6px; font-size: 11px; font-family: Arial, sans-serif; color: #424242; font-weight: bold; text-transform: uppercase;">Date</p>
               </td>
             </tr>
           </table>
 
           ${meta?.verificationCode ? `
-            <div style="margin-top: 45px; position: relative; z-index: 10; display: inline-block;">
-              <div style="border: 1px solid #a5d6a7; padding: 6px 12px; background-color: #f1f8e9; border-radius: 4px; font-family: monospace; font-size: 9px; color: #2e7d32; font-weight: bold; letter-spacing: 0.5px;">
+            <div style="margin-top: 15px; position: relative; z-index: 10; display: inline-block;">
+              <div style="border: 1px solid #a5d6a7; padding: 4px 10px; background-color: #f1f8e9; border-radius: 4px; font-family: monospace; font-size: 8.5px; color: #2e7d32; font-weight: bold; letter-spacing: 0.5px;">
                 ✓ SECURITY ID VERIFIED: ${meta.verificationCode}
               </div>
             </div>

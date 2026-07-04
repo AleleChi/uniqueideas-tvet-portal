@@ -109,21 +109,17 @@ export function PublicResponsePortal({ token, onClose }: PublicResponsePortalPro
   // Handle PDF/Html download downloads
   const triggerAdmissionLetterDownload = () => {
     if (!candidate) return;
-    window.open(`${API_BASE_URL}/api/admissions/download-letter/${candidate.id}`, "_blank");
+    window.open(`${API_BASE_URL}/api/admissions/download-letter/${candidate.id}?token=${encodeURIComponent(token)}`, "_blank");
   };
 
   const triggerAcceptanceTemplateDownload = () => {
     if (!candidate) return;
-    window.open(`${API_BASE_URL}/api/admissions/download-acceptance/${candidate.id}`, "_blank");
+    window.open(`${API_BASE_URL}/api/admissions/download-acceptance/${candidate.id}?token=${encodeURIComponent(token)}`, "_blank");
   };
 
   const triggerAcceptanceLetterDownload = () => {
     if (!candidate) return;
-    if (candidate.acceptanceLetterUrl) {
-      window.open(candidate.acceptanceLetterUrl, "_blank");
-      return;
-    }
-    window.open(`${API_BASE_URL}/api/admissions/download-acceptance/${candidate.id}`, "_blank");
+    window.open(`${API_BASE_URL}/api/admissions/download-acceptance/${candidate.id}?token=${encodeURIComponent(token)}`, "_blank");
   };
 
   // E-Signature Drawing Logic

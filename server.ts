@@ -2211,6 +2211,67 @@ app.get("/api/admissions/download-letter/:id", async (req, res) => {
   try {
     const { id } = req.params;
     const inline = req.query.inline === "true";
+    const token = req.query.token as string;
+    
+    let isAuthorized = false;
+
+    // 1. Try to validate via public secure response token first
+    if (token) {
+      const tokenHash = TokenService.hashToken(token);
+      const pool = getPgPool();
+      let tokenRow: any = null;
+      if (pool) {
+        try {
+          const tRes = await pool.query(
+            "SELECT * FROM public_response_tokens WHERE (token_hash = $1 OR token = $2) AND deleted_at IS NULL LIMIT 1",
+            [tokenHash, token]
+          );
+          if (tRes.rows.length > 0) {
+            tokenRow = tRes.rows[0];
+          }
+        } catch (dbErr) {
+          console.error("[DownloadLetter] Token database check failed:", dbErr);
+        }
+      }
+
+      const decoded = TokenService.decodeToken(token);
+      if (decoded && decoded.id === id && !decoded.expired) {
+        isAuthorized = true;
+      } else if (tokenRow && tokenRow.beneficiary_id === id && tokenRow.status !== "REVOKED" && tokenRow.status !== "EXPIRED") {
+        isAuthorized = true;
+      }
+    }
+
+    // 2. Try to validate via standard admin session
+    if (!isAuthorized) {
+      try {
+        let adminToken = "";
+        if (req.cookies && req.cookies.token) {
+          adminToken = req.cookies.token;
+        } else if (req.headers.authorization && req.headers.authorization.startsWith("Bearer ")) {
+          adminToken = req.headers.authorization.split(" ")[1];
+        } else if (req.query && req.query.authToken) {
+          adminToken = req.query.authToken as string;
+        }
+        
+        if (adminToken) {
+          const jwtDecoded = jwt.verify(adminToken, JWT_SECRET) as any;
+          if (jwtDecoded) {
+            const session = await DbRepo.getUserSessionByToken(adminToken);
+            if (session) {
+              isAuthorized = true;
+            }
+          }
+        }
+      } catch (err) {
+        // Auth check ignored
+      }
+    }
+
+    if (!isAuthorized) {
+      return res.status(401).send("Unauthorized. A valid secure response token or administrative login session is required to download this document.");
+    }
+
     const beneficiary = await DbRepo.getBeneficiaryById(id);
     if (!beneficiary) {
       return res.status(404).send("Beneficiary candidate not found");
@@ -2230,6 +2291,67 @@ app.get("/api/admissions/download-acceptance/:id", async (req, res) => {
   try {
     const { id } = req.params;
     const inline = req.query.inline === "true";
+    const token = req.query.token as string;
+
+    let isAuthorized = false;
+
+    // 1. Try to validate via public secure response token first
+    if (token) {
+      const tokenHash = TokenService.hashToken(token);
+      const pool = getPgPool();
+      let tokenRow: any = null;
+      if (pool) {
+        try {
+          const tRes = await pool.query(
+            "SELECT * FROM public_response_tokens WHERE (token_hash = $1 OR token = $2) AND deleted_at IS NULL LIMIT 1",
+            [tokenHash, token]
+          );
+          if (tRes.rows.length > 0) {
+            tokenRow = tRes.rows[0];
+          }
+        } catch (dbErr) {
+          console.error("[DownloadAcceptance] Token database check failed:", dbErr);
+        }
+      }
+
+      const decoded = TokenService.decodeToken(token);
+      if (decoded && decoded.id === id && !decoded.expired) {
+        isAuthorized = true;
+      } else if (tokenRow && tokenRow.beneficiary_id === id && tokenRow.status !== "REVOKED" && tokenRow.status !== "EXPIRED") {
+        isAuthorized = true;
+      }
+    }
+
+    // 2. Try to validate via standard admin session
+    if (!isAuthorized) {
+      try {
+        let adminToken = "";
+        if (req.cookies && req.cookies.token) {
+          adminToken = req.cookies.token;
+        } else if (req.headers.authorization && req.headers.authorization.startsWith("Bearer ")) {
+          adminToken = req.headers.authorization.split(" ")[1];
+        } else if (req.query && req.query.authToken) {
+          adminToken = req.query.authToken as string;
+        }
+        
+        if (adminToken) {
+          const jwtDecoded = jwt.verify(adminToken, JWT_SECRET) as any;
+          if (jwtDecoded) {
+            const session = await DbRepo.getUserSessionByToken(adminToken);
+            if (session) {
+              isAuthorized = true;
+            }
+          }
+        }
+      } catch (err) {
+        // Auth check ignored
+      }
+    }
+
+    if (!isAuthorized) {
+      return res.status(401).send("Unauthorized. A valid secure response token or administrative login session is required to download this document.");
+    }
+
     const beneficiary = await DbRepo.getBeneficiaryById(id);
     if (!beneficiary) {
       return res.status(404).send("Beneficiary candidate not found");
