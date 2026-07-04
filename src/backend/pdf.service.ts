@@ -45,26 +45,44 @@ export class PdfService {
   private static getLetterheadBgUrl(activeLetterhead: any): string {
     if (!activeLetterhead) return "";
     const url = activeLetterhead.fileUrl || "";
-    if (url.toLowerCase().endsWith(".pdf")) {
-      return url.substring(0, url.length - 4) + ".png";
+    return PdfService.resolveCloudinaryImageFromPdf(url);
+  }
+
+  /**
+   * Helper to convert Cloudinary PDF URL to first-page image transform.
+   */
+  public static resolveCloudinaryImageFromPdf(url: string): string {
+    if (!url) return "";
+    let cleanUrl = url.trim();
+    if (cleanUrl.toLowerCase().endsWith(".pdf") || cleanUrl.toLowerCase().includes("/raw/upload/")) {
+      let imgUrl = cleanUrl;
+      if (imgUrl.toLowerCase().endsWith(".pdf")) {
+        imgUrl = imgUrl.substring(0, imgUrl.length - 4) + ".jpg";
+      } else {
+        imgUrl = imgUrl + ".jpg";
+      }
+      // To specify page 1 in Cloudinary: replace upload/ with upload/pg_1/
+      if (imgUrl.includes("/image/upload/")) {
+        imgUrl = imgUrl.replace("/image/upload/", "/image/upload/pg_1/");
+      } else if (imgUrl.includes("/raw/upload/")) {
+        imgUrl = imgUrl.replace("/raw/upload/", "/image/upload/pg_1/");
+      }
+      return imgUrl;
     }
-    return url;
+    return cleanUrl;
   }
 
   /**
    * Unified loader to resolve the official letterhead according to user priority:
    * 
-   * For admission/offer letter:
-   * 1. settings.admissionLetterheadUrl
-   * 2. active institution letterhead
-   * 3. settings.letterheadUrl
-   * 4. generated default official header (fallback)
+   * Priority:
+   * 1. document-specific letterhead URL
+   * 2. general letterhead URL
+   * 3. active institution letterhead
+   * 4. opposite document letterhead as fallback
+   * 5. default generated header only if no Unique letterhead exists
    * 
-   * For acceptance letter:
-   * 1. settings.acceptanceLetterheadUrl
-   * 2. active institution letterhead
-   * 3. settings.letterheadUrl
-   * 4. generated default official header (fallback)
+   * Since the uploaded letterhead is a full A4 background, we set isFullPage to true for all resolved Unique letterheads.
    */
   public static async resolveOfficialLetterhead(
     documentType: "admission" | "acceptance",
@@ -73,26 +91,47 @@ export class PdfService {
     const settings = await this.getSettings();
     const activeLetterhead = await DbRepo.getActiveLetterhead();
 
+    let resolvedUrl = "";
+
     if (documentType === "admission") {
+      // 1. document-specific letterhead URL
       if (settings.admissionLetterheadUrl) {
-        return { url: settings.admissionLetterheadUrl, isFullPage: false };
+        resolvedUrl = settings.admissionLetterheadUrl;
       }
-      if (activeLetterhead) {
-        return { url: PdfService.getLetterheadBgUrl(activeLetterhead), isFullPage: true };
+      // 2. general letterhead URL
+      else if (settings.letterheadUrl) {
+        resolvedUrl = settings.letterheadUrl;
       }
-      if (settings.letterheadUrl) {
-        return { url: settings.letterheadUrl, isFullPage: false };
+      // 3. active institution letterhead
+      else if (activeLetterhead) {
+        resolvedUrl = activeLetterhead.fileUrl || "";
+      }
+      // 4. opposite document letterhead as fallback
+      else if (settings.acceptanceLetterheadUrl) {
+        resolvedUrl = settings.acceptanceLetterheadUrl;
       }
     } else {
+      // 1. document-specific letterhead URL
       if (settings.acceptanceLetterheadUrl) {
-        return { url: settings.acceptanceLetterheadUrl, isFullPage: false };
+        resolvedUrl = settings.acceptanceLetterheadUrl;
       }
-      if (activeLetterhead) {
-        return { url: PdfService.getLetterheadBgUrl(activeLetterhead), isFullPage: true };
+      // 2. general letterhead URL
+      else if (settings.letterheadUrl) {
+        resolvedUrl = settings.letterheadUrl;
       }
-      if (settings.letterheadUrl) {
-        return { url: settings.letterheadUrl, isFullPage: false };
+      // 3. active institution letterhead
+      else if (activeLetterhead) {
+        resolvedUrl = activeLetterhead.fileUrl || "";
       }
+      // 4. opposite document letterhead as fallback
+      else if (settings.admissionLetterheadUrl) {
+        resolvedUrl = settings.admissionLetterheadUrl;
+      }
+    }
+
+    if (resolvedUrl) {
+      const finalUrl = PdfService.resolveCloudinaryImageFromPdf(resolvedUrl);
+      return { url: finalUrl, isFullPage: true };
     }
 
     return { url: "", isFullPage: false };
@@ -407,6 +446,19 @@ export class PdfService {
 
       const setContentStart = globalThis.performance ? globalThis.performance.now() : Date.now();
       await page.setContent(htmlContent, { waitUntil: "domcontentloaded" as any });
+      // Wait for all image assets (including background letterhead images) to fully load
+      await page.evaluate(async () => {
+        const images = Array.from(document.querySelectorAll("img"));
+        await Promise.all(
+          images.map((img) => {
+            if (img.complete) return;
+            return new Promise((resolve) => {
+              img.onload = resolve;
+              img.onerror = resolve;
+            });
+          })
+        );
+      });
       const setContentTime = (globalThis.performance ? globalThis.performance.now() : Date.now()) - setContentStart;
       
       const pdfGenerationStart = globalThis.performance ? globalThis.performance.now() : Date.now();
@@ -603,35 +655,45 @@ total=${totalTime.toFixed(2)}ms`);
             margin: 0 !important;
             padding: 0 !important;
             width: 210mm;
-            height: 297mm;
+            height: 295mm;
+            max-height: 295mm;
             box-sizing: border-box;
             background-color: #ffffff;
+            font-family: 'Times New Roman', Times, serif;
+            color: #0f172a;
+            line-height: 1.35;
+            font-size: 11px;
+            overflow: hidden;
           }
           .border-frame {
             border: none !important;
-            padding: 38mm 15mm 15mm 15mm !important;
+            padding: 48mm 18mm 20mm 18mm !important;
             margin: 0 !important;
             border-radius: 0 !important;
             width: 210mm;
-            height: 297mm;
+            height: 295mm;
+            max-height: 295mm;
             box-sizing: border-box;
             position: relative;
+            page-break-after: avoid;
+            page-break-inside: avoid;
+            overflow: hidden;
           }
           ` : `
           @page { size: A4; margin: 10mm; }
-          body { font-family: 'Times New Roman', Times, serif; color: #0f172a; line-height: 1.4; margin: 0; padding: 5px; background-color: #ffffff; }
-          .border-frame { border: 1px solid #e2e8f0; padding: 20px; border-radius: 4px; min-height: 260mm; position: relative; }
+          body { font-family: 'Times New Roman', Times, serif; color: #0f172a; line-height: 1.35; margin: 0; padding: 5px; background-color: #ffffff; font-size: 11px; }
+          .border-frame { border: 1px solid #e2e8f0; padding: 20px; border-radius: 4px; min-height: 260mm; position: relative; box-sizing: border-box; }
           `}
           .logo-header-table { width: 100%; border-collapse: collapse; margin-bottom: 5px; }
           .logo-header-table td { vertical-align: middle; padding: 0; }
           .divider-line { border-bottom: 3px double #000000; width: 100%; margin: 8px 0 12px 0; }
-          .metadata-table { width: 100%; border-collapse: collapse; margin-top: 8px; margin-bottom: 12px; font-size: 13px; }
-          .metadata-table td { padding: 3px 0; }
-          .letter-title { text-align: left; font-size: 14px; font-weight: bold; text-transform: uppercase; margin: 10px 0 10px 0; text-decoration: underline; color: #000000; letter-spacing: 0.5px; }
-          .letter-content { font-size: 13px; text-align: justify; }
-          .letter-content p { margin: 8px 0; text-indent: 0; }
-          .signatures { margin-top: 25px; page-break-inside: avoid; }
-          .footer-note { text-align: center; font-size: 8.5px; color: #94a3b8; position: absolute; bottom: 15px; width: 100%; left: 0; font-family: Arial, sans-serif; letter-spacing: 0.5px; }
+          .metadata-table { width: 100%; border-collapse: collapse; margin-top: 5px; margin-bottom: 8px; font-size: 11px; }
+          .metadata-table td { padding: 2px 0; }
+          .letter-title { text-align: left; font-size: 12px; font-weight: bold; text-transform: uppercase; margin: 8px 0; text-decoration: underline; color: #000000; letter-spacing: 0.5px; }
+          .letter-content { font-size: 11px; text-align: justify; line-height: 1.35; }
+          .letter-content p { margin: 6px 0; text-indent: 0; }
+          .signatures { margin-top: 15px; page-break-inside: avoid; }
+          .footer-note { text-align: center; font-size: 8px; color: #94a3b8; position: absolute; bottom: 20mm; width: calc(100% - 36mm); left: 18mm; font-family: Arial, sans-serif; letter-spacing: 0.5px; }
           ${settings.watermarkEnabled ? `
           .watermark {
             position: absolute;
@@ -691,17 +753,18 @@ total=${totalTime.toFixed(2)}ms`);
             `}
           `}
 
-          <table class="metadata-table" style="position: relative; z-index: 10;">
+          <table class="metadata-table" style="position: relative; z-index: 10; width: 100%;">
             <tr>
-              <td><strong>Date:</strong> ${dateStr}</td>
+              <td style="text-align: left;"><strong>Our Ref:</strong> ${admissionRef}</td>
+              <td style="text-align: right;"><strong>Date:</strong> ${dateStr}</td>
             </tr>
           </table>
 
-          <div class="salutation" style="position: relative; z-index: 10; font-size: 13px; font-weight: bold; margin-bottom: 12px;">
+          <div class="salutation" style="position: relative; z-index: 10; font-size: 11px; font-weight: bold; margin-bottom: 8px;">
             Dear Mr/Mrs/Miss: ${genderSalutation} ${beneficiary.lastName} ${beneficiary.firstName} ${beneficiary.otherName || ""}
           </div>
 
-          <div class="letter-title" style="position: relative; z-index: 10;">ADMISSION LETTER</div>
+          <div class="letter-title" style="position: relative; z-index: 10;">OFFER OF ADMISSION</div>
 
           <div class="letter-content" style="position: relative; z-index: 10;">
             <p>We are pleased to inform you that you have been selected to participate in the short-term technical and vocational education and training (TVET) Program, sponsored by the IDEAS Project.</p>
@@ -710,39 +773,39 @@ total=${totalTime.toFixed(2)}ms`);
             
             <p>The training will take place at <strong>${settings.trainingVenue || settings.contactAddress || "Government Technical College (GTC), Kano"}</strong><br>From <strong>${settings.trainingStartDate || "October 12, 2026"}</strong> To <strong>${settings.trainingEndDate || "December 18, 2026"}</strong>.</p>
             
-            <p style="margin-bottom: 4px;">As a participant in this program, you are expected to:</p>
-            <ul style="list-style-type: none; padding-left: 15px; margin-top: 2px; margin-bottom: 8px;">
-              <li style="margin-bottom: 4px;">• Attend all training sessions and activities (at least 65% monthly attendance)</li>
-              <li style="margin-bottom: 4px;">• Participate in class discussions</li>
-              <li style="margin-bottom: 4px;">• Adhere to the Training Service Provider's rules and regulations</li>
+            <p style="margin-bottom: 2px;">As a participant in this program, you are expected to:</p>
+            <ul style="list-style-type: none; padding-left: 15px; margin-top: 1px; margin-bottom: 6px;">
+              <li style="margin-bottom: 2px;">• Attend all training sessions and activities (at least 65% monthly attendance)</li>
+              <li style="margin-bottom: 2px;">• Participate actively in class discussions and practical reviews</li>
+              <li style="margin-bottom: 2px;">• Adhere strictly to the Training Service Provider's rules and regulations</li>
             </ul>
             
-            <p>The IDEAS Project will cover the tuition and stipends for transportation only.</p>
+            <p>The IDEAS Project will cover your tuition and stipulated program costs.</p>
             
-            <p>Kindly confirm your acceptance of this admission with an acceptance letter to this effect.</p>
+            <p>Kindly confirm your acceptance of this admission by signing and submitting the acceptance form to this effect.</p>
           </div>
 
-          <table style="width: 100%; margin-top: 20px; border-collapse: collapse; page-break-inside: avoid; position: relative; z-index: 10;">
+          <table style="width: 100%; margin-top: 15px; border-collapse: collapse; page-break-inside: avoid; position: relative; z-index: 10;">
             <tr>
               <td style="vertical-align: top; text-align: left;">
-                <p style="font-size: 13px; margin: 0 0 15px 0;">Kind regards</p>
+                <p style="font-size: 11px; margin: 0 0 8px 0;">Kind regards,</p>
                 
-                <div style="margin-top: 15px;">
+                <div style="margin-top: 5px;">
                   ${settings.signatureUrl ? `
-                    <img src="${settings.signatureUrl}" style="max-height: 45px; display: block;" referrerPolicy="no-referrer">
+                    <img src="${settings.signatureUrl}" style="max-height: 40px; display: block;" referrerPolicy="no-referrer">
                   ` : `
-                    <span style="font-family: 'Georgia', serif; font-style: italic; font-size: 14px; font-weight: bold; color: #1e3a8a;">${settings.tpmName}</span>
+                    <span style="font-family: 'Georgia', serif; font-style: italic; font-size: 13px; font-weight: bold; color: #1e3a8a;">${settings.tpmName}</span>
                   `}
-                  <div style="width: 180px; border-bottom: 1px dashed #475569; margin: 4px 0 6px 0;"></div>
-                  <strong style="font-size: 12px; text-transform: uppercase;">${settings.tpmName}</strong><br>
-                  <span style="font-size: 10px; color: #64748b; font-family: Arial, sans-serif; text-transform: uppercase; letter-spacing: 0.5px;">TPM Signature</span>
+                  <div style="width: 160px; border-bottom: 1px dashed #475569; margin: 4px 0 4px 0;"></div>
+                  <strong style="font-size: 11px; text-transform: uppercase;">${settings.tpmName}</strong><br>
+                  <span style="font-size: 9px; color: #64748b; font-family: Arial, sans-serif; text-transform: uppercase; letter-spacing: 0.5px;">TSP AUTHORIZED SIGNATORY</span>
                 </div>
               </td>
               ${meta?.qrDataUrl ? `
-              <td style="vertical-align: bottom; text-align: right; width: 120px;">
-                <div style="display: inline-block; text-align: center; border: 1px solid #cbd5e1; padding: 5px; border-radius: 6px; background-color: #f8fafc;">
-                  <img src="${meta.qrDataUrl}" style="width: 54px; height: 54px; display: block; margin: 0 auto 3px auto;" />
-                  <span style="font-family: monospace; font-size: 6.5px; color: #475569; text-transform: uppercase; font-weight: bold;">CODE: ${meta.verificationCode}</span>
+              <td style="vertical-align: bottom; text-align: right; width: 110px;">
+                <div style="display: inline-block; text-align: center; border: 1px solid #cbd5e1; padding: 4px; border-radius: 6px; background-color: #f8fafc;">
+                  <img src="${meta.qrDataUrl}" style="width: 48px; height: 48px; display: block; margin: 0 auto 2px auto;" />
+                  <span style="font-family: monospace; font-size: 6px; color: #475569; text-transform: uppercase; font-weight: bold;">CODE: ${meta.verificationCode}</span>
                 </div>
               </td>
               ` : ""}
@@ -801,31 +864,41 @@ total=${totalTime.toFixed(2)}ms`);
             margin: 0 !important;
             padding: 0 !important;
             width: 210mm;
-            height: 297mm;
+            height: 295mm;
+            max-height: 295mm;
             box-sizing: border-box;
             background-color: #ffffff;
+            font-family: 'Times New Roman', Times, serif;
+            color: #011627;
+            line-height: 1.35;
+            font-size: 11px;
+            overflow: hidden;
           }
           .border-frame {
             border: none !important;
-            padding: 38mm 15mm 15mm 15mm !important;
+            padding: 48mm 18mm 20mm 18mm !important;
             margin: 0 !important;
             border-radius: 0 !important;
             width: 210mm;
-            height: 297mm;
+            height: 295mm;
+            max-height: 295mm;
             box-sizing: border-box;
             position: relative;
+            page-break-after: avoid;
+            page-break-inside: avoid;
+            overflow: hidden;
           }
           ` : `
           @page { size: A4; margin: 10mm; }
-          body { font-family: 'Times New Roman', Times, serif; color: #011627; line-height: 1.4; margin: 0; padding: 0; background-color: #ffffff; }
+          body { font-family: 'Times New Roman', Times, serif; color: #011627; line-height: 1.35; margin: 0; padding: 0; background-color: #ffffff; font-size: 11px; }
           .border-frame { border: 1.5px solid #2e7d32; padding: 20px; border-radius: 6px; min-height: 260mm; position: relative; box-sizing: border-box; }
           `}
-          .divider-line { border-bottom: 2px solid #2e7d32; margin-top: 8px; margin-bottom: 12px; width: 100%; }
-          .title-box { text-align: center; font-size: 14px; font-weight: bold; background: #e8f5e9; padding: 8px; text-transform: uppercase; margin-bottom: 15px; border: 1px solid #a5d6a7; color: #1b5e20; letter-spacing: 0.5px; }
-          .declarative-text { font-size: 13px; text-align: justify; margin-top: 15px; line-height: 1.5; }
-          .declarative-text p { margin-bottom: 10px; }
-          .field-line { border-bottom: 1px solid #111111; font-weight: bold; padding: 0 8px; color: #1b5e20; }
-          .footer-note { text-align: center; font-size: 8px; color: #727272; position: absolute; bottom: 15px; width: calc(100% - 30px); left: 15px; font-family: Arial, sans-serif; border-top: 1px solid #e0e0e0; padding-top: 8px; }
+          .divider-line { border-bottom: 2px solid #2e7d32; margin-top: 5px; margin-bottom: 8px; width: 100%; }
+          .title-box { text-align: center; font-size: 12px; font-weight: bold; background: #e8f5e9; padding: 6px; text-transform: uppercase; margin-bottom: 10px; border: 1px solid #a5d6a7; color: #1b5e20; letter-spacing: 0.5px; }
+          .declarative-text { font-size: 11.5px; text-align: justify; margin-top: 10px; line-height: 1.4; }
+          .declarative-text p { margin-bottom: 6px; }
+          .field-line { border-bottom: 1px solid #111111; font-weight: bold; padding: 0 4px; color: #1b5e20; }
+          .footer-note { text-align: center; font-size: 8px; color: #727272; position: absolute; bottom: 20mm; width: calc(100% - 36mm); left: 18mm; font-family: Arial, sans-serif; border-top: 1px solid #e0e0e0; padding-top: 6px; }
           ${meta?.watermarkEnabled ? `
           .watermark {
             position: absolute;
@@ -855,7 +928,7 @@ total=${totalTime.toFixed(2)}ms`);
             </div>
           ` : `
             ${letterheadUrl ? `
-              <div style="text-align: center; margin-bottom: 25px; position: relative; z-index: 10; width: 100%;">
+              <div style="text-align: center; margin-bottom: 20px; position: relative; z-index: 10; width: 100%;">
                 <img src="${letterheadUrl}" style="width: 100%; height: auto; display: block;" referrerPolicy="no-referrer">
               </div>
             ` : `
@@ -877,7 +950,7 @@ total=${totalTime.toFixed(2)}ms`);
             `}
           `}
 
-          <div style="text-align: right; font-family: monospace; font-size: 12px; margin-bottom: 20px; color: #424242; position: relative; z-index: 10;">
+          <div style="text-align: right; font-family: monospace; font-size: 11px; margin-bottom: 12px; color: #424242; position: relative; z-index: 10;">
             <div>Registry Ref: <strong>IDEAS-TVET/ACC/${beneficiary.id.split("-").pop() || "VAL"}</strong></div>
             <div>Date: <strong>${dateStr}</strong></div>
           </div>
@@ -890,7 +963,7 @@ total=${totalTime.toFixed(2)}ms`);
             </p>
             
             <p>
-              I agree to abide by all programme regulations, attendance requirements, and institutional guidelines established at <span class="field-line" style="font-size: 13px;">${settings.trainingVenue || "the Designated Training Center"}</span>.
+              I agree to abide by all programme regulations, attendance requirements, and institutional guidelines established at <span class="field-line" style="font-size: 11.5px;">${settings.trainingVenue || "the Designated Training Center"}</span>.
             </p>
             
             <p>
@@ -898,40 +971,40 @@ total=${totalTime.toFixed(2)}ms`);
             </p>
           </div>
 
-          <div style="margin-top: 15px; font-size: 13px; position: relative; z-index: 10;">
+          <div style="margin-top: 10px; font-size: 11.5px; position: relative; z-index: 10;">
             <p>Yours faithfully,</p>
           </div>
 
-          <table style="width: 100%; margin-top: 15px; border-collapse: collapse; version: 1.0; position: relative; z-index: 10; page-break-inside: avoid;">
+          <table style="width: 100%; margin-top: 10px; border-collapse: collapse; version: 1.0; position: relative; z-index: 10; page-break-inside: avoid;">
             <tr>
               <td style="width: 55%; vertical-align: top;">
-                <div style="width: 85%; border-bottom: 1px solid #111111; height: 40px; position: relative;">
+                <div style="width: 85%; border-bottom: 1px solid #111111; height: 35px; position: relative;">
                   ${signatureSrc ? `
-                    <img src="${signatureSrc}" style="max-height: 38px; max-width: 90%; position: absolute; bottom: 1px; left: 15px;" referrerPolicy="no-referrer" />
+                    <img src="${signatureSrc}" style="max-height: 33px; max-width: 90%; position: absolute; bottom: 1px; left: 15px;" referrerPolicy="no-referrer" />
                   ` : `
-                    <span style="font-family: 'Brush Script MT', 'Georgia', cursive, serif; font-size: 20px; color: #1b5e20; position: absolute; bottom: 3px; left: 15px;">
+                    <span style="font-family: 'Brush Script MT', 'Georgia', cursive, serif; font-size: 18px; color: #1b5e20; position: absolute; bottom: 3px; left: 15px;">
                       ${signatureInput || `${beneficiary.firstName} ${beneficiary.lastName}`}
                     </span>
                   `}
                 </div>
-                <p style="margin-top: 6px; font-size: 11px; font-family: Arial, sans-serif; color: #424242; font-weight: bold; text-transform: uppercase;">Trainee Signature</p>
-                <p style="font-size: 10px; font-family: Arial, sans-serif; color: #727272; margin-top: 1px;">Candidate Name: ${beneficiary.firstName} ${beneficiary.lastName}</p>
-                <p style="font-size: 8px; font-family: monospace; color: #727272; margin-top: 1px;">ID: ${beneficiary.id} • SECURE VERIFIED: ${verificationTime}</p>
+                <p style="margin-top: 4px; font-size: 10px; font-family: Arial, sans-serif; color: #424242; font-weight: bold; text-transform: uppercase; margin-bottom: 1px;">Trainee Signature</p>
+                <p style="font-size: 9px; font-family: Arial, sans-serif; color: #727272; margin-top: 0; margin-bottom: 1px;">Candidate Name: ${beneficiary.firstName} ${beneficiary.lastName}</p>
+                <p style="font-size: 7.5px; font-family: monospace; color: #727272; margin-top: 0;">ID: ${beneficiary.id} • SECURE VERIFIED: ${verificationTime}</p>
               </td>
               <td style="width: 45%; vertical-align: top;">
-                <div style="width: 85%; border-bottom: 1px solid #111111; height: 40px; position: relative;">
-                  <span style="font-family: monospace; font-size: 13px; font-weight: bold; position: absolute; bottom: 5px; left: 5px;">
+                <div style="width: 85%; border-bottom: 1px solid #111111; height: 35px; position: relative;">
+                  <span style="font-family: monospace; font-size: 11px; font-weight: bold; position: absolute; bottom: 5px; left: 5px;">
                     ${dateStr}
                   </span>
                 </div>
-                <p style="margin-top: 6px; font-size: 11px; font-family: Arial, sans-serif; color: #424242; font-weight: bold; text-transform: uppercase;">Date</p>
+                <p style="margin-top: 4px; font-size: 10px; font-family: Arial, sans-serif; color: #424242; font-weight: bold; text-transform: uppercase;">Date</p>
               </td>
             </tr>
           </table>
 
           ${meta?.verificationCode ? `
-            <div style="margin-top: 15px; position: relative; z-index: 10; display: inline-block;">
-              <div style="border: 1px solid #a5d6a7; padding: 4px 10px; background-color: #f1f8e9; border-radius: 4px; font-family: monospace; font-size: 8.5px; color: #2e7d32; font-weight: bold; letter-spacing: 0.5px;">
+            <div style="margin-top: 10px; position: relative; z-index: 10; display: inline-block;">
+              <div style="border: 1px solid #a5d6a7; padding: 3px 8px; background-color: #f1f8e9; border-radius: 4px; font-family: monospace; font-size: 8px; color: #2e7d32; font-weight: bold; letter-spacing: 0.5px;">
                 ✓ SECURITY ID VERIFIED: ${meta.verificationCode}
               </div>
             </div>

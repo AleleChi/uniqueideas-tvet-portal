@@ -567,7 +567,7 @@ export const Sidebar = React.memo(function Sidebar({
       <div className="space-y-4">
         
         {/* Action CTA: Add New Beneficiary */}
-        {["SUPER_ADMIN", "ADMIN_OFFICER"].includes(session?.role || "") && (
+        {["SUPER_ADMIN", "ADMIN_OFFICER", "TSP", "TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER"].includes(session?.role || "") && (
           <div className="px-4">
             <button 
               onClick={() => {

@@ -6854,7 +6854,7 @@ export class DbRepo {
   /**
    * Aggregate funnel steps count
    */
-  static async getAdmissionsFunnelReport(): Promise<{
+  static async getAdmissionsFunnelReport(tspId?: string): Promise<{
     totalRegistered: number;
     generated: number;
     sent: number;
@@ -6867,14 +6867,15 @@ export class DbRepo {
       const state = loadJsonState();
       const list = (state.beneficiaries || []) as Beneficiary[];
       
-      const totalRegistered = list.length;
+      const filteredList = tspId ? list.filter((b: any) => b.tspId === tspId) : list;
+      const totalRegistered = filteredList.length;
       let generated = 0;
       let sent = 0;
       let viewed = 0;
       let uploaded = 0;
       let accepted = 0;
 
-      list.forEach((b: any) => {
+      filteredList.forEach((b: any) => {
         const s = (b.admissionStatus || "Pending").toLowerCase();
         const lStatus = b.acceptanceLetterStatus || "NOT_SUBMITTED";
         
@@ -6899,7 +6900,7 @@ export class DbRepo {
     }
 
     try {
-      const q = `
+      let q = `
         SELECT 
           COUNT(*) as total_registered,
           COUNT(CASE WHEN COALESCE(adm.admission_status, 'Pending') IN ('Admission Generated', 'Admission Sent', 'Offer Viewed', 'Acceptance Uploaded', 'Accepted') THEN 1 END) as generated,
@@ -6911,7 +6912,12 @@ export class DbRepo {
         LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
         WHERE b.deleted_at IS NULL
       `;
-      const res = await executeQuery(q);
+      const params: any[] = [];
+      if (tspId) {
+        q += ` AND b.tsp_id = $1`;
+        params.push(tspId);
+      }
+      const res = await executeQuery(q, params);
       const row = res.rows[0];
       return {
         totalRegistered: parseInt(row.total_registered || "0", 10),
@@ -6930,7 +6936,7 @@ export class DbRepo {
   /**
    * Pull grouped TSP center performance metrics
    */
-  static async getTspPerformanceReport(): Promise<Array<{
+  static async getTspPerformanceReport(tspId?: string): Promise<Array<{
     tsp: string;
     total: number;
     admitted: number;
@@ -6943,8 +6949,9 @@ export class DbRepo {
       const state = loadJsonState();
       const list = (state.beneficiaries || []) as Beneficiary[];
       
+      const filteredList = tspId ? list.filter((b: any) => b.tspId === tspId) : list;
       const map: { [key: string]: any } = {};
-      list.forEach((b: any) => {
+      filteredList.forEach((b: any) => {
         const tspName = b.tsp || "Unique Technology Nig. Ltd";
         if (!map[tspName]) {
           map[tspName] = { tsp: tspName, total: 0, admitted: 0, submitted: 0, underReview: 0, verified: 0 };
@@ -6967,11 +6974,11 @@ export class DbRepo {
         }
       });
 
-      return Object.values(map).sort((a, b) => b.total - a.total);
+      return Object.values(map).sort((a: any, b: any) => b.total - a.total);
     }
 
     try {
-      const q = `
+      let q = `
         SELECT 
           COALESCE(b.tsp, 'Unique Technology Nig. Ltd') as tsp,
           COUNT(*) as total,
@@ -6982,10 +6989,17 @@ export class DbRepo {
         FROM beneficiaries b
         LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
         WHERE b.deleted_at IS NULL
+      `;
+      const params: any[] = [];
+      if (tspId) {
+        q += ` AND b.tsp_id = $1`;
+        params.push(tspId);
+      }
+      q += `
         GROUP BY b.tsp
         ORDER BY total DESC
       `;
-      const res = await executeQuery(q);
+      const res = await executeQuery(q, params);
       return res.rows.map(r => ({
         tsp: r.tsp,
         total: parseInt(r.total || "0", 10),
@@ -7003,7 +7017,7 @@ export class DbRepo {
   /**
    * Pull geographical state boundaries metrics
    */
-  static async getStatePerformanceReport(): Promise<Array<{
+  static async getStatePerformanceReport(tspId?: string): Promise<Array<{
     state: string;
     total: number;
     admitted: number;
@@ -7014,8 +7028,9 @@ export class DbRepo {
       const stateData = loadJsonState();
       const list = (stateData.beneficiaries || []) as Beneficiary[];
       
+      const filteredList = tspId ? list.filter((b: any) => b.tspId === tspId) : list;
       const map: { [key: string]: any } = {};
-      list.forEach((b: any) => {
+      filteredList.forEach((b: any) => {
         const stateName = b.state || "Imo";
         if (!map[stateName]) {
           map[stateName] = { state: stateName, total: 0, admitted: 0, pending: 0 };
@@ -7031,11 +7046,11 @@ export class DbRepo {
         }
       });
 
-      return Object.values(map).sort((a, b) => b.total - a.total);
+      return Object.values(map).sort((a: any, b: any) => b.total - a.total);
     }
 
     try {
-      const q = `
+      let q = `
         SELECT 
           COALESCE(b.state, 'Imo') as state,
           COUNT(*) as total,
@@ -7044,10 +7059,17 @@ export class DbRepo {
         FROM beneficiaries b
         LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
         WHERE b.deleted_at IS NULL
+      `;
+      const params: any[] = [];
+      if (tspId) {
+        q += ` AND b.tsp_id = $1`;
+        params.push(tspId);
+      }
+      q += `
         GROUP BY b.state
         ORDER BY total DESC
       `;
-      const res = await executeQuery(q);
+      const res = await executeQuery(q, params);
       return res.rows.map(r => ({
         state: r.state,
         total: parseInt(r.total || "0", 10),

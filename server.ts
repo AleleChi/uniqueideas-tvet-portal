@@ -58,9 +58,10 @@ async function checkBeneficiaryAccess(user: any, beneficiaryId: string): Promise
   let userTspId = user.tspId;
   let userStateId = user.stateId;
 
-  if (TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"))) {
+  const isTspUser = TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"));
+  if (isTspUser) {
     if (!userTspId) userTspId = "00000000-0000-0000-0000-000000000001";
-    if (!userStateId) userStateId = "state_imo_id_default";
+    userStateId = undefined; // Bypass state restrictions entirely for TSP users
   }
 
   const bTspId = b.tspId || "00000000-0000-0000-0000-000000000001";
@@ -74,6 +75,44 @@ async function checkBeneficiaryAccess(user: any, beneficiaryId: string): Promise
   }
   return true;
 }
+
+const restrictTspAdmissionAccess = async (req: any, res: any, next: any) => {
+  const user = req.user;
+  if (!user) {
+    return res.status(401).json({ error: "Authentication required" });
+  }
+
+  const isFederal = user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role);
+  if (isFederal) {
+    return next();
+  }
+
+  const isTsp = TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"));
+  if (!isTsp) {
+    return res.status(403).json({ error: "Access Denied: Insufficient permissions." });
+  }
+
+  const rawId = req.params.id || req.params.beneficiaryId || req.body.beneficiaryId || req.query.id || req.query.beneficiaryId;
+  const ids = req.body.ids;
+
+  if (rawId) {
+    const resolvedId = (await DbRepo.resolveBeneficiaryIdResiliently(rawId)) || String(rawId);
+    const hasAccess = await checkBeneficiaryAccess(user, resolvedId);
+    if (!hasAccess) {
+      return res.status(403).json({ error: "Access Denied: You are restricted from accessing another training organization's trainee." });
+    }
+  } else if (Array.isArray(ids)) {
+    for (const id of ids) {
+      const resolvedId = (await DbRepo.resolveBeneficiaryIdResiliently(id)) || String(id);
+      const hasAccess = await checkBeneficiaryAccess(user, resolvedId);
+      if (!hasAccess) {
+        return res.status(403).json({ error: `Access Denied: You are restricted from accessing trainee with ID ${id} as they belong to another training organization.` });
+      }
+    }
+  }
+
+  next();
+};
 
 const memoizedStates = NIGERIAN_ZONES.reduce((acc: any[], zone) => {
   zone.states.forEach(state => {
@@ -934,11 +973,11 @@ app.post("/api/governance/log-action", requireAuth, async (req, res) => {
     return res.status(500).json({ success: false, error: err.message || String(err) });
   }
 });
-app.get("/api/admissions/list", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.getAdmissionsList);
-app.post("/api/admissions/bulk-transition", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.bulkTransitionStatus);
-app.post("/api/admissions/acceptance/review", requireAuth, requireRole(["SUPER_ADMIN", "REVIEW_OFFICER", "ADMIN_OFFICER"]), AdmissionController.reviewAcceptanceLetter);
-app.get("/api/admissions/:id/letter", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", "TRAINEE"]), AdmissionController.getAdmissionLetterData);
-app.post("/api/admissions/regenerate-offer-package", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), AdmissionController.regenerateOfferPackage);
+app.get("/api/admissions/list", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), AdmissionController.getAdmissionsList);
+app.post("/api/admissions/bulk-transition", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), restrictTspAdmissionAccess, AdmissionController.bulkTransitionStatus);
+app.post("/api/admissions/acceptance/review", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), restrictTspAdmissionAccess, AdmissionController.reviewAcceptanceLetter);
+app.get("/api/admissions/:id/letter", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES, "TRAINEE"]), restrictTspAdmissionAccess, AdmissionController.getAdmissionLetterData);
+app.post("/api/admissions/regenerate-offer-package", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), restrictTspAdmissionAccess, AdmissionController.regenerateOfferPackage);
 app.get("/api/admin/debug/offer-token", requireAuth, AdmissionController.debugOfferToken);
 
 // --- Admission Form Module ---
@@ -967,15 +1006,15 @@ const protectInactiveBeneficiary = async (req: express.Request, res: express.Res
   }
 };
 
-app.post("/api/admissions/:id/generate-form", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "TRAINEE"]), protectInactiveBeneficiary, AdmissionController.generateForm);
-app.get("/api/admissions/:id/form", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", "TRAINEE"]), AdmissionController.getForm);
-app.post("/api/admissions/:id/save-form", requireAuth, requireRole(["SUPER_ADMIN", "TRAINEE"]), protectInactiveBeneficiary, AdmissionController.saveForm);
-app.get("/api/admissions/:id/form/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", "TRAINEE"]), AdmissionController.getFormPdf);
-app.get("/api/admissions/:id/form/docx", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", "TRAINEE"]), AdmissionController.getFormDocx);
+app.post("/api/admissions/:id/generate-form", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES, "TRAINEE"]), restrictTspAdmissionAccess, protectInactiveBeneficiary, AdmissionController.generateForm);
+app.get("/api/admissions/:id/form", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES, "TRAINEE"]), restrictTspAdmissionAccess, AdmissionController.getForm);
+app.post("/api/admissions/:id/save-form", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES, "TRAINEE"]), restrictTspAdmissionAccess, protectInactiveBeneficiary, AdmissionController.saveForm);
+app.get("/api/admissions/:id/form/pdf", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES, "TRAINEE"]), restrictTspAdmissionAccess, AdmissionController.getFormPdf);
+app.get("/api/admissions/:id/form/docx", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES, "TRAINEE"]), restrictTspAdmissionAccess, AdmissionController.getFormDocx);
 app.post("/api/admissions/bulk-export", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.bulkExportAdmissionForms);
-app.post("/api/admissions/:id/confirm-form", requireAuth, requireRole(["SUPER_ADMIN", "TRAINEE"]), protectInactiveBeneficiary, AdmissionController.confirmForm);
+app.post("/api/admissions/:id/confirm-form", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES, "TRAINEE"]), restrictTspAdmissionAccess, protectInactiveBeneficiary, AdmissionController.confirmForm);
 app.post("/api/admissions/:id/unlock-form", requireAuth, requireRole(["SUPER_ADMIN"]), AdmissionController.unlockForm);
-app.post("/api/admissions/:id/regenerate-reference", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), protectInactiveBeneficiary, AdmissionController.regenerateReference);
+app.post("/api/admissions/:id/regenerate-reference", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), restrictTspAdmissionAccess, protectInactiveBeneficiary, AdmissionController.regenerateReference);
 
 // ==========================================
 // GOVERNANCE SUBMISSIONS API ENDPOINTS (Phase 8)
@@ -1209,9 +1248,13 @@ app.get("/api/submissions/:id/audits", requireAuth, async (req: AuthenticatedReq
 // ==========================================
 // ADMISSIONS REPORTING API ENDPOINTS
 // ==========================================
-app.get("/api/reports/admissions/funnel", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"], ["view_reports"]), async (req: AuthenticatedRequest, res) => {
+app.get("/api/reports/admissions/funnel", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES], ["view_reports"]), async (req: AuthenticatedRequest, res) => {
   try {
-    const data = await DbRepo.getAdmissionsFunnelReport();
+    const user = req.user;
+    const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+    const tspId = (!isFederal && user && (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP"))) ? user.tspId : undefined;
+    
+    const data = await DbRepo.getAdmissionsFunnelReport(tspId);
     res.json({
       success: true,
       data: data
@@ -1225,9 +1268,13 @@ app.get("/api/reports/admissions/funnel", requireAuth, requireRoleOrPermission([
   }
 });
 
-app.get("/api/reports/admissions/tsp", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"], ["view_reports"]), async (req: AuthenticatedRequest, res) => {
+app.get("/api/reports/admissions/tsp", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES], ["view_reports"]), async (req: AuthenticatedRequest, res) => {
   try {
-    const data = await DbRepo.getTspPerformanceReport();
+    const user = req.user;
+    const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+    const tspId = (!isFederal && user && (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP"))) ? user.tspId : undefined;
+
+    const data = await DbRepo.getTspPerformanceReport(tspId);
     res.json({
       success: true,
       data: data
@@ -1241,9 +1288,13 @@ app.get("/api/reports/admissions/tsp", requireAuth, requireRoleOrPermission(["SU
   }
 });
 
-app.get("/api/reports/admissions/state", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"], ["view_reports"]), async (req: AuthenticatedRequest, res) => {
+app.get("/api/reports/admissions/state", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES], ["view_reports"]), async (req: AuthenticatedRequest, res) => {
   try {
-    const data = await DbRepo.getStatePerformanceReport();
+    const user = req.user;
+    const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+    const tspId = (!isFederal && user && (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP"))) ? user.tspId : undefined;
+
+    const data = await DbRepo.getStatePerformanceReport(tspId);
     res.json({
       success: true,
       data: data
@@ -1257,7 +1308,7 @@ app.get("/api/reports/admissions/state", requireAuth, requireRoleOrPermission(["
   }
 });
 
-app.get("/api/reports/admissions/list", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"], ["view_reports"]), async (req: AuthenticatedRequest, res) => {
+app.get("/api/reports/admissions/list", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES], ["view_reports"]), async (req: AuthenticatedRequest, res) => {
   try {
     // 1. Strict Query Parameters Validation
     const pageStr = req.query.page as string || "1";
@@ -1299,6 +1350,13 @@ app.get("/api/reports/admissions/list", requireAuth, requireRoleOrPermission(["S
     const sortBy = ((req.query.sortBy as string) || "createdAt").substring(0, 50);
     const sortOrder = req.query.sortOrder === "ASC" ? "ASC" : "DESC";
 
+    const user = req.user;
+    const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+    let effectiveTsp = tsp;
+    if (!isFederal && user && (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP"))) {
+      effectiveTsp = user.tspId || "00000000-0000-0000-0000-000000000001";
+    }
+
     const data = await DbRepo.getAdmissionsReportPaged({
       page,
       pageSize,
@@ -1307,7 +1365,7 @@ app.get("/api/reports/admissions/list", requireAuth, requireRoleOrPermission(["S
       acceptanceLetterStatus,
       state,
       sector,
-      tsp,
+      tsp: effectiveTsp,
       sortBy,
       sortOrder
     });
@@ -2102,7 +2160,7 @@ function isValidTransition(oldStatus: string | undefined, newStatus: string): bo
   return true; // Default fallback for administrative updates
 }
 
-app.post("/api/admissions/transition-status", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", "REVIEW_OFFICER", "ADMIN_OFFICER"], ["review_admissions"]), async (req: AuthenticatedRequest, res) => {
+app.post("/api/admissions/transition-status", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES], ["review_admissions"]), restrictTspAdmissionAccess, async (req: AuthenticatedRequest, res) => {
   try {
     const { beneficiaryId, newStatus, reason, isUndo } = req.body;
     if (!beneficiaryId || !newStatus) {
@@ -2201,10 +2259,10 @@ app.post("/api/admissions/transition-status", requireAuth, requireRoleOrPermissi
   }
 });
 
-app.post("/api/admissions/approve-acceptance", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", "REVIEW_OFFICER"], ["approve_admissions"]), AdmissionController.approveAcceptance);
-app.post("/api/admissions/reject-acceptance", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", "REVIEW_OFFICER"], ["reject_admissions"]), AdmissionController.rejectAcceptance);
-app.post("/api/admissions/:beneficiaryId/render-acceptance-pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.retryRenderAcceptancePdf);
-app.post("/api/admissions/:beneficiaryId/render-offer-documents", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.renderOfferDocuments);
+app.post("/api/admissions/approve-acceptance", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES], ["approve_admissions"]), restrictTspAdmissionAccess, AdmissionController.approveAcceptance);
+app.post("/api/admissions/reject-acceptance", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES], ["reject_admissions"]), restrictTspAdmissionAccess, AdmissionController.rejectAcceptance);
+app.post("/api/admissions/:beneficiaryId/render-acceptance-pdf", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), restrictTspAdmissionAccess, AdmissionController.retryRenderAcceptancePdf);
+app.post("/api/admissions/:beneficiaryId/render-offer-documents", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), restrictTspAdmissionAccess, AdmissionController.renderOfferDocuments);
 
 // PDF Download Endpoint with application/pdf and .pdf extension
 app.get("/api/admissions/download-letter/:id", async (req, res) => {
@@ -2214,6 +2272,7 @@ app.get("/api/admissions/download-letter/:id", async (req, res) => {
     const token = req.query.token as string;
     
     let isAuthorized = false;
+    const resolvedTargetId = (await DbRepo.resolveBeneficiaryIdResiliently(id)) || id;
 
     // 1. Try to validate via public secure response token first
     if (token) {
@@ -2235,9 +2294,19 @@ app.get("/api/admissions/download-letter/:id", async (req, res) => {
       }
 
       const decoded = TokenService.decodeToken(token);
-      if (decoded && decoded.id === id && !decoded.expired) {
+      let decodedResolvedId = "";
+      if (decoded && decoded.id) {
+        decodedResolvedId = (await DbRepo.resolveBeneficiaryIdResiliently(decoded.id)) || decoded.id;
+      }
+      
+      let tokenRowResolvedId = "";
+      if (tokenRow && tokenRow.beneficiary_id) {
+        tokenRowResolvedId = (await DbRepo.resolveBeneficiaryIdResiliently(tokenRow.beneficiary_id)) || tokenRow.beneficiary_id;
+      }
+
+      if (decodedResolvedId && decodedResolvedId.toLowerCase() === resolvedTargetId.toLowerCase() && !decoded.expired) {
         isAuthorized = true;
-      } else if (tokenRow && tokenRow.beneficiary_id === id && tokenRow.status !== "REVOKED" && tokenRow.status !== "EXPIRED") {
+      } else if (tokenRowResolvedId && tokenRowResolvedId.toLowerCase() === resolvedTargetId.toLowerCase() && tokenRow.status !== "REVOKED" && tokenRow.status !== "EXPIRED") {
         isAuthorized = true;
       }
     }
@@ -2272,7 +2341,7 @@ app.get("/api/admissions/download-letter/:id", async (req, res) => {
       return res.status(401).send("Unauthorized. A valid secure response token or administrative login session is required to download this document.");
     }
 
-    const beneficiary = await DbRepo.getBeneficiaryById(id);
+    const beneficiary = await DbRepo.getBeneficiaryById(resolvedTargetId);
     if (!beneficiary) {
       return res.status(404).send("Beneficiary candidate not found");
     }
@@ -2294,6 +2363,7 @@ app.get("/api/admissions/download-acceptance/:id", async (req, res) => {
     const token = req.query.token as string;
 
     let isAuthorized = false;
+    const resolvedTargetId = (await DbRepo.resolveBeneficiaryIdResiliently(id)) || id;
 
     // 1. Try to validate via public secure response token first
     if (token) {
@@ -2315,9 +2385,19 @@ app.get("/api/admissions/download-acceptance/:id", async (req, res) => {
       }
 
       const decoded = TokenService.decodeToken(token);
-      if (decoded && decoded.id === id && !decoded.expired) {
+      let decodedResolvedId = "";
+      if (decoded && decoded.id) {
+        decodedResolvedId = (await DbRepo.resolveBeneficiaryIdResiliently(decoded.id)) || decoded.id;
+      }
+      
+      let tokenRowResolvedId = "";
+      if (tokenRow && tokenRow.beneficiary_id) {
+        tokenRowResolvedId = (await DbRepo.resolveBeneficiaryIdResiliently(tokenRow.beneficiary_id)) || tokenRow.beneficiary_id;
+      }
+
+      if (decodedResolvedId && decodedResolvedId.toLowerCase() === resolvedTargetId.toLowerCase() && !decoded.expired) {
         isAuthorized = true;
-      } else if (tokenRow && tokenRow.beneficiary_id === id && tokenRow.status !== "REVOKED" && tokenRow.status !== "EXPIRED") {
+      } else if (tokenRowResolvedId && tokenRowResolvedId.toLowerCase() === resolvedTargetId.toLowerCase() && tokenRow.status !== "REVOKED" && tokenRow.status !== "EXPIRED") {
         isAuthorized = true;
       }
     }
@@ -2352,7 +2432,7 @@ app.get("/api/admissions/download-acceptance/:id", async (req, res) => {
       return res.status(401).send("Unauthorized. A valid secure response token or administrative login session is required to download this document.");
     }
 
-    const beneficiary = await DbRepo.getBeneficiaryById(id);
+    const beneficiary = await DbRepo.getBeneficiaryById(resolvedTargetId);
     if (!beneficiary) {
       return res.status(404).send("Beneficiary candidate not found");
     }
@@ -6146,13 +6226,17 @@ app.post("/api/portal-monitoring/import-csv", requireAuth, requireRole(["SUPER_A
 });
 
 // GET computed student certification eligibility and save to metrics
-app.get("/api/annex9/readiness", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFF1CER", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.get("/api/annex9/readiness", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
     const pool = getPgPool();
     if (!pool) return res.status(500).json({ error: "Postgres database offline" });
 
+    const user = req.user;
+    const isTsp = TSP_ROLES.includes(user.role) || user.role.startsWith("TSP");
+    const tspId = isTsp ? user.tspId : req.query.tspId;
+
     // Fetch active trainees with profile credentials
-    const trainees = await pool.query(`
+    let queryStr = `
       SELECT 
         b.id as beneficiary_id,
         b.status as beneficiary_status,
@@ -6172,7 +6256,14 @@ app.get("/api/annex9/readiness", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN
       LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
       LEFT JOIN portal_monitoring pm ON b.id = pm.beneficiary_id
       WHERE b.deleted_at IS NULL AND b.status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI', 'GRADUATED', 'COMPLETED', 'ONBOARDED')
-    `);
+    `;
+    const params: any[] = [];
+    if (tspId) {
+      queryStr += ` AND b.tsp_id = $1`;
+      params.push(tspId);
+    }
+
+    const trainees = await pool.query(queryStr, params);
 
     const readinessList = [];
 
@@ -6276,13 +6367,17 @@ app.get("/api/annex9/readiness", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN
 });
 
 // GET aggregate operational analytics for Annex 9 dashboard
-app.get("/api/annex9/dashboard-stats", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFF1CER", "ADMIN_OFFICER"]), async (req, res) => {
+app.get("/api/annex9/dashboard-stats", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
     const pool = getPgPool();
     if (!pool) return res.status(500).json({ error: "Postgres database offline" });
 
+    const user = req.user;
+    const isTsp = TSP_ROLES.includes(user.role) || user.role.startsWith("TSP");
+    const tspId = isTsp ? user.tspId : req.query.tspId;
+
     // 1. Fetch active trainees
-    const traineesRes = await pool.query(`
+    let traineesQuery = `
       SELECT 
         b.id as beneficiary_id,
         b.status as beneficiary_status,
@@ -6303,20 +6398,35 @@ app.get("/api/annex9/dashboard-stats", requireAuth, requireRole(["SUPER_ADMIN", 
       LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
       LEFT JOIN portal_monitoring pm ON b.id = pm.beneficiary_id
       WHERE b.deleted_at IS NULL AND b.status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI', 'GRADUATED', 'COMPLETED', 'ONBOARDED')
-    `);
+    `;
+    const params: any[] = [];
+    if (tspId) {
+      traineesQuery += ` AND b.tsp_id = $1`;
+      params.push(tspId);
+    }
+
+    const traineesRes = await pool.query(traineesQuery, params);
 
     const trainees = traineesRes.rows;
 
     // 2. Fetch attendance sums per trainee
-    const attendanceStatsRes = await pool.query(`
+    let attendanceQuery = `
       SELECT 
-        beneficiary_id,
-        COUNT(CASE WHEN status IN ('PRESENT', 'LATE') THEN 1 END) as present_days,
-        COUNT(CASE WHEN status = 'ABSENT' THEN 1 END) as absent_days,
+        ta.beneficiary_id,
+        COUNT(CASE WHEN ta.status IN ('PRESENT', 'LATE') THEN 1 END) as present_days,
+        COUNT(CASE WHEN ta.status = 'ABSENT' THEN 1 END) as absent_days,
         COUNT(*) as total_days
-      FROM trainee_attendance
-      GROUP BY beneficiary_id
-    `);
+      FROM trainee_attendance ta
+    `;
+    if (tspId) {
+      attendanceQuery += `
+        INNER JOIN beneficiaries b ON ta.beneficiary_id = b.id
+        WHERE b.tsp_id = $1
+      `;
+    }
+    attendanceQuery += ` GROUP BY ta.beneficiary_id`;
+
+    const attendanceStatsRes = await pool.query(attendanceQuery, params);
 
     const attendanceMap = new Map();
     for (const row of attendanceStatsRes.rows) {
@@ -6328,7 +6438,16 @@ app.get("/api/annex9/dashboard-stats", requireAuth, requireRole(["SUPER_ADMIN", 
     }
 
     // 3. Find latest attendance date to determine "Today's" stats
-    const maxDateRes = await pool.query(`SELECT MAX(attendance_date) as max_date FROM trainee_attendance`);
+    let maxDateQuery = `SELECT MAX(ta.attendance_date) as max_date FROM trainee_attendance ta`;
+    if (tspId) {
+      maxDateQuery = `
+        SELECT MAX(ta.attendance_date) as max_date 
+        FROM trainee_attendance ta
+        INNER JOIN beneficiaries b ON ta.beneficiary_id = b.id
+        WHERE b.tsp_id = $1
+      `;
+    }
+    const maxDateRes = await pool.query(maxDateQuery, params);
     const latestDate = maxDateRes.rows[0]?.max_date;
 
     let presentToday = 0;
@@ -6337,15 +6456,28 @@ app.get("/api/annex9/dashboard-stats", requireAuth, requireRole(["SUPER_ADMIN", 
     let excusedToday = 0;
 
     if (latestDate) {
-      const todayStatsRes = await pool.query(`
+      let todayQuery = `
         SELECT 
-          COUNT(CASE WHEN status = 'PRESENT' THEN 1 END) as pr,
-          COUNT(CASE WHEN status = 'ABSENT' THEN 1 END) as ab,
-          COUNT(CASE WHEN status = 'LATE' THEN 1 END) as lt,
-          COUNT(CASE WHEN status = 'EXCUSED' THEN 1 END) as ex
-        FROM trainee_attendance
-        WHERE attendance_date = $1
-      `, [latestDate]);
+          COUNT(CASE WHEN ta.status = 'PRESENT' THEN 1 END) as pr,
+          COUNT(CASE WHEN ta.status = 'ABSENT' THEN 1 END) as ab,
+          COUNT(CASE WHEN ta.status = 'LATE' THEN 1 END) as lt,
+          COUNT(CASE WHEN ta.status = 'EXCUSED' THEN 1 END) as ex
+        FROM trainee_attendance ta
+      `;
+      const todayParams = [latestDate];
+      if (tspId) {
+        todayQuery += `
+          INNER JOIN beneficiaries b ON ta.beneficiary_id = b.id
+          WHERE ta.attendance_date = $1 AND b.tsp_id = $2
+        `;
+        todayParams.push(tspId);
+      } else {
+        todayQuery += `
+          WHERE ta.attendance_date = $1
+        `;
+      }
+
+      const todayStatsRes = await pool.query(todayQuery, todayParams);
 
       const tStats = todayStatsRes.rows[0];
       presentToday = parseInt(tStats.pr || "0", 10);
@@ -9604,7 +9736,7 @@ app.post("/api/beneficiaries/:id/lifecycle-status", requireAuth, async (req: Aut
   }
 });
 
-app.post("/api/superadmin/beneficiaries/:id/workflow-rollback", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.post("/api/superadmin/beneficiaries/:id/workflow-rollback", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "TSP", "TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
   try {
     const { id } = req.params;
     const { targetState, reason } = req.body;
@@ -9620,6 +9752,15 @@ app.post("/api/superadmin/beneficiaries/:id/workflow-rollback", requireAuth, req
     const beneficiary = await DbRepo.getBeneficiaryById(id);
     if (!beneficiary) {
       return res.status(404).json({ error: "Beneficiary not found for rollback process" });
+    }
+
+    // Scoping check for TSP users
+    const userRole = req.user!.role;
+    const userTspId = req.user!.tspId;
+    if (["TSP", "TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER"].includes(userRole)) {
+      if (beneficiary.tspId !== userTspId) {
+        return res.status(403).json({ error: "Access denied: You can only rollback your own trainees." });
+      }
     }
 
     const oldStatus = beneficiary.status;
@@ -9671,6 +9812,40 @@ app.post("/api/superadmin/beneficiaries/:id/workflow-rollback", requireAuth, req
       beneficiary.alumniStatus = false;
       beneficiary.acceptanceLetterUploaded = false;
       beneficiary.acceptanceLetterStatus = "PENDING";
+
+      // Clear digital signatures and submission dates
+      beneficiary.digitalSignature = "";
+      beneficiary.admissionFormData = {};
+      beneficiary.acceptanceLetterUrl = undefined;
+      beneficiary.acceptanceLetterUploadedAt = undefined;
+      beneficiary.admissionFormConfirmedAt = undefined;
+      beneficiary.admissionFormPdfUrl = undefined;
+
+      if (beneficiary.customFields) {
+        delete beneficiary.customFields.signature_name;
+        delete beneficiary.customFields.signature_date;
+        delete beneficiary.customFields.signature_image;
+        delete beneficiary.customFields.accepted_at;
+      }
+
+      // Revoke old tokens and recreate a fresh active token
+      const pool = getPgPool();
+      if (pool) {
+        await pool.query(
+          `UPDATE public_response_tokens
+           SET status = 'REVOKED', revoked_at = NOW(), revoked_reason = $1, updated_at = NOW()
+           WHERE beneficiary_id = $2 AND (status = 'ACTIVE' OR status = 'SUBMITTED') AND deleted_at IS NULL`,
+          [reason || "Rolled back/reopened by administrator", id]
+        ).catch((err) => {
+          console.error("[Rollback Route] Failed to revoke old response tokens on rollback:", err);
+        });
+
+        try {
+          await AdmissionService.createPublicResponseToken(id, "OFFER_ACCEPTANCE", pool);
+        } catch (tokenErr) {
+          console.error("[Rollback Route] Failed to auto-generate fresh response token on rollback:", tokenErr);
+        }
+      }
     }
     else {
       return res.status(400).json({ error: "Invalid targetState rollback value." });
@@ -9882,7 +10057,7 @@ app.get("/api/beneficiaries/:id/workflow-history", requireAuth, async (req: Auth
 });
 
 // Generate or Regenerate a document
-app.post("/api/documents/generate", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.post("/api/documents/generate", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
     const { beneficiaryId, documentType, regenerate } = req.body;
     if (!beneficiaryId || !documentType) {
@@ -9920,7 +10095,7 @@ app.post("/api/documents/generate", requireAuth, requireRole(["SUPER_ADMIN", "AD
 });
 
 // Delete / Destroy a generated document version, reverting back to the most recent superseded version (Phase 7)
-app.delete("/api/documents/:id", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.delete("/api/documents/:id", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
     const { id } = req.params;
     
@@ -9953,7 +10128,7 @@ app.delete("/api/documents/:id", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN
 });
 
 // Dispatch a generated document to Email
-app.post("/api/documents/email", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.post("/api/documents/email", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
     const { documentId, recipientEmail } = req.body;
     if (!documentId) {

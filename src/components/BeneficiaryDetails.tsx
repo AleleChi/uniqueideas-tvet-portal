@@ -2114,8 +2114,8 @@ export function BeneficiaryDetails({
                 </div>
               )}
 
-              {/* ADMIN_OFFICER Actions */}
-              {session?.role === "ADMIN_OFFICER" && (
+              {/* ADMIN_OFFICER & TSP Actions */}
+              {(session?.role === "ADMIN_OFFICER" || session?.role?.startsWith("TSP") || session?.role === "TSP") && (
                 <div className="grid grid-cols-1 gap-2">
                   {["ACTIVE", "UNDER_REVIEW"].includes(beneficiary.beneficiaryStatus || "ACTIVE") && (
                     <>
@@ -2140,7 +2140,7 @@ export function BeneficiaryDetails({
               )}
 
               {/* Readonly disclaimer for others */}
-              {session?.role !== "SUPER_ADMIN" && session?.role !== "ADMIN_OFFICER" && (
+              {session?.role !== "SUPER_ADMIN" && session?.role !== "ADMIN_OFFICER" && !session?.role?.startsWith("TSP") && session?.role !== "TSP" && (
                 <p className="text-[10px] text-slate-400 italic font-medium leading-normal mt-1">
                   You are viewing this record with read-only governance permissions. Trainees or guests are barred from state updates.
                 </p>
@@ -5210,7 +5210,7 @@ export function BeneficiaryDetails({
                 </div>
 
                 {/* Permissions Guard Warning */}
-                {session?.role !== "SUPER_ADMIN" && session?.role !== "ADMIN_OFFICER" && (
+                {session?.role !== "SUPER_ADMIN" && session?.role !== "ADMIN_OFFICER" && !session?.role?.startsWith("TSP") && session?.role !== "TSP" && (
                   <div className="bg-amber-50 border border-amber-200 p-3.5 rounded-lg text-xs text-amber-900 leading-snug font-sans">
                     <strong>PERMISSIONS LOCK:</strong> You are viewing this console with Read-Only Compliance Officer permissions. 
                     Only users with <span className="font-mono bg-amber-100 px-1 py-0.2 rounded font-bold">SUPER_ADMIN</span> and <span className="font-mono bg-amber-100 px-1 py-0.2 rounded font-bold">ADMIN_OFFICER</span> clearance keys can execute rollback transformations.
@@ -5225,7 +5225,7 @@ export function BeneficiaryDetails({
                         Select Target Rollback State
                       </label>
                       <select
-                        disabled={session?.role !== "SUPER_ADMIN" && session?.role !== "ADMIN_OFFICER"}
+                        disabled={session?.role !== "SUPER_ADMIN" && session?.role !== "ADMIN_OFFICER" && !session?.role?.startsWith("TSP") && session?.role !== "TSP"}
                         value={rollbackTarget}
                         onChange={(e) => {
                           const val = e.target.value;
@@ -5258,7 +5258,7 @@ export function BeneficiaryDetails({
                       </label>
                       <input
                         type="text"
-                        disabled={session?.role !== "SUPER_ADMIN" && session?.role !== "ADMIN_OFFICER"}
+                        disabled={session?.role !== "SUPER_ADMIN" && session?.role !== "ADMIN_OFFICER" && !session?.role?.startsWith("TSP") && session?.role !== "TSP"}
                         value={rollbackReason}
                         onChange={(e) => setRollbackReason(e.target.value)}
                         placeholder="e.g., Parent requested signature correction, Cohort audit re-verifying NIN matches"
@@ -5272,7 +5272,7 @@ export function BeneficiaryDetails({
                       </label>
                       <textarea
                         rows={2}
-                        disabled={session?.role !== "SUPER_ADMIN" && session?.role !== "ADMIN_OFFICER"}
+                        disabled={session?.role !== "SUPER_ADMIN" && session?.role !== "ADMIN_OFFICER" && !session?.role?.startsWith("TSP") && session?.role !== "TSP"}
                         value={rollbackNotes}
                         onChange={(e) => setRollbackNotes(e.target.value)}
                         placeholder="Additional context about this exceptional administrative rollback cycle..."
@@ -5457,7 +5457,7 @@ export function BeneficiaryDetails({
                 </div>
 
                 {/* Operations Execution Footer */}
-                {(session?.role === "SUPER_ADMIN" || session?.role === "ADMIN_OFFICER") && (
+                {(session?.role === "SUPER_ADMIN" || session?.role === "ADMIN_OFFICER" || session?.role?.startsWith("TSP") || session?.role === "TSP") && (
                   <div className="pt-2 flex justify-end gap-2.5">
                     <button
                       type="button"

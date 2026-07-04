@@ -760,7 +760,7 @@ export class AdmissionService {
   }
 
   /**
-   * Admin verification checks: Acceptance Rejected.
+   * Admin verification checks: Acceptance Rejected / Rollback.
    */
   static async rejectAcceptance(beneficiaryId: string, adminUser: string, reason: string): Promise<Beneficiary> {
     const pool = getPgPool();
@@ -769,14 +769,31 @@ export class AdmissionService {
     if (!beneficiary) throw new Error("Beneficiary not found");
 
     const oldStatus = beneficiary.admissionStatus || "Pending";
-    if (oldStatus !== "Acceptance Uploaded" && oldStatus !== "Under Review" && oldStatus !== "Acceptance Rejected") {
+    // Allow rollback/rejection from any active or submitted status
+    const allowedStatuses = ["Accepted", "ACCEPTED", "Acceptance Uploaded", "Under Review", "Acceptance Rejected", "Admission Sent", "Offer Viewed"];
+    if (!allowedStatuses.includes(oldStatus)) {
       throw new Error(`Invalid transition from status '${oldStatus}' to 'Acceptance Rejected'. This action is blocked.`);
     }
 
+    // Clear active acceptance submission/signature parameters on beneficiary
     beneficiary.admissionStatus = "Acceptance Rejected";
     beneficiary.acceptanceLetterUploaded = false;
     beneficiary.acceptanceLetterUrl = undefined;
     beneficiary.acceptanceLetterUploadedAt = undefined;
+    beneficiary.admissionFormCompleted = false;
+    beneficiary.admissionFormStatus = "Pending";
+    beneficiary.digitalSignature = "";
+    beneficiary.admissionFormData = {};
+    
+    if (beneficiary.customFields) {
+      delete beneficiary.customFields.signature_name;
+      delete beneficiary.customFields.signature_date;
+      delete beneficiary.customFields.signature_image;
+      delete beneficiary.customFields.accepted_at;
+    }
+
+    // Increment tokenVersion to revoke old tokens and create a new attempt
+    beneficiary.tokenVersion = (beneficiary.tokenVersion || 1) + 1;
     beneficiary.updatedAt = new Date().toISOString();
 
     try {
@@ -786,17 +803,53 @@ export class AdmissionService {
         newStatus: "Acceptance Rejected",
         changedBy: adminUser,
         changedAt: new Date().toISOString(),
-        remarks: reason || "Acceptance Rejected on review"
+        remarks: reason || "Acceptance Rejected on review / roll back"
       });
     } catch (err) {}
 
     await this.logAction(
       adminUser,
       "Acceptance Rejected",
-      `Administrator rejected acceptance for '${beneficiary.firstName} ${beneficiary.lastName}': ${reason}`
+      `Administrator rejected acceptance/rolled back for '${beneficiary.firstName} ${beneficiary.lastName}': ${reason}`
     );
 
+    // Save beneficiary changes
     await DbRepo.upsertBeneficiary(beneficiary);
+
+    // Update admissions table status
+    if (pool) {
+      await pool.query(
+        `UPDATE admissions
+         SET acceptance_letter_status = 'NEEDS_RESUBMISSION',
+             admission_status = 'Admission Sent',
+             acceptance_letter_url = NULL,
+             acceptance_letter_uploaded_at = NULL,
+             admission_form_completed = false,
+             updated_at = NOW()
+         WHERE beneficiary_id = $1 AND deleted_at IS NULL`,
+        [beneficiary.id]
+      ).catch((err) => {
+        console.error("[AdmissionService] Failed to update admissions table on rollback:", err);
+      });
+
+      // Revoke all previous active and submitted response tokens for this beneficiary
+      await pool.query(
+        `UPDATE public_response_tokens
+         SET status = 'REVOKED', revoked_at = NOW(), revoked_reason = $1, updated_at = NOW()
+         WHERE beneficiary_id = $2 AND (status = 'ACTIVE' OR status = 'SUBMITTED') AND deleted_at IS NULL`,
+        [reason || "Rolled back/reopened by administrator", beneficiary.id]
+      ).catch((err) => {
+        console.error("[AdmissionService] Failed to revoke old response tokens on rollback:", err);
+      });
+
+      // Create a fresh active token with the newly incremented token version
+      try {
+        await AdmissionService.createPublicResponseToken(beneficiary.id, "OFFER_ACCEPTANCE", pool);
+      } catch (tokenErr) {
+        console.error("[AdmissionService] Failed to auto-generate fresh response token on rollback:", tokenErr);
+      }
+    }
+
     return beneficiary;
   }
 
