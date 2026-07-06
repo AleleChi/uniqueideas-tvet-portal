@@ -10,6 +10,8 @@ export interface Annex9ExportOptions {
   skill?: string;
   cohort?: string;
   status?: string;
+  gender?: string;
+  lga?: string;
 }
 
 /**
@@ -26,14 +28,19 @@ async function fetchMasterExportData(options?: Annex9ExportOptions) {
   let traineeQuery = `
     SELECT 
       b.id as beneficiary_id,
-      COALESCE(tp.tvet_id, 'ID-TVE-26-' || SUBSTRING(b.id, 1, 6)) as tvet_id,
+      CASE 
+        WHEN tp.tvet_id IS NOT NULL AND tp.tvet_id != '' AND tp.tvet_id NOT LIKE '%IDEAS-' AND tp.tvet_id NOT LIKE 'ID-TVE-26-IDEAS-%' AND LENGTH(tp.tvet_id) > 8 THEN tp.tvet_id
+        WHEN (b.custom_fields->>'tvet_id') IS NOT NULL AND (b.custom_fields->>'tvet_id') != '' AND (b.custom_fields->>'tvet_id') NOT LIKE '%IDEAS-' AND (b.custom_fields->>'tvet_id') NOT LIKE 'ID-TVE-26-IDEAS-%' AND LENGTH(b.custom_fields->>'tvet_id') > 8 THEN (b.custom_fields->>'tvet_id')
+        WHEN b.id IS NOT NULL AND b.id != '' THEN b.id
+        ELSE 'Pending TVET ID'
+      END as tvet_id,
       b.first_name,
       b.last_name,
       COALESCE(b.other_name, '') as other_name,
       b.gender,
       COALESCE(b.date_of_birth, '') as date_of_birth,
       b.state,
-      COALESCE(b.lga, '') as lga,
+      COALESCE(b.custom_fields->>'lga', b.city, '') as lga,
       COALESCE(b.phone_number, '') as phone_number,
       b.email,
       COALESCE(b.residential_address, '') as residential_address,
@@ -44,11 +51,15 @@ async function fetchMasterExportData(options?: Annex9ExportOptions) {
       COALESCE(b.bank_name, '') as bank_name,
       COALESCE(b.bank_account_holder, '') as account_name,
       COALESCE(b.bank_account_number, '') as account_number,
+      COALESCE(b.bank_sort_code, '') as bank_sort_code,
+      COALESCE(b.physical_challenge, 'NO') as physical_challenge,
+      COALESCE(b.guardian_address, '') as guardian_address,
+      COALESCE(b.education_qualification, '') as education_qualification,
       COALESCE(b.nin, '') as nin,
       COALESCE(b.bvn, '') as bvn,
       COALESCE(b.guardian_name, '') as guardian_name,
       COALESCE(b.guardian_phone, '') as guardian_phone,
-      COALESCE(b.cohort, '') as cohort
+      COALESCE(b.batch, '') as cohort
     FROM beneficiaries b
     LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
     WHERE b.deleted_at IS NULL AND (
@@ -64,7 +75,7 @@ async function fetchMasterExportData(options?: Annex9ExportOptions) {
     traineeParams.push(options.state);
   }
   if (options?.tspId && options.tspId !== 'all') {
-    traineeQuery += ` AND (b.tsp_id = $${paramIdx} OR b.tsp ILIKE $${paramIdx} OR b.tsp ILIKE '%' || $${paramIdx} || '%' OR b.tsp_id IN (SELECT id FROM tsps WHERE name ILIKE $${paramIdx} OR code ILIKE $${paramIdx}) OR b.tsp IN (SELECT name FROM tsps WHERE id::text = $${paramIdx}))`;
+    traineeQuery += ` AND (b.tsp_id::text = $${paramIdx} OR b.tsp ILIKE $${paramIdx} OR b.tsp ILIKE '%' || $${paramIdx} || '%' OR b.tsp_id IN (SELECT id FROM tsps WHERE name ILIKE $${paramIdx} OR code ILIKE $${paramIdx}) OR b.tsp IN (SELECT name FROM tsps WHERE id::text = $${paramIdx}))`;
     paramIdx++;
     traineeParams.push(options.tspId);
   }
@@ -74,8 +85,21 @@ async function fetchMasterExportData(options?: Annex9ExportOptions) {
     traineeParams.push(options.skill);
   }
   if (options?.cohort && options.cohort !== 'all') {
-    traineeQuery += ` AND b.cohort ILIKE '%' || $${paramIdx++} || '%'`;
+    traineeQuery += ` AND b.batch ILIKE '%' || $${paramIdx++} || '%'`;
     traineeParams.push(options.cohort);
+  }
+  if (options?.gender && options.gender !== 'all') {
+    traineeQuery += ` AND b.gender ILIKE $${paramIdx++}`;
+    traineeParams.push(options.gender);
+  }
+  if (options?.status && options.status !== 'all') {
+    traineeQuery += ` AND (b.status ILIKE $${paramIdx} OR b.beneficiary_status ILIKE $${paramIdx})`;
+    paramIdx++;
+    traineeParams.push(options.status);
+  }
+  if (options?.lga && options.lga !== 'all') {
+    traineeQuery += ` AND COALESCE(b.custom_fields->>'lga', b.city) ILIKE $${paramIdx++}`;
+    traineeParams.push(options.lga);
   }
   traineeQuery += ` ORDER BY b.last_name ASC, b.first_name ASC`;
 
@@ -214,27 +238,64 @@ export async function generateAnnex9Workbook(options?: Annex9ExportOptions): Pro
   const ws1 = workbook.addWorksheet("TRAINEE PROFILE");
   ws1.views = [{ showGridLines: true }];
 
-  ws1.mergeCells("A1:U1");
+  // Header Details
+  const firstTrainee = trainees[0];
+  const tspName = firstTrainee ? firstTrainee.tsp : "Unique Technology Nig. Ltd";
+  const sectorName = firstTrainee ? firstTrainee.skill_sector : "Computer Hardware and Cell Phone Repairs";
+  const skillName = firstTrainee ? firstTrainee.skill_sector : "Computer Hardware and Cell Phone Repairs";
+  const totalEnrolled = trainees.length;
+
+  ws1.mergeCells("A1:W1");
   const titleCell1 = ws1.getCell("A1");
-  titleCell1.value = "FEDERAL REPUBLIC OF NIGERIA — IDEAS TVET PROGRAM DEVELOPMENT COOPERATIVE";
+  titleCell1.value = "THE FEDERAL MINISTRY OF EDUCATION AND THE WORLD BANK";
   titleCell1.font = fontTitle;
   titleCell1.alignment = { horizontal: "center", vertical: "middle" };
   ws1.getRow(1).height = 40;
 
-  ws1.mergeCells("A2:U2");
+  ws1.mergeCells("A2:W2");
   const subTitleCell1 = ws1.getCell("A2");
-  subTitleCell1.value = "ANNEX 9: TRAINEE LIFECYCLE DEPLOYMENT & VERIFICATION PROFILE STAGE";
-  subTitleCell1.font = { name: "Inter", size: 11, bold: true, color: { argb: "FF475569" } };
+  subTitleCell1.value = "IDEAS-TVET INITIATIVE TRAINEE REGISTRATION FORM";
+  subTitleCell1.font = { name: "Inter", size: 12, bold: true, color: { argb: "FF475569" } };
   subTitleCell1.alignment = { horizontal: "center", vertical: "middle" };
   ws1.getRow(2).height = 25;
+
+  ws1.mergeCells("A3:W3");
+  const tspCell = ws1.getCell("A3");
+  tspCell.value = `Name of TSP: ${tspName}`;
+  tspCell.font = { name: "Inter", size: 10, bold: true };
+  tspCell.alignment = { horizontal: "left", vertical: "middle" };
+  ws1.getRow(3).height = 20;
+
+  ws1.mergeCells("A4:W4");
+  const sectorCell = ws1.getCell("A4");
+  sectorCell.value = `Sector: ${sectorName}`;
+  sectorCell.font = { name: "Inter", size: 10, bold: true };
+  sectorCell.alignment = { horizontal: "left", vertical: "middle" };
+  ws1.getRow(4).height = 20;
+
+  ws1.mergeCells("A5:W5");
+  const skillCell = ws1.getCell("A5");
+  skillCell.value = `Skill: ${skillName}`;
+  skillCell.font = { name: "Inter", size: 10, bold: true };
+  skillCell.alignment = { horizontal: "left", vertical: "middle" };
+  ws1.getRow(5).height = 20;
+
+  ws1.mergeCells("A6:W6");
+  const enrolledCell = ws1.getCell("A6");
+  enrolledCell.value = `Total Number Enrolled: ${totalEnrolled}`;
+  enrolledCell.font = { name: "Inter", size: 10, bold: true };
+  enrolledCell.alignment = { horizontal: "left", vertical: "middle" };
+  ws1.getRow(6).height = 20;
 
   ws1.addRow([]); // Blank Spacer
 
   const colHeaders1 = [
-    "S/N", "Trainee ID (TVET Code)", "First Name", "Last Name", "Other Name", "Gender",
-    "Date of Birth", "State of Origin", "Phone Number", "Email Address", "Contact Address",
-    "Sector Track", "TSP Association", "Training Status", "Bank Name", "Account Holder",
-    "Bank Account No", "NIN (Hashed/Verified)", "BVN (Hashed/Verified)", "Guardian Name", "Guardian Phone"
+    "SN", "First Name", "Last Name", "Sex", "Date of Birth", "PWD?", "Phone",
+    "National Identification Number", "Bank Verification Number", "Account Name",
+    "Account Number", "Bank Name", "Bank Sort Code", "Email", "State of Residence",
+    "LGA of Residence", "Name of Trainee’s Parent/Guardian", "Address of Trainee’s Parent/Guardian",
+    "Phone No. of Trainee’s Parent/Guardian", "Educational Qualification", "Employment Status",
+    "Training Status", "Skill"
   ];
   const headerRow1 = ws1.addRow(colHeaders1);
   headerRow1.height = 30;
@@ -248,33 +309,35 @@ export async function generateAnnex9Workbook(options?: Annex9ExportOptions): Pro
   trainees.forEach((trainee, index) => {
     const rowData = [
       index + 1,
-      trainee.tvet_id,
       trainee.first_name,
       trainee.last_name,
-      trainee.other_name,
       trainee.gender,
-      trainee.date_of_birth,
-      trainee.state,
-      trainee.phone_number,
-      trainee.email,
-      trainee.residential_address,
-      trainee.skill_sector,
-      trainee.tsp,
-      trainee.training_status,
-      trainee.bank_name,
-      trainee.account_name,
-      trainee.account_number,
-      trainee.nin,
-      trainee.bvn,
-      trainee.guardian_name,
-      trainee.guardian_phone
+      trainee.date_of_birth || "Not provided",
+      trainee.physical_challenge || "NO",
+      trainee.phone_number || "Not provided",
+      trainee.nin || "Not provided",
+      trainee.bvn || "Not provided",
+      trainee.account_name || "Not provided",
+      trainee.account_number || "Not provided",
+      trainee.bank_name || "Not provided",
+      trainee.bank_sort_code || "Not provided",
+      trainee.email || "Not provided",
+      trainee.state || "Not provided",
+      trainee.lga || "Not provided",
+      trainee.guardian_name || "Not provided",
+      trainee.guardian_address || "Not provided",
+      trainee.guardian_phone || "Not provided",
+      trainee.education_qualification || "Not provided",
+      "NOT_EMPLOYED",
+      trainee.training_status || "ACTIVE",
+      trainee.skill_sector || "Not provided"
     ];
     const row = ws1.addRow(rowData);
     row.height = 22;
     row.eachCell((cell, colNumber) => {
       cell.border = borderThin;
       cell.font = { name: "Inter", size: 10 };
-      if (colNumber === 1 || colNumber === 2 || colNumber === 6 || colNumber === 7 || colNumber >= 14) {
+      if (colNumber === 1 || colNumber === 4 || colNumber === 5 || colNumber === 6 || colNumber === 21 || colNumber === 22) {
         cell.alignment = { horizontal: "center", vertical: "middle" };
       } else {
         cell.alignment = { horizontal: "left", vertical: "middle" };
@@ -287,16 +350,16 @@ export async function generateAnnex9Workbook(options?: Annex9ExportOptions): Pro
   const ws2 = workbook.addWorksheet("ATTENDANCE");
   ws2.views = [{ showGridLines: true }];
 
-  ws2.mergeCells("A1:P1");
+  ws2.mergeCells("A1:K1");
   const titleCell2 = ws2.getCell("A1");
   titleCell2.value = "IDEAS-TVET OPERATIONS SYSTEM — OFFICIAL ATTENDANCE LOGS";
   titleCell2.font = fontTitle;
   titleCell2.alignment = { horizontal: "center", vertical: "middle" };
   ws2.getRow(1).height = 40;
 
-  ws2.mergeCells("A2:P2");
+  ws2.mergeCells("A2:K2");
   const subTitleCell2 = ws2.getCell("A2");
-  subTitleCell2.value = "ANNEX 9: ATTENDANCE RECORDS (PRESENT, LATE, ABSENT & EXCUSED)";
+  subTitleCell2.value = "ANNEX 9: ATTENDANCE SUMMARY STATUS (ELIGIBILITY & STIPEND AUDIT)";
   subTitleCell2.font = { name: "Inter", size: 11, bold: true, color: { argb: "FF475569" } };
   subTitleCell2.alignment = { horizontal: "center", vertical: "middle" };
   ws2.getRow(2).height = 25;
@@ -304,9 +367,8 @@ export async function generateAnnex9Workbook(options?: Annex9ExportOptions): Pro
   ws2.addRow([]);
 
   const colHeaders2 = [
-    "S/N", "Trainee ID (TVET Code)", "First Name", "Last Name", "Gender", "State", "LGA",
-    "TSP Association", "Skill", "Attendance Date", "Status", "Check In Time", "Check Out Time",
-    "Attendance Source", "Hours Logged", "Remarks"
+    "S/N", "First Name", "Last Name", "Trainee ID", "Number of Training Days",
+    "Present Days", "Absent Days", "Late Days", "Excused Days", "Attendance Percentage", "Stipend Status"
   ];
   const headerRow2 = ws2.addRow(colHeaders2);
   headerRow2.height = 30;
@@ -317,36 +379,48 @@ export async function generateAnnex9Workbook(options?: Annex9ExportOptions): Pro
     cell.border = borderThin;
   });
 
-  const formatTime = (val: any) => {
-    if (!val) return "-";
-    try {
-      const d = typeof val === "string" ? new Date(val) : val;
-      return isNaN(d.getTime()) ? String(val) : d.toLocaleTimeString("en-GB");
-    } catch { return String(val); }
-  };
+  // Unique marked training days
+  const uniqueDates = new Set(
+    attendanceRecords.map(r => {
+      const dStr = typeof r.attendance_date === 'string' ? r.attendance_date.split("T")[0] : r.attendance_date.toISOString().split("T")[0];
+      return dStr;
+    })
+  );
+  const expectedDays = uniqueDates.size > 0 ? uniqueDates.size : 20;
 
-  attendanceRecords.forEach((rec, index) => {
-    const trainee = traineeMap.get(rec.beneficiary_id);
-    if (!trainee) return;
+  trainees.forEach((trainee, index) => {
+    const traineeAtt = attendanceRecords.filter(r => r.beneficiary_id === trainee.beneficiary_id);
+    const presentCount = traineeAtt.filter(r => r.status === "PRESENT").length;
+    const lateCount = traineeAtt.filter(r => r.status === "LATE").length;
+    const absentCount = traineeAtt.filter(r => r.status === "ABSENT").length;
+    const excusedCount = traineeAtt.filter(r => r.status === "EXCUSED").length;
 
-    const dateStr = typeof rec.attendance_date === 'string' ? rec.attendance_date.split("T")[0] : rec.attendance_date.toISOString().split("T")[0];
+    const markedCount = presentCount + lateCount + absentCount + excusedCount;
+    const totalPresent = presentCount + lateCount;
+    const denominator = Math.max(0, expectedDays - excusedCount);
+    const attendancePercentage = denominator > 0 ? parseFloat(((totalPresent / denominator) * 100).toFixed(1)) : (excusedCount > 0 ? 100.0 : 0.0);
+
+    let stipendStatus = "No Record";
+    if (markedCount > 0) {
+      if (attendancePercentage >= 65.0) {
+        stipendStatus = "Eligible";
+      } else {
+        stipendStatus = "Below Threshold";
+      }
+    }
+
     const rowData = [
       index + 1,
-      trainee.tvet_id,
       trainee.first_name,
       trainee.last_name,
-      trainee.gender,
-      trainee.state,
-      trainee.lga,
-      trainee.tsp,
-      trainee.skill_sector,
-      dateStr,
-      rec.status,
-      formatTime(rec.check_in_time),
-      formatTime(rec.check_out_time),
-      rec.attendance_source,
-      Number(rec.hours_logged || 0),
-      rec.remarks || "-"
+      trainee.tvet_id,
+      expectedDays,
+      totalPresent,
+      absentCount,
+      lateCount,
+      excusedCount,
+      attendancePercentage + "%",
+      stipendStatus
     ];
 
     const row = ws2.addRow(rowData);
@@ -354,7 +428,7 @@ export async function generateAnnex9Workbook(options?: Annex9ExportOptions): Pro
     row.eachCell((cell, colNumber) => {
       cell.border = borderThin;
       cell.font = { name: "Inter", size: 10 };
-      if (colNumber === 1 || colNumber === 2 || colNumber === 5 || colNumber >= 10) {
+      if (colNumber === 1 || colNumber === 4 || colNumber >= 5) {
         cell.alignment = { horizontal: "center", vertical: "middle" };
       } else {
         cell.alignment = { horizontal: "left", vertical: "middle" };
@@ -362,15 +436,16 @@ export async function generateAnnex9Workbook(options?: Annex9ExportOptions): Pro
 
       if (colNumber === 11) {
         cell.font = { name: "Inter", size: 10, bold: true };
-        const st = String(rec.status).toUpperCase();
-        if (st === "PRESENT") {
+        if (stipendStatus === "Eligible") {
           cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2F0D9" } };
-        } else if (st === "LATE") {
+        } else if (stipendStatus === "Warning") {
           cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF2CC" } };
-        } else if (st === "ABSENT") {
+        } else if (stipendStatus === "At Risk") {
           cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFCE4D6" } };
-        } else if (st === "EXCUSED") {
-          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFDEE2E6" } };
+        } else if (stipendStatus === "Not Eligible") {
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF87171" } }; // Soft red
+        } else {
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFDEE2E6" } }; // Gray
         }
       } else if (index % 2 === 1) {
         cell.fill = subHeaderFill;
@@ -379,19 +454,19 @@ export async function generateAnnex9Workbook(options?: Annex9ExportOptions): Pro
   });
 
   // --- SHEET 3: TVET PORTAL ---
-  const ws3 = workbook.addWorksheet("TVET PORTAL");
+  const ws3 = workbook.addWorksheet("TVET-PORTAL");
   ws3.views = [{ showGridLines: true }];
 
-  ws3.mergeCells("A1:H1");
+  ws3.mergeCells("A1:F1");
   const titleCell3 = ws3.getCell("A1");
-  titleCell3.value = "IDEAS-TVET OPERATIONS SYSTEM — REGISTERED DEPLOYED PORTAL TRACKING";
+  titleCell3.value = "IDEAS-TVET OPERATIONS SYSTEM — REGISTERED DEPLOYED TVET LIST TRACKING";
   titleCell3.font = fontTitle;
   titleCell3.alignment = { horizontal: "center", vertical: "middle" };
   ws3.getRow(1).height = 40;
 
-  ws3.mergeCells("A2:H2");
+  ws3.mergeCells("A2:F2");
   const subTitleCell3 = ws3.getCell("A2");
-  subTitleCell3.value = "VERIFICATION OF PORTAL DEPLOYMENT (ANNEX 9 REGISTRATION STATUS)";
+  subTitleCell3.value = "VERIFICATION OF TVET LIST DEPLOYMENT (ANNEX 9 REGISTRATION STATUS)";
   subTitleCell3.font = { name: "Inter", size: 11, bold: true, color: { argb: "FF475569" } };
   subTitleCell3.alignment = { horizontal: "center", vertical: "middle" };
   ws3.getRow(2).height = 25;
@@ -399,8 +474,7 @@ export async function generateAnnex9Workbook(options?: Annex9ExportOptions): Pro
   ws3.addRow([]);
 
   const colHeaders3 = [
-    "S/N", "First Name", "Last Name", "TVET Code (Trainee ID)",
-    "Still On Portal", "Still Attending Classes", "Remarks", "Last Verified Date"
+    "SN", "First Name", "Last Name", "TVET Code", "Still on TVET List? Yes / No", "Still Attending Classes? Yes / No"
   ];
   const headerRow3 = ws3.addRow(colHeaders3);
   headerRow3.height = 30;
@@ -418,10 +492,8 @@ export async function generateAnnex9Workbook(options?: Annex9ExportOptions): Pro
       trainee.first_name,
       trainee.last_name,
       trainee.tvet_id,
-      pm ? (pm.still_on_portal ? "YES" : "NO") : "UNVERIFIED",
-      pm ? (pm.still_attending ? "YES" : "NO") : "UNVERIFIED",
-      pm?.remarks || "Awaiting Monitoring Verification",
-      pm?.last_verified_at ? new Date(pm.last_verified_at).toLocaleDateString() : "Pending"
+      pm ? (pm.still_on_portal ? "YES" : "NO") : "Not confirmed",
+      pm ? (pm.still_attending ? "YES" : "NO") : "Not confirmed"
     ];
 
     const row = ws3.addRow(rowData);
@@ -440,6 +512,8 @@ export async function generateAnnex9Workbook(options?: Annex9ExportOptions): Pro
           cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2F0D9" } };
         } else if (cell.value === "NO") {
           cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFCE4D6" } };
+        } else {
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF1F5F9" } };
         }
       } else if (index % 2 === 1) {
         cell.fill = subHeaderFill;
@@ -447,86 +521,12 @@ export async function generateAnnex9Workbook(options?: Annex9ExportOptions): Pro
     });
   });
 
-  // --- SHEET 4: DAILY ATTENDANCE MATRIX ---
-  const ws4 = workbook.addWorksheet("DAILY ATTENDANCE MATRIX");
-  ws4.views = [{ showGridLines: true }];
-
-  const matrixMonth = options?.month || (attendanceRecords.length > 0 ? (typeof attendanceRecords[0].attendance_date === 'string' ? attendanceRecords[0].attendance_date.substring(0, 7) : attendanceRecords[0].attendance_date.toISOString().substring(0, 7)) : new Date().toISOString().substring(0, 7));
-  const numDays = new Date(parseInt(matrixMonth.split("-")[0]), parseInt(matrixMonth.split("-")[1]), 0).getDate();
-
-  const totalCols = numDays + 5;
-  const lastColLetter = ws4.getColumn(totalCols).letter;
-
-  ws4.mergeCells(`A1:${lastColLetter}1`);
-  const titleCell4 = ws4.getCell("A1");
-  titleCell4.value = `IDEAS-TVET PROGRAM — DAILY ATTENDANCE REGISTER MATRIX (${matrixMonth})`;
-  titleCell4.font = fontTitle;
-  titleCell4.alignment = { horizontal: "center", vertical: "middle" };
-  ws4.getRow(1).height = 40;
-
-  ws4.mergeCells(`A2:${lastColLetter}2`);
-  const subTitleCell4 = ws4.getCell("A2");
-  subTitleCell4.value = "P = PRESENT, L = LATE, A = ABSENT, E = EXCUSED | TOTAL P/L COUNTS PRESENT & LATE ONLY";
-  subTitleCell4.font = { name: "Inter", size: 11, bold: true, color: { argb: "FF475569" } };
-  subTitleCell4.alignment = { horizontal: "center", vertical: "middle" };
-  ws4.getRow(2).height = 25;
-
-  ws4.addRow([]);
-
-  const colHeaders4 = ["S/N", "TVET Code", "Full Name", "TSP Name"];
-  for (let d = 1; d <= numDays; d++) colHeaders4.push(`Day ${d}`);
-  colHeaders4.push("Total P/L");
-
-  const headerRow4 = ws4.addRow(colHeaders4);
-  headerRow4.height = 28;
-  headerRow4.eachCell((cell) => {
-    cell.fill = primaryHeaderFill;
-    cell.font = fontHeader;
-    cell.alignment = { horizontal: "center", vertical: "middle" };
-    cell.border = borderThin;
-  });
-
-  trainees.forEach((trainee, index) => {
-    const rowData: any[] = [
-      index + 1,
-      trainee.tvet_id,
-      `${trainee.first_name} ${trainee.last_name}`,
-      trainee.tsp
-    ];
-    let totalP = 0;
-    for (let d = 1; d <= numDays; d++) {
-      const code = dailyMap.get(`${trainee.beneficiary_id}_${d}`) || ""; // no record = blank
-      rowData.push(code);
-      if (code === "P" || code === "L") totalP++;
-    }
-    rowData.push(totalP);
-
-    const row = ws4.addRow(rowData);
-    row.height = 20;
-    row.eachCell((cell, colNumber) => {
-      cell.border = borderThin;
-      cell.font = { name: "Inter", size: 9 };
-      if (colNumber > 4) {
-        cell.alignment = { horizontal: "center", vertical: "middle" };
-        if (cell.value === "P") {
-          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2F0D9" } };
-        } else if (cell.value === "A") {
-          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFCE4D6" } };
-        } else if (cell.value === "L") {
-          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF2CC" } };
-        }
-      } else {
-        cell.alignment = { horizontal: "left", vertical: "middle" };
-      }
-    });
-  });
-
   // --- AUTO WIDTH ADJUSTMENTS ACROSS WORKBOOK ---
-  [ws1, ws2, ws3, ws4].forEach((ws) => {
+  [ws1, ws2, ws3].forEach((ws) => {
     ws.columns.forEach((col) => {
       let maxLen = 0;
       col.eachCell!({ includeEmpty: false }, (cell) => {
-        if (cell.value && cell.address !== "A1" && cell.address !== "A2") {
+        if (cell.value && Number(cell.row) > 6) {
           const valStr = String(cell.value);
           if (valStr.length > maxLen) maxLen = valStr.length;
         }
@@ -627,7 +627,7 @@ export async function generateAnnex9PortalCSV(options?: Annex9ExportOptions): Pr
   const { trainees, portalMap } = await fetchMasterExportData(options);
   const header = [
     "S/N", "First Name", "Last Name", "TVET Code (Trainee ID)",
-    "Still On Portal", "Still Attending Classes", "Remarks", "Last Verified Date"
+    "Still On TVET List", "Still Attending Classes", "Remarks", "Last Verified Date"
   ].join(",") + "\n";
 
   const lines: string[] = [];

@@ -446,16 +446,17 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
   const triggerExport = async (format: string = "xlsx") => {
     try {
       showToast(`Compiling official Annex 9 attendance records (${format.toUpperCase()})...`, "info");
-      const endpoint = isFed ? "/api/annex9/export" : "/api/tsp/attendance/export-annex9";
+      const baseRoute = isFed ? "/api/fed/reports/annex9/export" : "/api/tsp/reports/annex9/export";
       const params = new URLSearchParams();
       if (selectedMonth && selectedMonth !== "all") params.set("month", selectedMonth);
-      if (format === "csv") params.set("format", "csv");
+      if (format === "csv") {
+        params.set("format", "csv");
+        params.set("section", "attendance");
+      } else {
+        params.set("format", "excel");
+      }
 
-      const res = await fetch(`${endpoint}?${params.toString()}`, {
-        headers: {
-          "Authorization": `Bearer ${session?.token || ""}`
-        }
-      });
+      const res = await authFetch(`${baseRoute}?${params.toString()}`);
 
       if (!res.ok) {
         throw new Error("Failed to export Annex 9 workbook");

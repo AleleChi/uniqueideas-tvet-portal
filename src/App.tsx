@@ -383,10 +383,37 @@ export default function App() {
       handleLogout();
     };
 
+    const lastForbiddenToasts = new Map<string, number>();
+
     const handleForbidden = (e: Event) => {
       const detail = (e as CustomEvent).detail;
       console.warn("[SECURITY REJECTION] Forbidden event received:", detail);
-      showToast("Access denied. You do not have permission to view this resource.", "error");
+      if (detail?.suppressForbiddenToast) {
+        console.log("[SECURITY REJECTION] Toast suppressed via suppressForbiddenToast flag for:", detail.url);
+        return;
+      }
+      const url = (detail?.url || "").toLowerCase();
+      
+      // Filter out optional/background panels from triggering toast spam
+      const isOptional = url.includes("/api/audit-logs") || 
+                         url.includes("/api/admissions/email-health") ||
+                         url.includes("/api/documents/delivery-logs") ||
+                         url.includes("/api/documents/") ||
+                         url.includes("/api/attendance/") ||
+                         url.includes("/history") ||
+                         (url.includes("/api/beneficiaries/") && url.includes("/workflow-history")) ||
+                         url.includes("/api/governance/");
+                         
+      if (!isOptional) {
+        const now = Date.now();
+        const lastShown = lastForbiddenToasts.get(url) || 0;
+        if (now - lastShown > 5000) {
+          lastForbiddenToasts.set(url, now);
+          showToast("Access denied. You do not have permission to view this resource.", "error");
+        } else {
+          console.log("[SECURITY REJECTION] Duplicate toast throttled for:", url);
+        }
+      }
     };
 
     window.addEventListener("ideas-auth-unauthorized", handleUnauthorized);
@@ -615,7 +642,9 @@ export default function App() {
 
   const handleAddBeneficiary = async (data: any) => {
     try {
-      const res = await authFetch("/api/beneficiaries", {
+      const isTspUser = session?.role && (["TSP", "TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER", "ADMIN_OFFICER", "REVIEW_OFFICER"].includes(session.role) || session.role.startsWith("TSP"));
+      const endpoint = isTspUser ? "/api/tsp/beneficiaries" : "/api/beneficiaries";
+      const res = await authFetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1187,7 +1216,7 @@ export default function App() {
           <div className="flex items-center gap-2">
             <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
             <span className="text-[10px] font-bold font-mono tracking-wider text-slate-400 text-left">
-              SECURE GOVERNMENT SYSTEM DATABASE PORTAL ACTIVE
+              IDEAS TVET IMS MAIN PORTAL ACTIVE
             </span>
           </div>
           <div className="text-[11px] font-mono text-slate-400 text-left">

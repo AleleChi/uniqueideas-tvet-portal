@@ -134,7 +134,7 @@ export default function RestorationCenter() {
             <span className="p-1.5 bg-indigo-500/10 rounded-lg text-indigo-400">
               <RotateCcw className="w-6 h-6 animate-pulse" />
             </span>
-            Federal Restoration Center
+            Record Recovery Center
           </h1>
           <p className="text-xs text-slate-400 mt-1 max-w-2xl">
             Audit and recover soft-deleted National records including user accounts, organization registries, and applicant portfolios.
@@ -273,7 +273,7 @@ export default function RestorationCenter() {
                 <div className="text-white">{selectedItem.deleted_by}</div>
               </div>
               <p className="text-red-400 font-medium">
-                Warning: Once authorized, this record and all associated relational indices are permanently dropped from the database cluster. Backups or Restoration Center logs won&apos;t be able to recover this profile.
+                Warning: Once authorized, this record and all associated relational indices are permanently dropped from the database cluster. Backups or Record Recovery Center logs won&apos;t be able to recover this profile.
               </p>
             </div>
 

@@ -52,7 +52,8 @@ function adaptResponse(response: Response, url: string): Response {
 
 export async function authFetch(
   url: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  customOptions: { suppressForbiddenToast?: boolean } = {}
 ): Promise<Response> {
   if (isVercelMissingApi) {
     console.error(`[CATASTROPHIC] Blocked relative API request to ${url} on vercel.app due to missing VITE_API_BASE_URL config.`);
@@ -148,7 +149,7 @@ export async function authFetch(
           } else if (response.status === 403) {
             console.error(`[ACCESS DENIED] 403 Forbidden detected for ${url}. Security role context disallowed.`);
             if (typeof window !== "undefined") {
-              window.dispatchEvent(new CustomEvent("ideas-auth-forbidden", { detail: { url } }));
+              window.dispatchEvent(new CustomEvent("ideas-auth-forbidden", { detail: { url, suppressForbiddenToast: !!customOptions?.suppressForbiddenToast } }));
             }
           }
           break;

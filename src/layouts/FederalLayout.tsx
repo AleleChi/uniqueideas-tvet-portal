@@ -92,7 +92,7 @@ export function FederalLayout({
         { label: "Audit Center", path: "/federal/audits", icon: History },
         { label: "System Status", path: "/federal/system-status", icon: Cpu },
         { label: "Email Delivery Center", path: "/federal/email-center", icon: Mail },
-        { label: "Restoration Center", path: "/federal/restoration", icon: Database }
+        { label: "Record Recovery Center", path: "/federal/restoration", icon: Database }
       ]
     }
   ];

@@ -4,7 +4,15 @@ import { PoolClient } from "pg";
 import { DbRepo } from "./db";
 import { requestStorage } from "./request-storage";
 
-export const JWT_SECRET = process.env.JWT_SECRET || "ideas-tvet-system-secret-authority-token-1995";
+let secret = process.env.JWT_SECRET;
+if (!secret) {
+  if (process.env.NODE_ENV === "production") {
+    console.error("FATAL ERROR: JWT_SECRET environment variable is missing in production!");
+    process.exit(1);
+  }
+  secret = "ideas-tvet-system-secret-authority-token-1995";
+}
+export const JWT_SECRET = secret;
 
 export { requestStorage };
 
@@ -28,15 +36,11 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
   try {
     let token = "";
 
-    // 1. Check query parameters first (vital for window.open / iframe files if cookies are blocked)
-    if (req.query && req.query.token) {
-      token = req.query.token as string;
-    }
-    // 2. Check cookies
-    else if (req.cookies && req.cookies.token) {
+    // 1. Check cookies
+    if (req.cookies && req.cookies.token) {
       token = req.cookies.token;
     } 
-    // 3. Check Authorization Header as fallback
+    // 2. Check Authorization Header as fallback
     else if (req.headers.authorization && req.headers.authorization.startsWith("Bearer ")) {
       token = req.headers.authorization.split(" ")[1];
     }
@@ -70,6 +74,12 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
     const isFederalRole = session.role === "SUPER_ADMIN" || session.role.startsWith("FED") || session.role.startsWith("FEDERAL");
     const tenantTier = isFederalRole ? "FED" : (session.tenant_tier || undefined);
 
+    const isTspUser = session.role === "TSP" || session.role.startsWith("TSP") || session.role === "REVIEW_OFFICER" || session.role === "ADMIN_OFFICER";
+    let tspId = session.tsp_id || undefined;
+    if (isTspUser && !tspId) {
+      tspId = "00000000-0000-0000-0000-000000000001";
+    }
+
     req.user = {
       id: session.user_id,
       email: session.email,
@@ -78,7 +88,7 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
       tenantId: session.tenant_id || undefined,
       tenantTier,
       stateId: session.state_id || undefined,
-      tspId: session.tsp_id || undefined,
+      tspId,
       permissions
     };
 
@@ -100,7 +110,8 @@ export function requireRole(roles: string[]) {
     const isFederal = req.user.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user.role) || req.user.role.startsWith("FED") || req.user.role.startsWith("FEDERAL");
 
     if (!isFederal && !roles.includes(req.user.role)) {
-      return res.status(403).json({ error: `Access Denied. Security Role restricted to: [${roles.join(", ")}]` });
+      console.warn(`[Auth Warning] Authorization failed for user ${req.user.id}. Required roles: [${roles.join(", ")}], but user has: ${req.user.role}`);
+      return res.status(403).json({ error: "You do not have permission to perform this action." });
     }
 
     next();
@@ -124,9 +135,9 @@ export function requirePermission(permissions: string | string[]) {
     const authorized = isFederal || required.every(permission => granted.includes(permission));
 
     if (!authorized) {
+      console.warn(`[Auth Warning] Authorization failed for user ${req.user.id}. Required permissions: [${required.join(", ")}]`);
       return res.status(403).json({
-        error: "Insufficient permissions",
-        required
+        error: "You do not have permission to perform this action."
       });
     }
 
@@ -163,10 +174,9 @@ export function requireRoleOrPermission(
     const isAuthorized = isFederal || hasRole || hasPermission;
 
     if (!isAuthorized) {
+      console.warn(`[Auth Warning] Authorization failed for user ${req.user.id}. Required roles: [${rolesList.join(", ")}], required permissions: [${permissionsList.join(", ")}]`);
       return res.status(403).json({
-        error: "Insufficient roles or permissions",
-        requiredRoles: rolesList,
-        requiredPermissions: permissionsList
+        error: "You do not have permission to perform this action."
       });
     }
 
@@ -182,9 +192,7 @@ export async function authenticate(req: AuthenticatedRequest, res: Response, nex
   try {
     let token = "";
 
-    if (req.query && req.query.token) {
-      token = req.query.token as string;
-    } else if (req.cookies && req.cookies.token) {
+    if (req.cookies && req.cookies.token) {
       token = req.cookies.token;
     } else if (req.headers.authorization && req.headers.authorization.startsWith("Bearer ")) {
       token = req.headers.authorization.split(" ")[1];

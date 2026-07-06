@@ -1149,7 +1149,7 @@ export function FedOrganizationsWorkspace() {
           }`}
         >
           <Compass className="w-4 h-4" />
-          <span>Activation Flow Audit & telemetry</span>
+          <span>Activation Flow Audit</span>
           {currentMainTab === "activation_monitoring" && (
             <div className="absolute bottom-0 inset-x-0 h-0.5 bg-indigo-500 rounded-full" />
           )}
@@ -1589,7 +1589,7 @@ export function FedOrganizationsWorkspace() {
             <div className="absolute top-0 right-0 w-80 h-80 bg-indigo-500/5 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none" />
             <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider mb-2 flex items-center gap-2">
               <Compass className="w-4 h-4 text-indigo-400" />
-              <span>National TVET Activation & Telemetry Registry Monitor</span>
+              <span>National TVET Activation & Registry Monitor</span>
             </h2>
             <p className="text-xs text-slate-400 max-w-3xl">
               Forensic audit ledger track-points trace activation pipelines from federal registry creations to organization email dispatches, route checks, validation requests, and credential completions. This ledger presents immutable physical logs from the database.
@@ -2498,7 +2498,7 @@ export function FedOrganizationsWorkspace() {
                   <div className="bg-slate-950/60 p-4 border border-slate-850 rounded-2xl relative overflow-hidden">
                     <h4 className="text-[10px] uppercase font-mono font-bold text-indigo-400 border-b border-slate-900 pb-2 mb-4 flex items-center gap-2">
                       <Sliders className="w-3.5 h-3.5" />
-                      Operations Telemetry Summary
+                      Operations Summary
                     </h4>
                     
                     <div className="grid grid-cols-3 gap-3 text-center mb-1">

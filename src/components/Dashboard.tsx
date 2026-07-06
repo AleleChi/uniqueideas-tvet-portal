@@ -17,7 +17,7 @@ interface DashboardProps {
 export function Dashboard({ beneficiaries, onSelectBeneficiary, onNavigateToRegistryCreate, session }: DashboardProps) {
   const [timeframe, setTimeframe] = useState("Last 6 Months");
 
-  const isTspUser = session?.role === "TSP" || (session?.role && session?.role.startsWith("TSP"));
+  const isTspUser = ["TSP", "TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER", "ADMIN_OFFICER", "REVIEW_OFFICER"].includes(session?.role || "") || (session?.role && session?.role.startsWith("TSP"));
   const title = isTspUser ? "Training Center Workspace" : "Governance Dashboard";
   const subtitle = isTspUser 
     ? "Accredited operator command center and local trainees metrics." 

@@ -690,11 +690,11 @@ export function BeneficiaryDetails({
       if (res.ok) {
         const data = await res.json();
         setDocumentHistory(data);
-        if (!silently) showToast("Document registry matching engine loaded fully.", "success");
+        if (!silently) showToast("Records loaded successfully.", "success");
       }
     } catch (e) {
       console.error("Failed to load document version history:", e);
-      showToast("Could not contact the cryptographic registry.", "error");
+      showToast("Could not contact candidate records service.", "error");
     } finally {
       if (!silently) setLoadingHistory(false);
     }
@@ -1969,12 +1969,12 @@ export function BeneficiaryDetails({
             </div>
           </div>
 
-          {/* SECURE LIFECYCLE MANAGEMENT & GOVERNANCE COMPONENT */}
+          {/* SECURE LIFECYCLE MANAGEMENT & COMPLIANCE COMPONENT */}
           <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs text-left space-y-4">
             <div className="flex justify-between items-center pb-2 border-b border-slate-100">
               <h4 className="font-display font-bold text-slate-900 text-xs uppercase flex items-center gap-1.5">
                 <ShieldCheck className="w-4 h-4 text-indigo-600" />
-                Lifecycle & Governance
+                Lifecycle Compliance & Quality
               </h4>
               <span className={`text-[9px] uppercase font-mono px-2 py-0.5 rounded font-bold border ${
                 getLifecycleStatusBadge(beneficiary.beneficiaryStatus).bg
@@ -2012,7 +2012,7 @@ export function BeneficiaryDetails({
             {/* ACTION TRIGGERS */}
             <div className="space-y-2 pt-2 border-t border-slate-100">
               <span className="text-[9px] font-mono font-bold text-slate-400 uppercase tracking-widest block mb-1">
-                AVAILABLE GOVERNANCE ACTIONS (Role: {session?.role || "GUEST"})
+                AVAILABLE COMPLIANCE ACTIONS (Role: {session?.role || "GUEST"})
               </span>
 
               {/* SUPER_ADMIN Actions */}
@@ -2066,13 +2066,13 @@ export function BeneficiaryDetails({
                     </>
                   )}
 
-                  {/* EMERGENCY WORKFLOW RESET HUB (SUPER_ADMIN ONLY) */}
+                  {/* CORRECT TRAINING STATUS (TSP & FED HUB) */}
                   <div className="mt-4 pt-4 border-t border-dashed border-slate-200">
                     <span className="text-[10px] font-mono font-bold text-amber-600 uppercase tracking-widest block mb-1 flex items-center gap-1">
-                      <AlertTriangle className="w-3.5 h-3.5 animate-pulse" /> EMERGENCY WORKFLOW ROLLBACK
+                      <AlertTriangle className="w-3.5 h-3.5 animate-pulse" /> CORRECT TRAINING STATUS
                     </span>
                     <p className="text-[10px] text-slate-400 mb-2 leading-tight font-sans">
-                      Forcefully move student backward in lifecycle. Every modification is strictly logged and audited.
+                      If you need to correct a student's training stage due to a data entry error, select the correct stage below. All changes are logged and audited.
                     </p>
                     <div className="space-y-2">
                       <div>
@@ -2082,18 +2082,25 @@ export function BeneficiaryDetails({
                           className="w-full bg-white border border-slate-200 rounded-lg p-1.5 text-xs text-slate-700 focus:ring-1 focus:ring-amber-500 cursor-pointer"
                         >
                           <option value="">-- Select Target Stage --</option>
-                          <option value="ADMISSION_FORM_DRAFT">1. ADMISSION FORM DRAFT (Restart / Unlock)</option>
-                          <option value="ACTIVE">2. ACTIVE (In-Training / Enrolled)</option>
-                          <option value="CERTIFIED">3. CERTIFIED (Graduated / Approved)</option>
-                          <option value="CERTIFICATE_ISSUED">4. CERTIFICATE ISSUED</option>
-                          <option value="ALUMNI">5. ALUMNI TRACKING</option>
+                          <option value="ADMISSION_FORM_DRAFT">1. Draft / Unlock Registration (Reset Form)</option>
+                          <option value="ACCEPTED">2. Offer Accepted</option>
+                          <option value="ACTIVE">3. Active In-Training (Enrolled)</option>
+                          <option value="GRADUATED">4. Completed Training</option>
+                          {/* FED / Admin-only options */}
+                          {(session?.role === "SUPER_ADMIN" || session?.role === "FED" || session?.role === "ADMIN_OFFICER") && (
+                            <>
+                              <option value="CERTIFIED">5. Certified & Approved</option>
+                              <option value="CERTIFICATE_ISSUED">6. Certificate Issued</option>
+                              <option value="ALUMNI">7. Alumni Tracking</option>
+                            </>
+                          )}
                         </select>
                       </div>
                       {rollbackTarget && (
                         <div className="space-y-2">
                           <input
                             type="text"
-                            placeholder="Enter mandatory audit reason..."
+                            placeholder="Enter mandatory correction reason..."
                             value={rollbackReason}
                             onChange={(e) => setRollbackReason(e.target.value)}
                             className="w-full bg-white border border-slate-200 rounded-lg p-1.5 text-xs focus:ring-1 focus:ring-amber-500 placeholder-slate-400 font-sans"
@@ -2104,7 +2111,7 @@ export function BeneficiaryDetails({
                             onClick={handleExecuteRollback}
                             className="w-full bg-amber-500 hover:bg-amber-600 border border-amber-600 disabled:opacity-50 text-white font-bold py-1.5 px-3 rounded-lg text-xs cursor-pointer transition shadow-xs flex items-center justify-center gap-1 select-none"
                           >
-                            {rollbackLoading ? "Processing Rollback..." : "Authorize Rollback Change"}
+                            {rollbackLoading ? "Saving..." : "Adjust Status"}
                           </button>
                         </div>
                       )}
@@ -2166,7 +2173,7 @@ export function BeneficiaryDetails({
               { id: "communications", label: "COMMUNICATIONS" },
               { id: "workflow", label: "WORKFLOW" },
               { id: "audits", label: "AUDIT LOGS" },
-              { id: "governance", label: "GOVERNANCE" },
+               { id: "governance", label: "COMPLIANCE & QUALITY" },
               { id: "guardian", label: "GUARDIAN" },
               { id: "banking", label: "BANKING" },
               { id: "verification", label: "VERIFICATION" }
@@ -2201,9 +2208,9 @@ export function BeneficiaryDetails({
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({
-                        action: "GOVERNANCE_PANEL_OPENED",
+                        action: "COMPLIANCE_PANEL_OPENED",
                         beneficiaryId: beneficiary.id,
-                        remarks: `Opened trainee lifecycle governance panel`
+                        remarks: `Opened trainee compliance and quality panel`
                       })
                     }).catch(() => {});
                   }
@@ -4058,7 +4065,7 @@ export function BeneficiaryDetails({
                 <div className="mt-8 border-t border-slate-200 pt-6">
                   <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3 pb-3 mb-4">
                     <h6 className="text-[10px] font-bold text-indigo-950 tracking-wider uppercase font-mono">
-                      Cryptographic Registry Ledger ({documentHistory.length} Total Versions)
+                      Candidate Document Version Log ({documentHistory.length} Total Versions)
                     </h6>
                     
                     {/* FILTERS */}
@@ -4742,7 +4749,7 @@ export function BeneficiaryDetails({
                 <div className="space-y-2 text-xs font-mono text-slate-700">
                   <div className="flex items-center gap-2">
                     <CheckCircle className="h-4 w-4 text-emerald-600" />
-                    <span>NIN Verification Log coordinates loaded successfully & bound to record block</span>
+                    <span>NIN Verification checked successfully and linked to trainee profile</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <CheckCircle className="h-4 w-4 text-emerald-600" />
@@ -4767,7 +4774,7 @@ export function BeneficiaryDetails({
                     Federal Central Security Portal Active
                   </span>
                   <h4 className="font-display font-bold text-base uppercase tracking-wider flex items-center gap-2">
-                    <ShieldCheck className="h-5 w-5 text-emerald-400" /> Trainee Lifecycle & Decentralized Governance Registry
+                    <ShieldCheck className="h-5 w-5 text-emerald-400" /> Trainee Lifecycle, Compliance & Quality Records
                   </h4>
                   <p className="text-xs text-slate-350 font-mono">
                     COMPLIANCE LEDGER ID: LEDGER-{beneficiary.id.slice(0, 8).toUpperCase()}
@@ -4784,7 +4791,7 @@ export function BeneficiaryDetails({
               {/* EXECUTIVE KPI CARDS */}
               <div className="space-y-2">
                 <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider block text-left">
-                  Executive Central Workspace Governance Metrics
+                  Central Workspace Compliance & Quality Metrics
                 </span>
                 <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
                   
@@ -4850,13 +4857,13 @@ export function BeneficiaryDetails({
               {/* TRAINEE GOVERNANCE STATS & RADAR */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 
-                {/* LIFECYCLE GOVERNANCE DASHBOARD CONTAINER */}
+                {/* LIFECYCLE COMPLIANCE DASHBOARD CONTAINER */}
                 <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs text-left space-y-4">
                   <div className="pb-2 border-b border-slate-150">
                     <h5 className="font-sans font-bold text-slate-900 text-xs uppercase tracking-wider flex items-center gap-1.5">
-                      <Database className="h-4 w-4 text-indigo-600" /> Candidate Verification & Registry States
+                      <Database className="h-4 w-4 text-indigo-600" /> Candidate Verification & Records Status
                     </h5>
-                    <p className="text-[9px] text-slate-400 font-mono mt-0.5">TRAINEE INDIVIDUAL GOVERNANCE DATA SUMMARY</p>
+                    <p className="text-[9px] text-slate-400 font-mono mt-0.5">TRAINEE COMPLIANCE & QUALITY DATA SUMMARY</p>
                   </div>
 
                   <div className="grid grid-cols-2 gap-x-4 gap-y-3.5 text-xs font-mono">
@@ -4922,14 +4929,14 @@ export function BeneficiaryDetails({
                 <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs text-left space-y-4">
                   <div className="pb-2 border-b border-slate-150">
                     <h5 className="font-sans font-bold text-slate-900 text-xs uppercase tracking-wider flex items-center gap-1.5">
-                      <History className="h-4 w-4 text-emerald-600" /> Federal Trainee State Timeline Verification
+                      <History className="h-4 w-4 text-emerald-600" /> Trainee State Timeline Verification
                     </h5>
                     <p className="text-[9px] text-slate-400 font-mono mt-0.5">REAL-TIME VISUAL STEP VERIFICATION</p>
                   </div>
 
                   <div className="relative pl-6 border-l-2 border-slate-150 space-y-4.5 text-xs">
                     {[
-                      { key: "DRAFT", label: "Registry Draft Completed", date: beneficiary.createdAt, actor: "REGISTRY_OFFICER", version: 1, isCompleted: true },
+                      { key: "DRAFT", label: "Initial Records Created", date: beneficiary.createdAt, actor: "REGISTRY_OFFICER", version: 1, isCompleted: true },
                       { key: "ADMISSION_SENT", label: "Admission Letter Issued", date: beneficiary.admissionLetterGeneratedAt, actor: "SYSTEM_SENTINEL", version: 1, isCompleted: !!beneficiary.admissionLetterGeneratedAt },
                       { key: "PORTAL_OPENED", label: "Trainee Portal Activated", date: beneficiary.admissionFormViewedAt, actor: "TRAINEE_CLIENT", version: beneficiary.tokenVersion || 1, isCompleted: !!beneficiary.admissionFormViewedAt },
                       { key: "SIGNED", label: "Trainee Guarantee Signed", date: beneficiary.admissionFormConfirmedAt, actor: "GUARDIAN_CO-SIGN", version: beneficiary.tokenVersion || 1, isCompleted: !!beneficiary.admissionFormCompleted },
@@ -5083,14 +5090,14 @@ export function BeneficiaryDetails({
                 </div>
               </div>
 
-              {/* DOCUMENT GOVERNANCE PANEL */}
+              {/* DOCUMENT COMPLIANCE PANEL */}
               <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs text-left space-y-4">
                 <div className="pb-2 border-b border-slate-150 flex items-center justify-between gap-2">
                   <div>
                     <h5 className="font-sans font-bold text-slate-900 text-xs uppercase tracking-wider flex items-center gap-1.5">
-                      <FileText className="h-4 w-4 text-indigo-600" /> Decentralized Document Integrity Register
+                      <FileText className="h-4 w-4 text-indigo-600" /> Verified Document Candidate Records
                     </h5>
-                    <p className="text-[9px] text-slate-400 font-mono mt-0.5">COMPLIANCE CRIPPLE LOCK REGISTERS</p>
+                    <p className="text-[9px] text-slate-400 font-mono mt-0.5">COMPLIANCE AND INTEGRITY CHECKS</p>
                   </div>
                   <span className="text-[10px] font-mono font-bold text-emerald-600 px-2 py-0.5 bg-emerald-50 rounded border border-emerald-100">
                     Compliant Ledger Matches (100%)
@@ -5174,7 +5181,7 @@ export function BeneficiaryDetails({
                 </div>
               </div>
 
-              {/* ADMINISTRATIVE ROLLBACK CENTER */}
+              {/* TRAINING STATUS ADJUSTMENT PORTAL */}
               <div className="bg-slate-50 border border-slate-250 rounded-xl p-5 shadow-xs text-left relative overflow-hidden space-y-4">
                 
                 {/* Visual Watermark */}
@@ -5183,28 +5190,27 @@ export function BeneficiaryDetails({
                 </div>
 
                 <div className="pb-3 border-b border-slate-200">
-                  <h5 className="font-display font-bold text-slate-900 text-xs uppercase tracking-wider flex items-center gap-1.5 text-red-750">
-                    <AlertTriangle className="h-4.5 w-4.5 text-red-700" /> Administrative Rollback Center
+                  <h5 className="font-display font-bold text-slate-900 text-xs uppercase tracking-wider flex items-center gap-1.5 text-amber-800">
+                    <AlertTriangle className="h-4.5 w-4.5 text-amber-700" /> Training Status Adjustment Portal
                   </h5>
-                  <p className="text-[9px] text-slate-400 font-mono mt-0.5">COMPLIANT ROLLBACK & AMNESTY PROTOCOL</p>
+                  <p className="text-[9px] text-slate-400 font-mono mt-0.5">COMPLIANT STATUS CORRECTION & AUDITING</p>
                 </div>
 
                 {/* Warning Card */}
-                <div className="bg-red-50 border border-red-200 p-4 rounded-lg flex items-start gap-3">
-                  <div className="h-8 w-8 bg-red-100 rounded-lg flex items-center justify-center text-red-700 shrink-0 select-none">
-                    <Lock className="h-4 w-4" />
+                <div className="bg-amber-50/50 border border-amber-200 p-4 rounded-lg flex items-start gap-3">
+                  <div className="h-8 w-8 bg-amber-100 rounded-lg flex items-center justify-center text-amber-800 shrink-0 select-none">
+                    <ShieldCheck className="h-4 w-4" />
                   </div>
-                  <div className="space-y-1 text-xs text-red-900">
-                    <span className="font-bold block uppercase tracking-wider text-[10px]">Critical Operational Impact Warning</span>
+                  <div className="space-y-1 text-xs text-amber-950">
+                    <span className="font-bold block uppercase tracking-wider text-[10px]">Programmatic Compliance Notification</span>
                     <p className="leading-relaxed font-sans">
-                      Rolling back a trainee is a highly destructive operational rollback that triggers the following actions:
+                      Correcting a trainee's status is an audited action that adjusts their active record state:
                     </p>
                     <ul className="list-disc pl-4 space-y-0.5 font-sans">
-                      <li>Revokes active portal secure access links immediately (token session invalidated)</li>
-                      <li>Archives active locked documents, marking them as superseded</li>
-                      <li>Increments central workflow version number in system registries</li>
-                      <li>Increments token generation version numbers to protect system endpoints</li>
-                      <li>Logs the operation in the immutable central system audit trail (strictly audited)</li>
+                      <li>Revokes/reissues secure response tokens if moving back to Draft</li>
+                      <li>Archives active forms and documents for safety</li>
+                      <li>Logs workflow history to preserve the record audit trail</li>
+                      <li>Saves a detailed entry in the programmatic audit logs</li>
                     </ul>
                   </div>
                 </div>
@@ -5213,7 +5219,7 @@ export function BeneficiaryDetails({
                 {session?.role !== "SUPER_ADMIN" && session?.role !== "ADMIN_OFFICER" && !session?.role?.startsWith("TSP") && session?.role !== "TSP" && (
                   <div className="bg-amber-50 border border-amber-200 p-3.5 rounded-lg text-xs text-amber-900 leading-snug font-sans">
                     <strong>PERMISSIONS LOCK:</strong> You are viewing this console with Read-Only Compliance Officer permissions. 
-                    Only users with <span className="font-mono bg-amber-100 px-1 py-0.2 rounded font-bold">SUPER_ADMIN</span> and <span className="font-mono bg-amber-100 px-1 py-0.2 rounded font-bold">ADMIN_OFFICER</span> clearance keys can execute rollback transformations.
+                    Only users with authorized administrative permissions can adjust training statuses.
                   </div>
                 )}
 
@@ -5222,7 +5228,7 @@ export function BeneficiaryDetails({
                   <div className="space-y-3">
                     <div>
                       <label className="text-[10px] font-mono font-bold text-slate-500 uppercase tracking-wide block mb-1">
-                        Select Target Rollback State
+                        Select New Target Stage
                       </label>
                       <select
                         disabled={session?.role !== "SUPER_ADMIN" && session?.role !== "ADMIN_OFFICER" && !session?.role?.startsWith("TSP") && session?.role !== "TSP"}
@@ -5235,20 +5241,27 @@ export function BeneficiaryDetails({
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({
-                              action: "ROLLBACK_PREVIEW_OPENED",
+                              action: "CORRECTION_PREVIEW_OPENED",
                               beneficiaryId: beneficiary.id,
-                              remarks: `Began investigating rollback target state: ${val}`
+                              remarks: `Began investigating status correction target state: ${val}`
                             })
                           }).catch(() => {});
                         }}
                         className="w-full text-xs font-mono text-slate-800 bg-white border border-slate-250 p-2.5 rounded-lg shadow-2xs focus:ring-1 focus:ring-indigo-750 focus:border-indigo-750"
                       >
                         <option value="">-- Choose Target Milestone --</option>
-                        <option value="ADMISSION_FORM_DRAFT">DRAFT (Reset Admission Status & Form Draft)</option>
-                        <option value="ACTIVE">ACTIVE (Reset to Active Cohort In-Training State)</option>
-                        <option value="CERTIFIED">CERTIFIED (Mark Certified / Re-evaluate Criteria)</option>
-                        <option value="CERTIFICATE_ISSUED">CERTIFICATE_ISSUED (Lock Certification Records)</option>
-                        <option value="ALUMNI">ALUMNI (Cohort Graduate Archive Operations)</option>
+                        <option value="ADMISSION_FORM_DRAFT">Draft / Unlock Registration (Reset Form)</option>
+                        <option value="ACCEPTED">Offer Accepted</option>
+                        <option value="ACTIVE">Active In-Training (Enrolled)</option>
+                        <option value="GRADUATED">Completed Training</option>
+                        {/* FED / Admin-only options */}
+                        {(session?.role === "SUPER_ADMIN" || session?.role === "FED" || session?.role === "ADMIN_OFFICER") && (
+                          <>
+                            <option value="CERTIFIED">Certified & Approved</option>
+                            <option value="CERTIFICATE_ISSUED">Certificate Issued</option>
+                            <option value="ALUMNI">Alumni Tracking</option>
+                          </>
+                        )}
                       </select>
                     </div>
 
@@ -5261,27 +5274,27 @@ export function BeneficiaryDetails({
                         disabled={session?.role !== "SUPER_ADMIN" && session?.role !== "ADMIN_OFFICER" && !session?.role?.startsWith("TSP") && session?.role !== "TSP"}
                         value={rollbackReason}
                         onChange={(e) => setRollbackReason(e.target.value)}
-                        placeholder="e.g., Parent requested signature correction, Cohort audit re-verifying NIN matches"
+                        placeholder="e.g., Correction of data entry error on completion state"
                         className="w-full text-xs text-slate-800 bg-white border border-slate-250 p-2.5 rounded-lg shadow-2xs focus:ring-1 focus:ring-indigo-750 focus:border-indigo-750"
                       />
                     </div>
 
                     <div>
                       <label className="text-[10px] font-mono font-bold text-slate-500 uppercase tracking-wide block mb-1">
-                        Supplementary Operational Notes (Non-Audited Notes)
+                        Supplementary Operational Notes
                       </label>
                       <textarea
                         rows={2}
                         disabled={session?.role !== "SUPER_ADMIN" && session?.role !== "ADMIN_OFFICER" && !session?.role?.startsWith("TSP") && session?.role !== "TSP"}
                         value={rollbackNotes}
                         onChange={(e) => setRollbackNotes(e.target.value)}
-                        placeholder="Additional context about this exceptional administrative rollback cycle..."
+                        placeholder="Additional context about this exceptional administrative state adjustment..."
                         className="w-full text-xs text-slate-800 bg-white border border-slate-250 p-2.5 rounded-lg shadow-2xs focus:ring-1 focus:ring-indigo-750 focus:border-indigo-750"
                       />
                     </div>
                   </div>
 
-                  {/* PREVIEW OF THE ROLLBACK DYNAMICS */}
+                  {/* PREVIEW OF THE CORRECTION DYNAMICS */}
                   <div className="bg-slate-100 border border-slate-200 rounded-lg p-4 flex flex-col justify-between">
                     <div className="space-y-4">
                       <span className="text-[10px] font-mono font-bold text-slate-500 uppercase block select-none">
@@ -5319,7 +5332,7 @@ export function BeneficiaryDetails({
                           {depAnalysisLoading ? (
                             <div className="bg-white p-3.5 rounded border border-slate-150 text-center py-6 flex flex-col items-center justify-center gap-2">
                               <RefreshCw className="h-5 w-5 text-indigo-650 animate-spin" />
-                              <span className="text-xs text-slate-550 font-sans">Running deep dependency security scanning...</span>
+                              <span className="text-xs text-slate-550 font-sans">Running dependency compliance check...</span>
                             </div>
                           ) : dependencyAnalysis ? (
                             <div className="space-y-3 font-sans">
@@ -5345,7 +5358,7 @@ export function BeneficiaryDetails({
                               {/* Impact Summary Panel */}
                               <div className="bg-white p-3 rounded-lg border border-slate-200 space-y-2">
                                 <span className="text-[9px] font-mono font-bold text-slate-400 uppercase block pb-1 border-b border-slate-100">
-                                  This Rollback operation will affect:
+                                  This correction will affect:
                                 </span>
                                 <ul className="text-xs text-slate-650 space-y-1 font-sans">
                                   <li className="flex justify-between items-center bg-slate-50 px-2 py-1 rounded">
@@ -5409,7 +5422,7 @@ export function BeneficiaryDetails({
 
                                 {(dependencyAnalysis.governanceRiskLevel === "HIGH" || dependencyAnalysis.governanceRiskLevel === "CRITICAL") && (
                                   <div className="text-[10px] text-red-800 font-sans leading-relaxed bg-red-50 border border-red-150 rounded p-2">
-                                    <strong>HIGH/CRITICAL HURDLE:</strong> Supplementary Operational Notes must be filled out below to justify this operational re-evaluation before authorization proceeds.
+                                    <strong>HIGH/CRITICAL HURDLE:</strong> Supplementary notes must be filled out below to justify this operational state adjustment.
                                   </div>
                                 )}
 
@@ -5421,21 +5434,21 @@ export function BeneficiaryDetails({
                                       onChange={(e) => setSubConfirmCheck(e.target.checked)}
                                       className="mt-0.5 rounded border-rose-300 text-rose-800 focus:ring-rose-800 cursor-pointer h-3.5 w-3.5"
                                     />
-                                    <span><strong>DOUBLE-AUDIT LOCK:</strong> I explicitly accept that all linked certifications, toolkits, dispatches, and financial outcome references will be flagged as archived/invalidated, and assume full accountability.</span>
+                                    <span><strong>DOUBLE-AUDIT LOCK:</strong> I explicitly accept that all linked certifications, toolkits, dispatches, and financial outcome references will be flagged as archived/invalidated.</span>
                                   </label>
                                 )}
                               </div>
                             </div>
                           ) : (
                             <div className="text-xs text-slate-500 bg-slate-50 p-2.5 rounded border border-slate-150 font-sans italic text-center">
-                              No active analysis generated. Drag dropdown target to evaluate impact risk.
+                              No active analysis generated. Select target stage to evaluate impact risk.
                             </div>
                           )}
                         </div>
                       ) : (
-                        <div className="text-xs text-slate-400 py-6 text-center italic font-sans flex flex-col items-center justify-center gap-1.5 select-none font-sans">
+                        <div className="text-xs text-slate-400 py-6 text-center italic font-sans flex flex-col items-center justify-center gap-1.5 select-none">
                           <Layers className="h-8 w-8 text-slate-300 stroke-1" />
-                          Select a target milestone state to running standard dependency scan rules.
+                          Select a target milestone stage to run standard dependency scan rules.
                         </div>
                       )}
                     </div>
@@ -5449,7 +5462,7 @@ export function BeneficiaryDetails({
                             onChange={(e) => setRollbackConfirmCheck(e.target.checked)}
                             className="mt-0.5 rounded border-slate-300 text-indigo-750 focus:ring-indigo-750 cursor-pointer h-4 w-4"
                           />
-                          <span>I certify that this rollback meets Central Workspace TVET guidelines and is fully authorized.</span>
+                          <span>I certify that this status adjustment is correct and fully authorized.</span>
                         </label>
                       </div>
                     )}
@@ -5471,15 +5484,15 @@ export function BeneficiaryDetails({
                         (dependencyAnalysis?.governanceRiskLevel === "CRITICAL" && (!riskAcknowledgeCheck || !subConfirmCheck || !rollbackNotes?.trim()))
                       }
                       onClick={handleExecuteRollback}
-                      className="bg-red-700 hover:bg-red-800 text-white font-bold py-2 px-5 rounded-lg text-xs cursor-pointer shadow-xs transition disabled:opacity-50 disabled:cursor-not-allowed select-none flex items-center gap-1.5 animate-fade-in"
+                      className="bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 px-5 rounded-lg text-xs cursor-pointer shadow-xs transition disabled:opacity-50 disabled:cursor-not-allowed select-none flex items-center gap-1.5 animate-fade-in animate-duration-150"
                     >
                       {rollbackLoading ? (
                         <>
-                          <RefreshCw className="h-3 w-3 animate-spin" /> Executing Rollback...
+                          <RefreshCw className="h-3 w-3 animate-spin" /> Saving...
                         </>
                       ) : (
                         <>
-                          <ShieldCheck className="h-4 w-4" /> Finalize WorkFlow Rollback
+                          <ShieldCheck className="h-4 w-4" /> Save Status Correction
                         </>
                       )}
                     </button>
@@ -5917,7 +5930,7 @@ export function BeneficiaryDetails({
                       <ShieldCheck className="h-5 w-5" />
                     </div>
                     <div>
-                      <span className="font-bold text-slate-800 text-xs block font-sans">Central biometric matching matches federal database</span>
+                      <span className="font-bold text-slate-800 text-xs block font-sans">Biometric identity verification matches record</span>
                       <span className="text-[10px] text-slate-400">Match score confidence level: 98.44%</span>
                     </div>
                   </div>
@@ -5930,7 +5943,7 @@ export function BeneficiaryDetails({
                       <FileCode className="h-5 w-5" />
                     </div>
                     <div>
-                      <span className="font-bold text-slate-800 text-xs block font-sans">National Identity Management Sync matching</span>
+                      <span className="font-bold text-slate-800 text-xs block font-sans">National database identity status matches</span>
                       <span className="text-[10px] text-slate-400">NIN ID: {beneficiary.nin ? `*******${beneficiary.nin.slice(-4)}` : "Verified Match"}</span>
                     </div>
                   </div>

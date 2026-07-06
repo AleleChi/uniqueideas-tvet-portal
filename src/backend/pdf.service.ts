@@ -5,7 +5,7 @@
 
 import { Beneficiary } from "../types";
 import puppeteer from "puppeteer";
-import { DbRepo } from "./db";
+import { DbRepo, getPgPool, isPgActive, loadJsonState } from "./db";
 import { buildPublicUrl } from "../config/api";
 import { logForensicPdfTrace } from "./pdfTraceAudit";
 import fs from "fs";
@@ -88,6 +88,57 @@ export class PdfService {
     documentType: "admission" | "acceptance",
     beneficiary: Beneficiary
   ): Promise<{ url: string; isFullPage: boolean }> {
+    // 1. Try to fetch TSP-scoped branding from branding_profiles table first
+    const tspId = (beneficiary as any).tsp_id || beneficiary.tspId;
+    if (tspId) {
+      const pool = getPgPool();
+      if (pool && isPgActive) {
+        try {
+          const brandingRes = await pool.query(
+            "SELECT * FROM branding_profiles WHERE tsp_id = $1 LIMIT 1",
+            [tspId]
+          );
+          if (brandingRes.rows.length > 0) {
+            const b = brandingRes.rows[0];
+            let tspUrl = "";
+            if (documentType === "admission") {
+              tspUrl = b.admission_letterhead_url || b.letterhead_url || b.logo_url || "";
+            } else {
+              tspUrl = b.acceptance_letterhead_url || b.letterhead_url || b.logo_url || "";
+            }
+            if (tspUrl) {
+              const finalUrl = PdfService.resolveCloudinaryImageFromPdf(tspUrl);
+              return { url: finalUrl, isFullPage: true };
+            }
+          }
+        } catch (brandErr) {
+          console.error("[PdfService] Error querying TSP branding profile:", brandErr);
+        }
+      } else {
+        // JSON fallback
+        try {
+          const state = loadJsonState() as any;
+          const bpList = state.branding_profiles || [];
+          const b = bpList.find((item: any) => item.tsp_id === tspId);
+          if (b) {
+            let tspUrl = "";
+            if (documentType === "admission") {
+              tspUrl = b.admission_letterhead_url || b.letterhead_url || b.logo_url || "";
+            } else {
+              tspUrl = b.acceptance_letterhead_url || b.letterhead_url || b.logo_url || "";
+            }
+            if (tspUrl) {
+              const finalUrl = PdfService.resolveCloudinaryImageFromPdf(tspUrl);
+              return { url: finalUrl, isFullPage: true };
+            }
+          }
+        } catch (jsonErr) {
+          console.error("[PdfService] JSON fallback error in resolveOfficialLetterhead:", jsonErr);
+        }
+      }
+    }
+
+    // 2. Fallback to global/federation settings
     const settings = await this.getSettings();
     const activeLetterhead = await DbRepo.getActiveLetterhead();
 
@@ -634,6 +685,98 @@ total=${totalTime.toFixed(2)}ms`);
       ? new Date(beneficiary.admissionLetterGeneratedAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }) 
       : new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
 
+    // Resolve TSP-scoped details dynamically!
+    let tspDetails = {
+      name: beneficiary.tsp || "Unique Technology Nig. Ltd",
+      logo_url: (settings as any).logoUrl || "",
+      stamp_url: settings.stampUrl || "",
+      signature_url: settings.signatureUrl || "",
+      tpm_name: settings.tpmName || "Tom Okwa",
+      official_name: beneficiary.tsp || "Unique Technology Nig. Ltd",
+      accreditation_number: (settings as any).accreditationNumber || "NBTE/TVET/UT-001/2024",
+      contact_email: settings.contactEmail || "uniqueideasproject@gmail.com",
+      contact_phone: settings.contactPhone || "+234 803 123 4567",
+      address: settings.contactAddress || "124 Bompai Road, Kano",
+      training_venue: settings.trainingVenue || "Government Technical College (GTC), Kano",
+      training_start_date: settings.trainingStartDate || "October 12, 2026",
+      training_end_date: settings.trainingEndDate || "December 18, 2026",
+    };
+
+    const tspId = (beneficiary as any).tsp_id || beneficiary.tspId;
+    if (tspId) {
+      const pool = getPgPool();
+      if (pool && isPgActive) {
+        try {
+          const tspRes = await pool.query("SELECT * FROM tsps WHERE id = $1", [tspId]);
+          if (tspRes.rows.length > 0) {
+            const tRow = tspRes.rows[0];
+            tspDetails.name = tRow.name || tspDetails.name;
+            tspDetails.official_name = tRow.name || tspDetails.name;
+            tspDetails.contact_email = tRow.contact_email || tspDetails.contact_email;
+            tspDetails.contact_phone = tRow.contact_phone || tspDetails.contact_phone;
+            tspDetails.address = tRow.physical_address || tspDetails.address;
+            tspDetails.training_venue = tRow.training_venue || tspDetails.training_venue;
+            tspDetails.training_start_date = tRow.training_start_date || tspDetails.training_start_date;
+            tspDetails.training_end_date = tRow.training_end_date || tspDetails.training_end_date;
+            tspDetails.tpm_name = tRow.programme_manager || tRow.contact_person || tspDetails.tpm_name;
+            tspDetails.accreditation_number = tRow.accreditation_number || tspDetails.accreditation_number;
+          }
+
+          const brandingRes = await pool.query(
+            "SELECT * FROM branding_profiles WHERE tsp_id = $1 LIMIT 1",
+            [tspId]
+          );
+          if (brandingRes.rows.length > 0) {
+            const b = brandingRes.rows[0];
+            tspDetails.logo_url = b.logo_url || tspDetails.logo_url;
+            tspDetails.stamp_url = b.stamp_url || tspDetails.stamp_url;
+            tspDetails.signature_url = b.signature_url || tspDetails.signature_url;
+            tspDetails.official_name = b.official_name || tspDetails.official_name;
+            tspDetails.accreditation_number = b.accreditation_number || tspDetails.accreditation_number;
+            tspDetails.contact_email = b.contact_email || tspDetails.contact_email;
+            tspDetails.contact_phone = b.contact_phone || tspDetails.contact_phone;
+            tspDetails.address = b.address || tspDetails.address;
+          }
+        } catch (dbErr) {
+          console.error("[PdfService] Error resolving TSP details:", dbErr);
+        }
+      } else {
+        // JSON fallback
+        try {
+          const state = loadJsonState() as any;
+          const tsps = state.tsps || [];
+          const tRow = tsps.find((item: any) => item.id === tspId);
+          if (tRow) {
+            tspDetails.name = tRow.name || tspDetails.name;
+            tspDetails.official_name = tRow.name || tspDetails.name;
+            tspDetails.contact_email = tRow.contact_email || tspDetails.contact_email;
+            tspDetails.contact_phone = tRow.contact_phone || tspDetails.contact_phone;
+            tspDetails.address = tRow.physical_address || tspDetails.address;
+            tspDetails.training_venue = tRow.training_venue || tspDetails.training_venue;
+            tspDetails.training_start_date = tRow.training_start_date || tspDetails.training_start_date;
+            tspDetails.training_end_date = tRow.training_end_date || tspDetails.training_end_date;
+            tspDetails.tpm_name = tRow.programme_manager || tRow.contact_person || tspDetails.tpm_name;
+            tspDetails.accreditation_number = tRow.accreditation_number || tspDetails.accreditation_number;
+          }
+
+          const bpList = state.branding_profiles || [];
+          const b = bpList.find((item: any) => item.tsp_id === tspId);
+          if (b) {
+            tspDetails.logo_url = b.logo_url || tspDetails.logo_url;
+            tspDetails.stamp_url = b.stamp_url || tspDetails.stamp_url;
+            tspDetails.signature_url = b.signature_url || tspDetails.signature_url;
+            tspDetails.official_name = b.official_name || tspDetails.official_name;
+            tspDetails.accreditation_number = b.accreditation_number || tspDetails.accreditation_number;
+            tspDetails.contact_email = b.contact_email || tspDetails.contact_email;
+            tspDetails.contact_phone = b.contact_phone || tspDetails.contact_phone;
+            tspDetails.address = b.address || tspDetails.address;
+          }
+        } catch (jsonErr) {
+          console.error("[PdfService] JSON fallback error resolving TSP details in generateAdmissionLetterPdf:", jsonErr);
+        }
+      }
+    }
+
     // Determine the letterhead priority using the unified resolver:
     const letterheadResult = await PdfService.resolveOfficialLetterhead("admission", beneficiary);
     const letterheadUrl = letterheadResult.url;
@@ -737,15 +880,15 @@ total=${totalTime.toFixed(2)}ms`);
                         <span style="font-size: 9px; color: #64748b; font-weight: bold; margin-left: 5px; text-transform: uppercase; letter-spacing: 0.5px;">IDEAS Project TVET Program</span>
                       </div>
                       <h2 style="font-size: 16px; font-weight: 900; color: #0f172a; margin: 0; text-transform: uppercase; letter-spacing: -0.5px;">
-                        ${settings.organizationName || beneficiary.tsp || "State TVET Board, Kano"}
+                        ${tspDetails.name}
                       </h2>
                       <p style="font-size: 10px; color: #475569; margin: 4px 0 0 0; font-weight: 600;">
-                        ${settings.contactAddress || "No. 45 Gwarzo Road, Kano State, Nigeria"}
+                        ${tspDetails.address}
                       </p>
                     </td>
                     <td style="vertical-align: bottom; text-align: right; font-size: 9px; color: #475569; font-family: monospace; white-space: nowrap; line-height: 1.4;">
-                      <div>Phone: ${settings.contactPhone || "+234 803 123 4567"}</div>
-                      <div>Email: ${settings.contactEmail || "kano-tvet@ideas-initiative.org"}</div>
+                      <div>Phone: ${tspDetails.contact_phone}</div>
+                      <div>Email: ${tspDetails.contact_email}</div>
                     </td>
                   </tr>
                 </table>
@@ -771,7 +914,7 @@ total=${totalTime.toFixed(2)}ms`);
             
             <p>This program aims to equip you with relevant skills and competencies in <strong>${beneficiary.skillSector || "Computer Hardware and Cell Phone Repairs"}</strong> under <strong>${beneficiary.program || "Technical & Vocational Education"}</strong> Sector.</p>
             
-            <p>The training will take place at <strong>${settings.trainingVenue || settings.contactAddress || "Government Technical College (GTC), Kano"}</strong><br>From <strong>${settings.trainingStartDate || "October 12, 2026"}</strong> To <strong>${settings.trainingEndDate || "December 18, 2026"}</strong>.</p>
+            <p>The training will take place at <strong>${tspDetails.training_venue}</strong><br>From <strong>${tspDetails.training_start_date}</strong> To <strong>${tspDetails.training_end_date}</strong>.</p>
             
             <p style="margin-bottom: 2px;">As a participant in this program, you are expected to:</p>
             <ul style="list-style-type: none; padding-left: 15px; margin-top: 1px; margin-bottom: 6px;">
@@ -790,15 +933,18 @@ total=${totalTime.toFixed(2)}ms`);
               <td style="vertical-align: top; text-align: left;">
                 <p style="font-size: 11px; margin: 0 0 8px 0;">Kind regards,</p>
                 
-                <div style="margin-top: 5px;">
-                  ${settings.signatureUrl ? `
-                    <img src="${settings.signatureUrl}" style="max-height: 40px; display: block;" referrerPolicy="no-referrer">
+                <div style="margin-top: 5px; position: relative; display: inline-block;">
+                  ${tspDetails.signature_url ? `
+                    <img src="${tspDetails.signature_url}" style="max-height: 40px; display: block; position: relative; z-index: 2;" referrerPolicy="no-referrer">
                   ` : `
-                    <span style="font-family: 'Georgia', serif; font-style: italic; font-size: 13px; font-weight: bold; color: #1e3a8a;">${settings.tpmName}</span>
+                    <span style="font-family: 'Georgia', serif; font-style: italic; font-size: 13px; font-weight: bold; color: #1e3a8a; position: relative; z-index: 2;">${tspDetails.tpm_name}</span>
                   `}
-                  <div style="width: 160px; border-bottom: 1px dashed #475569; margin: 4px 0 4px 0;"></div>
-                  <strong style="font-size: 11px; text-transform: uppercase;">${settings.tpmName}</strong><br>
-                  <span style="font-size: 9px; color: #64748b; font-family: Arial, sans-serif; text-transform: uppercase; letter-spacing: 0.5px;">TSP AUTHORIZED SIGNATORY</span>
+                  ${tspDetails.stamp_url ? `
+                    <img src="${tspDetails.stamp_url}" style="max-height: 60px; position: absolute; left: 80px; top: -15px; opacity: 0.85; z-index: 1;" referrerPolicy="no-referrer">
+                  ` : ""}
+                  <div style="width: 160px; border-bottom: 1px dashed #475569; margin: 4px 0 4px 0; position: relative; z-index: 2;"></div>
+                  <strong style="font-size: 11px; text-transform: uppercase; position: relative; z-index: 2;">${tspDetails.tpm_name}</strong><br>
+                  <span style="font-size: 9px; color: #64748b; font-family: Arial, sans-serif; text-transform: uppercase; letter-spacing: 0.5px; position: relative; z-index: 2;">TSP AUTHORIZED SIGNATORY</span>
                 </div>
               </td>
               ${meta?.qrDataUrl ? `
@@ -813,7 +959,7 @@ total=${totalTime.toFixed(2)}ms`);
           </table>
 
           <div class="footer-note">
-            IDEAS-TVET PROGRAMME COHORT • UNIQUE TECHNOLOGY NIG LTD REGISTERED CENTER • SECURITY WATERMARKED A4 DOCUMENT
+            IDEAS-TVET PROGRAMME COHORT • ${tspDetails.name.toUpperCase()} REGISTERED CENTER • SECURITY WATERMARKED A4 DOCUMENT
           </div>
         </div>
       </body>
@@ -842,6 +988,98 @@ total=${totalTime.toFixed(2)}ms`);
     const verificationTime = beneficiary.acceptanceLetterUploadedAt
       ? new Date(beneficiary.acceptanceLetterUploadedAt).toISOString()
       : new Date().toISOString();
+
+    // Resolve TSP-scoped details dynamically!
+    let tspDetails = {
+      name: beneficiary.tsp || "Unique Technology Nig. Ltd",
+      logo_url: (settings as any).logoUrl || "",
+      stamp_url: settings.stampUrl || "",
+      signature_url: settings.signatureUrl || "",
+      tpm_name: settings.tpmName || "Tom Okwa",
+      official_name: beneficiary.tsp || "Unique Technology Nig. Ltd",
+      accreditation_number: (settings as any).accreditationNumber || "NBTE/TVET/UT-001/2024",
+      contact_email: settings.contactEmail || "uniqueideasproject@gmail.com",
+      contact_phone: settings.contactPhone || "+234 803 123 4567",
+      address: settings.contactAddress || "124 Bompai Road, Kano",
+      training_venue: settings.trainingVenue || "Government Technical College (GTC), Kano",
+      training_start_date: settings.trainingStartDate || "October 12, 2026",
+      training_end_date: settings.trainingEndDate || "December 18, 2026",
+    };
+
+    const tspId = (beneficiary as any).tsp_id || beneficiary.tspId;
+    if (tspId) {
+      const pool = getPgPool();
+      if (pool && isPgActive) {
+        try {
+          const tspRes = await pool.query("SELECT * FROM tsps WHERE id = $1", [tspId]);
+          if (tspRes.rows.length > 0) {
+            const tRow = tspRes.rows[0];
+            tspDetails.name = tRow.name || tspDetails.name;
+            tspDetails.official_name = tRow.name || tspDetails.name;
+            tspDetails.contact_email = tRow.contact_email || tspDetails.contact_email;
+            tspDetails.contact_phone = tRow.contact_phone || tspDetails.contact_phone;
+            tspDetails.address = tRow.physical_address || tspDetails.address;
+            tspDetails.training_venue = tRow.training_venue || tspDetails.training_venue;
+            tspDetails.training_start_date = tRow.training_start_date || tspDetails.training_start_date;
+            tspDetails.training_end_date = tRow.training_end_date || tspDetails.training_end_date;
+            tspDetails.tpm_name = tRow.programme_manager || tRow.contact_person || tspDetails.tpm_name;
+            tspDetails.accreditation_number = tRow.accreditation_number || tspDetails.accreditation_number;
+          }
+
+          const brandingRes = await pool.query(
+            "SELECT * FROM branding_profiles WHERE tsp_id = $1 LIMIT 1",
+            [tspId]
+          );
+          if (brandingRes.rows.length > 0) {
+            const b = brandingRes.rows[0];
+            tspDetails.logo_url = b.logo_url || tspDetails.logo_url;
+            tspDetails.stamp_url = b.stamp_url || tspDetails.stamp_url;
+            tspDetails.signature_url = b.signature_url || tspDetails.signature_url;
+            tspDetails.official_name = b.official_name || tspDetails.official_name;
+            tspDetails.accreditation_number = b.accreditation_number || tspDetails.accreditation_number;
+            tspDetails.contact_email = b.contact_email || tspDetails.contact_email;
+            tspDetails.contact_phone = b.contact_phone || tspDetails.contact_phone;
+            tspDetails.address = b.address || tspDetails.address;
+          }
+        } catch (dbErr) {
+          console.error("[PdfService] Error resolving TSP details:", dbErr);
+        }
+      } else {
+        // JSON fallback
+        try {
+          const state = loadJsonState() as any;
+          const tsps = state.tsps || [];
+          const tRow = tsps.find((item: any) => item.id === tspId);
+          if (tRow) {
+            tspDetails.name = tRow.name || tspDetails.name;
+            tspDetails.official_name = tRow.name || tspDetails.name;
+            tspDetails.contact_email = tRow.contact_email || tspDetails.contact_email;
+            tspDetails.contact_phone = tRow.contact_phone || tspDetails.contact_phone;
+            tspDetails.address = tRow.physical_address || tspDetails.address;
+            tspDetails.training_venue = tRow.training_venue || tspDetails.training_venue;
+            tspDetails.training_start_date = tRow.training_start_date || tspDetails.training_start_date;
+            tspDetails.training_end_date = tRow.training_end_date || tspDetails.training_end_date;
+            tspDetails.tpm_name = tRow.programme_manager || tRow.contact_person || tspDetails.tpm_name;
+            tspDetails.accreditation_number = tRow.accreditation_number || tspDetails.accreditation_number;
+          }
+
+          const bpList = state.branding_profiles || [];
+          const b = bpList.find((item: any) => item.tsp_id === tspId);
+          if (b) {
+            tspDetails.logo_url = b.logo_url || tspDetails.logo_url;
+            tspDetails.stamp_url = b.stamp_url || tspDetails.stamp_url;
+            tspDetails.signature_url = b.signature_url || tspDetails.signature_url;
+            tspDetails.official_name = b.official_name || tspDetails.official_name;
+            tspDetails.accreditation_number = b.accreditation_number || tspDetails.accreditation_number;
+            tspDetails.contact_email = b.contact_email || tspDetails.contact_email;
+            tspDetails.contact_phone = b.contact_phone || tspDetails.contact_phone;
+            tspDetails.address = b.address || tspDetails.address;
+          }
+        } catch (jsonErr) {
+          console.error("[PdfService] JSON fallback error resolving TSP details in generateAcceptanceFormPdf:", jsonErr);
+        }
+      }
+    }
 
     // Determine the letterhead priority using the unified resolver:
     const letterheadResult = await PdfService.resolveOfficialLetterhead("acceptance", beneficiary);
@@ -963,11 +1201,11 @@ total=${totalTime.toFixed(2)}ms`);
             </p>
             
             <p>
-              I agree to abide by all programme regulations, attendance requirements, and institutional guidelines established at <span class="field-line" style="font-size: 11.5px;">${settings.trainingVenue || "the Designated Training Center"}</span>.
+              I agree to abide by all programme regulations, attendance requirements, and institutional guidelines established at <span class="field-line" style="font-size: 11.5px;">${tspDetails.training_venue}</span>.
             </p>
             
             <p>
-              I understand that the formal training schedule sessions will run from <strong>${settings.trainingStartDate || "October 12, 2026"}</strong> to <strong>${settings.trainingEndDate || "December 18, 2026"}</strong>, and I understand that failure to comply with active attendance requirements or program milestones may result in immediate withdrawal from the programme.
+              I understand that the formal training schedule sessions will run from <strong>${tspDetails.training_start_date}</strong> to <strong>${tspDetails.training_end_date}</strong>, and I understand that failure to comply with active attendance requirements or program milestones may result in immediate withdrawal from the programme.
             </p>
           </div>
 
@@ -1011,7 +1249,7 @@ total=${totalTime.toFixed(2)}ms`);
           ` : ""}
 
           <div class="footer-note">
-            FEDERAL CONTRACT DOCUMENTS • IDEAS-TVET SKILLS SANCTION • OFFICIAL RECONCILIATION DOCUMENT NO: ${beneficiary.id.split("-").pop() || "VAL"}
+            FEDERAL CONTRACT DOCUMENTS • IDEAS-TVET SKILLS SANCTION • ${tspDetails.name.toUpperCase()} RECONCILIATION DOCUMENT NO: ${beneficiary.id.split("-").pop() || "VAL"}
           </div>
         </div>
       </body>

@@ -53,9 +53,14 @@ export class CloudinaryService {
   static async uploadDocument(
     fileContent: string | Buffer,
     fileName: string,
-    folder: string = "ideas_tvet"
+    folder: string = "ideas_tvet",
+    mimeType?: string
   ): Promise<string> {
     initCloudinary();
+
+    if (process.env.NODE_ENV === "production" && !isCloudinaryConfigured) {
+      throw new Error("File storage is not configured. Please contact the system administrator.");
+    }
 
     const timestamp = Date.now();
     const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -70,10 +75,12 @@ export class CloudinaryService {
         : Buffer.from(fileContent, "base64");
 
     const extension = fileName.includes(".") ? fileName.split(".").pop()?.toLowerCase() : "pdf";
+    const isImage = (mimeType && mimeType.startsWith("image/")) || ["png", "jpg", "jpeg", "webp", "gif", "svg"].includes(extension || "");
+    const resourceType = isImage ? "image" : "raw";
 
     if (!isCloudinaryConfigured) {
       console.log(`[Cloudinary Simulation] Simulating secure upload for ${fileName}...`);
-      const mockUrl = `https://res.cloudinary.com/ideas-tvet/raw/upload/v${timestamp}/${folder}/${publicId}.${extension}`;
+      const mockUrl = `https://res.cloudinary.com/ideas-tvet/${resourceType}/upload/v${timestamp}/${folder}/${publicId}.${extension}`;
       
       // Cache simulated raw uploads in global registry to bypass Cloudinary fetching 404s
       if (!(global as any).simulatedCloudinaryFiles) {
@@ -89,7 +96,7 @@ export class CloudinaryService {
 
     try {
       const options = {
-        resource_type: "raw",
+        resource_type: resourceType,
         folder: folder,
         public_id: publicId,
         access_mode: "public"
@@ -121,7 +128,7 @@ export class CloudinaryService {
     } catch (err: any) {
       console.error(`[Cloudinary] Real upload failed for ${fileName}:`, err.message || err);
       // Fallback on error to ensure non-blocking operation
-      const mockUrl = `https://res.cloudinary.com/ideas-tvet/raw/upload/v${timestamp}/${folder}/${publicId}_fallback.${extension}`;
+      const mockUrl = `https://res.cloudinary.com/ideas-tvet/${resourceType}/upload/v${timestamp}/${folder}/${publicId}_fallback.${extension}`;
       
       if (!(global as any).simulatedCloudinaryFiles) {
         (global as any).simulatedCloudinaryFiles = new Map();

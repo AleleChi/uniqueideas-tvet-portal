@@ -452,7 +452,9 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
             validCount++;
             validated.push({
               beneficiary_id: bId,
-              tvet_id: tvetId || `ID-TVE-26-${bId.substring(0, 6)}`,
+              tvet_id: (tvetId && tvetId !== 'ID-TVE-26-IDEAS-' && !tvetId.endsWith('IDEAS-'))
+                ? tvetId
+                : (bId.startsWith('IDEAS-') ? 'ID-TVE-26-' + bId.replace('IDEAS-', '') : bId),
               nin: ninNum || "",
               bvn: bvnNum || "",
               first_name: firstName || "Imported",
@@ -1002,7 +1004,12 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
       const params = new URLSearchParams();
       if (stateFilter && stateFilter !== "all") params.set("state", stateFilter);
       if (tspFilter && tspFilter !== "all") params.set("tspId", tspFilter);
-      const res = await authFetch(`/api/annex9/export?${params.toString()}`);
+      params.set("format", "excel");
+
+      const isTsp = session?.role === "TSP" || (session?.role && session?.role.startsWith("TSP")) || ["TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER"].includes(session?.role || "");
+      const baseRoute = isTsp ? "/api/tsp/reports/annex9/export" : "/api/fed/reports/annex9/export";
+
+      const res = await authFetch(`${baseRoute}?${params.toString()}`);
       if (!res.ok) {
         throw new Error("Failed to generate Excel download link");
       }
@@ -1029,10 +1036,14 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
       showToast(`Exporting official Annex 9 ${activeSubTab.toUpperCase()} records to CSV...`, "info");
       const params = new URLSearchParams();
       params.set("section", activeSubTab);
+      params.set("format", "csv");
       if (stateFilter && stateFilter !== "all") params.set("state", stateFilter);
       if (tspFilter && tspFilter !== "all") params.set("tspId", tspFilter);
 
-      const res = await authFetch(`/api/annex9/export-csv?${params.toString()}`);
+      const isTsp = session?.role === "TSP" || (session?.role && session?.role.startsWith("TSP")) || ["TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER"].includes(session?.role || "");
+      const baseRoute = isTsp ? "/api/tsp/reports/annex9/export" : "/api/fed/reports/annex9/export";
+
+      const res = await authFetch(`${baseRoute}?${params.toString()}`);
       if (!res.ok) {
         throw new Error("Failed to export CSV dataset");
       }

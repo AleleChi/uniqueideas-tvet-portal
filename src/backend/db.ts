@@ -171,6 +171,13 @@ async function checkPgStatusSilent(): Promise<boolean> {
   }
 }
 
+export function deactivatePg() {
+  if (isPgActive) {
+    isPgActive = false;
+    triggerBackgroundHealthCheck();
+  }
+}
+
 export function getPgPool(): pg.Pool | null {
   if (pgPool) return pgPool;
 
@@ -1624,6 +1631,13 @@ export async function initDb(): Promise<void> {
       ALTER TABLE tsps ADD COLUMN IF NOT EXISTS invitation_email VARCHAR(255);
       ALTER TABLE tsps ADD COLUMN IF NOT EXISTS recovery_email VARCHAR(255);
       ALTER TABLE tsps ADD COLUMN IF NOT EXISTS programme_manager VARCHAR(255);
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS sector TEXT;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS skill_area TEXT;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS cac_certificate_url TEXT;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS nbte_accreditation_url TEXT;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS eoi_documents_url TEXT;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS mou_documents_url TEXT;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS tax_compliance_url TEXT;
 
       -- Ensure uniqueideasproject@gmail.com is registered as the official testing contact email for the existing Unique TSP record if not already registered
       UPDATE tsps 
@@ -1736,9 +1750,42 @@ export async function initDb(): Promise<void> {
         stamp_url TEXT,
         official_name VARCHAR(255),
         accreditation_number VARCHAR(100),
+        admission_letterhead_url TEXT,
+        acceptance_letterhead_url TEXT,
+        certificate_background_url TEXT,
+        photo_album_header_url TEXT,
+        contact_email VARCHAR(255),
+        contact_phone VARCHAR(100),
+        address TEXT,
+        is_active BOOLEAN DEFAULT TRUE,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
+
+      -- Safe migrations to ensure existing branding_profiles have all required columns
+      ALTER TABLE branding_profiles ADD COLUMN IF NOT EXISTS admission_letterhead_url TEXT;
+      ALTER TABLE branding_profiles ADD COLUMN IF NOT EXISTS acceptance_letterhead_url TEXT;
+      ALTER TABLE branding_profiles ADD COLUMN IF NOT EXISTS certificate_background_url TEXT;
+      ALTER TABLE branding_profiles ADD COLUMN IF NOT EXISTS photo_album_header_url TEXT;
+      ALTER TABLE branding_profiles ADD COLUMN IF NOT EXISTS contact_email VARCHAR(255);
+      ALTER TABLE branding_profiles ADD COLUMN IF NOT EXISTS contact_phone VARCHAR(100);
+      ALTER TABLE branding_profiles ADD COLUMN IF NOT EXISTS address TEXT;
+      ALTER TABLE branding_profiles ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+      ALTER TABLE branding_profiles ADD COLUMN IF NOT EXISTS updated_by VARCHAR(255);
+
+      -- Migrate tsps table for Phase 3 Training Setup and Branding if not exists
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS training_venue TEXT;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS training_start_date VARCHAR(100);
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS training_end_date VARCHAR(100);
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS attendance_threshold INT DEFAULT 80;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS completion_threshold INT DEFAULT 75;
+
+      -- Add requested performance indexes from Phase 8
+      CREATE INDEX IF NOT EXISTS idx_tsps_state ON tsps(state);
+      CREATE INDEX IF NOT EXISTS idx_tsps_lga ON tsps(lga);
+      CREATE INDEX IF NOT EXISTS idx_tsps_code ON tsps(code);
+      CREATE INDEX IF NOT EXISTS idx_tsps_contact_email ON tsps(contact_email);
+      CREATE INDEX IF NOT EXISTS idx_branding_profiles_tsp_id ON branding_profiles(tsp_id);
 
       -- Create general_email_queue table
       CREATE TABLE IF NOT EXISTS general_email_queue (
@@ -2293,7 +2340,7 @@ export async function initDb(): Promise<void> {
           )
           SELECT 
             id,
-            'ID-TVE-26-' || SUBSTRING(id, 1, 6),
+            CASE WHEN id LIKE 'IDEAS-%' THEN 'ID-TVE-26-' || REPLACE(id, 'IDEAS-', '') ELSE id END,
             COALESCE(nin, ''),
             COALESCE(bvn, ''),
             COALESCE(bank_name, ''),
@@ -3743,7 +3790,7 @@ export class DbRepo {
       return cleanToken;
     }
 
-    const conn = activeConnection || getPgPool();
+    const conn = activeConnection || (isPgActive ? getPgPool() : null);
     if (conn) {
       try {
         const terms = [cleanToken];
@@ -3794,6 +3841,41 @@ export class DbRepo {
         }
       } catch (e) {
         console.error("[DbRepo.resolveBeneficiaryIdResiliently] DB lookup error:", e);
+      }
+    } else {
+      try {
+        const state = loadJsonState() as any;
+        const terms = [cleanToken];
+        const match = cleanToken.match(/^IDEAS-(\d{4})-(\d+)$/i);
+        if (match) {
+          const year = match[1];
+          const numStr = match[2];
+          const paddedNum = numStr.padStart(3, "0");
+          terms.push(`IDEAS/TVET/ADM/${paddedNum}/${year}`);
+        }
+
+        for (const term of terms) {
+          // Check beneficiaries ID or custom fields
+          const b = state.beneficiaries.find((b: any) => 
+            b.id === term || 
+            (b.custom_fields && (b.custom_fields.tvet_id === term || b.custom_fields.reference_number === term))
+          );
+          if (b) return b.id;
+
+          // Check trainee profiles
+          const tp = state.trainee_profiles?.find((tp: any) => tp.tvet_id === term || tp.beneficiary_id === term);
+          if (tp) return tp.beneficiary_id;
+
+          // Check admissions
+          const adm = state.admissions?.find((adm: any) => adm.admission_ref === term || adm.admission_form_ref === term || adm.beneficiary_id === term);
+          if (adm) return adm.beneficiary_id;
+
+          // Check generated documents
+          const gd = state.generated_documents?.find((gd: any) => gd.id === term || gd.verification_code === term || gd.beneficiary_id === term);
+          if (gd) return gd.beneficiary_id;
+        }
+      } catch (err) {
+        console.error("[DbRepo.resolveBeneficiaryIdResiliently] JSON fallback lookup error:", err);
       }
     }
     return cleanToken;
@@ -4191,8 +4273,19 @@ export class DbRepo {
     const pool = getPgPool();
     if (!pool || !isPgActive) {
       const state = loadJsonState();
-      const b = state.beneficiaries.find(b => b.id === id) || null;
+      let b = state.beneficiaries.find(b => b.id === id) || null;
       if (b) {
+        b = { ...b };
+        if (!b.tsp) {
+          b.tsp = "Unique Technology Nig. Ltd";
+        }
+        if (b.tsp === "Unique Technology Nig. Ltd") {
+          if (!b.tspId) b.tspId = "00000000-0000-0000-0000-000000000001";
+          if (!b.stateId) b.stateId = "state_imo_id_default";
+          if (!b.tenantId) b.tenantId = "tsp_tenant_default";
+          if (!b.state) b.state = "Imo";
+          if (!b.city) b.city = "Owerri Municipal";
+        }
         const dynamic = getDynamicEligibility(b);
         b.age = dynamic.age;
         b.eligibilityStatus = dynamic.eligibilityStatus;
@@ -5245,7 +5338,7 @@ export class DbRepo {
     if (!pool || !isPgActive) {
       // B. Database unavailable
       console.warn("[DB Repo] Database is currently unavailable (no active pool or pg flag is inactive).");
-      if (decoded) {
+      if (decoded && process.env.NODE_ENV !== "production") {
         console.warn(`[DB Repo] DANGER/OUTAGE: Differentiating database offline status. Restoring offline session from valid JWT for user: ${decoded.email}`);
         return {
           session_id: "offline_session_" + decoded.id,
@@ -5275,7 +5368,7 @@ export class DbRepo {
          INNER JOIN users u ON u.id = us.user_id
          LEFT JOIN tenants t ON t.id = u.tenant_id
          WHERE us.token = $1 AND us.expires_at > NOW() AND u.deleted_at IS NULL`,
-        [token]
+         [token]
       );
       if (res.rows.length > 0) {
         return res.rows[0];
@@ -5287,7 +5380,7 @@ export class DbRepo {
     } catch (e: any) {
       // B. Database unavailable
       console.error("[DB Repo] Database query failed during session Lookup (Differentiating database offline status):", e.message || e);
-      if (decoded) {
+      if (decoded && process.env.NODE_ENV !== "production") {
         console.warn(`[DB Repo] DANGER/OUTAGE: Session lookup database error, but token JWT is valid. Restoring fallback data session for user: ${decoded.email}`);
         return {
           session_id: "offline_session_" + decoded.id,
@@ -5340,6 +5433,11 @@ export class DbRepo {
       if (userId === "user_sta") {
         return [
           "view_reports", "manage_cohorts", "manage_batches", "manage_trainers", "manage_assessments", "manage_graduation"
+        ];
+      }
+      if (userId === "user_tsp") {
+        return [
+          "view_reports", "review_admissions", "approve_admissions", "reject_admissions", "manage_beneficiaries", "trainee_access", "audit_logs_access"
         ];
       }
       if (userId && (userId.startsWith("usr_tr_") || userId === "user_tr")) {
@@ -7965,7 +8063,11 @@ export class DbRepo {
         SELECT 
           COALESCE(tp.id, gen_random_uuid()) as id,
           b.id as beneficiary_id,
-          COALESCE(tp.tvet_id, 'ID-TVE-26-' || SUBSTRING(b.id, 1, 6)) as tvet_id,
+          CASE 
+            WHEN tp.tvet_id IS NOT NULL AND tp.tvet_id != '' AND tp.tvet_id != 'ID-TVE-26-IDEAS-' AND tp.tvet_id NOT LIKE '%IDEAS-' THEN tp.tvet_id
+            WHEN b.id LIKE 'IDEAS-%' THEN 'ID-TVE-26-' || REPLACE(b.id, 'IDEAS-', '')
+            ELSE b.id
+          END as tvet_id,
           b.photo,
           b.first_name,
           b.last_name,
@@ -8027,7 +8129,11 @@ export class DbRepo {
         SELECT 
           COALESCE(tp.id, gen_random_uuid()) as id,
           b.id as beneficiary_id,
-          COALESCE(tp.tvet_id, 'ID-TVE-26-' || SUBSTRING(b.id, 1, 6)) as tvet_id,
+          CASE 
+            WHEN tp.tvet_id IS NOT NULL AND tp.tvet_id != '' AND tp.tvet_id != 'ID-TVE-26-IDEAS-' AND tp.tvet_id NOT LIKE '%IDEAS-' THEN tp.tvet_id
+            WHEN b.id LIKE 'IDEAS-%' THEN 'ID-TVE-26-' || REPLACE(b.id, 'IDEAS-', '')
+            ELSE b.id
+          END as tvet_id,
           b.photo,
           b.first_name,
           b.last_name,
@@ -8115,7 +8221,9 @@ export class DbRepo {
           updated_at = NOW()
       `, [
         beneficiaryId,
-        updates.tvet_id || ('ID-TVE-26-' + beneficiaryId.substring(0, 6))
+        (updates.tvet_id && updates.tvet_id !== 'ID-TVE-26-IDEAS-' && !updates.tvet_id.endsWith('IDEAS-'))
+          ? updates.tvet_id
+          : (beneficiaryId.startsWith('IDEAS-') ? 'ID-TVE-26-' + beneficiaryId.replace('IDEAS-', '') : beneficiaryId)
       ]);
 
       // Fetch the updated complete view to return
@@ -8194,7 +8302,11 @@ export class DbRepo {
           ta.*,
           b.first_name,
           b.last_name,
-          COALESCE(tp.tvet_id, 'ID-TVE-26-' || SUBSTRING(b.id, 1, 6)) as tvet_id,
+          CASE 
+            WHEN tp.tvet_id IS NOT NULL AND tp.tvet_id != '' AND tp.tvet_id != 'ID-TVE-26-IDEAS-' AND tp.tvet_id NOT LIKE '%IDEAS-' THEN tp.tvet_id
+            WHEN b.id LIKE 'IDEAS-%' THEN 'ID-TVE-26-' || REPLACE(b.id, 'IDEAS-', '')
+            ELSE b.id
+          END as tvet_id,
           b.skill_sector as skill,
           b.state,
           b.tsp
@@ -8344,7 +8456,11 @@ export class DbRepo {
           b.tsp_id,
           b.program as programme,
           b.skill_sector as skill,
-          COALESCE(tp.tvet_id, 'ID-TVE-26-' || SUBSTRING(b.id, 1, 6)) as tvet_id,
+          CASE 
+            WHEN tp.tvet_id IS NOT NULL AND tp.tvet_id != '' AND tp.tvet_id != 'ID-TVE-26-IDEAS-' AND tp.tvet_id NOT LIKE '%IDEAS-' THEN tp.tvet_id
+            WHEN b.id LIKE 'IDEAS-%' THEN 'ID-TVE-26-' || REPLACE(b.id, 'IDEAS-', '')
+            ELSE b.id
+          END as tvet_id,
           tp.batch_id as batch,
           tp.cohort_id as cohort,
           ta.id as attendance_id,
@@ -8700,7 +8816,11 @@ export class DbRepo {
           COALESCE(pm.verified_by, 'System') as verified_by,
           b.first_name,
           b.last_name,
-          COALESCE(tp.tvet_id, 'ID-TVE-26-' || SUBSTRING(b.id, 1, 6)) as tvet_id,
+          CASE 
+            WHEN tp.tvet_id IS NOT NULL AND tp.tvet_id != '' AND tp.tvet_id != 'ID-TVE-26-IDEAS-' AND tp.tvet_id NOT LIKE '%IDEAS-' THEN tp.tvet_id
+            WHEN b.id LIKE 'IDEAS-%' THEN 'ID-TVE-26-' || REPLACE(b.id, 'IDEAS-', '')
+            ELSE b.id
+          END as tvet_id,
           b.skill_sector as skill,
           b.state,
           b.tsp

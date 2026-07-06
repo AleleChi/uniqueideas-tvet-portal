@@ -16,8 +16,8 @@ type FormState = "LOGIN" | "FORGOT" | "RESET";
 
 export function AdminLogin({ onLoginSuccess, onBackToHome }: AdminLoginProps) {
   const [formState, setFormState] = useState<FormState>("LOGIN");
-  const [email, setEmail] = useState("admin@uniqueideas.dontechservicesconst.com");
-  const [password, setPassword] = useState("password123");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -76,7 +76,7 @@ export function AdminLogin({ onLoginSuccess, onBackToHome }: AdminLoginProps) {
 
     if (!success) {
       setHealthStatus("OFFLINE");
-      setError("Backend unreachable. The system is attempting to connect to the backend server (Render Cold Start). Please wait or reload.");
+      setError("Unable to connect right now. Please retry.");
     }
     setIsRetryingHealth(false);
   };
@@ -195,12 +195,12 @@ export function AdminLogin({ onLoginSuccess, onBackToHome }: AdminLoginProps) {
               <span className="text-[10px] font-bold text-indigo-950 font-mono uppercase tracking-widest block leading-none">
                 IDEAS-TVET Program Portal
               </span>
-              <h2 className="font-display text-slate-800 text-lg font-bold tracking-tight">Verifying Secure Network Connection</h2>
+              <h2 className="font-display text-slate-800 text-lg font-bold tracking-tight">Checking service availability...</h2>
               <div className="flex items-center justify-center gap-2 text-xs text-indigo-600 font-medium">
                 <RefreshCw className="w-4 h-4 animate-spin" />
-                <span>Checking server reachability and database status...</span>
+                <span>Checking service status...</span>
               </div>
-              <p className="text-[11px] text-slate-400 max-w-xs mt-1">If using Render or a server starting from a cold state, initialization might take up to a minute.</p>
+              <p className="text-[11px] text-slate-400 max-w-xs mt-1">Service is taking longer than expected. Please try again shortly.</p>
             </div>
           </div>
         </div>
@@ -220,12 +220,12 @@ export function AdminLogin({ onLoginSuccess, onBackToHome }: AdminLoginProps) {
               <span className="text-[10px] font-bold text-indigo-950 font-mono uppercase tracking-widest block leading-none">
                 IDEAS-TVET Program Portal
               </span>
-              <h2 className="font-display text-slate-900 text-xl font-bold tracking-tight">Backend Unreachable</h2>
+              <h2 className="font-display text-slate-900 text-xl font-bold tracking-tight">Unable to connect right now</h2>
               <p className="text-xs text-slate-500 max-w-sm">
-                The centralized server at <code className="bg-slate-100 text-slate-800 px-1 py-0.5 rounded font-mono text-[10px] break-all">{API_BASE_URL}</code> did not respond correctly or is initiating from a cold start.
+                Service is taking longer than expected. Please try again shortly.
               </p>
               <div className="text-xs text-rose-600 font-semibold bg-rose-50 border border-rose-100 p-3 rounded-lg max-w-sm leading-normal">
-                Error status: Backend Offline or Configuration Missing
+                Unable to connect right now. Please retry.
               </div>
             </div>
             <button
@@ -241,7 +241,7 @@ export function AdminLogin({ onLoginSuccess, onBackToHome }: AdminLoginProps) {
               ) : (
                 <>
                   <RefreshCw className="w-4 h-4" />
-                  <span>Retry Network Connection</span>
+                  <span>Retry Connection</span>
                 </>
               )}
             </button>
@@ -309,17 +309,6 @@ export function AdminLogin({ onLoginSuccess, onBackToHome }: AdminLoginProps) {
               </>
             )}
           </div>
-
-          {/* Degraded State Indicator */}
-          {healthStatus === "DEGRADED" && (
-            <div className="text-xs text-amber-700 font-medium bg-amber-50 border border-amber-100 p-3 rounded-lg flex items-center gap-2">
-              <span className="flex h-2 w-2 relative">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
-              </span>
-              <span>Centralized services are fully running under a degraded bootstrap state (optional seeds skipped/failed). Control and logins are functional.</span>
-            </div>
-          )}
 
           {/* Feedback alerts */}
           {error && (

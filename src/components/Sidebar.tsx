@@ -43,6 +43,7 @@ export const Sidebar = React.memo(function Sidebar({
 }: SidebarProps) {
   const FED_ROLES_LIST = ["FED", "FED_SUPER_ADMIN", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "FEDERAL_ME_OFFICER"];
   const isFedUser = session?.role === "SUPER_ADMIN" || FED_ROLES_LIST.includes(session?.role || "");
+  const isTspUser = ["TSP", "TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER", "ADMIN_OFFICER", "REVIEW_OFFICER"].includes(session?.role || "") || (session?.role && session?.role.startsWith("TSP"));
 
   return (
     <aside 
@@ -270,35 +271,39 @@ export const Sidebar = React.memo(function Sidebar({
             <span>Training Outcomes</span>
           </button>
 
-          <button 
-            onClick={() => {
-              setActiveTab("toolkits");
-              setIsSidebarOpen(false);
-            }}
-            className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-              activeTab === "toolkits"
-                ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
-                : "text-slate-400 hover:text-white hover:bg-slate-800/40"
-            }`}
-          >
-            <Briefcase className="w-4 h-4 text-inherit" />
-            <span>Toolkits & Assets</span>
-          </button>
+          {!isTspUser && (
+            <button 
+              onClick={() => {
+                setActiveTab("toolkits");
+                setIsSidebarOpen(false);
+              }}
+              className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+                activeTab === "toolkits"
+                  ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                  : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+              }`}
+            >
+              <Briefcase className="w-4 h-4 text-inherit" />
+              <span>Toolkits & Assets</span>
+            </button>
+          )}
 
-          <button 
-            onClick={() => {
-              setActiveTab("evidence");
-              setIsSidebarOpen(false);
-            }}
-            className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-              activeTab === "evidence"
-                ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
-                : "text-slate-400 hover:text-white hover:bg-slate-800/40"
-            }`}
-          >
-            <ClipboardCheck className="w-4 h-4 text-inherit" />
-            <span>Impact Evidence</span>
-          </button>
+          {!isTspUser && (
+            <button 
+              onClick={() => {
+                setActiveTab("evidence");
+                setIsSidebarOpen(false);
+              }}
+              className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+                activeTab === "evidence"
+                  ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                  : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+              }`}
+            >
+              <ClipboardCheck className="w-4 h-4 text-inherit" />
+              <span>Impact Evidence</span>
+            </button>
+          )}
 
           {isFedUser && (
             <>
@@ -349,20 +354,22 @@ export const Sidebar = React.memo(function Sidebar({
             </>
           )}
 
-          <button 
-            onClick={() => {
-              setActiveTab("certification");
-              setIsSidebarOpen(false);
-            }}
-            className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-              activeTab === "certification"
-                ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
-                : "text-slate-400 hover:text-white hover:bg-slate-800/40"
-            }`}
-          >
-            <Award className="w-4 h-4 text-inherit" />
-            <span>🏆 Certification Center</span>
-          </button>
+          {!isTspUser && (
+            <button 
+              onClick={() => {
+                setActiveTab("certification");
+                setIsSidebarOpen(false);
+              }}
+              className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+                activeTab === "certification"
+                  ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                  : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+              }`}
+            >
+              <Award className="w-4 h-4 text-inherit" />
+              <span>🏆 Certification Center</span>
+            </button>
+          )}
 
           <button 
             onClick={() => {
@@ -397,22 +404,24 @@ export const Sidebar = React.memo(function Sidebar({
             <span>Reports</span>
           </button>
 
-          <button 
-            onClick={() => {
-              setActiveTab("locations");
-              setIsSidebarOpen(false);
-            }}
-            className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-              activeTab === "locations" 
-                ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
-                : "text-slate-400 hover:text-white hover:bg-slate-800/40"
-            }`}
-          >
-            <Landmark className="w-4 h-4 text-inherit" />
-            <span>Training Centers & Locations</span>
-          </button>
+          {!isTspUser && (
+            <button 
+              onClick={() => {
+                setActiveTab("locations");
+                setIsSidebarOpen(false);
+              }}
+              className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+                activeTab === "locations" 
+                  ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                  : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+              }`}
+            >
+              <Landmark className="w-4 h-4 text-inherit" />
+              <span>Training Centers & Locations</span>
+            </button>
+          )}
 
-          {["TSP", "TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER"].includes(session?.role || "") && (
+          {isTspUser && (
             <button 
               onClick={() => {
                 setActiveTab("tsp-profile");
@@ -429,7 +438,7 @@ export const Sidebar = React.memo(function Sidebar({
             </button>
           )}
 
-          {["SUPER_ADMIN", "ADMIN_OFFICER"].includes(session?.role || "") && (
+          {!isTspUser && ["SUPER_ADMIN", "ADMIN_OFFICER"].includes(session?.role || "") && (
             <button 
               onClick={() => {
                 setActiveTab("settings");
@@ -463,7 +472,7 @@ export const Sidebar = React.memo(function Sidebar({
             </button>
           )}
 
-          {["SUPER_ADMIN", "ADMIN_OFFICER"].includes(session?.role || "") && (
+          {!isTspUser && ["SUPER_ADMIN", "ADMIN_OFFICER"].includes(session?.role || "") && (
             <button 
               onClick={() => {
                 setActiveTab("custom");
@@ -480,7 +489,7 @@ export const Sidebar = React.memo(function Sidebar({
             </button>
           )}
 
-          {["SUPER_ADMIN", "ADMIN_OFFICER"].includes(session?.role || "") && (
+          {!isTspUser && ["SUPER_ADMIN", "ADMIN_OFFICER"].includes(session?.role || "") && (
             <button 
               onClick={() => {
                 setActiveTab("communications");
@@ -526,7 +535,7 @@ export const Sidebar = React.memo(function Sidebar({
                 }`}
               >
                 <Database className="w-4 h-4 text-inherit" />
-                <span>Restoration Center</span>
+                <span>Record Recovery Center</span>
               </button>
 
               <button 

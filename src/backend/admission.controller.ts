@@ -476,10 +476,30 @@ export class AdmissionController {
       }
 
       const outcome = await AdmissionService.processPortalSubmission(token, responseData);
+      const b = outcome.beneficiary;
+      const sanitizedCandidate = b ? {
+        id: b.id,
+        firstName: b.firstName,
+        lastName: b.lastName,
+        email: b.email,
+        nin: b.nin,
+        bvn: b.bvn,
+        state: b.state,
+        city: b.city,
+        skillSector: b.skillSector,
+        admissionRef: b.admissionRef,
+        admissionStatus: b.admissionStatus,
+        admissionFormCompleted: b.admissionFormCompleted,
+        admissionFormStatus: b.admissionFormStatus,
+        admissionFormData: b.admissionFormData,
+        admissionLetterUrl: b.admissionLetterUrl,
+        acceptanceLetterUrl: b.acceptanceLetterUrl
+      } : null;
+
       return res.status(200).json({
         success: true,
         message: outcome.warning || "Your e-Signature and admission enrollment profiles were successfully verified and logged.",
-        candidate: outcome.beneficiary,
+        candidate: sanitizedCandidate,
         warning: outcome.warning || null
       });
     } catch (err: any) {
@@ -916,6 +936,22 @@ export class AdmissionController {
         tspId,
         beneficiaryId
       });
+
+      const canSeePII = user && (user.role === "SUPER_ADMIN" || user.role === "FEDERAL_SUPER_ADMIN");
+      if (!canSeePII && listPayload && Array.isArray(listPayload.rows)) {
+        listPayload.rows = listPayload.rows.map((item: any) => {
+          const cloned = { ...item };
+          if (cloned.nin) {
+            const trimmed = String(cloned.nin).trim();
+            cloned.nin = trimmed.length <= 4 ? "****" + trimmed : "*******" + trimmed.slice(-4);
+          }
+          if (cloned.bvn) {
+            const trimmed = String(cloned.bvn).trim();
+            cloned.bvn = trimmed.length <= 4 ? "****" + trimmed : "*******" + trimmed.slice(-4);
+          }
+          return cloned;
+        });
+      }
 
       return res.status(200).json(listPayload);
     } catch (err: any) {

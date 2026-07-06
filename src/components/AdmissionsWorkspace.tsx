@@ -794,7 +794,7 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
               : "text-slate-600 hover:bg-slate-200/60"
           }`}
         >
-          Dashboard & Telemetry
+          Dashboard
         </button>
         <button
           type="button"
@@ -847,7 +847,7 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
           {/* 1. KEY TELEMETRY ANALYTICS PANEL */}
       <div id="admissions-analytics-panel" className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
         <h3 className="text-xs font-bold text-slate-400 font-mono uppercase tracking-widest text-left mb-4">
-          Admissions Telemetry & Aggregated Statistics
+          Admissions Dashboard & Statistics
         </h3>
 
         {loadingStats ? (

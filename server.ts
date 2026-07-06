@@ -12,6 +12,7 @@ import cors from "cors";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
+import helmet from "helmet";
 import { createServer as createViteServer } from "vite";
 import { Gender, ProgramStatus, Beneficiary, CustomField, AuditLog, DocumentType, WorkflowHistory } from "./src/types";
 import { AdmissionController } from "./src/backend/admission.controller";
@@ -40,7 +41,7 @@ console.log("[BOOT] server.ts loaded");
 
 const FED_ROLES = ["FED", "FED_SUPER_ADMIN", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "FEDERAL_ME_OFFICER"];
 const STA_ROLES = ["STA", "STATE_ADMIN", "STATE_COORDINATOR"];
-const TSP_ROLES = ["TSP", "TSP_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"];
+const TSP_ROLES = ["TSP", "TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER", "ADMIN_OFFICER", "REVIEW_OFFICER"];
 const ALL_ADMIN_ROLES = ["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES];
 
 async function checkBeneficiaryAccess(user: any, beneficiaryId: string): Promise<boolean> {
@@ -55,8 +56,8 @@ async function checkBeneficiaryAccess(user: any, beneficiaryId: string): Promise
   const b = await DbRepo.getBeneficiaryById(beneficiaryId);
   if (!b) return false;
   
-  let userTspId = user.tspId;
-  let userStateId = user.stateId;
+  let userTspId = user.tspId || (user as any).tsp_id;
+  let userStateId = user.stateId || (user as any).state_id;
 
   const isTspUser = TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"));
   if (isTspUser) {
@@ -64,8 +65,8 @@ async function checkBeneficiaryAccess(user: any, beneficiaryId: string): Promise
     userStateId = undefined; // Bypass state restrictions entirely for TSP users
   }
 
-  const bTspId = b.tspId || "00000000-0000-0000-0000-000000000001";
-  const bStateId = b.stateId || "state_imo_id_default";
+  const bTspId = b.tspId || (b as any).tsp_id || "00000000-0000-0000-0000-000000000001";
+  const bStateId = b.stateId || (b as any).state_id || "state_imo_id_default";
 
   if (userTspId && bTspId !== userTspId) {
     return false;
@@ -328,22 +329,33 @@ const corsOptions = {
   origin: function (origin: any, callback: any) {
     if (!origin) return callback(null, true);
 
-    const allowedPatterns = [
-      "localhost",
-      "127.0.0.1",
-      "uniqueideas-tvet-portal.vercel.app",
-      "uniqueideas-tvet-portal.onrender.com",
-      "run.app",
-      "aistudio"
+    const isProd = process.env.NODE_ENV === "production";
+    const allowedOrigins = [
+      "https://uniqueideas-tvet-portal.onrender.com"
     ];
 
-    const isAllowed = allowedPatterns.some(pattern => origin.includes(pattern));
-
-    if (isAllowed) {
+    // Check if it is a trusted AI Studio development/preview sandbox URL on Cloud Run
+    const aisPattern = /^https:\/\/ais-(dev|pre)-[a-z0-9]+-[0-9]+\.[a-z0-9-]+\.run\.app$/;
+    if (aisPattern.test(origin)) {
       return callback(null, true);
     }
 
-    return callback(null, false);
+    if (!isProd) {
+      try {
+        const url = new URL(origin);
+        if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
+          return callback(null, true);
+        }
+      } catch (err) {
+        // Safe fallthrough
+      }
+    }
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error("CORS policy violation: origin not allowed."), false);
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -357,6 +369,34 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
+
+// Configure Helmet with specific, secure options that don't break PDF/iframe document viewing
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        fontSrc: ["'self'", "https://fonts.gstatic.com"],
+        imgSrc: ["'self'", "data:", "https://res.cloudinary.com", "blob:"],
+        connectSrc: ["'self'", "https://api.cloudinary.com", "https://res.cloudinary.com"],
+        frameAncestors: ["'self'", "https://ais-dev-rqplowhf7blg5f5xy4gil6-517501253596.europe-west1.run.app", "https://ais-pre-rqplowhf7blg5f5xy4gil6-517501253596.europe-west1.run.app", "https://ai.studio", "https://*.google.com"],
+        frameSrc: ["'self'", "data:", "blob:"],
+        objectSrc: ["'self'", "data:", "blob:"]
+      }
+    },
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    referrerPolicy: { policy: "no-referrer" }
+  })
+);
+
+// Permissions policy middleware
+app.use((req, res, next) => {
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  next();
+});
 
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
@@ -416,6 +456,161 @@ async function logAction(username: string, action: string, details: string) {
   await DbRepo.saveAuditLog(enrichedLog);
 }
 
+// Global Error Sanitization Helper
+export function sendSafeError(res: any, err: any, fallbackMessage: string, statusCode = 500) {
+  console.error(`[Error Details]`, err);
+  if (process.env.NODE_ENV === "production") {
+    return res.status(statusCode).json({ error: fallbackMessage || "We could not complete this request. Please try again." });
+  } else {
+    return res.status(statusCode).json({ error: err.message || fallbackMessage });
+  }
+}
+
+// In-Memory Rate Limiting Engine
+const rateLimitStore: Record<string, number[]> = {};
+
+export function rateLimiter(options: { windowMs: number; max: number; message: string }) {
+  return (req: any, res: any, next: any) => {
+    const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
+    const email = (req.body && req.body.email) ? String(req.body.email).toLowerCase().trim() : "";
+    
+    const now = Date.now();
+    const cleanIP = Array.isArray(ip) ? ip[0] : String(ip).split(",")[0].trim();
+    
+    const keys = [`ip:${cleanIP}`];
+    if (email) {
+      keys.push(`email:${email}`);
+    }
+
+    for (const key of keys) {
+      const entryKey = `${options.windowMs}:${key}`;
+      if (!rateLimitStore[entryKey]) {
+        rateLimitStore[entryKey] = [];
+      }
+      
+      // Filter out attempts outside the window
+      rateLimitStore[entryKey] = rateLimitStore[entryKey].filter(
+        timestamp => now - timestamp < options.windowMs
+      );
+
+      if (rateLimitStore[entryKey].length >= options.max) {
+        return res.status(429).json({ error: options.message });
+      }
+    }
+
+    // Record the attempt for all keys
+    for (const key of keys) {
+      const entryKey = `${options.windowMs}:${key}`;
+      rateLimitStore[entryKey].push(now);
+    }
+
+    next();
+  };
+}
+
+// Secure Magic Number & File Size Verification for Uploads
+export function validateAndGetUploadBuffer(
+  fileContent: string,
+  allowPdf = false
+): { buffer: Buffer; mimeType: string; error?: string } {
+  if (!fileContent) {
+    return { buffer: Buffer.alloc(0), mimeType: "", error: "Missing file content" };
+  }
+
+  let base64Data = fileContent;
+  let mimeFromData = "";
+  if (fileContent.startsWith("data:")) {
+    const parts = fileContent.split(",");
+    if (parts.length < 2) {
+      return { buffer: Buffer.alloc(0), mimeType: "", error: "Malformed data URI" };
+    }
+    const mimeMatch = fileContent.match(/data:([^;]+);/);
+    if (mimeMatch) {
+      mimeFromData = mimeMatch[1];
+    }
+    base64Data = parts[1];
+  }
+
+  let buffer: Buffer;
+  try {
+    buffer = Buffer.from(base64Data, "base64");
+  } catch (err) {
+    return { buffer: Buffer.alloc(0), mimeType: "", error: "Invalid base64 encoding" };
+  }
+
+  // 1. Limit file size (5MB)
+  if (buffer.length > 5 * 1024 * 1024) {
+    return { buffer: Buffer.alloc(0), mimeType: "", error: "File is too large (maximum size is 5MB)" };
+  }
+
+  // 2. Validate magic numbers
+  if (buffer.length < 4) {
+    return { buffer: Buffer.alloc(0), mimeType: "", error: "File format could not be verified" };
+  }
+
+  const hex = buffer.toString("hex", 0, 4).toLowerCase();
+  
+  // JPEG: ff d8 ff
+  const isJpeg = hex.startsWith("ffd8ff");
+  // PNG: 89 50 4e 47
+  const isPng = hex === "89504e47";
+  // WEBP: 52 49 46 46 (RIFF)
+  const isWebp = hex === "52494646";
+  // PDF: 25 50 44 46 (%PDF)
+  const isPdf = hex === "25504446";
+
+  if (isJpeg) {
+    return { buffer, mimeType: "image/jpeg" };
+  } else if (isPng) {
+    return { buffer, mimeType: "image/png" };
+  } else if (isWebp) {
+    return { buffer, mimeType: "image/webp" };
+  } else if (isPdf && allowPdf) {
+    return { buffer, mimeType: "application/pdf" };
+  }
+
+  return { 
+    buffer: Buffer.alloc(0), 
+    mimeType: "", 
+    error: "Invalid file format. Only JPEG, PNG, WEBP, " + (allowPdf ? "and PDF " : "") + "files are permitted." 
+  };
+}
+
+// PII Masking Helpers (NIN and BVN)
+function maskPIIValue(value: string | null | undefined): string {
+  if (!value) return "";
+  const trimmed = value.trim();
+  if (trimmed.length <= 4) {
+    return "****" + trimmed;
+  }
+  return "*******" + trimmed.slice(-4);
+}
+
+export function maskPII(beneficiary: any, user: any): any {
+  if (!beneficiary) return beneficiary;
+  const canSeePII = user && (user.role === "SUPER_ADMIN" || user.role === "FEDERAL_SUPER_ADMIN");
+  if (canSeePII) {
+    return beneficiary;
+  }
+  const cloned = { ...beneficiary };
+  if (cloned.nin) {
+    cloned.nin = maskPIIValue(cloned.nin);
+  }
+  if (cloned.bvn) {
+    cloned.bvn = maskPIIValue(cloned.bvn);
+  }
+  return cloned;
+}
+
+export function maskPIIArray(beneficiaries: any[], user: any): any[] {
+  if (!Array.isArray(beneficiaries)) return beneficiaries;
+  const canSeePII = user && (user.role === "SUPER_ADMIN" || user.role === "FEDERAL_SUPER_ADMIN");
+  if (canSeePII) {
+    return beneficiaries;
+  }
+  return beneficiaries.map(b => maskPII(b, user));
+}
+
 // REST API Endpoints
 
 app.get("/api/health", async (req, res) => {
@@ -430,17 +625,47 @@ app.get("/api/health", async (req, res) => {
     console.error("[Health] Database health check query failed:", err);
   }
 
-  const isDegraded = dbStatus === "disconnected";
+  if (dbStatus === "connected") {
+    res.json({ status: "ok" });
+  } else {
+    res.json({ status: "unavailable" });
+  }
+});
+
+// Protected internal health diagnostic route
+app.get("/api/system/health/internal", requireAuth, async (req, res) => {
+  const user = (req as any).user;
+  if (!user || (user.role !== "SUPER_ADMIN" && user.role !== "FEDERAL_SUPER_ADMIN")) {
+    return res.status(403).json({ error: "You do not have permission to perform this action." });
+  }
+
+  let dbStatus = "disconnected";
+  try {
+    const pool = getPgPool();
+    if (pool) {
+      await pool.query("SELECT 1");
+      dbStatus = "connected";
+    }
+  } catch (err) {
+    console.error("[Health] Database internal health check query failed:", err);
+  }
+
   res.json({
-    status: isDegraded ? "degraded" : "ok",
+    status: dbStatus === "connected" ? "ok" : "degraded",
     database: dbStatus,
     timestamp: Date.now(),
-    ...(startupWarnings.length > 0 ? { startupWarnings } : {})
+    startupWarnings
   });
 });
 
 // Authentication API
-app.post("/api/auth/login", async (req, res) => {
+const loginLimiter = rateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: "Too many login attempts. Please try again in 15 minutes."
+});
+
+app.post("/api/auth/login", loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
@@ -567,7 +792,7 @@ app.post("/api/auth/login", async (req, res) => {
       }
     }
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    sendSafeError(res, err, "Unable to complete login process.");
   }
 });
 
@@ -628,7 +853,13 @@ app.get("/api/auth/session", async (req, res) => {
   }
 });
 
-app.post("/api/auth/forgot-password", async (req, res) => {
+const forgotPasswordLimiter = rateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 3,
+  message: "Too many password reset requests. Please try again in an hour."
+});
+
+app.post("/api/auth/forgot-password", forgotPasswordLimiter, async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) {
@@ -640,7 +871,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
       // Secure response to prevent user discovery enumerations
       return res.json({ 
         success: true, 
-        message: "If the email is registered in our database, a password reset link has been dispatched." 
+        message: "If this email exists, password reset instructions will be sent." 
       });
     }
 
@@ -654,7 +885,10 @@ app.post("/api/auth/forgot-password", async (req, res) => {
 
     // Dynamic reset links
     const resetLink = buildPublicUrl(`/reset-password?token=${resetToken}`, req);
-    console.log(`[SECURITY] Forgot password requested for ${normalizedEmail}. Code: ${resetToken}. Link: ${resetLink}`);
+    
+    // Hash email for safe logging and do not log the raw token or link
+    const emailHash = crypto.createHash("sha256").update(normalizedEmail).digest("hex");
+    console.log(`[SECURITY] Password reset requested for email hash: ${emailHash}`);
     
     // Attempt real notification dispatch
     try {
@@ -677,20 +911,25 @@ app.post("/api/auth/forgot-password", async (req, res) => {
       console.log("[SECURITY] Mail dispatch failed (Resend not verified):", mailErr.message);
     }
 
-    await logAction(normalizedEmail, "SECURITY_PASSWORD_FORGOT", `Password reset request registered. Token generated with 15-minute expiry.`);
-    await logAction(normalizedEmail, "PASSWORD_RESET_REQUESTED", `Password reset request generated for: ${normalizedEmail}`);
+    await logAction(normalizedEmail, "SECURITY_PASSWORD_FORGOT", `Password reset request registered.`);
+    await logAction(normalizedEmail, "PASSWORD_RESET_REQUESTED", `Password reset request generated for user.`);
 
     return res.json({ 
       success: true, 
-      message: "If the email is registered in our database, a password reset link has been dispatched.",
-      token: resetToken // Included for instant integration testing
+      message: "If this email exists, password reset instructions will be sent."
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    sendSafeError(res, err, "Unable to process forgot password request.");
   }
 });
 
-app.post("/api/auth/reset-password", async (req, res) => {
+const resetPasswordLimiter = rateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: "Too many password reset attempts. Please try again in 15 minutes."
+});
+
+app.post("/api/auth/reset-password", resetPasswordLimiter, async (req, res) => {
   try {
     const { token, password } = req.body;
     if (!token || !password) {
@@ -710,11 +949,11 @@ app.post("/api/auth/reset-password", async (req, res) => {
     await DbRepo.updateUser(user);
 
     await logAction(user.email, "SECURITY_PASSWORD_RESET", "Password successfully recovered and changed.");
-    await logAction(user.email, "PASSWORD_RESET_COMPLETED", `Password successfully recovered and changed for user: ${user.email}`);
+    await logAction(user.email, "PASSWORD_RESET_COMPLETED", `Password successfully recovered and changed for user.`);
 
     return res.json({ success: true, message: "Your account password has been updated securely. You may log in." });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    sendSafeError(res, err, "Unable to complete password reset process.");
   }
 });
 
@@ -826,7 +1065,7 @@ app.post("/api/email/production-test", requireAuth, requireRole(["SUPER_ADMIN", 
   }
 });
 
-app.get("/api/admissions/stats", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.getAdmissionsStats);
+app.get("/api/admissions/stats", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), AdmissionController.getAdmissionsStats);
 
 // --- Governance Global Stats KPI Endpoint ---
 app.get("/api/governance/global-stats", requireAuth, async (req, res) => {
@@ -914,7 +1153,13 @@ app.get("/api/governance/global-stats", requireAuth, async (req, res) => {
 app.get("/api/governance/dependency-analysis/:beneficiaryId", requireAuth, async (req, res) => {
   try {
     const { beneficiaryId } = req.params;
-    const author = (req as any).user || { username: "governance_officer", role: "Super Admin" };
+    const user = (req as any).user;
+    const author = user || { username: "governance_officer", role: "Super Admin" };
+
+    const hasAccess = await checkBeneficiaryAccess(user, beneficiaryId);
+    if (!hasAccess) {
+      return res.status(403).json({ success: false, error: "Access Denied: Tenant isolation active." });
+    }
 
     const analysis = await LifecycleDependencyService.analyze(beneficiaryId);
 
@@ -982,8 +1227,8 @@ app.get("/api/admin/debug/offer-token", requireAuth, AdmissionController.debugOf
 
 // --- Admission Form Module ---
 app.get("/api/admissions/verify/:reference", AdmissionController.verifyForm);
-app.post("/api/admissions/export-jobs", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.createExportJob);
-app.get("/api/admissions/export-jobs/:jobId", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.getExportJobStatus);
+app.post("/api/admissions/export-jobs", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), AdmissionController.createExportJob);
+app.get("/api/admissions/export-jobs/:jobId", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), AdmissionController.getExportJobStatus);
 app.get("/api/admissions/export-jobs/download/:jobId", AdmissionController.downloadExportJob);
 
 const protectInactiveBeneficiary = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -1011,7 +1256,7 @@ app.get("/api/admissions/:id/form", requireAuth, requireRole(["SUPER_ADMIN", ...
 app.post("/api/admissions/:id/save-form", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES, "TRAINEE"]), restrictTspAdmissionAccess, protectInactiveBeneficiary, AdmissionController.saveForm);
 app.get("/api/admissions/:id/form/pdf", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES, "TRAINEE"]), restrictTspAdmissionAccess, AdmissionController.getFormPdf);
 app.get("/api/admissions/:id/form/docx", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES, "TRAINEE"]), restrictTspAdmissionAccess, AdmissionController.getFormDocx);
-app.post("/api/admissions/bulk-export", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), AdmissionController.bulkExportAdmissionForms);
+app.post("/api/admissions/bulk-export", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), AdmissionController.bulkExportAdmissionForms);
 app.post("/api/admissions/:id/confirm-form", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES, "TRAINEE"]), restrictTspAdmissionAccess, protectInactiveBeneficiary, AdmissionController.confirmForm);
 app.post("/api/admissions/:id/unlock-form", requireAuth, requireRole(["SUPER_ADMIN"]), AdmissionController.unlockForm);
 app.post("/api/admissions/:id/regenerate-reference", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), restrictTspAdmissionAccess, protectInactiveBeneficiary, AdmissionController.regenerateReference);
@@ -1386,7 +1631,7 @@ app.get("/api/reports/admissions/list", requireAuth, requireRoleOrPermission(["S
 // ==========================================
 // ADMISSIONS REPORTING EXPORTS COMPILATION
 // ==========================================
-app.get("/api/export/reports/excel", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.get("/api/export/reports/excel", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
     const reportType = req.query.reportType as "admitted" | "rejected" | "acceptance_status" | "tsp_performance" | "state_performance";
     const search = req.query.search as string || "";
@@ -1394,6 +1639,16 @@ app.get("/api/export/reports/excel", requireAuth, requireRole(["SUPER_ADMIN", "A
     const state = req.query.state as string || "all";
     const sector = req.query.sector as string || "all";
     const tsp = req.query.tsp as string || "all";
+
+    const user = req.user;
+    const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+    let effectiveTsp = tsp;
+    if (!isFederal && user && (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP"))) {
+      effectiveTsp = user.tspId || "00000000-0000-0000-0000-000000000001";
+      if (reportType === "tsp_performance" || reportType === "state_performance") {
+        return res.status(403).json({ success: false, error: "Access Denied: National comparison charts are restricted." });
+      }
+    }
 
     await logAction(req.user!.email, "EXCEL_EXPORT", `Triggered Admission Report export in Excel for type: ${reportType}`);
 
@@ -1451,7 +1706,7 @@ app.get("/api/export/reports/excel", requireAuth, requireRole(["SUPER_ADMIN", "A
         acceptanceLetterStatus,
         state,
         sector,
-        tsp,
+        tsp: effectiveTsp,
         sortBy: "createdAt",
         sortOrder: "DESC"
       });
@@ -1512,7 +1767,7 @@ app.get("/api/export/reports/excel", requireAuth, requireRole(["SUPER_ADMIN", "A
   }
 });
 
-app.get("/api/export/reports/word", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.get("/api/export/reports/word", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
     const reportType = req.query.reportType as "admitted" | "rejected" | "acceptance_status" | "tsp_performance" | "state_performance";
     const search = req.query.search as string || "";
@@ -1520,6 +1775,16 @@ app.get("/api/export/reports/word", requireAuth, requireRole(["SUPER_ADMIN", "AD
     const state = req.query.state as string || "all";
     const sector = req.query.sector as string || "all";
     const tsp = req.query.tsp as string || "all";
+
+    const user = req.user;
+    const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+    let effectiveTsp = tsp;
+    if (!isFederal && user && (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP"))) {
+      effectiveTsp = user.tspId || "00000000-0000-0000-0000-000000000001";
+      if (reportType === "tsp_performance" || reportType === "state_performance") {
+        return res.status(403).json({ success: false, error: "Access Denied: National comparison charts are restricted." });
+      }
+    }
 
     await logAction(req.user!.email, "WORD_EXPORT", `Triggered Admission Report export in Word format for type: ${reportType}`);
 
@@ -1636,7 +1901,7 @@ app.get("/api/export/reports/word", requireAuth, requireRole(["SUPER_ADMIN", "AD
   }
 });
 
-app.get("/api/export/reports/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.get("/api/export/reports/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
     const reportType = req.query.reportType as "admitted" | "rejected" | "acceptance_status" | "tsp_performance" | "state_performance";
     const search = req.query.search as string || "";
@@ -1644,6 +1909,16 @@ app.get("/api/export/reports/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADM
     const state = req.query.state as string || "all";
     const sector = req.query.sector as string || "all";
     const tsp = req.query.tsp as string || "all";
+
+    const user = req.user;
+    const isFederal = user && (user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role));
+    let effectiveTsp = tsp;
+    if (!isFederal && user && (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP"))) {
+      effectiveTsp = user.tspId || "00000000-0000-0000-0000-000000000001";
+      if (reportType === "tsp_performance" || reportType === "state_performance") {
+        return res.status(403).json({ success: false, error: "Access Denied: National comparison charts are restricted." });
+      }
+    }
 
     await logAction(req.user!.email, "PDF_EXPORT", `Triggered Admission Report export in PDF layout for type: ${reportType}`);
 
@@ -1972,7 +2247,7 @@ app.get("/api/export/reports/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADM
   }
 });
 
-app.get("/api/admissions/email-health", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), AdmissionController.getEmailHealth);
+app.get("/api/admissions/email-health", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), AdmissionController.getEmailHealth);
 app.post("/api/admissions/send-offer", requireAuth, AdmissionController.sendOffer);
 
 app.get("/api/admin/debug/offer-token", async (req, res) => {
@@ -3162,7 +3437,14 @@ app.delete("/api/admission-form-templates/:id", requireAuth, requireRole(["SUPER
 });
 
 // --- TEMPLATE DIAGNOSTICS & OPERATIONS PLATFORM ---
-app.get("/api/templates/diagnostics", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
+app.get("/api/templates/diagnostics", requireAuth, async (req, res) => {
+  if (process.env.SECURITY_DIAGNOSTICS_ENABLED !== "true") {
+    return res.status(403).json({ error: "Diagnostics feature is disabled." });
+  }
+  const user = (req as any).user;
+  if (!user || (user.role !== "SUPER_ADMIN" && user.role !== "FEDERAL_SUPER_ADMIN")) {
+    return res.status(403).json({ error: "You do not have permission to perform this action." });
+  }
   try {
     const letterheads = await DbRepo.getLetterheads();
     const admissionTemplates = await DbRepo.getAdmissionFormTemplates();
@@ -3391,9 +3673,16 @@ app.get("/api/trainees/:beneficiaryId", requireAuth, requireRole(["SUPER_ADMIN",
   }
 });
 
-app.put("/api/trainees/:beneficiaryId", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.put("/api/trainees/:beneficiaryId", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
     const { beneficiaryId } = req.params;
+
+    // Strict multi-tenant scope protection
+    const hasAccess = await checkBeneficiaryAccess(req.user, beneficiaryId);
+    if (!hasAccess) {
+      return res.status(403).json({ error: "Access Denied: You do not have permission to modify this trainee." });
+    }
+
     const original = await DbRepo.getTraineeProfileByBeneficiaryId(beneficiaryId);
     if (!original) return res.status(404).json({ error: "Trainee profile not found" });
 
@@ -4964,10 +5253,14 @@ app.post("/api/toolkits/upload-photo", requireAuth, requireRole(["SUPER_ADMIN", 
       return res.status(400).json({ error: "Missing file_content or file_name parameters" });
     }
 
+    const validation = validateAndGetUploadBuffer(file_content, false); // No PDFs allowed for toolkit photo
+    if (validation.error) {
+      return res.status(400).json({ error: validation.error });
+    }
+
     // Convert and proxy via CloudinaryService
     console.log(`[Toolkit Evidence] Proxying image upload to Cloudinary CDN for ${file_name}...`);
-    const buffer = Buffer.from(file_content, "base64");
-    const uploadedUrl = await CloudinaryService.uploadDocument(buffer, file_name, "toolkit_evidence");
+    const uploadedUrl = await CloudinaryService.uploadDocument(validation.buffer, file_name, "toolkit_evidence");
 
     if (assignmentId) {
       // Tie this photo URL as verification evidence in replacementReason or reference
@@ -4978,8 +5271,7 @@ app.post("/api/toolkits/upload-photo", requireAuth, requireRole(["SUPER_ADMIN", 
 
     res.json({ success: true, photoUrl: uploadedUrl });
   } catch (err: any) {
-    console.error("[Toolkit Photo Proxy] Error uploading file content:", err);
-    res.status(500).json({ error: err.message || "Failed to proxy image files upload" });
+    sendSafeError(res, err, "Failed to proxy image files upload");
   }
 });
 
@@ -5244,7 +5536,11 @@ app.get("/api/attendance/compliance", requireAuth, requireRole(["SUPER_ADMIN", .
     let queryStr = `
       SELECT 
         b.id, b.first_name, b.last_name, b.gender, b.program, b.skill_sector, b.tsp, b.state,
-        COALESCE(tp.tvet_id, 'ID-TVE-26-' || SUBSTRING(b.id, 1, 6)) as tvet_id,
+        CASE 
+          WHEN tp.tvet_id IS NOT NULL AND tp.tvet_id != '' AND tp.tvet_id != 'ID-TVE-26-IDEAS-' AND tp.tvet_id NOT LIKE '%IDEAS-' THEN tp.tvet_id
+          WHEN b.id LIKE 'IDEAS-%' THEN 'ID-TVE-26-' || REPLACE(b.id, 'IDEAS-', '')
+          ELSE b.id
+        END as tvet_id,
         COALESCE(da.present, 0) as present_days,
         COALESCE(da.absent, 0) as absent_days,
         COALESCE(da.late, 0) as late_days,
@@ -5518,7 +5814,11 @@ app.get("/api/tsp/attendance/compliance", requireAuth, requireRole(["SUPER_ADMIN
         b.gender,
         b.program,
         b.skill_sector,
-        COALESCE(tp.tvet_id, 'ID-TVE-26-' || SUBSTRING(b.id, 1, 6)) as tvet_id,
+        CASE 
+          WHEN tp.tvet_id IS NOT NULL AND tp.tvet_id != '' AND tp.tvet_id != 'ID-TVE-26-IDEAS-' AND tp.tvet_id NOT LIKE '%IDEAS-' THEN tp.tvet_id
+          WHEN b.id LIKE 'IDEAS-%' THEN 'ID-TVE-26-' || REPLACE(b.id, 'IDEAS-', '')
+          ELSE b.id
+        END as tvet_id,
         COALESCE(da.present, 0) as present_days,
         COALESCE(da.absent, 0) as absent_days,
         COALESCE(da.late, 0) as late_days,
@@ -5678,6 +5978,882 @@ app.post("/api/tsp/attendance/bulk-mark", requireAuth, requireRole(["SUPER_ADMIN
     );
 
     res.json({ success: true, count: results.length, records: results });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ====================================================
+// TSP SCOPED REPORTING API ENDPOINTS (Phase 9 & 10)
+// ====================================================
+
+app.get("/api/tsp/reports/summary", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: "Session missing" });
+    
+    const isTsp = TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"));
+    let tspId = "";
+    if (isTsp) {
+      tspId = user.tspId || "";
+      if (!tspId) {
+        return res.status(403).json({ error: "Your account is not linked to a training provider." });
+      }
+    } else {
+      tspId = (req.query.tspId as string) || "";
+    }
+
+    let bWhere = `deleted_at IS NULL`;
+    const params: any[] = [];
+    if (tspId) {
+      bWhere += ` AND tsp_id = $1`;
+      params.push(tspId);
+    }
+
+    // Apply extra filters if provided by FED/STA
+    let paramIdx = params.length + 1;
+    const state = req.query.state || req.query.selectedState;
+    if (state && state !== "all") {
+      bWhere += ` AND state = $${paramIdx++}`;
+      params.push(state);
+    }
+    const program = req.query.program || req.query.programId || req.query.selectedProgram;
+    if (program && program !== "all") {
+      bWhere += ` AND program = $${paramIdx++}`;
+      params.push(program);
+    }
+    const skill = req.query.skill || req.query.skill_sector || req.query.selectedSkill;
+    if (skill && skill !== "all") {
+      bWhere += ` AND skill_sector = $${paramIdx++}`;
+      params.push(skill);
+    }
+    const gender = req.query.gender || req.query.selectedGender;
+    if (gender && gender !== "all") {
+      bWhere += ` AND gender = $${paramIdx++}`;
+      params.push(gender);
+    }
+    const status = req.query.status || req.query.selectedStatus;
+    if (status && status !== "all") {
+      bWhere += ` AND status = $${paramIdx++}`;
+      params.push(status);
+    }
+
+    const countsRes = await executeQuery(`
+      SELECT 
+        COUNT(*)::int as total_trainees,
+        COUNT(CASE WHEN status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'ADMITTED', 'ACTIVE', 'ELIGIBLE', 'IN_TRAINING', 'ONBOARDED') THEN 1 END)::int as active_trainees,
+        COUNT(CASE WHEN status IN ('CERTIFIED', 'GRADUATED', 'COMPLETED', 'ALUMNI') THEN 1 END)::int as completed_trainees,
+        COUNT(CASE WHEN gender = 'MALE' THEN 1 END)::int as male_count,
+        COUNT(CASE WHEN gender = 'FEMALE' THEN 1 END)::int as female_count
+      FROM beneficiaries
+      WHERE ${bWhere}
+    `, params);
+    
+    const counts = countsRes.rows[0];
+
+    // Calculate real-time attendance rate and stipend tiers dynamically
+    const attRes = await executeQuery(`
+      WITH att_pcts AS (
+        SELECT 
+          ta.beneficiary_id,
+          CASE 
+            WHEN COUNT(CASE WHEN ta.status IN ('PRESENT', 'LATE', 'ABSENT') THEN 1 END) > 0 THEN 
+              ROUND((COUNT(CASE WHEN ta.status IN ('PRESENT', 'LATE') THEN 1 END)::numeric / COUNT(CASE WHEN ta.status IN ('PRESENT', 'LATE', 'ABSENT') THEN 1 END)::numeric) * 100, 1)
+            ELSE NULL 
+          END as attendance_percentage
+        FROM trainee_attendance ta
+        GROUP BY ta.beneficiary_id
+      ),
+      att_status AS (
+        SELECT 
+          b.id,
+          ap.attendance_percentage,
+          CASE 
+            WHEN ap.attendance_percentage IS NULL THEN 'NO_RECORD'
+            WHEN ap.attendance_percentage >= 65.0 THEN 'ELIGIBLE'
+            WHEN ap.attendance_percentage >= 50.0 THEN 'WARNING'
+            WHEN ap.attendance_percentage >= 30.0 THEN 'AT_RISK'
+            ELSE 'SUSPENDED'
+          END as stipend_status
+        FROM beneficiaries b
+        LEFT JOIN att_pcts ap ON b.id = ap.beneficiary_id
+        WHERE ${bWhere}
+      )
+      SELECT 
+        COALESCE(AVG(attendance_percentage)::float, 0.0) as avg_attendance,
+        COUNT(CASE WHEN stipend_status = 'ELIGIBLE' THEN 1 END)::int as eligible_count,
+        COUNT(CASE WHEN stipend_status = 'WARNING' THEN 1 END)::int as warning_count,
+        COUNT(CASE WHEN stipend_status = 'AT_RISK' THEN 1 END)::int as risk_count,
+        COUNT(CASE WHEN stipend_status = 'SUSPENDED' THEN 1 END)::int as suspended_count
+      FROM att_status
+    `, params);
+
+    const att = attRes.rows[0];
+
+    // Dynamically calculate document stats based on upload status or generated_documents entries
+    const docRes = await executeQuery(`
+      SELECT 
+        'Admission Acceptance Letter' as document_type,
+        COUNT(b.id)::int as total_documents,
+        COUNT(CASE WHEN b.acceptance_letter_url IS NOT NULL OR b.status = 'ACCEPTED' THEN 1 END)::int as signed_documents
+      FROM beneficiaries b
+      WHERE ${bWhere}
+    `, params);
+    const doc = docRes.rows[0];
+
+    res.json({
+      success: true,
+      summary: {
+        totalTrainees: counts?.total_trainees || 0,
+        activeTrainees: counts?.active_trainees || 0,
+        completedTrainees: counts?.completed_trainees || 0,
+        genderBreakdown: {
+          male: counts?.male_count || 0,
+          female: counts?.female_count || 0,
+          other: Math.max((counts?.total_trainees || 0) - (counts?.male_count || 0) - (counts?.female_count || 0), 0)
+        },
+        avgAttendance: att ? parseFloat((att.avg_attendance || 0).toFixed(1)) : 0,
+        stipendCompliance: {
+          eligible: att ? att.eligible_count || 0 : 0,
+          warning: att ? att.warning_count || 0 : 0,
+          atRisk: att ? att.risk_count || 0 : 0,
+          suspended: att ? att.suspended_count || 0 : 0
+        },
+        documentSigning: {
+          total: doc ? doc.total_documents || 0 : 0,
+          signed: doc ? doc.signed_documents || 0 : 0
+        }
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/tsp/reports/admissions", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: "Session missing" });
+    
+    const isTsp = TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"));
+    let tspId = "";
+    if (isTsp) {
+      tspId = user.tspId || "";
+      if (!tspId) return res.status(403).json({ error: "Your account is not linked to a training provider." });
+    } else {
+      tspId = (req.query.tspId as string) || "";
+    }
+
+    let bWhere = `b.deleted_at IS NULL`;
+    const params: any[] = [];
+    if (tspId) {
+      bWhere += ` AND b.tsp_id = $1`;
+      params.push(tspId);
+    }
+
+    // Apply extra filters if provided by FED/STA
+    let paramIdx = params.length + 1;
+    const state = req.query.state || req.query.selectedState;
+    if (state && state !== "all") {
+      bWhere += ` AND b.state = $${paramIdx++}`;
+      params.push(state);
+    }
+    const program = req.query.program || req.query.programId || req.query.selectedProgram;
+    if (program && program !== "all") {
+      bWhere += ` AND b.program = $${paramIdx++}`;
+      params.push(program);
+    }
+    const skill = req.query.skill || req.query.skill_sector || req.query.selectedSkill;
+    if (skill && skill !== "all") {
+      bWhere += ` AND b.skill_sector = $${paramIdx++}`;
+      params.push(skill);
+    }
+    const gender = req.query.gender || req.query.selectedGender;
+    if (gender && gender !== "all") {
+      bWhere += ` AND b.gender = $${paramIdx++}`;
+      params.push(gender);
+    }
+    const status = req.query.status || req.query.selectedStatus;
+    if (status && status !== "all") {
+      bWhere += ` AND b.status = $${paramIdx++}`;
+      params.push(status);
+    }
+
+    const funnelRes = await executeQuery(`
+      SELECT 
+        COUNT(b.id)::int as total_registered,
+        COUNT(CASE WHEN COALESCE(adm.admission_status, 'Pending') = 'Pending' OR b.status = 'DRAFT' THEN 1 END)::int as under_review,
+        COUNT(CASE WHEN adm.id IS NOT NULL THEN 1 END)::int as admitted,
+        COUNT(CASE WHEN b.status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'ACTIVE', 'ONBOARDED') THEN 1 END)::int as verified,
+        COUNT(CASE WHEN adm.admission_form_pdf_url IS NOT NULL THEN 1 END)::int as forms_generated,
+        COUNT(CASE WHEN adm.admission_letter_versions IS NOT NULL AND JSONB_ARRAY_LENGTH(adm.admission_letter_versions) > 0 THEN 1 END)::int as letters_generated,
+        COUNT(CASE WHEN adm.offer_sent_at IS NOT NULL THEN 1 END)::int as emails_sent,
+        COUNT(CASE WHEN adm.offer_sent_at IS NULL AND adm.id IS NOT NULL THEN 1 END)::int as offer_pending,
+        COUNT(CASE WHEN adm.acceptance_letter_status = 'Pending' THEN 1 END)::int as acceptance_pending,
+        COUNT(CASE WHEN adm.acceptance_letter_status = 'Submitted' THEN 1 END)::int as acceptance_submitted,
+        COUNT(CASE WHEN b.status = 'ACCEPTED' OR adm.admission_status = 'Accepted' THEN 1 END)::int as accepted_trainees,
+        COUNT(CASE WHEN b.status = 'WITHDRAWN' OR b.status = 'REJECTED' THEN 1 END)::int as rejected_withdrawn
+      FROM beneficiaries b
+      LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
+      WHERE ${bWhere}
+    `, params);
+
+    const r = funnelRes.rows[0];
+    const funnel = {
+      totalRegistered: r.total_registered || 0,
+      underReview: r.under_review || 0,
+      admitted: r.admitted || 0,
+      verified: r.verified || 0,
+      admissionFormsGenerated: r.forms_generated || 0,
+      offerLettersGenerated: r.letters_generated || 0,
+      offerEmailsSent: r.emails_sent || 0,
+      offerPending: r.offer_pending || 0,
+      secureLinksCopied: r.forms_generated || 0,
+      acceptancePending: r.acceptance_pending || 0,
+      acceptanceSubmitted: r.acceptance_submitted || 0,
+      acceptedTrainees: r.accepted_trainees || 0,
+      rejectedWithdrawnTrainees: r.rejected_withdrawn || 0
+    };
+
+    res.json({
+      success: true,
+      funnel
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/tsp/reports/attendance", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: "Session missing" });
+    
+    const isTsp = TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"));
+    let tspId = "";
+    if (isTsp) {
+      tspId = user.tspId || "";
+      if (!tspId) return res.status(403).json({ error: "Your account is not linked to a training provider." });
+    } else {
+      tspId = (req.query.tspId as string) || "";
+    }
+
+    let bWhere = `b.deleted_at IS NULL`;
+    const params: any[] = [];
+    if (tspId) {
+      bWhere += ` AND b.tsp_id = $1`;
+      params.push(tspId);
+    }
+
+    const monthlyRes = await executeQuery(`
+      SELECT 
+        TO_CHAR(ta.attendance_date, 'YYYY-MM') as raw_month,
+        TO_CHAR(ta.attendance_date, 'Month YYYY') as month,
+        COUNT(DISTINCT ta.beneficiary_id)::int as total_assessed,
+        ROUND(
+          (COUNT(CASE WHEN ta.status IN ('PRESENT', 'LATE') THEN 1 END)::numeric / 
+           NULLIF(COUNT(CASE WHEN ta.status IN ('PRESENT', 'LATE', 'ABSENT') THEN 1 END), 0)::numeric) * 100, 
+          1
+        )::float as avg_rate
+      FROM trainee_attendance ta
+      JOIN beneficiaries b ON ta.beneficiary_id = b.id
+      WHERE ${bWhere}
+      GROUP BY raw_month, month
+      ORDER BY raw_month DESC
+    `, params);
+
+    res.json({
+      success: true,
+      monthlyTrends: monthlyRes.rows
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/tsp/reports/eligibility", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: "Session missing" });
+    
+    const isTsp = TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"));
+    let tspId = "";
+    if (isTsp) {
+      tspId = user.tspId || "";
+      if (!tspId) return res.status(403).json({ error: "Your account is not linked to a training provider." });
+    } else {
+      tspId = (req.query.tspId as string) || "";
+    }
+
+    let bWhere = `deleted_at IS NULL`;
+    const params: any[] = [];
+    if (tspId) {
+      bWhere += ` AND tsp_id = $1`;
+      params.push(tspId);
+    }
+
+    const eligibilityRes = await executeQuery(`
+      SELECT 
+        CASE 
+          WHEN date_of_birth IS NULL OR TRIM(date_of_birth) = '' THEN 'INCOMPLETE'
+          WHEN CASE 
+            WHEN date_of_birth ~ '^\d{4}-\d{2}-\d{2}' THEN EXTRACT(YEAR FROM AGE(TO_DATE(date_of_birth, 'YYYY-MM-DD')))
+            WHEN date_of_birth ~ '^\d{1,2}/\d{1,2}/\d{4}' THEN EXTRACT(YEAR FROM AGE(TO_DATE(date_of_birth, 'DD/MM/YYYY')))
+            WHEN date_of_birth ~ '^\d{1,2}-\d{1,2}-\d{4}' THEN EXTRACT(YEAR FROM AGE(TO_DATE(date_of_birth, 'DD-MM-YYYY')))
+            ELSE NULL
+          END <= 35 THEN 'ELIGIBLE'
+          ELSE 'INELIGIBLE'
+        END as eligibility_status,
+        COUNT(*)::int as count
+      FROM beneficiaries
+      WHERE ${bWhere}
+      GROUP BY 1
+    `, params);
+
+    res.json({
+      success: true,
+      eligibility: eligibilityRes.rows
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/tsp/reports/documents", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: "Session missing" });
+    
+    const isTsp = TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"));
+    let tspId = "";
+    if (isTsp) {
+      tspId = user.tspId || "";
+      if (!tspId) return res.status(403).json({ error: "Your account is not linked to a training provider." });
+    } else {
+      tspId = (req.query.tspId as string) || "";
+    }
+
+    let bWhere = `b.deleted_at IS NULL`;
+    const params: any[] = [];
+    if (tspId) {
+      bWhere += ` AND b.tsp_id = $1`;
+      params.push(tspId);
+    }
+
+    const docTypeRes = await executeQuery(`
+      SELECT 
+        'Admission Acceptance Letter' as document_type,
+        COUNT(b.id)::int as count,
+        COUNT(CASE WHEN b.acceptance_letter_url IS NOT NULL OR b.status = 'ACCEPTED' THEN 1 END)::int as signed_count
+      FROM beneficiaries b
+      WHERE ${bWhere}
+      
+      UNION ALL
+      
+      SELECT 
+        'Parental/Guardian Indemnity Guarantee' as document_type,
+        COUNT(b.id)::int as count,
+        COUNT(CASE WHEN b.guardian_name IS NOT NULL AND b.guardian_phone IS NOT NULL THEN 1 END)::int as signed_count
+      FROM beneficiaries b
+      WHERE ${bWhere}
+    `, params);
+
+    res.json({
+      success: true,
+      documentStats: docTypeRes.rows
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/tsp/reports/completion", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: "Session missing" });
+    
+    const isTsp = TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"));
+    let tspId = "";
+    if (isTsp) {
+      tspId = user.tspId || "";
+      if (!tspId) return res.status(403).json({ error: "Your account is not linked to a training provider." });
+    } else {
+      tspId = (req.query.tspId as string) || "";
+    }
+
+    let bWhere = `deleted_at IS NULL`;
+    const params: any[] = [];
+    if (tspId) {
+      bWhere += ` AND tsp_id = $1`;
+      params.push(tspId);
+    }
+
+    const completionRes = await executeQuery(`
+      SELECT 
+        CASE 
+          WHEN status IN ('CERTIFIED', 'GRADUATED', 'COMPLETED', 'ALUMNI') THEN status 
+          ELSE 'PENDING FINAL GRADUATION CLEARANCE' 
+        END as status,
+        COUNT(*)::int as count
+      FROM beneficiaries
+      WHERE ${bWhere}
+      GROUP BY 1
+    `, params);
+
+    res.json({
+      success: true,
+      completion: completionRes.rows
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/tsp/reports/monthly", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: "Session missing" });
+    
+    const isTsp = TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"));
+    let tspId = "";
+    if (isTsp) {
+      tspId = user.tspId || "";
+      if (!tspId) return res.status(403).json({ error: "Your account is not linked to a training provider." });
+    } else {
+      tspId = (req.query.tspId as string) || "";
+    }
+
+    let bWhere = `1=1`;
+    const params: any[] = [];
+    if (tspId) {
+      bWhere += ` AND tsp_id = $1`;
+      params.push(tspId);
+    }
+
+    const subRes = await executeQuery(`
+      SELECT 
+        id,
+        period as submission_period,
+        status,
+        created_at,
+        updated_at,
+        COALESCE((payload->>'total_trainees')::int, (payload->>'totalTrainees')::int, 0) as total_trainees,
+        COALESCE((payload->>'stipend_eligible_count')::int, (payload->>'stipendEligibleCount')::int, 0) as stipend_eligible_count
+      FROM governance_submissions
+      WHERE ${bWhere}
+      ORDER BY period DESC
+    `, params);
+
+    res.json({
+      success: true,
+      submissions: subRes.rows
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/tsp/reports/annex9", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: "Session missing" });
+    
+    const isTsp = TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"));
+    let tspId = "";
+    if (isTsp) {
+      tspId = user.tspId || "";
+      if (!tspId) return res.status(403).json({ error: "Your account is not linked to a training provider." });
+    } else {
+      tspId = (req.query.tspId as string) || "";
+    }
+
+    const targetMonth = (req.query.month as string) || new Date().toISOString().substring(0, 7);
+
+    let expQuery = `
+      SELECT COUNT(DISTINCT ta.attendance_date)::int as count 
+      FROM trainee_attendance ta
+      JOIN beneficiaries b ON ta.beneficiary_id = b.id
+      WHERE TO_CHAR(ta.attendance_date, 'YYYY-MM') = $1 AND b.deleted_at IS NULL
+    `;
+    const expParams: any[] = [targetMonth];
+    let expParamIdx = 2;
+    if (isTsp) {
+      expQuery += ` AND b.tsp_id = $${expParamIdx}`;
+      expParams.push(user.tspId);
+      expParamIdx++;
+    } else if (tspId && tspId !== "all") {
+      expQuery += ` AND (b.tsp_id = $${expParamIdx} OR b.tsp ILIKE $${expParamIdx})`;
+      expParams.push(tspId);
+      expParamIdx++;
+    }
+    const expectedDaysRes = await executeQuery(expQuery, expParams);
+    const expectedDays = Math.max(expectedDaysRes.rows[0]?.count || 0, 20); // Default to standard 20 days if no marked ones yet
+
+    let queryStr = `
+      SELECT 
+        b.id,
+        b.first_name,
+        b.last_name,
+        b.gender,
+        b.program,
+        b.skill_sector,
+        b.email,
+        b.phone_number,
+        b.state,
+        COALESCE(b.custom_fields->>'lga', b.city) as lga,
+        b.nin,
+        b.bvn,
+        b.bank_name,
+        b.bank_account_holder as account_name,
+        b.bank_account_number as account_number,
+        b.guardian_name,
+        b.guardian_phone,
+        b.guardian_address,
+        b.tsp as tsp_name,
+        CASE 
+          WHEN tp.tvet_id IS NOT NULL AND tp.tvet_id != '' AND tp.tvet_id NOT LIKE '%IDEAS-' AND tp.tvet_id NOT LIKE 'ID-TVE-26-IDEAS-%' AND LENGTH(tp.tvet_id) > 8 THEN tp.tvet_id
+          WHEN (b.custom_fields->>'tvet_id') IS NOT NULL AND (b.custom_fields->>'tvet_id') != '' AND (b.custom_fields->>'tvet_id') NOT LIKE '%IDEAS-' AND (b.custom_fields->>'tvet_id') NOT LIKE 'ID-TVE-26-IDEAS-%' AND LENGTH(b.custom_fields->>'tvet_id') > 8 THEN (b.custom_fields->>'tvet_id')
+          WHEN b.id IS NOT NULL AND b.id != '' THEN b.id
+          ELSE 'Pending TVET ID'
+        END as tvet_id,
+        COALESCE(da.present, 0) as present_days,
+        COALESCE(da.absent, 0) as absent_days,
+        COALESCE(da.late, 0) as late_days,
+        COALESCE(da.excused, 0) as excused_days,
+        COALESCE(da.total_hours, 0) as total_hours,
+        COALESCE(pm.still_on_portal, TRUE) as still_on_portal,
+        COALESCE(pm.still_attending, TRUE) as still_attending,
+        pm.last_verified_at,
+        pm.verified_by,
+        pm.remarks
+      FROM beneficiaries b
+      LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
+      LEFT JOIN portal_monitoring pm ON b.id = pm.beneficiary_id
+      LEFT JOIN (
+        SELECT 
+          ta.beneficiary_id,
+          COUNT(CASE WHEN ta.status = 'PRESENT' THEN 1 END)::int as present,
+          COUNT(CASE WHEN ta.status = 'ABSENT' THEN 1 END)::int as absent,
+          COUNT(CASE WHEN ta.status = 'LATE' THEN 1 END)::int as late,
+          COUNT(CASE WHEN ta.status = 'EXCUSED' THEN 1 END)::int as excused,
+          SUM(COALESCE(ta.hours_logged, 0))::numeric as total_hours
+        FROM trainee_attendance ta
+        WHERE TO_CHAR(ta.attendance_date, 'YYYY-MM') = $1
+        GROUP BY ta.beneficiary_id
+      ) da ON b.id = da.beneficiary_id
+      WHERE b.deleted_at IS NULL AND b.status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI', 'GRADUATED', 'COMPLETED', 'ONBOARDED')
+    `;
+    const params: any[] = [targetMonth];
+    let paramIdx = 2;
+
+    if (isTsp) {
+      queryStr += ` AND b.tsp_id = $${paramIdx}`;
+      params.push(user.tspId);
+      paramIdx++;
+    } else if (tspId && tspId !== "all") {
+      queryStr += ` AND (b.tsp_id = $${paramIdx} OR b.tsp ILIKE $${paramIdx})`;
+      params.push(tspId);
+      paramIdx++;
+    }
+
+    if (!isTsp) {
+      if (req.query.state && req.query.state !== "all") {
+        queryStr += ` AND b.state ILIKE $${paramIdx}`;
+        params.push(req.query.state);
+        paramIdx++;
+      }
+      if (req.query.lga && req.query.lga !== "all") {
+        queryStr += ` AND COALESCE(b.custom_fields->>'lga', b.city) ILIKE $${paramIdx}`;
+        params.push(req.query.lga);
+        paramIdx++;
+      }
+      if (req.query.skill && req.query.skill !== "all") {
+        queryStr += ` AND (b.skill_sector ILIKE $${paramIdx} OR b.program ILIKE $${paramIdx})`;
+        params.push(`%${req.query.skill}%`);
+        paramIdx++;
+      }
+      if (req.query.program && req.query.program !== "all") {
+        queryStr += ` AND b.program ILIKE $${paramIdx}`;
+        params.push(req.query.program);
+        paramIdx++;
+      }
+      if (req.query.gender && req.query.gender !== "all") {
+        queryStr += ` AND b.gender ILIKE $${paramIdx}`;
+        params.push(req.query.gender);
+        paramIdx++;
+      }
+      if (req.query.status && req.query.status !== "all") {
+        queryStr += ` AND b.status ILIKE $${paramIdx}`;
+        params.push(req.query.status);
+        paramIdx++;
+      }
+    }
+
+    if (req.query.search && typeof req.query.search === "string" && req.query.search.trim() !== "") {
+      queryStr += ` AND (b.first_name ILIKE $${paramIdx} OR b.last_name ILIKE $${paramIdx} OR tp.tvet_id ILIKE $${paramIdx} OR b.id ILIKE $${paramIdx})`;
+      params.push(`%${req.query.search.trim()}%`);
+      paramIdx++;
+    }
+
+    queryStr += " ORDER BY b.last_name ASC, b.first_name ASC";
+
+    const result = await executeQuery(queryStr, params);
+
+    const records = result.rows.map(row => {
+      const present = parseInt(row.present_days || 0, 10);
+      const absent = parseInt(row.absent_days || 0, 10);
+      const late = parseInt(row.late_days || 0, 10);
+      const excused = parseInt(row.excused_days || 0, 10);
+
+      const totalMarked = present + absent + late + excused;
+      const totalPresent = present + late;
+      
+      const denominator = Math.max(0, expectedDays - excused);
+      const attendance_percentage = denominator > 0 ? parseFloat(((totalPresent / denominator) * 100).toFixed(1)) : (excused > 0 ? 100.0 : 0.0);
+      
+      let stipend_status = "No Record";
+      if (totalMarked > 0) {
+        if (attendance_percentage >= 65.0) {
+          stipend_status = "Eligible";
+        } else {
+          stipend_status = "Below Threshold";
+        }
+      }
+
+      return {
+        ...row,
+        expected_days: expectedDays,
+        present_days: totalPresent,
+        attendance_percentage,
+        stipend_status,
+        remarks: totalMarked > 0 ? `Attendance rate ${attendance_percentage}%.` : "No Record"
+      };
+    });
+
+    res.json({ success: true, records });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+const handlePortalStatusPatch = async (req: AuthenticatedRequest, res: any) => {
+  try {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: "Session missing" });
+
+    const { beneficiaryId } = req.params;
+    const { stillOnPortal, stillAttending, remarks } = req.body;
+
+    const bId = await resolveBeneficiaryIdResiliently(beneficiaryId);
+    if (!bId) {
+      return res.status(404).json({ success: false, error: "Trainee beneficiary not found" });
+    }
+
+    const isTsp = TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"));
+    if (isTsp) {
+      const bRes = await executeQuery("SELECT tsp_id FROM beneficiaries WHERE id = $1 AND deleted_at IS NULL", [bId]);
+      if (bRes.rows.length === 0) {
+        return res.status(404).json({ success: false, error: "Trainee beneficiary not found or deleted" });
+      }
+      const beneficiaryTspId = bRes.rows[0].tsp_id;
+      if (beneficiaryTspId !== user.tspId) {
+        return res.status(403).json({ success: false, error: "Access Denied. This trainee belongs to another training provider." });
+      }
+    }
+
+    const updated = await DbRepo.savePortalMonitoring(bId, {
+      still_on_portal: stillOnPortal !== undefined ? stillOnPortal : undefined,
+      still_attending: stillAttending !== undefined ? stillAttending : undefined,
+      remarks: remarks || "",
+      verified_by: user.email || "TSP Officer"
+    });
+
+    if (!updated) {
+      return res.status(500).json({ success: false, error: "Failed to save portal status in database." });
+    }
+
+    await executeQuery(`
+      INSERT INTO audit_logs (id, user_id, action, target_type, target_id, details, created_at)
+      VALUES (gen_random_uuid(), $1, $2, 'PORTAL_MONITORING', $3, $4, NOW())
+    `, [
+      user.id,
+      "UPDATE_PORTAL_STATUS",
+      bId,
+      JSON.stringify({ still_on_portal: stillOnPortal, still_attending: stillAttending, remarks })
+    ]);
+
+    res.json({ success: true, record: updated });
+  } catch (err: any) {
+    console.error("PATCH portal-status error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+app.patch("/api/tsp/reports/tvet-list-status/:beneficiaryId", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), handlePortalStatusPatch);
+app.patch("/api/tsp/reports/portal-status/:beneficiaryId", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), handlePortalStatusPatch);
+
+app.get("/api/tsp/reports/annex9/export", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: "Session missing" });
+    
+    const isTsp = TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"));
+    let tspId = "";
+    if (isTsp) {
+      tspId = user.tspId || "";
+      if (!tspId) return res.status(403).json({ error: "Your account is not linked to a training provider." });
+    } else {
+      tspId = (req.query.tspId as string) || "";
+    }
+
+    const month = (req.query.month as string) || undefined;
+    const format = req.query.format === "csv" ? "csv" : "excel";
+    const section = (req.query.section as string) || undefined;
+
+    const options = {
+      tspId: tspId || undefined,
+      month: month !== "all" ? month : undefined,
+      state: typeof req.query.state === "string" && req.query.state !== "all" ? req.query.state : undefined,
+      lga: typeof req.query.lga === "string" && req.query.lga !== "all" ? req.query.lga : undefined,
+      skill: typeof req.query.skill === "string" && req.query.skill !== "all" ? req.query.skill : undefined,
+      gender: typeof req.query.gender === "string" && req.query.gender !== "all" ? req.query.gender : undefined,
+      status: typeof req.query.status === "string" && req.query.status !== "all" ? req.query.status : undefined,
+      cohort: typeof req.query.cohort === "string" && req.query.cohort !== "all" ? req.query.cohort : undefined,
+    };
+
+    if (format === "csv") {
+      let csvContent = "";
+      let filename = "Annex9_Export.csv";
+      if (section === "attendance") {
+        csvContent = await generateAnnex9AttendanceCSV(options);
+        filename = `Annex9_Attendance_Export_${options.month || new Date().toISOString().split('T')[0]}.csv`;
+      } else if (section === "portal") {
+        csvContent = await generateAnnex9PortalCSV(options);
+        filename = `Annex9_Portal_Export_${options.month || new Date().toISOString().split('T')[0]}.csv`;
+      } else {
+        csvContent = await generateAnnex9ProfileCSV(options);
+        filename = `Annex9_Trainee_Registry_${new Date().toISOString().split('T')[0]}.csv`;
+      }
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      return res.send(csvContent);
+    } else {
+      const workbook = await generateAnnex9Workbook(options);
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="Annex_9_Official_Workbook_${options.month || "all"}.xlsx"`
+      );
+      await workbook.xlsx.write(res);
+      return res.end();
+    }
+  } catch (err: any) {
+    console.error("TSP Annex 9 export error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/fed/reports/annex9/export", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: "Session missing" });
+
+    const month = (req.query.month as string) || undefined;
+    const format = req.query.format === "csv" ? "csv" : "excel";
+    const section = (req.query.section as string) || undefined;
+
+    const options = {
+      tspId: typeof req.query.tspId === "string" && req.query.tspId !== "all" ? req.query.tspId : undefined,
+      month: month !== "all" ? month : undefined,
+      state: typeof req.query.state === "string" && req.query.state !== "all" ? req.query.state : undefined,
+      lga: typeof req.query.lga === "string" && req.query.lga !== "all" ? req.query.lga : undefined,
+      skill: typeof req.query.skill === "string" && req.query.skill !== "all" ? req.query.skill : undefined,
+      gender: typeof req.query.gender === "string" && req.query.gender !== "all" ? req.query.gender : undefined,
+      status: typeof req.query.status === "string" && req.query.status !== "all" ? req.query.status : undefined,
+      cohort: typeof req.query.cohort === "string" && req.query.cohort !== "all" ? req.query.cohort : undefined,
+    };
+
+    if (format === "csv") {
+      let csvContent = "";
+      let filename = "Annex9_Export.csv";
+      if (section === "attendance") {
+        csvContent = await generateAnnex9AttendanceCSV(options);
+        filename = `Annex9_Attendance_Export_${options.month || new Date().toISOString().split('T')[0]}.csv`;
+      } else if (section === "portal") {
+        csvContent = await generateAnnex9PortalCSV(options);
+        filename = `Annex9_Portal_Export_${options.month || new Date().toISOString().split('T')[0]}.csv`;
+      } else {
+        csvContent = await generateAnnex9ProfileCSV(options);
+        filename = `Annex9_Trainee_Registry_${new Date().toISOString().split('T')[0]}.csv`;
+      }
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      return res.send(csvContent);
+    } else {
+      const workbook = await generateAnnex9Workbook(options);
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="Annex_9_Official_Workbook_${options.month || "all"}.xlsx"`
+      );
+      await workbook.xlsx.write(res);
+      return res.end();
+    }
+  } catch (err: any) {
+    console.error("FED Annex 9 export error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/tsp/reports/export", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: "Session missing" });
+    
+    const isTsp = TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"));
+    let tspId = "";
+    if (isTsp) {
+      tspId = user.tspId || "";
+      if (!tspId) return res.status(403).json({ error: "Your account is not linked to a training provider." });
+    } else {
+      tspId = (req.query.tspId as string) || "";
+    }
+
+    const month = (req.query.month as string) || undefined;
+    const format = req.query.format === "csv" ? "csv" : "excel";
+
+    const options = {
+      tspId: tspId || undefined,
+      month: month !== "all" ? month : undefined,
+    };
+
+    if (format === "csv") {
+      const csvContent = await generateAnnex9AttendanceCSV(options);
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="Annex_9_Attendance_Export_${month || "all"}.csv"`
+      );
+      return res.send(csvContent);
+    } else {
+      const workbook = await generateAnnex9Workbook(options);
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="Annex_9_Official_Workbook_${month || "all"}.xlsx"`
+      );
+      await workbook.xlsx.write(res);
+      return res.end();
+    }
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -6245,7 +7421,11 @@ app.get("/api/annex9/readiness", requireAuth, requireRole(["SUPER_ADMIN", ...FED
         b.state,
         b.tsp,
         COALESCE(pm.still_on_portal, TRUE) as still_on_portal,
-        COALESCE(tp.tvet_id, 'ID-TVE-26-' || SUBSTRING(b.id, 1, 6)) as tvet_id,
+        CASE 
+          WHEN tp.tvet_id IS NOT NULL AND tp.tvet_id != '' AND tp.tvet_id != 'ID-TVE-26-IDEAS-' AND tp.tvet_id NOT LIKE '%IDEAS-' THEN tp.tvet_id
+          WHEN b.id LIKE 'IDEAS-%' THEN 'ID-TVE-26-' || REPLACE(b.id, 'IDEAS-', '')
+          ELSE b.id
+        END as tvet_id,
         tp.nin,
         tp.bvn,
         tp.bank_name,
@@ -6387,7 +7567,11 @@ app.get("/api/annex9/dashboard-stats", requireAuth, requireRole(["SUPER_ADMIN", 
         b.tsp,
         b.skill_sector as sector,
         COALESCE(pm.still_on_portal, TRUE) as still_on_portal,
-        COALESCE(tp.tvet_id, 'ID-TVE-26-' || SUBSTRING(b.id, 1, 6)) as tvet_id,
+        CASE 
+          WHEN tp.tvet_id IS NOT NULL AND tp.tvet_id != '' AND tp.tvet_id != 'ID-TVE-26-IDEAS-' AND tp.tvet_id NOT LIKE '%IDEAS-' THEN tp.tvet_id
+          WHEN b.id LIKE 'IDEAS-%' THEN 'ID-TVE-26-' || REPLACE(b.id, 'IDEAS-', '')
+          ELSE b.id
+        END as tvet_id,
         tp.nin,
         tp.bvn,
         tp.bank_name,
@@ -6781,7 +7965,7 @@ app.get("/api/annex9/export", requireAuth, async (req: AuthenticatedRequest, res
 
     let effectiveTspId = typeof tspId === "string" && tspId !== "all" ? tspId : undefined;
     if (!isFedOrSuper && user) {
-      effectiveTspId = user.tspId || undefined;
+      effectiveTspId = user.tspId || "00000000-0000-0000-0000-000000000001";
     }
 
     const workbook = await generateAnnex9Workbook({
@@ -6819,7 +8003,7 @@ app.get("/api/annex9/export-csv", requireAuth, async (req: AuthenticatedRequest,
 
     let effectiveTspId = typeof req.query.tspId === "string" && req.query.tspId !== "all" ? req.query.tspId : undefined;
     if (!isFedOrSuper) {
-      effectiveTspId = user.tspId || undefined;
+      effectiveTspId = user.tspId || "00000000-0000-0000-0000-000000000001";
     }
 
     const { section, state, month, startDate, endDate, skill, cohort, status } = req.query;
@@ -6912,55 +8096,68 @@ app.get("/api/tsp/attendance/export-annex9", requireAuth, async (req: Authentica
 // Helper functions for TSP Profiles (Phase 3 & 4)
 async function getTspProfile(tspId: string) {
   const pool = getPgPool();
+  let row: any = null;
+
   if (pool) {
     try {
       const result = await pool.query("SELECT * FROM tsps WHERE id = $1", [tspId]);
       if (result.rows.length > 0) {
-        const row = result.rows[0];
-        return {
-          id: row.id,
-          name: row.name,
-          code: row.code,
-          contact_person: row.contact_person,
-          contact_email: row.contact_email,
-          contact_phone: row.contact_phone,
-          is_active: row.is_active,
-          state: row.state || "",
-          lga: row.lga || "",
-          physical_address: row.physical_address || "",
-          latitude: row.latitude ? parseFloat(row.latitude) : null,
-          longitude: row.longitude ? parseFloat(row.longitude) : null,
-          registration_number: row.registration_number || "",
-           accreditation_status: row.accreditation_status || "ACTIVE",
-          accreditation_number: row.accreditation_number || "",
-          accreditation_expiry: row.accreditation_expiry || "",
-          is_nbte_accredited: row.is_nbte_accredited !== null && row.is_nbte_accredited !== undefined ? !!row.is_nbte_accredited : true,
-          nbte_accreditation_number: row.nbte_accreditation_number || row.accreditation_number || "",
-          accreditation_date: row.accreditation_date || "",
-          accreditation_expiry_date: row.accreditation_expiry_date || row.accreditation_expiry || "",
-          tsp_code: row.tsp_code || row.code || "",
-          account_status: row.account_status || (row.is_active ? "ACTIVE" : "DEACTIVATED"),
-          profile_completed: !!row.profile_completed,
-          activated_at: row.activated_at || null,
-          suspended_at: row.suspended_at || null,
-          suspension_reason: row.suspension_reason || "",
-          website: row.website || "",
-          secondary_contact: row.secondary_contact || "",
-          programme_manager: row.programme_manager || ""
-        };
+        row = result.rows[0];
       }
     } catch (e) {
-      console.error("[getTspProfile] DB error, falling back:", e);
+      console.error("[getTspProfile] DB error fetching tsp:", e);
     }
   }
-  
-  // Custom fallback seeded state in memory
-  return {
+
+  // Base profile details from DB row or seed fallback
+  const baseProfile = row ? {
+    id: row.id,
+    name: row.name,
+    code: row.code,
+    contact_person: row.contact_person,
+    contact_email: row.contact_email,
+    contact_phone: row.contact_phone,
+    is_active: row.is_active,
+    state: row.state || "",
+    lga: row.lga || "",
+    physical_address: row.physical_address || "",
+    latitude: row.latitude ? parseFloat(row.latitude) : null,
+    longitude: row.longitude ? parseFloat(row.longitude) : null,
+    registration_number: row.registration_number || "",
+    accreditation_status: row.accreditation_status || "ACTIVE",
+    accreditation_number: row.accreditation_number || "",
+    accreditation_expiry: row.accreditation_expiry || "",
+    is_nbte_accredited: row.is_nbte_accredited !== null && row.is_nbte_accredited !== undefined ? !!row.is_nbte_accredited : true,
+    nbte_accreditation_number: row.nbte_accreditation_number || row.accreditation_number || "",
+    accreditation_date: row.accreditation_date || "",
+    accreditation_expiry_date: row.accreditation_expiry_date || row.accreditation_expiry || "",
+    tsp_code: row.tsp_code || row.code || "",
+    account_status: row.account_status || (row.is_active ? "ACTIVE" : "DEACTIVATED"),
+    profile_completed: !!row.profile_completed,
+    activated_at: row.activated_at || null,
+    suspended_at: row.suspended_at || null,
+    suspension_reason: row.suspension_reason || "",
+    website: row.website || "",
+    secondary_contact: row.secondary_contact || "",
+    programme_manager: row.programme_manager || "",
+    sector: row.sector || "",
+    skill_area: row.skill_area || "",
+    cac_certificate_url: row.cac_certificate_url || "",
+    nbte_accreditation_url: row.nbte_accreditation_url || "",
+    eoi_documents_url: row.eoi_documents_url || "",
+    mou_documents_url: row.mou_documents_url || "",
+    tax_compliance_url: row.tax_compliance_url || "",
+    training_venue: row.training_venue || "",
+    training_start_date: row.training_start_date || "",
+    training_end_date: row.training_end_date || "",
+    attendance_threshold: row.attendance_threshold !== null && row.attendance_threshold !== undefined ? row.attendance_threshold : 80,
+    completion_threshold: row.completion_threshold !== null && row.completion_threshold !== undefined ? row.completion_threshold : 75
+  } : {
     id: tspId,
     name: "Unique Technology Nig. Ltd",
     code: "UT-001",
     contact_person: "Tom Okwa",
-    contact_email: "moh.yusuf@tvet.local",
+    contact_email: "uniqueideasproject@gmail.com",
     contact_phone: "+234 803 123 4567",
     is_active: true,
     state: "Kano",
@@ -6972,13 +8169,89 @@ async function getTspProfile(tspId: string) {
     accreditation_status: "ACTIVE",
     accreditation_number: "NBTE/TVET/UT-001/2024",
     accreditation_expiry: "2026-12-31",
-    programme_manager: "Tom Okwa"
+    is_nbte_accredited: true,
+    nbte_accreditation_number: "NBTE/TVET/UT-001/2024",
+    accreditation_date: "2024-01-01",
+    accreditation_expiry_date: "2026-12-31",
+    tsp_code: "UT-001",
+    account_status: "ACTIVE",
+    profile_completed: true,
+    activated_at: null,
+    suspended_at: null,
+    suspension_reason: "",
+    website: "https://uniquetech.com",
+    secondary_contact: "+234 805 987 6543",
+    programme_manager: "Tom Okwa",
+    sector: "Information and Communication Technology (ICT)",
+    skill_area: "Computer Hardware and Cell Phone Repairs",
+    cac_certificate_url: "",
+    nbte_accreditation_url: "",
+    eoi_documents_url: "",
+    mou_documents_url: "",
+    tax_compliance_url: "",
+    training_venue: "Government Technical College (GTC), Kano",
+    training_start_date: "October 12, 2026",
+    training_end_date: "December 18, 2026",
+    attendance_threshold: 80,
+    completion_threshold: 75
+  };
+
+  // Branding profiles details
+  let branding = {
+    logo_url: "",
+    letterhead_url: "",
+    admission_letterhead_url: "",
+    acceptance_letterhead_url: "",
+    signature_url: "",
+    stamp_url: "",
+    certificate_background_url: "",
+    photo_album_header_url: "",
+    official_name: baseProfile.name,
+    accreditation_number: baseProfile.accreditation_number,
+    contact_email: baseProfile.contact_email,
+    contact_phone: baseProfile.contact_phone,
+    address: baseProfile.physical_address
+  };
+
+  if (pool) {
+    try {
+      const brandingRes = await pool.query(
+        "SELECT * FROM branding_profiles WHERE tsp_id = $1 LIMIT 1",
+        [tspId]
+      );
+      if (brandingRes.rows.length > 0) {
+        const bRow = brandingRes.rows[0];
+        branding = {
+          logo_url: bRow.logo_url || "",
+          letterhead_url: bRow.letterhead_url || "",
+          admission_letterhead_url: bRow.admission_letterhead_url || "",
+          acceptance_letterhead_url: bRow.acceptance_letterhead_url || "",
+          signature_url: bRow.signature_url || "",
+          stamp_url: bRow.stamp_url || "",
+          certificate_background_url: bRow.certificate_background_url || "",
+          photo_album_header_url: bRow.photo_album_header_url || "",
+          official_name: bRow.official_name || baseProfile.name,
+          accreditation_number: bRow.accreditation_number || baseProfile.accreditation_number,
+          contact_email: bRow.contact_email || baseProfile.contact_email,
+          contact_phone: bRow.contact_phone || baseProfile.contact_phone,
+          address: bRow.address || baseProfile.physical_address
+        };
+      }
+    } catch (brandErr) {
+      console.error("Failed to query branding_profiles for TSP:", brandErr);
+    }
+  }
+
+  return {
+    ...baseProfile,
+    branding
   };
 }
 
-async function saveTspProfile(tspId: string, updates: any) {
+async function saveTspProfile(tspId: string, updates: any, updatedBy: string = "system") {
   const pool = getPgPool();
   if (pool) {
+    // 1. Update tsps table
     await pool.query(`
       UPDATE tsps
       SET 
@@ -6996,8 +8269,20 @@ async function saveTspProfile(tspId: string, updates: any) {
         accreditation_number = $12,
         accreditation_expiry = $13,
         programme_manager = $14,
+        sector = $15,
+        skill_area = $16,
+        cac_certificate_url = $17,
+        nbte_accreditation_url = $18,
+        eoi_documents_url = $19,
+        mou_documents_url = $20,
+        tax_compliance_url = $21,
+        training_venue = $22,
+        training_start_date = $23,
+        training_end_date = $24,
+        attendance_threshold = $25,
+        completion_threshold = $26,
         updated_at = NOW()
-      WHERE id = $15
+      WHERE id = $27
     `, [
       updates.name,
       updates.contact_person || updates.contactPerson || "",
@@ -7013,8 +8298,86 @@ async function saveTspProfile(tspId: string, updates: any) {
       updates.accreditation_number || updates.accreditationNumber || "",
       updates.accreditation_expiry || updates.accreditationExpiry || "",
       updates.programme_manager || updates.programmeManager || "",
+      updates.sector || "",
+      updates.skill_area || "",
+      updates.cac_certificate_url || "",
+      updates.nbte_accreditation_url || "",
+      updates.eoi_documents_url || "",
+      updates.mou_documents_url || "",
+      updates.tax_compliance_url || "",
+      updates.training_venue || "",
+      updates.training_start_date || "",
+      updates.training_end_date || "",
+      updates.attendance_threshold !== null && updates.attendance_threshold !== undefined ? Number(updates.attendance_threshold) : 80,
+      updates.completion_threshold !== null && updates.completion_threshold !== undefined ? Number(updates.completion_threshold) : 75,
       tspId
     ]);
+
+    // 2. Save or Sync branding profile if present in updates
+    const b = updates.branding || {};
+    const existRes = await pool.query("SELECT id FROM branding_profiles WHERE tsp_id = $1 LIMIT 1", [tspId]);
+    if (existRes.rows.length > 0) {
+      await pool.query(`
+        UPDATE branding_profiles
+        SET
+          logo_url = $1,
+          letterhead_url = $2,
+          admission_letterhead_url = $3,
+          acceptance_letterhead_url = $4,
+          signature_url = $5,
+          stamp_url = $6,
+          certificate_background_url = $7,
+          photo_album_header_url = $8,
+          official_name = $9,
+          accreditation_number = $10,
+          contact_email = $11,
+          contact_phone = $12,
+          address = $13,
+          updated_at = NOW(),
+          updated_by = $14
+        WHERE tsp_id = $15
+      `, [
+        b.logo_url || updates.logo_url || "",
+        b.letterhead_url || updates.letterhead_url || "",
+        b.admission_letterhead_url || updates.admission_letterhead_url || "",
+        b.acceptance_letterhead_url || updates.acceptance_letterhead_url || "",
+        b.signature_url || updates.signature_url || "",
+        b.stamp_url || updates.stamp_url || "",
+        b.certificate_background_url || updates.certificate_background_url || "",
+        b.photo_album_header_url || updates.photo_album_header_url || "",
+        updates.name || b.official_name || "",
+        updates.accreditation_number || b.accreditation_number || "",
+        updates.contact_email || b.contact_email || "",
+        updates.contact_phone || b.contact_phone || "",
+        updates.physical_address || b.address || "",
+        updatedBy,
+        tspId
+      ]);
+    } else {
+      await pool.query(`
+        INSERT INTO branding_profiles (
+          tsp_id, role_scope, logo_url, letterhead_url, admission_letterhead_url, acceptance_letterhead_url,
+          signature_url, stamp_url, certificate_background_url, photo_album_header_url, official_name,
+          accreditation_number, contact_email, contact_phone, address, is_active, updated_by
+        ) VALUES ($1, 'TSP', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, TRUE, $15)
+      `, [
+        tspId,
+        b.logo_url || updates.logo_url || "",
+        b.letterhead_url || updates.letterhead_url || "",
+        b.admission_letterhead_url || updates.admission_letterhead_url || "",
+        b.acceptance_letterhead_url || updates.acceptance_letterhead_url || "",
+        b.signature_url || updates.signature_url || "",
+        b.stamp_url || updates.stamp_url || "",
+        b.certificate_background_url || updates.certificate_background_url || "",
+        b.photo_album_header_url || updates.photo_album_header_url || "",
+        updates.name || b.official_name || "",
+        updates.accreditation_number || b.accreditation_number || "",
+        updates.contact_email || b.contact_email || "",
+        updates.contact_phone || b.contact_phone || "",
+        updates.physical_address || b.address || "",
+        updatedBy
+      ]);
+    }
   }
   return true;
 }
@@ -7091,6 +8454,22 @@ app.get("/api/tsps/profile", requireAuth, async (req: AuthenticatedRequest, res)
         );
         if (pendingRes.rows.length > 0) {
           profile.pending_change = pendingRes.rows[0];
+          try {
+            const changes = typeof profile.pending_change.changes === "string"
+              ? JSON.parse(profile.pending_change.changes)
+              : profile.pending_change.changes;
+            if (changes) {
+              const brandingChanges = changes.branding || {};
+              const mergedBranding = {
+                ...(profile.branding || {}),
+                ...brandingChanges
+              };
+              Object.assign(profile, changes);
+              profile.branding = mergedBranding;
+            }
+          } catch (mergeErr) {
+            console.error("Failed to merge pending profile changes:", mergeErr);
+          }
         }
         
         const historyRes = await pool.query(
@@ -7180,14 +8559,18 @@ app.get("/api/tsps/stats", requireAuth, async (req: AuthenticatedRequest, res) =
     // Retrieve active profile
     const tspProfile = await getTspProfile(tspId);
 
-    // Calculate eligibility breakdown
-    const eligRes = await pool.query(
-      `SELECT COUNT(*)::int as count 
-       FROM beneficiaries 
-       WHERE tsp_id = $1 AND status = 'ACTIVE' AND deleted_at IS NULL`,
+    // Calculate eligibility breakdown using the exact getDynamicEligibility logic
+    let eligCount = 0;
+    const allBensRes = await pool.query(
+      "SELECT * FROM beneficiaries WHERE tsp_id = $1 AND deleted_at IS NULL",
       [tspId]
     );
-    const eligCount = eligRes.rows[0]?.count || 0;
+    for (const row of allBensRes.rows) {
+      const dynamic = getDynamicEligibility(row);
+      if (dynamic.eligibilityStatus === "ELIGIBLE" || dynamic.eligibilityStatus === "OVERRIDDEN") {
+        eligCount++;
+      }
+    }
 
     // 1. Attendance rate
     const attQuery = await pool.query(
@@ -7243,9 +8626,11 @@ app.post("/api/tsps/profile", requireAuth, async (req: AuthenticatedRequest, res
     let tspId = req.user?.tspId;
     
     const isSuper = req.user?.role === "SUPER_ADMIN" || req.user?.role === "FEDERAL_SUPER_ADMIN" || req.user?.role === "FED_ADMIN" || FED_ROLES.includes(req.user?.role || "");
-    const isTspAdmin = req.user?.role === "TSP_ADMIN" || req.user?.role === "TSP";
+    const isTsp = TSP_ROLES.includes(req.user?.role || "") || req.user?.role?.startsWith("TSP");
     
-    if (isSuper && req.body.id) {
+    if (isTsp) {
+      tspId = req.user?.tspId || "00000000-0000-0000-0000-000000000001";
+    } else if (isSuper && req.body.id) {
       tspId = req.body.id;
     }
     
@@ -7255,7 +8640,7 @@ app.post("/api/tsps/profile", requireAuth, async (req: AuthenticatedRequest, res
     
     const updates = req.body;
     
-    if (isTspAdmin) {
+    if (isTsp) {
       const pool = getPgPool();
       if (!pool) {
         return res.status(500).json({ error: "Database offline" });
@@ -7280,7 +8665,7 @@ app.post("/api/tsps/profile", requireAuth, async (req: AuthenticatedRequest, res
         message: "Your profile update request has been submitted to the Federal Administrator for review and approval." 
       });
     } else {
-      await saveTspProfile(tspId, updates);
+      await saveTspProfile(tspId, updates, req.user?.email || "system");
       
       if (req.user) {
         await logAction(
@@ -7349,7 +8734,7 @@ app.post("/api/fed/tsp-profile-changes/:id/approve", requireAuth, async (req: Au
     const changeReq = changeRes.rows[0];
     const changes = typeof changeReq.changes === "string" ? JSON.parse(changeReq.changes) : changeReq.changes;
 
-    await saveTspProfile(changeReq.tsp_id, changes);
+    await saveTspProfile(changeReq.tsp_id, changes, changeReq.requested_by || "approved_change");
 
     await pool.query(
       "UPDATE tsp_profile_changes SET status = 'APPROVED', reviewed_by = $1, reviewed_at = NOW() WHERE id = $2",
@@ -8705,11 +10090,14 @@ app.post("/api/tsp/reset-access", requireAuth, async (req: AuthenticatedRequest,
 });
 
 app.get("/api/system/status", requireAuth, async (req: AuthenticatedRequest, res) => {
+  if (process.env.SECURITY_DIAGNOSTICS_ENABLED !== "true") {
+    return res.status(403).json({ error: "Diagnostics feature is disabled." });
+  }
+  const user = (req as any).user;
+  if (!user || (user.role !== "SUPER_ADMIN" && user.role !== "FEDERAL_SUPER_ADMIN")) {
+    return res.status(403).json({ error: "You do not have permission to perform this action." });
+  }
   try {
-    const isFed = req.user?.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user?.role || "");
-    if (!isFed) {
-       return res.status(403).json({ error: "Unauthorized. Access restricted to Federal administrators." });
-    }
 
     const pool = getPgPool();
     let dbStatus = "unhealthy";
@@ -8779,28 +10167,94 @@ app.get("/api/fed/tsps/registry", requireAuth, async (req: AuthenticatedRequest,
       return res.status(500).json({ error: "Database offline" });
     }
 
-    let query = `
-      SELECT t.*, s.name as state_name, s.code as state_code
-      FROM tsps t
-      LEFT JOIN states s ON t.state_id = s.id
-      WHERE t.deleted_at IS NULL
-    `;
+    let page = parseInt(req.query.page as string) || 1;
+    let limit = parseInt(req.query.limit as string) || 50;
+    if (page < 1) page = 1;
+    if (limit < 1) limit = 10;
+    if (limit > 500) limit = 500;
+    const offset = (page - 1) * limit;
+
     const params: any[] = [];
+    let queryConditions = "t.deleted_at IS NULL";
 
     // If State Coordinator, apply state isolation layer
     if (isSta) {
       const stateId = req.user.stateId;
       if (!stateId) {
-        return res.json([]);
+        return res.json({ data: [], total: 0, page, limit });
       }
       params.push(stateId);
-      query += ` AND t.state_id = $${params.length}`;
+      queryConditions += ` AND t.state_id = $${params.length}`;
     }
 
-    query += ` ORDER BY t.created_at DESC`;
+    // Search filter (ilike)
+    if (req.query.search) {
+      const searchStr = `%${req.query.search}%`;
+      params.push(searchStr);
+      queryConditions += ` AND (t.name ILIKE $${params.length} OR t.code ILIKE $${params.length} OR t.tsp_code ILIKE $${params.length} OR t.contact_email ILIKE $${params.length} OR t.contact_person ILIKE $${params.length})`;
+    }
 
-    const result = await pool.query(query, params);
-    res.json(result.rows);
+    // State filter (can be name or id)
+    if (req.query.state) {
+      params.push(req.query.state);
+      queryConditions += ` AND (t.state ILIKE $${params.length} OR CAST(t.state_id AS TEXT) = $${params.length})`;
+    }
+
+    // LGA filter
+    if (req.query.lga) {
+      params.push(`%${req.query.lga}%`);
+      queryConditions += ` AND t.lga ILIKE $${params.length}`;
+    }
+
+    // Sector filter
+    if (req.query.sector) {
+      params.push(`%${req.query.sector}%`);
+      queryConditions += ` AND t.sector ILIKE $${params.length}`;
+    }
+
+    // Status filter
+    if (req.query.status) {
+      params.push(req.query.status);
+      queryConditions += ` AND (t.account_status = $${params.length} OR t.organization_status = $${params.length})`;
+    }
+
+    // Fetch total count for pagination
+    const countQuery = `
+      SELECT COUNT(*) as total 
+      FROM tsps t
+      LEFT JOIN states s ON t.state_id = s.id
+      WHERE ${queryConditions}
+    `;
+    const countRes = await pool.query(countQuery, params);
+    const total = parseInt(countRes.rows[0].total) || 0;
+
+    // Fetch data with limit/offset
+    let dataQuery = `
+      SELECT t.*, s.name as state_name, s.code as state_code
+      FROM tsps t
+      LEFT JOIN states s ON t.state_id = s.id
+      WHERE ${queryConditions}
+      ORDER BY t.created_at DESC
+    `;
+    
+    // Add pagination params
+    params.push(limit);
+    dataQuery += ` LIMIT $${params.length}`;
+    params.push(offset);
+    dataQuery += ` OFFSET $${params.length}`;
+
+    const dataRes = await pool.query(dataQuery, params);
+
+    if (req.query.page || req.query.limit || req.query.search || req.query.state || req.query.lga || req.query.sector || req.query.status) {
+      res.json({
+        data: dataRes.rows,
+        total,
+        page,
+        limit
+      });
+    } else {
+      res.json(dataRes.rows);
+    }
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -9008,17 +10462,407 @@ app.delete("/api/training-programs/:id", requireAuth, requireRole(["SUPER_ADMIN"
 });
 
 // Cloudinary Asset Upload proxied endpoint
-app.post("/api/upload-asset", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.post("/api/upload-asset", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
     const { fileContent, fileName, folder } = req.body;
     if (!fileContent) {
       return res.status(400).json({ error: "Missing required upload parameter: fileContent" });
     }
-    const secureUrl = await CloudinaryService.uploadDocument(fileContent, fileName || "asset_image", folder || "ideas_assets");
+    const validation = validateAndGetUploadBuffer(fileContent, false); // No PDFs for general assets
+    if (validation.error) {
+      return res.status(400).json({ error: validation.error });
+    }
+    const secureUrl = await CloudinaryService.uploadDocument(validation.buffer, fileName || "asset_image", folder || "ideas_assets");
     res.json({ secureUrl });
-  } catch (e: any) {
-    console.error("[Upload Endpoint] Failed:", e);
-    res.status(500).json({ error: e.message || "Failed uploading asset" });
+  } catch (err: any) {
+    sendSafeError(res, err, "Failed uploading asset");
+  }
+});
+
+// TSP-scoped general asset upload route
+app.post("/api/tsps/profile/assets", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { fileContent, fileName, folder } = req.body;
+    if (!fileContent) {
+      return res.status(400).json({ error: "Missing required upload parameter: fileContent" });
+    }
+    const isPdf = fileContent.startsWith("data:application/pdf;base64,") || (fileName && fileName.toLowerCase().endsWith(".pdf"));
+    const validation = validateAndGetUploadBuffer(fileContent, isPdf);
+    if (validation.error) {
+      return res.status(400).json({ error: validation.error });
+    }
+    const secureUrl = await CloudinaryService.uploadDocument(validation.buffer, fileName || "tsp_asset", folder || "tsp_uploads", validation.mimeType);
+    res.json({ secureUrl, url: secureUrl });
+  } catch (err: any) {
+    sendSafeError(res, err, "Failed uploading TSP asset");
+  }
+});
+
+// TSP-specific branding asset upload route
+app.post("/api/tsps/branding/upload", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { assetType, fileName, fileContent, mimeType, tspId: bodyTspId } = req.body;
+
+    // Check Cloudinary configuration in production
+    const isProd = process.env.NODE_ENV === "production";
+    const hasCloudinaryEnv = !!(process.env.CLOUDINARY_URL || (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET));
+    
+    if (isProd && !hasCloudinaryEnv) {
+      return res.status(500).json({ error: "File storage is not configured. Please contact the system administrator." });
+    }
+
+    if (!fileContent) {
+      return res.status(400).json({ error: "Missing required upload parameter: fileContent" });
+    }
+    if (!assetType) {
+      return res.status(400).json({ error: "Missing required parameter: assetType" });
+    }
+    if (!mimeType) {
+      return res.status(400).json({ error: "Missing required parameter: mimeType" });
+    }
+
+    // Role-based TSP validation
+    const user = req.user!;
+    const isFederal = user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role) || user.role.startsWith("FED") || user.role.startsWith("FEDERAL");
+    
+    let tspId: string | undefined;
+
+    if (!isFederal) {
+      tspId = user.tspId;
+      if (!tspId) {
+        return res.status(403).json({ error: "Upload permission failed" });
+      }
+    } else {
+      tspId = bodyTspId || (req.query.tspId as string);
+      if (!tspId) {
+        return res.status(400).json({ error: "Missing required parameter: tspId" });
+      }
+      
+      const pool = getPgPool();
+      if (pool) {
+        const tspCheck = await pool.query("SELECT id FROM tsps WHERE id = $1", [tspId]);
+        if (tspCheck.rows.length === 0) {
+          return res.status(404).json({ error: "TSP not found." });
+        }
+      }
+    }
+
+    // Type and structure validations
+    const allowedAssetTypes = [
+      "logo", "stamp", "signature", "letterhead", "admissionLetterhead", "acceptanceLetterhead",
+      "certificateBackground", "photoAlbumHeader",
+      "logo_url", "stamp_url", "signature_url", "letterhead_url", "admission_letterhead_url", "acceptance_letterhead_url",
+      "certificate_background_url", "photo_album_header_url"
+    ];
+
+    if (!allowedAssetTypes.includes(assetType)) {
+      return res.status(400).json({ error: "File type not supported" });
+    }
+
+    const isImageMime = ["image/png", "image/jpeg", "image/jpg", "image/webp"].includes(mimeType);
+    const isPdfMime = mimeType === "application/pdf";
+
+    if (!isImageMime && !isPdfMime) {
+      return res.status(400).json({ error: "File type not supported" });
+    }
+
+    if (isPdfMime) {
+      const allowedPdfAssets = [
+        "letterhead", "admissionLetterhead", "acceptanceLetterhead", "certificateBackground", "photoAlbumHeader",
+        "letterhead_url", "admission_letterhead_url", "acceptance_letterhead_url", "certificate_background_url", "photo_album_header_url"
+      ];
+      if (!allowedPdfAssets.includes(assetType)) {
+        return res.status(400).json({ error: "File type not supported" });
+      }
+    }
+
+    // Secure Magic Number & Size check (5MB)
+    const validation = validateAndGetUploadBuffer(fileContent, isPdfMime);
+    if (validation.error) {
+      return res.status(400).json({ error: validation.error });
+    }
+
+    // Upload using Cloudinary service
+    let secureUrl: string;
+    try {
+      secureUrl = await CloudinaryService.uploadDocument(validation.buffer, fileName || `${assetType}_upload`, "tsp_branding", validation.mimeType);
+    } catch (uploadErr: any) {
+      console.error("[Branding Upload Endpoint] Storage failure:", uploadErr);
+      return res.status(500).json({ error: "Storage upload failed" });
+    }
+
+    // Save branding URL to TSP-specific record in branding_profiles table
+    const pool = getPgPool();
+    const columnMap: { [key: string]: string } = {
+      logo: "logo_url",
+      stamp: "stamp_url",
+      signature: "signature_url",
+      letterhead: "letterhead_url",
+      admissionLetterhead: "admission_letterhead_url",
+      acceptanceLetterhead: "acceptance_letterhead_url",
+      certificateBackground: "certificate_background_url",
+      photoAlbumHeader: "photo_album_header_url",
+      logo_url: "logo_url",
+      stamp_url: "stamp_url",
+      signature_url: "signature_url",
+      letterhead_url: "letterhead_url",
+      admission_letterhead_url: "admission_letterhead_url",
+      acceptance_letterhead_url: "acceptance_letterhead_url",
+      certificate_background_url: "certificate_background_url",
+      photo_album_header_url: "photo_album_header_url"
+    };
+
+    const targetColumn = columnMap[assetType];
+    const updatedBy = user.email || "system";
+
+    if (pool && isPgActive) {
+      try {
+        const existRes = await pool.query("SELECT id FROM branding_profiles WHERE tsp_id = $1 LIMIT 1", [tspId]);
+        if (existRes.rows.length > 0) {
+          await pool.query(`
+            UPDATE branding_profiles
+            SET ${targetColumn} = $1, updated_at = NOW(), updated_by = $2
+            WHERE tsp_id = $3
+          `, [secureUrl, updatedBy, tspId]);
+        } else {
+          await pool.query(`
+            INSERT INTO branding_profiles (tsp_id, role_scope, ${targetColumn}, updated_by)
+            VALUES ($1, 'TSP', $2, $3)
+          `, [tspId, secureUrl, updatedBy]);
+        }
+      } catch (dbErr: any) {
+        console.error("[Branding Upload Endpoint] Database save failure:", dbErr);
+        return res.status(500).json({ error: "Branding record could not be saved" });
+      }
+    } else {
+      // JSON fallback database save
+      try {
+        const state = loadJsonState() as any;
+        if (!state.branding_profiles) state.branding_profiles = [];
+        let bIdx = state.branding_profiles.findIndex((bp: any) => bp.tsp_id === tspId);
+        const updatedBp = {
+          tsp_id: tspId,
+          role_scope: 'TSP',
+          logo_url: "",
+          letterhead_url: "",
+          admission_letterhead_url: "",
+          acceptance_letterhead_url: "",
+          signature_url: "",
+          stamp_url: "",
+          certificate_background_url: "",
+          photo_album_header_url: "",
+          official_name: "",
+          accreditation_number: "",
+          contact_email: "",
+          contact_phone: "",
+          address: "",
+          ...(bIdx > -1 ? state.branding_profiles[bIdx] : {}),
+          [targetColumn]: secureUrl,
+          updated_at: new Date().toISOString(),
+          updated_by: updatedBy
+        };
+        if (bIdx > -1) {
+          state.branding_profiles[bIdx] = updatedBp;
+        } else {
+          state.branding_profiles.push(updatedBp);
+        }
+        saveJsonState(state);
+      } catch (dbErr: any) {
+        console.error("[Branding Upload Endpoint] JSON fallback database save failure:", dbErr);
+        return res.status(500).json({ error: "Branding record could not be saved to JSON fallback" });
+      }
+    }
+
+    res.json({
+      success: true,
+      assetType,
+      url: secureUrl,
+      message: "File uploaded successfully."
+    });
+  } catch (err: any) {
+    console.error("[Branding Upload Route Error]:", err);
+    res.status(500).json({ error: err.message || "Failed uploading asset" });
+  }
+});
+
+// GET /api/tsps/branding
+app.get("/api/tsps/branding", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user!;
+    const isFederal = user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role) || user.role.startsWith("FED") || user.role.startsWith("FEDERAL");
+    const isState = STA_ROLES.includes(user.role) || user.role.startsWith("STA");
+    
+    let tspId = user.tspId;
+    if ((isFederal || isState) && req.query.tspId) {
+      tspId = req.query.tspId as string;
+    }
+    
+    if (!tspId) {
+      tspId = "00000000-0000-0000-0000-000000000001";
+    }
+
+    const pool = getPgPool();
+    let branding = null;
+
+    if (pool && isPgActive) {
+      const brandingRes = await pool.query(
+        "SELECT * FROM branding_profiles WHERE tsp_id = $1 LIMIT 1",
+        [tspId]
+      );
+      if (brandingRes.rows.length > 0) {
+        branding = brandingRes.rows[0];
+      }
+    } else {
+      const state = loadJsonState() as any;
+      const bpList = state.branding_profiles || [];
+      branding = bpList.find((b: any) => b.tsp_id === tspId) || null;
+    }
+
+    if (!branding) {
+      branding = {
+        tsp_id: tspId,
+        logo_url: "",
+        letterhead_url: "",
+        admission_letterhead_url: "",
+        acceptance_letterhead_url: "",
+        signature_url: "",
+        stamp_url: "",
+        certificate_background_url: "",
+        photo_album_header_url: "",
+        official_name: "",
+        accreditation_number: "",
+        contact_email: "",
+        contact_phone: "",
+        address: ""
+      };
+    }
+
+    res.json(branding);
+  } catch (err: any) {
+    console.error("[GET Branding Error]:", err);
+    res.status(500).json({ error: err.message || "Failed to fetch branding profile" });
+  }
+});
+
+// PUT /api/tsps/branding
+app.put("/api/tsps/branding", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user!;
+    const isFederal = user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role) || user.role.startsWith("FED") || user.role.startsWith("FEDERAL");
+    
+    let tspId = user.tspId;
+    if (isFederal && req.body.tspId) {
+      tspId = req.body.tspId;
+    }
+
+    if (!tspId) {
+      return res.status(400).json({ error: "TSP ID is required to update branding" });
+    }
+
+    const b = req.body;
+    const updatedBy = user.email || "system";
+
+    const pool = getPgPool();
+    if (pool && isPgActive) {
+      const existRes = await pool.query("SELECT id FROM branding_profiles WHERE tsp_id = $1 LIMIT 1", [tspId]);
+      if (existRes.rows.length > 0) {
+        await pool.query(`
+          UPDATE branding_profiles
+          SET
+            logo_url = $1,
+            letterhead_url = $2,
+            admission_letterhead_url = $3,
+            acceptance_letterhead_url = $4,
+            signature_url = $5,
+            stamp_url = $6,
+            certificate_background_url = $7,
+            photo_album_header_url = $8,
+            official_name = $9,
+            accreditation_number = $10,
+            contact_email = $11,
+            contact_phone = $12,
+            address = $13,
+            updated_at = NOW(),
+            updated_by = $14
+          WHERE tsp_id = $15
+        `, [
+          b.logo_url || "",
+          b.letterhead_url || "",
+          b.admission_letterhead_url || "",
+          b.acceptance_letterhead_url || "",
+          b.signature_url || "",
+          b.stamp_url || "",
+          b.certificate_background_url || "",
+          b.photo_album_header_url || "",
+          b.official_name || "",
+          b.accreditation_number || "",
+          b.contact_email || "",
+          b.contact_phone || "",
+          b.address || "",
+          updatedBy,
+          tspId
+        ]);
+      } else {
+        await pool.query(`
+          INSERT INTO branding_profiles (
+            tsp_id, role_scope, logo_url, letterhead_url, admission_letterhead_url, acceptance_letterhead_url,
+            signature_url, stamp_url, certificate_background_url, photo_album_header_url, official_name,
+            accreditation_number, contact_email, contact_phone, address, is_active, updated_by
+          ) VALUES ($1, 'TSP', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, TRUE, $15)
+        `, [
+          tspId,
+          b.logo_url || "",
+          b.letterhead_url || "",
+          b.admission_letterhead_url || "",
+          b.acceptance_letterhead_url || "",
+          b.signature_url || "",
+          b.stamp_url || "",
+          b.certificate_background_url || "",
+          b.photo_album_header_url || "",
+          b.official_name || "",
+          b.accreditation_number || "",
+          b.contact_email || "",
+          b.contact_phone || "",
+          b.address || "",
+          updatedBy
+        ]);
+      }
+    } else {
+      // JSON fallback
+      const state = loadJsonState() as any;
+      if (!state.branding_profiles) state.branding_profiles = [];
+      let bIdx = state.branding_profiles.findIndex((bp: any) => bp.tsp_id === tspId);
+      const updatedBp = {
+        tsp_id: tspId,
+        role_scope: 'TSP',
+        logo_url: b.logo_url || "",
+        letterhead_url: b.letterhead_url || "",
+        admission_letterhead_url: b.admission_letterhead_url || "",
+        acceptance_letterhead_url: b.acceptance_letterhead_url || "",
+        signature_url: b.signature_url || "",
+        stamp_url: b.stamp_url || "",
+        certificate_background_url: b.certificate_background_url || "",
+        photo_album_header_url: b.photo_album_header_url || "",
+        official_name: b.official_name || "",
+        accreditation_number: b.accreditation_number || "",
+        contact_email: b.contact_email || "",
+        contact_phone: b.contact_phone || "",
+        address: b.address || "",
+        updated_at: new Date().toISOString(),
+        updated_by: updatedBy
+      };
+      if (bIdx > -1) {
+        state.branding_profiles[bIdx] = { ...state.branding_profiles[bIdx], ...updatedBp };
+      } else {
+        state.branding_profiles.push(updatedBp);
+      }
+      saveJsonState(state);
+    }
+
+    res.json({ success: true, message: "Branding profile updated successfully" });
+  } catch (err: any) {
+    console.error("[PUT Branding Error]:", err);
+    res.status(500).json({ error: err.message || "Failed to update branding profile" });
   }
 });
 
@@ -9060,7 +10904,7 @@ app.get("/api/beneficiaries", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OF
       tspId,
       beneficiaryId
     });
-    res.json(beneficiaries);
+    res.json(maskPIIArray(beneficiaries, req.user));
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -9080,15 +10924,27 @@ app.get("/api/beneficiaries/:id", requireAuth, async (req: AuthenticatedRequest,
       if (req.user.role === "TRAINEE" && req.user.beneficiaryId !== id) {
         return res.status(403).json({ error: "Access Denied. A trainee candidate can only access their personal profile." });
       }
-      if (req.user.tspId && b.tspId && b.tspId !== req.user.tspId) {
+      
+      let userTspId = req.user.tspId || (req.user as any).tsp_id;
+      let userStateId = req.user.stateId || (req.user as any).state_id;
+      const isTsp = TSP_ROLES.includes(req.user.role) || (req.user.role && req.user.role.startsWith("TSP"));
+      if (isTsp) {
+        if (!userTspId) userTspId = "00000000-0000-0000-0000-000000000001";
+        userStateId = undefined; // Bypass state restrictions
+      }
+      
+      const bTspId = b.tspId || (b as any).tsp_id || "00000000-0000-0000-0000-000000000001";
+      const bStateId = b.stateId || (b as any).state_id || "state_imo_id_default";
+
+      if (userTspId && bTspId !== userTspId) {
         return res.status(403).json({ error: "Access Denied: Tenant isolation active. This beneficiary belongs to another organization." });
       }
-      if (req.user.stateId && b.stateId && b.stateId !== req.user.stateId) {
+      if (userStateId && bStateId !== userStateId) {
         return res.status(403).json({ error: "Access Denied: State division active. This beneficiary belongs to another state." });
       }
     }
 
-    res.json(b);
+    res.json(maskPII(b, req.user));
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -9170,7 +11026,14 @@ app.get("/api/beneficiaries/:id/photo/raw", async (req: AuthenticatedRequest, re
 });
 
 // DOB Data Integrity Audit and Diagnostics Tooling
-app.get("/api/diagnostics/dob", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.get("/api/diagnostics/dob", requireAuth, async (req: AuthenticatedRequest, res) => {
+  if (process.env.SECURITY_DIAGNOSTICS_ENABLED !== "true") {
+    return res.status(403).json({ error: "Diagnostics feature is disabled." });
+  }
+  const user = req.user;
+  if (!user || (user.role !== "SUPER_ADMIN" && user.role !== "FEDERAL_SUPER_ADMIN")) {
+    return res.status(403).json({ error: "You do not have permission to perform this action." });
+  }
   try {
     let tenantId: string | undefined;
     let stateId: string | undefined;
@@ -9254,7 +11117,14 @@ app.get("/api/system/pdf-renderer-health", requireAuth, requireRole(["SUPER_ADMI
 });
 
 // System & Tenant Diagnostics for observability and multi-tenancy verification
-app.get("/api/system/tenant-health", requireAuth, requireRole(["SUPER_ADMIN"]), async (req: AuthenticatedRequest, res) => {
+app.get("/api/system/tenant-health", requireAuth, async (req: AuthenticatedRequest, res) => {
+  if (process.env.SECURITY_DIAGNOSTICS_ENABLED !== "true") {
+    return res.status(403).json({ error: "Diagnostics feature is disabled." });
+  }
+  const user = req.user;
+  if (!user || (user.role !== "SUPER_ADMIN" && user.role !== "FEDERAL_SUPER_ADMIN")) {
+    return res.status(403).json({ error: "You do not have permission to perform this action." });
+  }
   try {
     const start = Date.now();
     const pool = getPgPool();
@@ -9311,9 +11181,13 @@ app.get("/api/system/tenant-health", requireAuth, requireRole(["SUPER_ADMIN"]), 
   }
 });
 
-app.get("/api/debug/rls-context", async (req: AuthenticatedRequest, res) => {
-  if (process.env.NODE_ENV === "production") {
-    return res.status(403).json({ error: "Access Denied. Dev only route." });
+app.get("/api/debug/rls-context", requireAuth, async (req: AuthenticatedRequest, res) => {
+  if (process.env.SECURITY_DIAGNOSTICS_ENABLED !== "true") {
+    return res.status(403).json({ error: "Diagnostics feature is disabled." });
+  }
+  const user = req.user;
+  if (!user || (user.role !== "SUPER_ADMIN" && user.role !== "FEDERAL_SUPER_ADMIN")) {
+    return res.status(403).json({ error: "You do not have permission to perform this action." });
   }
   res.json({
     tenantId: req.user?.tenantId || null,
@@ -9324,9 +11198,13 @@ app.get("/api/debug/rls-context", async (req: AuthenticatedRequest, res) => {
   });
 });
 
-app.get("/api/debug/current-tenant", async (req: AuthenticatedRequest, res) => {
-  if (process.env.NODE_ENV === "production") {
-    return res.status(403).json({ error: "Access Denied. Dev only route." });
+app.get("/api/debug/current-tenant", requireAuth, async (req: AuthenticatedRequest, res) => {
+  if (process.env.SECURITY_DIAGNOSTICS_ENABLED !== "true") {
+    return res.status(403).json({ error: "Diagnostics feature is disabled." });
+  }
+  const user = req.user;
+  if (!user || (user.role !== "SUPER_ADMIN" && user.role !== "FEDERAL_SUPER_ADMIN")) {
+    return res.status(403).json({ error: "You do not have permission to perform this action." });
   }
   try {
     const dbRes = await executeQuery(`
@@ -9423,6 +11301,107 @@ app.post("/api/beneficiaries", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_O
     });
 
     await logAction(req.user!.email, "BENEFICIARY_CREATE", `Registered beneficiary ${newBeneficiary.firstName} ${newBeneficiary.lastName} with ID ${newBeneficiary.id}`);
+    res.status(201).json(newBeneficiary);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/tsp/beneficiaries", requireAuth, requireRole(["SUPER_ADMIN", ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const data = req.body;
+    if (!data.firstName || !data.lastName || !data.nin || !data.bvn) {
+      return res.status(400).json({ error: "First Name, Last Name, NIN, and BVN are required fields" });
+    }
+
+    const user = req.user!;
+    const isFederal = user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role);
+    
+    // Determine target tspId
+    let tspId = "00000000-0000-0000-0000-000000000001";
+    let tspName = "Unique Technology Nig. Ltd";
+    
+    if (!isFederal) {
+      tspId = user.tspId || "00000000-0000-0000-0000-000000000001";
+      // Fetch TSP details to get real name
+      const pool = getPgPool();
+      if (pool && isPgActive) {
+        const tspRes = await pool.query("SELECT name FROM tsps WHERE id = $1 LIMIT 1", [tspId]);
+        if (tspRes.rows.length > 0) {
+          tspName = tspRes.rows[0].name;
+        }
+      }
+    } else {
+      // Federal/Admin can specify TSP in body
+      tspId = data.tspId || "00000000-0000-0000-0000-000000000001";
+      const pool = getPgPool();
+      if (pool && isPgActive) {
+        const tspRes = await pool.query("SELECT name FROM tsps WHERE id = $1 LIMIT 1", [tspId]);
+        if (tspRes.rows.length > 0) {
+          tspName = tspRes.rows[0].name;
+        }
+      }
+    }
+
+    // Generate customized concurrent-safe sequential ID atomically
+    const enrollYear = new Date().getFullYear();
+    const id = await DbRepo.selectNextBeneficiaryId(enrollYear);
+
+    const newBeneficiary: Beneficiary = {
+      id,
+      photo: data.photo || "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?auto=format&fit=crop&q=80&w=200",
+      firstName: data.firstName,
+      lastName: data.lastName,
+      otherName: data.otherName || "",
+      gender: data.gender || Gender.OTHER,
+      bvn: data.bvn,
+      nin: data.nin,
+      state: data.state || "Imo",
+      city: data.city || "Owerri",
+      phoneNumber: data.phoneNumber || "",
+      email: data.email || "",
+      residentialAddress: data.residentialAddress || "",
+      batch: data.batch || `Batch ${new Date().getFullYear()}-C`,
+      customFields: {
+        ...(data.customFields || {}),
+        tsp_id: tspId,
+        tspId: tspId,
+      },
+      tsp: tspName,
+      program: data.program || "IDEAS-TVET",
+      skillSector: data.skillSector || "Computer Hardware and Cell Phone Repairs",
+      status: data.status || ProgramStatus.DRAFT,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      guardianName: data.guardianName || "",
+      guardianAddress: data.guardianAddress || "",
+      guardianPhone: data.guardianPhone || "",
+      physicalChallenge: data.physicalChallenge || "",
+      bankAccountHolder: data.bankAccountHolder || "",
+      bankName: data.bankName || "",
+      bankSortCode: data.bankSortCode || "",
+      bankAccountNumber: data.bankAccountNumber || "",
+      educationQualification: data.educationQualification || "",
+      dateOfBirth: data.dateOfBirth || ""
+    };
+
+    // Also populate standard fields directly on table object just in case they are mapped at column level
+    (newBeneficiary as any).tspId = tspId;
+    (newBeneficiary as any).tsp_id = tspId;
+
+    await DbRepo.upsertBeneficiary(newBeneficiary);
+    
+    // Record the initial state into workflow_history
+    await DbRepo.saveWorkflowHistory({
+      beneficiaryId: newBeneficiary.id,
+      oldStatus: "null",
+      newStatus: newBeneficiary.status,
+      changedBy: req.user!.email,
+      changedAt: new Date().toISOString(),
+      remarks: data.remarks || "Registered / Enrolled into Gov Portal via TSP"
+    });
+
+    await logAction(req.user!.email, "BENEFICIARY_CREATE", `Registered beneficiary ${newBeneficiary.firstName} ${newBeneficiary.lastName} with ID ${newBeneficiary.id} under TSP ${tspName}`);
     res.status(201).json(newBeneficiary);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -9736,30 +11715,51 @@ app.post("/api/beneficiaries/:id/lifecycle-status", requireAuth, async (req: Aut
   }
 });
 
-app.post("/api/superadmin/beneficiaries/:id/workflow-rollback", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "TSP", "TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+const handleStatusCorrection = async (req: AuthenticatedRequest, res: any) => {
   try {
     const { id } = req.params;
-    const { targetState, reason } = req.body;
+    const { targetState, targetStatus, reason } = req.body;
+    const targetVal = targetState || targetStatus;
 
-    if (!targetState) {
-      return res.status(400).json({ error: "Missing required parameter: targetState" });
+    if (!targetVal) {
+      return res.status(400).json({ error: "Missing required parameter: targetState or targetStatus" });
     }
 
     if (!reason || reason.trim() === "") {
-      return res.status(400).json({ error: "A rollback reason is required for auditing." });
+      return res.status(400).json({ error: "A correction reason is required for auditing." });
     }
 
     const beneficiary = await DbRepo.getBeneficiaryById(id);
     if (!beneficiary) {
-      return res.status(404).json({ error: "Beneficiary not found for rollback process" });
+      return res.status(404).json({ error: "Trainee not found for status correction process." });
     }
 
-    // Scoping check for TSP users
     const userRole = req.user!.role;
     const userTspId = req.user!.tspId;
+
+    // Scoping check for TSP users
     if (["TSP", "TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER"].includes(userRole)) {
       if (beneficiary.tspId !== userTspId) {
-        return res.status(403).json({ error: "Access denied: You can only rollback your own trainees." });
+        return res.status(403).json({ error: "Access denied: You can only correct status for your own trainees." });
+      }
+
+      // Cannot rollback FED-approved final records unless policy allows correction request.
+      const isFinalStatus = [
+        "GRADUATED", 
+        "CERTIFIED", 
+        "CERTIFICATE_ISSUED", 
+        "ALUMNI"
+      ].includes((beneficiary.status || "").toUpperCase());
+      
+      const isFedApproved = beneficiary.statusChangedBy && 
+        (beneficiary.statusChangedBy.includes("admin@ideas-tvet.ng") || 
+         beneficiary.statusChangedBy.includes("superadmin") || 
+         beneficiary.statusChangedBy.toLowerCase().includes("fed"));
+
+      if (isFinalStatus || isFedApproved) {
+        return res.status(403).json({ 
+          error: "Access denied: Cannot correct or roll back Federal-approved final records. Please contact a Federal Administrator to request a correction." 
+        });
       }
     }
 
@@ -9773,36 +11773,63 @@ app.post("/api/superadmin/beneficiaries/:id/workflow-rollback", requireAuth, req
 
     const operator = req.user!.email;
 
-    // Transition state variables based on targeted rollback state
-    if (targetState === "ALUMNI") {
+    let target = targetVal.toUpperCase().trim();
+    if (target === "DRAFT" || target === "ADMISSION_FORM_DRAFT") {
+      target = "ADMISSION_FORM_DRAFT";
+    } else if (target === "ACTIVE" || target === "IN_TRAINING" || target === "ENROLLED") {
+      target = "ACTIVE";
+    } else if (target === "ACCEPTED" || target === "ADMISSION_ACCEPTED") {
+      target = "ACCEPTED";
+    } else if (target === "GRADUATED" || target === "TRAINING_COMPLETED") {
+      target = "GRADUATED";
+    }
+
+    // Transition state variables based on targeted rollback/correction state
+    if (target === "ALUMNI") {
       beneficiary.status = ProgramStatus.ALUMNI;
       beneficiary.admissionStatus = "Alumni";
       beneficiary.alumniStatus = true;
       beneficiary.beneficiaryStatus = "COMPLETED";
       beneficiary.certificationStatus = "CERTIFICATE_ISSUED";
     }
-    else if (targetState === "CERTIFICATE_ISSUED") {
+    else if (target === "CERTIFICATE_ISSUED") {
       beneficiary.status = ProgramStatus.CERTIFICATE_ISSUED;
       beneficiary.admissionStatus = "Certified";
       beneficiary.certificationStatus = "CERTIFICATE_ISSUED";
       beneficiary.alumniStatus = false;
       beneficiary.beneficiaryStatus = "ACTIVE";
     }
-    else if (targetState === "CERTIFIED") {
+    else if (target === "CERTIFIED") {
       beneficiary.status = ProgramStatus.CERTIFIED;
       beneficiary.admissionStatus = "Certified";
       beneficiary.certificationStatus = "CERTIFIED";
       beneficiary.alumniStatus = false;
       beneficiary.beneficiaryStatus = "ACTIVE";
     }
-    else if (targetState === "ACTIVE") {
+    else if (target === "GRADUATED") {
+      beneficiary.status = ProgramStatus.GRADUATED;
+      beneficiary.admissionStatus = "Training Completed";
+      beneficiary.certificationStatus = "NONE";
+      beneficiary.alumniStatus = false;
+      beneficiary.beneficiaryStatus = "ACTIVE";
+    }
+    else if (target === "ACCEPTED") {
+      beneficiary.status = ProgramStatus.ACCEPTED;
+      beneficiary.admissionStatus = "Accepted";
+      beneficiary.admissionFormStatus = "CONFIRMED";
+      beneficiary.admissionFormCompleted = true;
+      beneficiary.beneficiaryStatus = "ACTIVE";
+      beneficiary.certificationStatus = "NONE";
+      beneficiary.alumniStatus = false;
+    }
+    else if (target === "ACTIVE") {
       beneficiary.status = ProgramStatus.IN_TRAINING;
       beneficiary.admissionStatus = "Enrolled";
       beneficiary.certificationStatus = "NONE";
       beneficiary.alumniStatus = false;
       beneficiary.beneficiaryStatus = "ACTIVE";
     }
-    else if (targetState === "ADMISSION_FORM_DRAFT") {
+    else if (target === "ADMISSION_FORM_DRAFT") {
       beneficiary.status = ProgramStatus.DRAFT;
       beneficiary.admissionStatus = "Draft";
       beneficiary.admissionFormStatus = "Draft";
@@ -9848,10 +11875,10 @@ app.post("/api/superadmin/beneficiaries/:id/workflow-rollback", requireAuth, req
       }
     }
     else {
-      return res.status(400).json({ error: "Invalid targetState rollback value." });
+      return res.status(400).json({ error: "Invalid target status correction value." });
     }
 
-    // Phase 1 / Phase 4 - Increment token and workflow versions on rollback
+    // Increment versions on correction/rollback
     beneficiary.tokenVersion = oldTokenVersion + 1;
     beneficiary.workflowVersion = oldWorkflowVersion + 1;
 
@@ -9859,21 +11886,22 @@ app.post("/api/superadmin/beneficiaries/:id/workflow-rollback", requireAuth, req
     beneficiary.statusChangedBy = operator;
     beneficiary.statusChangedAt = new Date().toISOString();
 
-    // Phase 3 - Archive all current active documents (ACTIVE -> ARCHIVED)
+    // Archive all current active documents (ACTIVE -> ARCHIVED)
     await DbRepo.archiveActiveDocuments(id);
 
     await DbRepo.upsertBeneficiary(beneficiary);
 
-    const remarks = `ADMIN ROLLBACK: Workflow rolled back from [Status: ${oldStatus}, Admission: ${oldAdmissionStatus}, Cert: ${oldCertStatus}] to targeted state: ${targetState}.`;
+    const remarks = `ADMIN STATUS CORRECTION: Status corrected from [Status: ${oldStatus}, Admission: ${oldAdmissionStatus}, Cert: ${oldCertStatus}] to targeted state: ${target}.`;
     
-    // Save to workflow history (wrapped to prevent rollback blocking if failing)
     const ipAddress = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1";
     const ipStr = Array.isArray(ipAddress) ? ipAddress[0] : ipAddress;
+    
+    // Save to workflow history
     try {
       await DbRepo.saveWorkflowHistory({
         beneficiaryId: id,
         oldStatus: `${oldStatus} (Admission: ${oldAdmissionStatus})`,
-        newStatus: `${beneficiary.status} (Target: ${targetState})`,
+        newStatus: `${beneficiary.status} (Target: ${target})`,
         changedBy: operator,
         changedAt: new Date().toISOString(),
         remarks,
@@ -9885,31 +11913,40 @@ app.post("/api/superadmin/beneficiaries/:id/workflow-rollback", requireAuth, req
         workflowVersionAfter: beneficiary.workflowVersion
       });
     } catch (wfErr) {
-      console.warn("[Rollback Route] Workflow history log failed, continuing rollback:", wfErr);
+      console.warn("[Correction Route] Workflow history log failed:", wfErr);
     }
 
-    // Save to System Audit Log (wrapped to prevent rollback blocking if failing)
+    // Save to System Audit Log with Phase 6 detailed fields
     try {
+      const auditLogObj = {
+        beneficiary_id: id,
+        old_status: oldStatus,
+        new_status: beneficiary.status,
+        old_admission_status: oldAdmissionStatus,
+        new_admission_status: beneficiary.admissionStatus || "Unknown",
+        old_acceptance_status: oldFormStatus,
+        new_acceptance_status: beneficiary.admissionFormStatus || "Unknown",
+        actor_user_id: req.user!.id,
+        actor_email: operator,
+        actor_role: req.user!.role,
+        actor_tsp_id: req.user!.tspId || null,
+        reason,
+        timestamp: new Date().toISOString(),
+        source_module: "STATUS_CORRECTION_MODULE"
+      };
+
       const newLog: AuditLog = {
         id: "log_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
         timestamp: new Date().toISOString(),
         username: operator,
         role: req.user!.role,
-        action: "WORKFLOW_ROLLBACK",
+        action: "STATUS_CORRECTION",
         ipAddress: ipStr,
-        details: [
-          `Super Admin manually rolled back candidate '${beneficiary.firstName} ${beneficiary.lastName}' (ID: ${id}) to targeted state: '${targetState}'.`,
-          `Reason: ${reason}`,
-          `IP: ${ipStr}`,
-          `Old Status: ${oldStatus} (Admission: ${oldAdmissionStatus})`,
-          `New Status: ${beneficiary.status} (Target: ${targetState})`,
-          `Token Version: ${oldTokenVersion} -> ${beneficiary.tokenVersion}`,
-          `Workflow Version: ${oldWorkflowVersion} -> ${beneficiary.workflowVersion}`
-        ].join("\n")
+        details: JSON.stringify(auditLogObj, null, 2)
       };
       await DbRepo.saveAuditLog(newLog);
     } catch (logErr) {
-      console.warn("[Rollback Route] Audit log failed, continuing rollback:", logErr);
+      console.warn("[Correction Route] Audit log failed:", logErr);
     }
 
     try {
@@ -9921,19 +11958,22 @@ app.post("/api/superadmin/beneficiaries/:id/workflow-rollback", requireAuth, req
         role: req.user!.role,
         action: "DEPENDENCY_ANALYSIS_APPROVED",
         ipAddress: ipStr,
-        details: `Dependency analysis approved for rollback. Risk level: ${depCheck.governanceRiskLevel}. Reason: ${reason}. Workflow Version V${beneficiary.workflowVersion}, Token Version T${beneficiary.tokenVersion}. Counts: Documents: ${depCheck.documentsAffected.total}, Certifications: ${depCheck.certificationsAffected.certificateCount}, Toolkits: ${depCheck.toolkitsAffected.toolkitsAffected}, Dispatches: ${depCheck.dispatchesAffected.dispatchCount}, Outcome evidence: ${depCheck.evidenceAffected.impactRecordsAffected}, Financials: ${depCheck.financialRecordsAffected.financialRecordsAffected}, Audit Refs: ${depCheck.auditReferencesAffected.auditReferencesAffected}`
+        details: `Dependency analysis approved for status correction. Risk level: ${depCheck.governanceRiskLevel}. Reason: ${reason}. Workflow Version V${beneficiary.workflowVersion}, Token Version T${beneficiary.tokenVersion}. Counts: Documents: ${depCheck.documentsAffected.total}`
       };
       await DbRepo.saveAuditLog(approveLog as any);
     } catch (depErr) {
-      console.warn("[Rollback Endpoint] Failed to log DEPENDENCY_ANALYSIS_APPROVED:", depErr);
+      console.warn("[Correction Route] Failed to log DEPENDENCY_ANALYSIS_APPROVED:", depErr);
     }
 
     return res.json({ success: true, beneficiary });
   } catch (err: any) {
-    console.error("[POST /api/superadmin/beneficiaries/:id/workflow-rollback] Error:", err);
-    res.status(500).json({ error: err.message || "Failed to execute superadmin workflow rollback." });
+    console.error("[Status Correction Endpoint] Error:", err);
+    res.status(500).json({ error: err.message || "Failed to execute status correction." });
   }
-});
+};
+
+app.post("/api/superadmin/beneficiaries/:id/workflow-rollback", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "TSP", "TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER", "FED"]), handleStatusCorrection);
+app.post("/api/beneficiaries/:id/status-correction", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "TSP", "TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER", "FED"]), handleStatusCorrection);
 
 app.post("/api/admissions/bulk-lifecycle-status", requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
@@ -11095,7 +13135,7 @@ app.post("/api/public/documents/verify/:token/track-download", async (req, res) 
 });
 
 // Audit Logging Fetch
-app.get("/api/audit-logs", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", ...FED_ROLES], ["audit_logs_access"]), async (req: AuthenticatedRequest, res) => {
+app.get("/api/audit-logs", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES], ["audit_logs_access"]), async (req: AuthenticatedRequest, res) => {
   try {
     const limit = parseInt(req.query.limit as string || "100", 10);
     const offset = parseInt(req.query.offset as string || "0", 10);
@@ -11114,6 +13154,12 @@ app.get("/api/audit-logs", requireAuth, requireRoleOrPermission(["SUPER_ADMIN", 
       authTenantId = user.tenantId;
       authStateId = user.stateId;
       authTspId = user.tspId;
+
+      if (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP")) {
+        if (!authTspId) authTspId = "00000000-0000-0000-0000-000000000001";
+        if (!authStateId) authStateId = "state_imo_id_default";
+        authTenantId = undefined;
+      }
     }
 
     const auditLogs = await DbRepo.getAuditLogs({
@@ -13156,7 +15202,7 @@ app.get("/api/export/csv", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFIC
 });
 
 // Excel Spreadsheet compilation endpoint (.xls styled HTML)
-app.get("/api/export/excel", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.get("/api/export/excel", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
     const { state, batch } = req.query;
 

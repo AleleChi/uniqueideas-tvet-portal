@@ -5,6 +5,7 @@ import {
   Upload, Eye, Camera, ClipboardCheck, Briefcase, ChevronRight, File, Shield
 } from "lucide-react";
 import { API_BASE } from "../config/api";
+import { authFetch } from "../utils/authFetch";
 
 interface ImpactEvidenceProps {
   session: any;
@@ -237,7 +238,7 @@ export default function ImpactEvidence({ session, showToast }: ImpactEvidencePro
       reader.readAsDataURL(file);
       reader.onload = async () => {
         try {
-          const res = await fetch(`${API_BASE}/api/upload-asset`, {
+          const res = await authFetch("/api/tsps/profile/assets", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -247,8 +248,8 @@ export default function ImpactEvidence({ session, showToast }: ImpactEvidencePro
             })
           });
           const d = await res.json();
-          if (res.ok && d.secureUrl) {
-            resolve(d.secureUrl);
+          if (res.ok && (d.secureUrl || d.url)) {
+            resolve(d.secureUrl || d.url);
           } else {
             reject(new Error(d.error || "Asset upload endpoint rejected content"));
           }

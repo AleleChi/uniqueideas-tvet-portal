@@ -3,7 +3,7 @@ import {
   FileSpreadsheet, Image as ImageIcon, FileText, Download, Printer, 
   CheckCircle2, Compass, AlertCircle, FileImage, Layers, Filter, Check, Landmark, Award,
   Users, CheckSquare, Globe, Building2, Search, ChevronLeft, ChevronRight, Info, Calendar, ArrowRight,
-  TrendingUp, Activity, Ban
+  TrendingUp, Activity, Ban, Edit2, RefreshCw, X
 } from "lucide-react";
 import { Beneficiary, ProgramStatus } from "../types";
 import { downloadWithAuth, authFetch } from "../utils/authFetch";
@@ -19,8 +19,10 @@ interface ReportsWorkspaceProps {
 }
 
 export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: ReportsWorkspaceProps) {
-  const [activeReportTab, setActiveReportTab] = useState<"excel" | "album" | "pdf" | "admissions" | "locations" | "governance">("excel");
-  const isTspUser = session?.role === "TSP" || (session?.role && session?.role.startsWith("TSP"));
+  const isTspUser = ["TSP", "TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER", "ADMIN_OFFICER", "REVIEW_OFFICER"].includes(session?.role || "") || (session?.role && session?.role.startsWith("TSP"));
+  const [activeReportTab, setActiveReportTab] = useState<"excel" | "album" | "pdf" | "admissions" | "locations" | "governance">(
+    isTspUser ? "admissions" : "excel"
+  );
 
   // Enterprise Unified National Reporting Filters Hierarchy State
   const [selectedZone, setSelectedZone] = useState("all");
@@ -56,6 +58,174 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
   const [tspData, setTspData] = useState<any[]>([]);
   const [statePerformanceData, setStatePerformanceData] = useState<any[]>([]);
   const [listData, setListData] = useState<any[]>([]);
+
+  // TSP Scoped Reporting State Controls (Phases 9 & 10)
+  const [selectedTspSubTab, setSelectedTspSubTab] = useState<
+    "summary" | "admissions" | "attendance" | "stipends" | "documents" | "completion" | "annex9" | "monthly_submissions"
+  >("summary");
+  const [tspSummary, setTspSummary] = useState<any>(null);
+  const [tspAdmissions, setTspAdmissions] = useState<any>(null);
+  const [tspAttendance, setTspAttendance] = useState<any>(null);
+  const [tspDocuments, setTspDocuments] = useState<any>(null);
+  const [tspCompletion, setTspCompletion] = useState<any>(null);
+  const [tspAnnex9, setTspAnnex9] = useState<any[]>([]);
+  const [tspMonthly, setTspMonthly] = useState<any[]>([]);
+  const [annex9Month, setAnnex9Month] = useState("2026-06");
+
+  // Annex 9 Filters, Toast, and Editing states
+  const [annex9Search, setAnnex9Search] = useState("");
+  const [annex9StipendFilter, setAnnex9StipendFilter] = useState("all");
+  const [annex9PortalFilter, setAnnex9PortalFilter] = useState("all");
+  const [annex9AttendingFilter, setAnnex9AttendingFilter] = useState("all");
+  const [toast, setToast] = useState<{ message: string; type: "success" | "info" | "error" } | null>(null);
+  const [editingRow, setEditingRow] = useState<any>(null);
+  const [remarksInput, setRemarksInput] = useState("");
+
+  const showToast = (message: string, type: "success" | "info" | "error" = "success") => {
+    setToast({ message, type });
+    setTimeout(() => {
+      setToast(null);
+    }, 4000);
+  };
+
+  const refreshAnnex9Data = async () => {
+    setLoadingReport(true);
+    try {
+      const res = await authFetch(`/api/tsp/reports/annex9?month=${annex9Month}`);
+      if (!res.ok) throw new Error("Failed to load TSP Annex 9 sheet");
+      const d = await res.json();
+      setTspAnnex9(d.records || []);
+      showToast("Annex 9 data reloaded successfully", "success");
+    } catch (err: any) {
+      showToast(err.message || "Failed to refresh", "error");
+    } finally {
+      setLoadingReport(false);
+    }
+  };
+
+  const handlePortalStatusToggle = async (beneficiaryId: string, field: "stillOnPortal" | "stillAttending", value: boolean) => {
+    try {
+      // Optimistically update client state
+      setTspAnnex9(prev => prev.map((row: any) => {
+        if (row.id === beneficiaryId) {
+          return { 
+            ...row, 
+            [field === "stillOnPortal" ? "still_on_portal" : "still_attending"]: value,
+            last_verified_at: new Date().toISOString(),
+            verified_by: session?.email || "TSP Officer"
+          };
+        }
+        return row;
+      }));
+
+      const res = await authFetch(`/api/tsp/reports/tvet-list-status/${beneficiaryId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          [field]: value
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error("Failed to sync updated status on backend.");
+      }
+      showToast("TVET list monitoring status saved", "success");
+    } catch (err: any) {
+      showToast(err.message || "Failed to update TVET list status", "error");
+      refreshAnnex9Data();
+    }
+  };
+
+  const handleOpenRemarksModal = (row: any) => {
+    setEditingRow(row);
+    setRemarksInput(row.remarks || "");
+  };
+
+  const handleSaveRemarks = async () => {
+    if (!editingRow) return;
+    try {
+      const res = await authFetch(`/api/tsp/reports/tvet-list-status/${editingRow.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          remarks: remarksInput
+        })
+      });
+
+      if (!res.ok) throw new Error("Failed to save remarks.");
+
+      setTspAnnex9(prev => prev.map((row: any) => {
+        if (row.id === editingRow.id) {
+          return { 
+            ...row, 
+            remarks: remarksInput, 
+            last_verified_at: new Date().toISOString(), 
+            verified_by: session?.email || "TSP Officer" 
+          };
+        }
+        return row;
+      }));
+
+      setEditingRow(null);
+      showToast("Operational remarks updated", "success");
+    } catch (err: any) {
+      showToast(err.message || "Failed to update remarks", "error");
+    }
+  };
+
+  const exportOfficialWorkbook = async () => {
+    try {
+      showToast("Generating Official Annex 9 Workbook...", "info");
+      const baseRoute = isTspUser ? "/api/tsp/reports/annex9/export" : "/api/fed/reports/annex9/export";
+      const url = `${baseRoute}?month=${annex9Month}&format=excel`;
+      
+      const response = await authFetch(url);
+      if (!response.ok) {
+        throw new Error("Failed to export Annex 9 workbook");
+      }
+      
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = `Annex_9_Official_Workbook_${annex9Month}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(blobUrl);
+
+      showToast("Annex 9 workbook downloaded successfully", "success");
+    } catch (err: any) {
+      showToast(err.message || "Export failed", "error");
+    }
+  };
+
+  const exportAttendanceCsv = async () => {
+    try {
+      showToast("Generating Attendance CSV...", "info");
+      const baseRoute = isTspUser ? "/api/tsp/reports/annex9/export" : "/api/fed/reports/annex9/export";
+      const url = `${baseRoute}?month=${annex9Month}&format=csv&section=attendance`;
+      
+      const response = await authFetch(url);
+      if (!response.ok) {
+        throw new Error("Failed to export Annex 9 CSV");
+      }
+      
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = `Annex_9_Attendance_Export_${annex9Month}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(blobUrl);
+
+      showToast("CSV downloaded successfully", "success");
+    } catch (err: any) {
+      showToast(err.message || "Export failed", "error");
+    }
+  };
   
   const [loadingReport, setLoadingReport] = useState(false);
   const [errorReport, setErrorReport] = useState<string | null>(null);
@@ -68,7 +238,7 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
 
   // Fetch report data on interaction
   useEffect(() => {
-    if (activeReportTab !== "admissions") return;
+    if (activeReportTab !== "admissions" || isTspUser) return;
 
     const fetchReportData = async () => {
       setLoadingReport(true);
@@ -133,8 +303,111 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
     reportAcceptanceStatus,
     reportState,
     reportSector,
-    reportTsp
+    reportTsp,
+    isTspUser
   ]);
+
+  // Fetch TSP report data on interaction (Phases 9 & 10)
+  useEffect(() => {
+    if (!isTspUser || activeReportTab !== "admissions") return;
+
+    const fetchTspReport = async () => {
+      setLoadingReport(true);
+      setErrorReport(null);
+      try {
+        if (selectedTspSubTab === "summary") {
+          const res = await authFetch("/api/tsp/reports/summary");
+          if (!res.ok) throw new Error("Failed to load TSP summary report");
+          const d = await res.json();
+          setTspSummary(d.summary);
+        } else if (selectedTspSubTab === "admissions") {
+          const res = await authFetch("/api/tsp/reports/admissions");
+          if (!res.ok) throw new Error("Failed to load TSP admissions report");
+          const d = await res.json();
+          setTspAdmissions(d.funnel);
+        } else if (selectedTspSubTab === "attendance") {
+          const res = await authFetch("/api/tsp/reports/attendance");
+          if (!res.ok) throw new Error("Failed to load TSP attendance report");
+          const d = await res.json();
+          setTspAttendance(d.monthlyTrends);
+        } else if (selectedTspSubTab === "stipends") {
+          const res = await authFetch("/api/tsp/reports/summary");
+          if (!res.ok) throw new Error("Failed to load TSP stipend report");
+          const d = await res.json();
+          setTspSummary(d.summary);
+        } else if (selectedTspSubTab === "documents") {
+          const res = await authFetch("/api/tsp/reports/documents");
+          if (!res.ok) throw new Error("Failed to load TSP documents report");
+          const d = await res.json();
+          setTspDocuments(d.documentStats);
+        } else if (selectedTspSubTab === "completion") {
+          const res = await authFetch("/api/tsp/reports/completion");
+          if (!res.ok) throw new Error("Failed to load TSP completion report");
+          const d = await res.json();
+          setTspCompletion(d.completion);
+        } else if (selectedTspSubTab === "annex9") {
+          const res = await authFetch(`/api/tsp/reports/annex9?month=${annex9Month}`);
+          if (!res.ok) throw new Error("Failed to load TSP Annex 9 sheet");
+          const d = await res.json();
+          setTspAnnex9(d.records || []);
+        } else if (selectedTspSubTab === "monthly_submissions") {
+          const res = await authFetch("/api/tsp/reports/monthly");
+          if (!res.ok) throw new Error("Failed to load TSP monthly report submissions");
+          const d = await res.json();
+          setTspMonthly(d.submissions || []);
+        }
+      } catch (err: any) {
+        setErrorReport(err.message || "An error occurred while loading TSP reports");
+      } finally {
+        setLoadingReport(false);
+      }
+    };
+
+    fetchTspReport();
+  }, [isTspUser, activeReportTab, selectedTspSubTab, annex9Month]);
+
+  // Client-side Annex 9 CSV Builder (Phase 12)
+  const downloadAnnex9Csv = () => {
+    if (!tspAnnex9 || tspAnnex9.length === 0) return;
+    const headers = [
+      "Trainee Name",
+      "TVET ID",
+      "Gender",
+      "Skill Sector",
+      "Expected Days",
+      "Present Days",
+      "Absent Days",
+      "Late Days",
+      "Excused Days",
+      "Attendance Percentage",
+      "Stipend Status",
+      "Remarks"
+    ];
+    const rows = tspAnnex9.map(r => [
+      `"${r.first_name} ${r.last_name}"`,
+      `"${r.tvet_id}"`,
+      `"${r.gender}"`,
+      `"${r.skill_sector}"`,
+      r.expected_days,
+      r.present_days,
+      r.absent_days,
+      r.late_days,
+      r.excused_days,
+      `"${r.attendance_percentage}%"`,
+      `"${r.stipend_status}"`,
+      `"${r.remarks || ""}"`
+    ]);
+    const csvContent = [headers.join(","), ...rows.map(e => e.join(","))].join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `Annex9_Attendance_Report_${annex9Month}.csv`);
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   const handleExport = async (format: "excel" | "pdf" | "word") => {
     try {
@@ -289,6 +562,18 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
             Governance Submissions
           </button>
 
+          <button
+            onClick={() => setActiveReportTab("admissions")}
+            className={`px-3.5 py-1.5 text-xs font-bold rounded-lg flex items-center gap-1.5 cursor-pointer transition ${
+              activeReportTab === "admissions"
+                ? "bg-white text-indigo-950 shadow-sm"
+                : "text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            <Award className="w-4 h-4 text-amber-500" />
+            {isTspUser ? "Center Reports & Analytics" : "Admissions Progress Reports"}
+          </button>
+
           {!isTspUser && (
             <>
               <button
@@ -301,18 +586,6 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
               >
                 <FileText className="w-4 h-4 text-rose-500" />
                 Official PDF Preview
-              </button>
-
-              <button
-                onClick={() => setActiveReportTab("admissions")}
-                className={`px-3.5 py-1.5 text-xs font-bold rounded-lg flex items-center gap-1.5 cursor-pointer transition ${
-                  activeReportTab === "admissions"
-                    ? "bg-white text-indigo-950 shadow-sm"
-                    : "text-slate-500 hover:text-slate-800"
-                }`}
-              >
-                <Award className="w-4 h-4 text-amber-500" />
-                Admissions Progress Reports
               </button>
 
               <button
@@ -899,7 +1172,7 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
       {/* ----------------------------------------------------------------- */}
       {/* VIEW D: ADMISSIONS PROGRESS REPORTS WORKSPACE */}
       {/* ----------------------------------------------------------------- */}
-      {activeReportTab === "admissions" && (
+      {activeReportTab === "admissions" && !isTspUser && (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-3 duration-300">
           
           {/* Header Action Section */}
@@ -1450,6 +1723,751 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
         </div>
       )}
 
+      {activeReportTab === "admissions" && isTspUser && (
+        <div className="space-y-6 animate-in fade-in slide-in-from-bottom-3 duration-300">
+          
+          {/* Header Action Section */}
+          <div className="bg-slate-900 text-white rounded-2xl p-6 shadow-xl border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-6">
+            <div className="space-y-1">
+              <span className="text-[10px] font-bold text-amber-400 tracking-widest font-mono uppercase">Section Four: TSP Center Analytics & Reports Workspace</span>
+              <h3 className="text-lg font-bold">TSP Performance, Compliance & Annex 9 Dashboard</h3>
+              <p className="text-xs text-slate-400">
+                Audit real-time admissions, student compliance tiers, and sign-off agreements for your training provider.
+              </p>
+            </div>
+            
+            {/* Quick Export Button */}
+            {selectedTspSubTab === "annex9" && tspAnnex9.length > 0 && (
+              <button
+                onClick={downloadAnnex9Csv}
+                className="px-4 py-2.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-500 rounded-lg text-white flex items-center gap-1.5 transition cursor-pointer shadow-md"
+              >
+                <FileSpreadsheet className="w-4 h-4 text-emerald-100" />
+                Export Annex 9 (CSV)
+              </button>
+            )}
+          </div>
+
+          {/* TSP Reports Tabbed Navigation Bar */}
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2 bg-slate-100 p-1.5 rounded-2xl border border-slate-200">
+            <button
+              onClick={() => setSelectedTspSubTab("summary")}
+              className={`px-3 py-2.5 rounded-xl text-center text-xs font-bold transition flex flex-col items-center gap-1.5 cursor-pointer ${
+                selectedTspSubTab === "summary"
+                  ? "bg-white text-indigo-950 shadow-sm border border-slate-200/50"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <Users className="w-4 h-4 text-indigo-500" />
+              <span>Trainee Summary</span>
+            </button>
+
+            <button
+              onClick={() => setSelectedTspSubTab("admissions")}
+              className={`px-3 py-2.5 rounded-xl text-center text-xs font-bold transition flex flex-col items-center gap-1.5 cursor-pointer ${
+                selectedTspSubTab === "admissions"
+                  ? "bg-white text-indigo-950 shadow-sm border border-slate-200/50"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <Award className="w-4 h-4 text-amber-500" />
+              <span>Admissions Funnel</span>
+            </button>
+
+            <button
+              onClick={() => setSelectedTspSubTab("attendance")}
+              className={`px-3 py-2.5 rounded-xl text-center text-xs font-bold transition flex flex-col items-center gap-1.5 cursor-pointer ${
+                selectedTspSubTab === "attendance"
+                  ? "bg-white text-indigo-950 shadow-sm border border-slate-200/50"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <Calendar className="w-4 h-4 text-emerald-500" />
+              <span>Attendance Rate</span>
+            </button>
+
+            <button
+              onClick={() => setSelectedTspSubTab("stipends")}
+              className={`px-3 py-2.5 rounded-xl text-center text-xs font-bold transition flex flex-col items-center gap-1.5 cursor-pointer ${
+                selectedTspSubTab === "stipends"
+                  ? "bg-white text-indigo-950 shadow-sm border border-slate-200/50"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <Activity className="w-4 h-4 text-rose-500" />
+              <span>Stipend Compliance</span>
+            </button>
+
+            <button
+              onClick={() => setSelectedTspSubTab("documents")}
+              className={`px-3 py-2.5 rounded-xl text-center text-xs font-bold transition flex flex-col items-center gap-1.5 cursor-pointer ${
+                selectedTspSubTab === "documents"
+                  ? "bg-white text-indigo-950 shadow-sm border border-slate-200/50"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <FileText className="w-4 h-4 text-sky-500" />
+              <span>Document Signing</span>
+            </button>
+
+            <button
+              onClick={() => setSelectedTspSubTab("completion")}
+              className={`px-3 py-2.5 rounded-xl text-center text-xs font-bold transition flex flex-col items-center gap-1.5 cursor-pointer ${
+                selectedTspSubTab === "completion"
+                  ? "bg-white text-indigo-950 shadow-sm border border-slate-200/50"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <CheckCircle2 className="w-4 h-4 text-teal-500" />
+              <span>Graduation Stats</span>
+            </button>
+
+            <button
+              onClick={() => setSelectedTspSubTab("annex9")}
+              className={`px-3 py-2.5 rounded-xl text-center text-xs font-bold transition flex flex-col items-center gap-1.5 cursor-pointer ${
+                selectedTspSubTab === "annex9"
+                  ? "bg-white text-indigo-950 shadow-sm border border-slate-200/50"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <FileSpreadsheet className="w-4 h-4 text-green-500" />
+              <span>Annex 9 Sheets</span>
+            </button>
+
+            <button
+              onClick={() => setSelectedTspSubTab("monthly_submissions")}
+              className={`px-3 py-2.5 rounded-xl text-center text-xs font-bold transition flex flex-col items-center gap-1.5 cursor-pointer ${
+                selectedTspSubTab === "monthly_submissions"
+                  ? "bg-white text-indigo-950 shadow-sm border border-slate-200/50"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <Layers className="w-4 h-4 text-purple-500" />
+              <span>Monthly Reports</span>
+            </button>
+          </div>
+
+          {/* MAIN DYNAMIC CONTENT COMPILER FOR TSP */}
+          <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm min-h-[350px] relative">
+            
+            {/* Loading Overlay */}
+            {loadingReport && (
+              <div className="absolute inset-0 bg-white/70 backdrop-blur-xs flex flex-col items-center justify-center z-10 rounded-2xl animate-in fade-in duration-200">
+                <Activity className="w-8 h-8 text-indigo-600 animate-pulse" />
+                <span className="text-xs font-bold text-slate-500 mt-2">Loading Report Datasets...</span>
+              </div>
+            )}
+
+            {/* Error Indicator */}
+            {errorReport && (
+              <div className="bg-rose-50 border border-rose-200 text-rose-800 p-4 rounded-xl text-xs font-semibold flex items-center gap-2 mb-4">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-600" />
+                <span>{errorReport}</span>
+              </div>
+            )}
+
+            {/* PANEL 1: TRAINEE SUMMARY */}
+            {selectedTspSubTab === "summary" && tspSummary && (
+              <div className="space-y-6 animate-in fade-in duration-200">
+                <div className="border-b border-slate-100 pb-3">
+                  <h4 className="text-sm font-bold text-slate-900 uppercase tracking-tight">TSP Trainee Demographics & Overview</h4>
+                  <p className="text-[11px] text-slate-400">Key metrics representing total enrolled, active training status, gender ratios, and digital sign-off compliance.</p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <div className="bg-slate-50 border border-slate-200/60 rounded-xl p-4 text-center">
+                    <span className="text-[10px] text-slate-400 font-bold uppercase block tracking-wider">Total Enrolled</span>
+                    <span className="text-2xl font-bold text-slate-900 block mt-1">{tspSummary.totalTrainees}</span>
+                    <span className="text-[10px] text-indigo-600 font-semibold block mt-1">Beneficiary Records</span>
+                  </div>
+
+                  <div className="bg-emerald-50/50 border border-emerald-100 rounded-xl p-4 text-center">
+                    <span className="text-[10px] text-emerald-600 font-bold uppercase block tracking-wider">Active Training</span>
+                    <span className="text-2xl font-bold text-emerald-900 block mt-1">{tspSummary.activeTrainees}</span>
+                    <span className="text-[10px] text-emerald-600 font-semibold block mt-1">Attending Classes</span>
+                  </div>
+
+                  <div className="bg-indigo-50/50 border border-indigo-100 rounded-xl p-4 text-center">
+                    <span className="text-[10px] text-indigo-600 font-bold uppercase block tracking-wider">Completed / Graduated</span>
+                    <span className="text-2xl font-bold text-indigo-900 block mt-1">{tspSummary.completedTrainees}</span>
+                    <span className="text-[10px] text-indigo-600 font-semibold block mt-1">Cleared Candidates</span>
+                  </div>
+
+                  <div className="bg-slate-50 border border-slate-200/60 rounded-xl p-4 text-center">
+                    <span className="text-[10px] text-slate-400 font-bold uppercase block tracking-wider">Average Attendance</span>
+                    <span className="text-2xl font-bold text-slate-900 block mt-1">{tspSummary.avgAttendance}%</span>
+                    <span className="text-[10px] text-slate-500 font-semibold block mt-1">Across all cohorts</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+                  <div className="bg-slate-50 border border-slate-200/60 rounded-xl p-5 space-y-4">
+                    <h5 className="text-xs font-bold text-slate-800 uppercase tracking-wider font-mono">Gender Distribution</h5>
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-xs font-semibold">
+                        <span>Female ratio</span>
+                        <span>{tspSummary.genderBreakdown?.female || 0} / {tspSummary.totalTrainees} Trainees</span>
+                      </div>
+                      <div className="w-full bg-slate-200 h-2.5 rounded-full overflow-hidden">
+                        <div className="bg-rose-500 h-full" style={{ width: `${tspSummary.totalTrainees > 0 ? ((tspSummary.genderBreakdown?.female || 0) / tspSummary.totalTrainees) * 100 : 0}%` }}></div>
+                      </div>
+                      <div className="flex justify-between text-xs font-semibold pt-2">
+                        <span>Male ratio</span>
+                        <span>{tspSummary.genderBreakdown?.male || 0} / {tspSummary.totalTrainees} Trainees</span>
+                      </div>
+                      <div className="w-full bg-slate-200 h-2.5 rounded-full overflow-hidden">
+                        <div className="bg-indigo-500 h-full" style={{ width: `${tspSummary.totalTrainees > 0 ? ((tspSummary.genderBreakdown?.male || 0) / tspSummary.totalTrainees) * 100 : 0}%` }}></div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-50 border border-slate-200/60 rounded-xl p-5 space-y-4">
+                    <h5 className="text-xs font-bold text-slate-800 uppercase tracking-wider font-mono">Document Sign-off Rate</h5>
+                    <div className="flex items-center gap-4">
+                      <div className="w-16 h-16 rounded-full border-4 border-indigo-600 border-t-slate-200 flex items-center justify-center font-bold text-indigo-900 text-sm">
+                        {tspSummary.documentSigning?.total > 0 ? Math.round((tspSummary.documentSigning.signed / tspSummary.documentSigning.total) * 100) : 0}%
+                      </div>
+                      <div>
+                        <span className="text-xs font-bold text-slate-700 block">{tspSummary.documentSigning?.signed || 0} of {tspSummary.documentSigning?.total || 0} documents signed</span>
+                        <span className="text-[11px] text-slate-400 block mt-1">All admitted students must complete signing their letters and indemnity agreements.</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* PANEL 2: ADMISSIONS FUNNEL */}
+            {selectedTspSubTab === "admissions" && tspAdmissions && (
+              <div className="space-y-6 animate-in fade-in duration-200">
+                <div className="border-b border-slate-100 pb-3 flex justify-between items-center">
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-900 uppercase tracking-tight">Admissions Funnel Progression</h4>
+                    <p className="text-[11px] text-slate-400">Real-time stats from registry pipeline showing conversion rates and pending actions.</p>
+                  </div>
+                </div>
+
+                <div className="space-y-4 max-w-xl mx-auto py-4">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs font-bold">
+                      <span>Total Applications Loaded</span>
+                      <span>{tspAdmissions.totalRegistered || 0} Candidates</span>
+                    </div>
+                    <div className="w-full bg-slate-100 h-4 rounded-full overflow-hidden border border-slate-200">
+                      <div className="bg-slate-500 h-full" style={{ width: "100%" }}></div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs font-bold">
+                      <span>Offers Under Review</span>
+                      <span>{tspAdmissions.underReview || 0} Candidates ({tspAdmissions.totalRegistered > 0 ? Math.round((tspAdmissions.underReview / tspAdmissions.totalRegistered) * 100) : 0}%)</span>
+                    </div>
+                    <div className="w-full bg-slate-100 h-4 rounded-full overflow-hidden border border-slate-200">
+                      <div className="bg-amber-500 h-full" style={{ width: `${tspAdmissions.totalRegistered > 0 ? (tspAdmissions.underReview / tspAdmissions.totalRegistered) * 100 : 0}%` }}></div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs font-bold">
+                      <span>Admitted Students</span>
+                      <span>{tspAdmissions.admitted || 0} Candidates ({tspAdmissions.totalRegistered > 0 ? Math.round((tspAdmissions.admitted / tspAdmissions.totalRegistered) * 100) : 0}%)</span>
+                    </div>
+                    <div className="w-full bg-slate-100 h-4 rounded-full overflow-hidden border border-slate-200">
+                      <div className="bg-indigo-600 h-full" style={{ width: `${tspAdmissions.totalRegistered > 0 ? (tspAdmissions.admitted / tspAdmissions.totalRegistered) * 100 : 0}%` }}></div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs font-bold">
+                      <span>Verified Complete (Fully Onboarded)</span>
+                      <span>{tspAdmissions.verified || 0} Candidates ({tspAdmissions.totalRegistered > 0 ? Math.round((tspAdmissions.verified / tspAdmissions.totalRegistered) * 100) : 0}%)</span>
+                    </div>
+                    <div className="w-full bg-slate-100 h-4 rounded-full overflow-hidden border border-slate-200">
+                      <div className="bg-emerald-500 h-full" style={{ width: `${tspAdmissions.totalRegistered > 0 ? (tspAdmissions.verified / tspAdmissions.totalRegistered) * 100 : 0}%` }}></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* PANEL 3: ATTENDANCE TRENDS */}
+            {selectedTspSubTab === "attendance" && tspAttendance && (
+              <div className="space-y-6 animate-in fade-in duration-200">
+                <div className="border-b border-slate-100 pb-3">
+                  <h4 className="text-sm font-bold text-slate-900 uppercase tracking-tight">Monthly Attendance Trends</h4>
+                  <p className="text-[11px] text-slate-400">Monthly breakdown of average attendance percentage rate across all active trainees linked to your center.</p>
+                </div>
+
+                <div className="overflow-x-auto border border-slate-150 rounded-xl">
+                  <table className="w-full text-[11px] text-slate-600 border-collapse text-left">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-50 text-[10px] text-slate-400 font-bold uppercase">
+                        <th className="py-3 px-4">Training Period (Month)</th>
+                        <th className="py-3 px-4 text-center">Trainees Assessed</th>
+                        <th className="py-3 px-4 text-right">Average Attendance Rate</th>
+                        <th className="py-3 px-4 text-right">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {tspAttendance.length === 0 ? (
+                        <tr>
+                          <td colSpan={4} className="py-10 text-center font-medium text-slate-400">No monthly trends found. Complete attendance markings to generate insights.</td>
+                        </tr>
+                      ) : (
+                        tspAttendance.map((row: any, idx: number) => (
+                          <tr key={idx} className="hover:bg-slate-50/50">
+                            <td className="py-3 px-4 font-bold text-indigo-950">{row.month}</td>
+                            <td className="py-3 px-4 text-center font-semibold text-slate-700">{row.total_assessed} students</td>
+                            <td className="py-3 px-4 text-right font-bold text-emerald-600 font-mono text-sm">{row.avg_rate ? parseFloat(row.avg_rate.toFixed(1)) : 0.0}%</td>
+                            <td className="py-3 px-4 text-right">
+                              <span className={`p-1 px-2.5 rounded-full text-[9px] font-bold ${row.avg_rate >= 65.0 ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-rose-50 text-rose-700 border border-rose-200"}`}>
+                                {row.avg_rate >= 65.0 ? "EXCELLENT" : "REQUIRES ATTENTION"}
+                              </span>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* PANEL 4: STIPEND COMPLIANCE TIERS */}
+            {selectedTspSubTab === "stipends" && tspSummary && (
+              <div className="space-y-6 animate-in fade-in duration-200">
+                <div className="border-b border-slate-100 pb-3">
+                  <h4 className="text-sm font-bold text-slate-900 uppercase tracking-tight">Stipend Eligibility & Compliance Breakdown</h4>
+                  <p className="text-[11px] text-slate-400">Current monthly distribution of trainees mapped directly to official stipend compliance threshold tiers (65% rule).</p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <div className="bg-emerald-50/50 border border-emerald-100 rounded-xl p-5 text-center space-y-1">
+                    <span className="text-[10px] text-emerald-600 font-bold uppercase block tracking-wider">{"Eligible (>= 65%)"}</span>
+                    <span className="text-3xl font-bold text-emerald-900 block mt-1">{tspSummary.stipendCompliance?.eligible || 0}</span>
+                    <p className="text-[10px] text-slate-400 pt-2 border-t border-emerald-100">Approved for 100% monthly stipend payments.</p>
+                  </div>
+
+                  <div className="bg-amber-50/50 border border-amber-100 rounded-xl p-5 text-center space-y-1">
+                    <span className="text-[10px] text-amber-600 font-bold uppercase block tracking-wider">{"Warning (>= 50% & < 65%)"}</span>
+                    <span className="text-3xl font-bold text-amber-900 block mt-1">{tspSummary.stipendCompliance?.warning || 0}</span>
+                    <p className="text-[10px] text-slate-400 pt-2 border-t border-amber-100">At risk of losing stipend if performance slips.</p>
+                  </div>
+
+                  <div className="bg-orange-50/50 border border-orange-100 rounded-xl p-5 text-center space-y-1">
+                    <span className="text-[10px] text-orange-600 font-bold uppercase block tracking-wider">{"At Risk (>= 30% & < 50%)"}</span>
+                    <span className="text-3xl font-bold text-orange-900 block mt-1">{tspSummary.stipendCompliance?.atRisk || 0}</span>
+                    <p className="text-[10px] text-slate-400 pt-2 border-t border-orange-100">Critical warning tier. Close tracking required.</p>
+                  </div>
+
+                  <div className="bg-rose-50 border border-rose-100 rounded-xl p-5 text-center space-y-1">
+                    <span className="text-[10px] text-rose-600 font-bold uppercase block tracking-wider">{"Suspended (< 30%)"}</span>
+                    <span className="text-3xl font-bold text-rose-900 block mt-1">{tspSummary.stipendCompliance?.suspended || 0}</span>
+                    <p className="text-[10px] text-slate-400 pt-2 border-t border-rose-100">Stipend payments suspended due to low attendance.</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* PANEL 5: DOCUMENT SIGNING */}
+            {selectedTspSubTab === "documents" && tspDocuments && (
+              <div className="space-y-6 animate-in fade-in duration-200">
+                <div className="border-b border-slate-100 pb-3">
+                  <h4 className="text-sm font-bold text-slate-900 uppercase tracking-tight">Document Signing Analytics</h4>
+                  <p className="text-[11px] text-slate-400">Audit report of generated letters, legal indemnity forms, and user-signed documents.</p>
+                </div>
+
+                <div className="overflow-x-auto border border-slate-150 rounded-xl">
+                  <table className="w-full text-[11px] text-slate-600 border-collapse text-left">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-50 text-[10px] text-slate-400 font-bold uppercase">
+                        <th className="py-3 px-4">Document Type</th>
+                        <th className="py-3 px-4 text-center">Total Generated</th>
+                        <th className="py-3 px-4 text-center">Signed Complete</th>
+                        <th className="py-3 px-4 text-right">Pending Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {tspDocuments.map((row: any, idx: number) => (
+                        <tr key={idx} className="hover:bg-slate-50/50">
+                          <td className="py-3 px-4 font-bold text-slate-800">{row.document_type}</td>
+                          <td className="py-3 px-4 text-center font-semibold text-slate-600">{row.count}</td>
+                          <td className="py-3 px-4 text-center text-emerald-600 font-bold">{row.signed_count} signed</td>
+                          <td className="py-3 px-4 text-right font-semibold text-rose-500">{row.count - row.signed_count} pending</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* PANEL 6: GRADUATION STATS */}
+            {selectedTspSubTab === "completion" && tspCompletion && (
+              <div className="space-y-6 animate-in fade-in duration-200">
+                <div className="border-b border-slate-100 pb-3">
+                  <h4 className="text-sm font-bold text-slate-900 uppercase tracking-tight">Graduation & Certification Statistics</h4>
+                  <p className="text-[11px] text-slate-400">Total cleared candidates and completion metrics for cohort training cycles.</p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {tspCompletion.map((row: any, idx: number) => (
+                    <div key={idx} className="bg-slate-50 border border-slate-200/60 rounded-xl p-5 text-center">
+                      <span className="text-[10px] text-slate-400 font-bold uppercase block tracking-wider">{row.status}</span>
+                      <span className="text-3xl font-bold text-indigo-950 block mt-1">{row.count}</span>
+                      <p className="text-[10px] text-slate-400 pt-2 border-t border-slate-200/60 mt-2">Verified completed status in database registry.</p>
+                    </div>
+                  ))}
+                  {tspCompletion.length === 0 && (
+                    <div className="col-span-3 bg-slate-50 text-slate-400 py-10 rounded-xl text-center text-xs font-semibold">
+                      No cleared candidates or completion status logged.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* PANEL 7: ANNEX 9 SHEETS */}
+            {selectedTspSubTab === "annex9" && (
+              <div className="space-y-6 animate-in fade-in duration-200 text-left">
+                {/* Header Block */}
+                <div className="border-b border-slate-100 pb-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-900 uppercase tracking-tight">Official Annex 9 Attendance & TVET List Ledger</h4>
+                    <p className="text-[11px] text-slate-400">Verify monthly attendance rates, active TVET list statuses, and stipend eligibility sheets for compliance oversight.</p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={refreshAnnex9Data}
+                      className="px-3 py-1.5 text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg flex items-center gap-1.5 transition cursor-pointer"
+                      title="Reload real-time data from database"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${loadingReport ? "animate-spin" : ""}`} />
+                      Refresh
+                    </button>
+                    <button
+                      onClick={exportOfficialWorkbook}
+                      className="px-3 py-1.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg flex items-center gap-1.5 transition cursor-pointer shadow-sm"
+                    >
+                      <FileSpreadsheet className="w-3.5 h-3.5" />
+                      Export Annex 9 (.xlsx)
+                    </button>
+                    <button
+                      onClick={exportAttendanceCsv}
+                      className="px-3 py-1.5 text-xs font-bold bg-slate-800 hover:bg-slate-700 text-white rounded-lg flex items-center gap-1.5 transition cursor-pointer shadow-sm"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      Export CSV
+                    </button>
+                  </div>
+                </div>
+
+                {/* Filters Row */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                  {/* Reporting Month */}
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 font-mono">Reporting Month</label>
+                    <input
+                      type="month"
+                      value={annex9Month}
+                      onChange={(e) => setAnnex9Month(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  {/* Search bar */}
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 font-mono">Search Trainee / TVET ID</label>
+                    <div className="relative">
+                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                      <input
+                        type="text"
+                        placeholder="Type name or TVET ID..."
+                        value={annex9Search}
+                        onChange={(e) => setAnnex9Search(e.target.value)}
+                        className="w-full pl-9 pr-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-medium text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Stipend Status filter */}
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 font-mono">Stipend Status</label>
+                    <select
+                      value={annex9StipendFilter}
+                      onChange={(e) => setAnnex9StipendFilter(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                    >
+                      <option value="all">All Stipend States</option>
+                      <option value="Eligible">Eligible</option>
+                      <option value="Below Threshold">Below Threshold</option>
+                      <option value="No Record">No Record</option>
+                    </select>
+                  </div>
+
+                  {/* Still on Portal filter */}
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 font-mono">Still on TVET List?</label>
+                    <select
+                      value={annex9PortalFilter}
+                      onChange={(e) => setAnnex9PortalFilter(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                    >
+                      <option value="all">All States</option>
+                      <option value="yes">Yes (Active)</option>
+                      <option value="no">No (Inactive)</option>
+                    </select>
+                  </div>
+
+                  {/* Still Attending filter */}
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 font-mono">Still Attending Classes?</label>
+                    <select
+                      value={annex9AttendingFilter}
+                      onChange={(e) => setAnnex9AttendingFilter(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                    >
+                      <option value="all">All States</option>
+                      <option value="yes">Yes (Attending)</option>
+                      <option value="no">No (Not Attending)</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Table container */}
+                <div className="overflow-x-auto border border-slate-200 rounded-xl shadow-sm">
+                  <table className="w-full text-[11px] text-slate-600 border-collapse text-left min-w-[1200px]">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-50 text-[10px] text-slate-500 font-bold uppercase tracking-wider">
+                        <th className="py-3 px-3">Trainee Name</th>
+                        <th className="py-3 px-3">TVET ID</th>
+                        <th className="py-3 px-3 text-center">Expected Days</th>
+                        <th className="py-3 px-3 text-center">Present Days</th>
+                        <th className="py-3 px-3 text-center">Absent Days</th>
+                        <th className="py-3 px-3 text-center">Late Days</th>
+                        <th className="py-3 px-3 text-center">Excused Days</th>
+                        <th className="py-3 px-3 text-right">Attendance %</th>
+                        <th className="py-3 px-3 text-right">Stipend Status</th>
+                        <th className="py-3 px-3 text-center bg-indigo-50/40">Still on TVET List?</th>
+                        <th className="py-3 px-3 text-center bg-indigo-50/40">Still Attending Classes?</th>
+                        <th className="py-3 px-3 text-center">Last Verified</th>
+                        <th className="py-3 px-3 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {(() => {
+                        const filtered = tspAnnex9.filter((row: any) => {
+                          if (annex9Search.trim() !== "") {
+                            const s = annex9Search.toLowerCase();
+                            const nameMatch = `${row.first_name || ""} ${row.last_name || ""}`.toLowerCase().includes(s);
+                            const idMatch = (row.tvet_id || "").toLowerCase().includes(s);
+                            if (!nameMatch && !idMatch) return false;
+                          }
+                          if (annex9StipendFilter !== "all") {
+                            if (row.stipend_status?.toLowerCase() !== annex9StipendFilter.toLowerCase()) return false;
+                          }
+                          if (annex9PortalFilter !== "all") {
+                            const targetVal = annex9PortalFilter === "yes";
+                            if (row.still_on_portal !== targetVal) return false;
+                          }
+                          if (annex9AttendingFilter !== "all") {
+                            const targetVal = annex9AttendingFilter === "yes";
+                            if (row.still_attending !== targetVal) return false;
+                          }
+                          return true;
+                        });
+
+                        if (filtered.length === 0) {
+                          return (
+                            <tr>
+                              <td colSpan={13} className="py-16 text-center font-medium text-slate-400 text-xs">
+                                No matching trainee records found. Try modifying your search or filters.
+                              </td>
+                            </tr>
+                          );
+                        }
+
+                        return filtered.map((row: any) => (
+                          <tr key={row.id} className="hover:bg-slate-50/40 transition-colors">
+                            <td className="py-3 px-3 font-bold text-indigo-950">
+                              {row.first_name} {row.last_name}
+                            </td>
+                            <td className="py-3 px-3 font-mono font-bold text-[10px] text-slate-500">
+                              {row.tvet_id}
+                            </td>
+                            <td className="py-3 px-3 text-center font-semibold text-slate-600">
+                              {row.expected_days}
+                            </td>
+                            <td className="py-3 px-3 text-center text-emerald-600 font-bold">
+                              {row.present_days}
+                            </td>
+                            <td className="py-3 px-3 text-center text-rose-500 font-semibold">
+                              {row.absent_days}
+                            </td>
+                            <td className="py-3 px-3 text-center text-amber-500 font-semibold">
+                              {row.late_days}
+                            </td>
+                            <td className="py-3 px-3 text-center text-slate-500 font-semibold">
+                              {row.excused_days}
+                            </td>
+                            <td className="py-3 px-3 text-right font-bold text-slate-950 font-mono text-xs">
+                              {row.attendance_percentage}%
+                            </td>
+                            <td className="py-3 px-3 text-right">
+                              <span className={`p-1 px-2.5 rounded-full text-[9px] font-extrabold uppercase tracking-wide border ${
+                                row.stipend_status === "Eligible" || row.stipend_status === "ELIGIBLE"
+                                  ? "bg-emerald-50 text-emerald-800 border-emerald-100"
+                                  : row.stipend_status === "Below Threshold" || row.stipend_status === "BELOW_THRESHOLD"
+                                  ? "bg-rose-50 text-rose-800 border-rose-100 animate-pulse"
+                                  : "bg-slate-50 text-slate-500 border-slate-200"
+                              }`}>
+                                {row.stipend_status}
+                              </span>
+                            </td>
+
+                            {/* Still on Portal Toggle */}
+                            <td className="py-3 px-3 text-center bg-indigo-50/10">
+                              <div className="flex items-center justify-center gap-1.5">
+                                <button
+                                  onClick={() => handlePortalStatusToggle(row.id, "stillOnPortal", true)}
+                                  className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold tracking-wider transition-all duration-150 cursor-pointer ${
+                                    row.still_on_portal === true
+                                      ? "bg-emerald-600 text-white shadow-sm"
+                                      : "bg-slate-100 hover:bg-slate-200 text-slate-600"
+                                  }`}
+                                >
+                                  YES
+                                </button>
+                                <button
+                                  onClick={() => handlePortalStatusToggle(row.id, "stillOnPortal", false)}
+                                  className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold tracking-wider transition-all duration-150 cursor-pointer ${
+                                    row.still_on_portal === false
+                                      ? "bg-rose-600 text-white shadow-sm"
+                                      : "bg-slate-100 hover:bg-slate-200 text-slate-600"
+                                  }`}
+                                >
+                                  NO
+                                </button>
+                              </div>
+                            </td>
+
+                            {/* Still Attending Toggle */}
+                            <td className="py-3 px-3 text-center bg-indigo-50/10">
+                              <div className="flex items-center justify-center gap-1.5">
+                                <button
+                                  onClick={() => handlePortalStatusToggle(row.id, "stillAttending", true)}
+                                  className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold tracking-wider transition-all duration-150 cursor-pointer ${
+                                    row.still_attending === true
+                                      ? "bg-emerald-600 text-white shadow-sm"
+                                      : "bg-slate-100 hover:bg-slate-200 text-slate-600"
+                                  }`}
+                                >
+                                  YES
+                                </button>
+                                <button
+                                  onClick={() => handlePortalStatusToggle(row.id, "stillAttending", false)}
+                                  className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold tracking-wider transition-all duration-150 cursor-pointer ${
+                                    row.still_attending === false
+                                      ? "bg-rose-600 text-white shadow-sm"
+                                      : "bg-slate-100 hover:bg-slate-200 text-slate-600"
+                                  }`}
+                                >
+                                  NO
+                                </button>
+                              </div>
+                            </td>
+
+                            {/* Last Verified */}
+                            <td className="py-3 px-3 text-center font-mono text-[10px] text-slate-500">
+                              {row.last_verified_at ? (
+                                <div className="flex flex-col items-center">
+                                  <span className="font-bold text-slate-700">
+                                    {new Date(row.last_verified_at).toISOString().split("T")[0]}
+                                  </span>
+                                  <span className="text-[9px] text-slate-400">
+                                    by {row.verified_by || "TSP"}
+                                  </span>
+                                </div>
+                              ) : (
+                                <span className="text-slate-400 italic">Not Verified</span>
+                              )}
+                            </td>
+
+                            {/* Actions */}
+                            <td className="py-3 px-3 text-right">
+                              <button
+                                onClick={() => handleOpenRemarksModal(row)}
+                                className="p-1.5 bg-slate-100 hover:bg-indigo-50 text-slate-600 hover:text-indigo-600 rounded-lg transition-colors cursor-pointer"
+                                title="Add operational remarks or notes"
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+                            </td>
+                          </tr>
+                        ));
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* PANEL 8: MONTHLY REPORT SUBMISSIONS */}
+            {selectedTspSubTab === "monthly_submissions" && (
+              <div className="space-y-6 animate-in fade-in duration-200">
+                <div className="border-b border-slate-100 pb-3">
+                  <h4 className="text-sm font-bold text-slate-900 uppercase tracking-tight">Monthly Report Submission History</h4>
+                  <p className="text-[11px] text-slate-400">Official logs of submitted report packets and approval status checks by Federal controllers.</p>
+                </div>
+
+                <div className="overflow-x-auto border border-slate-150 rounded-xl">
+                  <table className="w-full text-[11px] text-slate-600 border-collapse text-left">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-50 text-[10px] text-slate-400 font-bold uppercase">
+                        <th className="py-3 px-4">Submission Period</th>
+                        <th className="py-3 px-4">Trainees count</th>
+                        <th className="py-3 px-4">Compliance status</th>
+                        <th className="py-3 px-4 text-center">Approval State</th>
+                        <th className="py-3 px-4 text-right">Last Updated</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {tspMonthly.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="py-10 text-center font-medium text-slate-400">No monthly governance submissions found for this training center.</td>
+                        </tr>
+                      ) : (
+                        tspMonthly.map((row: any) => (
+                          <tr key={row.id} className="hover:bg-slate-50/50">
+                            <td className="py-3 px-4 font-bold text-indigo-950">{row.submission_period}</td>
+                            <td className="py-3 px-4 font-semibold text-slate-700">{row.total_trainees} students</td>
+                            <td className="py-3 px-4 font-semibold text-slate-600">Avg {row.stipend_eligible_count || 0} eligible</td>
+                            <td className="py-3 px-4 text-center">
+                              <span className={`p-1 px-2.5 rounded-full text-[9px] font-bold uppercase ${
+                                row.status === "APPROVED" ? "bg-emerald-50 text-emerald-700 border border-emerald-100" :
+                                row.status === "SUBMITTED" ? "bg-amber-50 text-amber-700 border border-amber-100" :
+                                row.status === "RETURNED" ? "bg-rose-50 text-rose-700 border border-rose-100" :
+                                "bg-slate-50 text-slate-700 border border-slate-100"
+                              }`}>
+                                {row.status}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono text-slate-500">{new Date(row.updated_at || row.created_at).toLocaleDateString()}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+          </div>
+
+        </div>
+      )}
+
       {/* ----------------------------------------------------------------- */}
       {/* VIEW E: LOCATIONS OVERSIGHT & KPIS REPORT PANEL (Task 017-C / Part 8 & 9) */}
       {/* ----------------------------------------------------------------- */}
@@ -1460,6 +2478,73 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
       {activeReportTab === "governance" && (
         <div className="bg-white p-6 rounded-2xl border border-slate-250 shadow-xs mt-4">
           <GovernanceSubmissions session={session} />
+        </div>
+      )}
+
+      {/* 5. Remarks Editor Modal Dialog */}
+      {editingRow && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200 text-left">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full overflow-hidden">
+            <div className="p-4 border-b flex items-center justify-between bg-slate-50">
+              <h4 className="text-xs font-black uppercase text-slate-500 tracking-wider font-mono">
+                Update Operational Remarks
+              </h4>
+              <button
+                onClick={() => setEditingRow(null)}
+                className="p-1 hover:bg-slate-200 text-slate-500 rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
+              <div>
+                <span className="text-[10px] text-slate-400 font-mono block uppercase">Trainee Candidate</span>
+                <span className="text-sm font-extrabold text-indigo-950">
+                  {editingRow.first_name} {editingRow.last_name}
+                </span>
+                <span className="text-[10px] font-mono text-slate-500 block mt-0.5">{editingRow.tvet_id}</span>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 font-mono">
+                  Continuous Attendance Remarks
+                </label>
+                <textarea
+                  placeholder="E.g. Verified on site; active registration verified on regional education portal node..."
+                  value={remarksInput}
+                  onChange={(e) => setRemarksInput(e.target.value)}
+                  className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 h-24 resize-none"
+                />
+              </div>
+            </div>
+            <div className="p-4 border-t bg-slate-50 flex items-center justify-end gap-2">
+              <button
+                onClick={() => setEditingRow(null)}
+                className="px-3 py-2 rounded-lg text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-600 transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveRemarks}
+                className="px-3 py-2 rounded-lg text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white transition cursor-pointer"
+              >
+                Save Changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 6. Toast Notification Overlays */}
+      {toast && (
+        <div className="fixed bottom-5 right-5 z-50 animate-bounce">
+          <div className={`p-4 rounded-xl shadow-lg border flex items-center gap-3 max-w-sm ${
+            toast.type === "success" ? "bg-emerald-50 text-emerald-800 border-emerald-100" :
+            toast.type === "error" ? "bg-rose-50 text-rose-800 border-rose-100" :
+            "bg-indigo-50 text-indigo-800 border-indigo-100"
+          }`}>
+            <span className="text-xs font-bold">{toast.message}</span>
+          </div>
         </div>
       )}
 

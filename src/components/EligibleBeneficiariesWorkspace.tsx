@@ -28,7 +28,7 @@ interface EligibleBeneficiariesWorkspaceProps {
 
 // Age threshold constants
 const PREFERRED_AGE_MIN = 18;
-const PREFERRED_AGE_MAX = 35;
+const PREFERRED_AGE_MAX = 34;
 
 // Phase 1: High Fidelity Image Fallback Component
 export function ImageWithFallback({ b, className, sizeClass = "w-10 h-10 text-xs" }: { b: any; className?: string; sizeClass?: string }) {
@@ -1533,8 +1533,8 @@ export default function EligibleBeneficiariesWorkspace({
                   className="w-full bg-slate-50 border border-slate-200 text-xs py-1.5 px-2 rounded-lg text-slate-700 font-medium cursor-pointer"
                 >
                   <option value="all">All Brackets</option>
-                  <option value="18–24">18–24 Years</option>
-                  <option value="25–35">25–35 Years (Preferred)</option>
+                  <option value="18–24">18–24 Years (Preferred)</option>
+                  <option value="25–35">25–35 Years</option>
                   <option value="36–45">36–45 Years</option>
                   <option value="46+">46+ Years</option>
                 </select>

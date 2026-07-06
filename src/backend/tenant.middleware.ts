@@ -1,7 +1,7 @@
 import { Response, NextFunction } from "express";
 import { PoolClient } from "pg";
 import { AuthenticatedRequest } from "./auth.middleware";
-import { getPgPool } from "./db";
+import { getPgPool, isPgActive, deactivatePg } from "./db";
 import { requestStorage } from "./request-storage";
 
 export async function tenantContextMiddleware(
@@ -17,37 +17,49 @@ export async function tenantContextMiddleware(
   let client: PoolClient | null = null;
   try {
     const pool = getPgPool();
-    if (!pool) {
+    if (!pool || !isPgActive) {
       return next();
     }
 
-    // Acquire PostgreSQL client
-    client = await pool.connect();
+    try {
+      // Acquire PostgreSQL client
+      client = await pool.connect();
 
-    // Begin a transaction
-    await client.query("BEGIN");
+      // Begin a transaction
+      await client.query("BEGIN");
 
-    // Push tenant context into PostgreSQL session variables in a single multi-set query
-    const effectiveStateId = req.user.stateId === "state_imo_id_default" 
-      ? "bc183dd7-3e5e-461c-8f23-b9e888339146" 
-      : (req.user.stateId || "");
+      // Push tenant context into PostgreSQL session variables in a single multi-set query
+      const effectiveStateId = req.user.stateId === "state_imo_id_default" 
+        ? "bc183dd7-3e5e-461c-8f23-b9e888339146" 
+        : (req.user.stateId || "");
 
-    await client.query(`
-      SELECT 
-        set_config('app.current_tenant_id', $1::text, true),
-        set_config('app.current_tenant_tier', $2::text, true),
-        set_config('app.current_state_id', $3::text, true),
-        set_config('app.current_tsp_id', $4::text, true),
-        set_config('app.current_beneficiary_id', $5::text, true),
-        set_config('app.current_user_role', $6::text, true)
-    `, [
-      req.user.tenantId || "",
-      req.user.tenantTier || "",
-      effectiveStateId,
-      req.user.tspId || "",
-      req.user.beneficiaryId || "",
-      req.user.role || ""
-    ]);
+      await client.query(`
+        SELECT 
+          set_config('app.current_tenant_id', $1::text, true),
+          set_config('app.current_tenant_tier', $2::text, true),
+          set_config('app.current_state_id', $3::text, true),
+          set_config('app.current_tsp_id', $4::text, true),
+          set_config('app.current_beneficiary_id', $5::text, true),
+          set_config('app.current_user_role', $6::text, true)
+      `, [
+        req.user.tenantId || "",
+        req.user.tenantTier || "",
+        effectiveStateId,
+        req.user.tspId || "",
+        req.user.beneficiaryId || "",
+        req.user.role || ""
+      ]);
+    } catch (dbError: any) {
+      console.warn("[TenantMiddleware] PostgreSQL initialization error. Falling back to JSON.", dbError.message || dbError);
+      deactivatePg();
+      if (client) {
+        try {
+          client.release();
+        } catch (_) {}
+        client = null;
+      }
+      return next();
+    }
 
     // Attach client to request
     req.dbClient = client;
