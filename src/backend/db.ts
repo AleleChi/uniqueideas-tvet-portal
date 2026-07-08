@@ -1435,6 +1435,17 @@ export async function initDb(): Promise<void> {
   const pool = getPgPool()!;
   console.log("[BOOT] Database Connected");
   
+  // Obtain PostgreSQL advisory lock to serialize startup migrations across multiple workers/processes
+  let advisoryLockClient: any = null;
+  try {
+    advisoryLockClient = await pool.connect();
+    console.log("[BOOT] Acquiring exclusive database initialization advisory lock...");
+    await advisoryLockClient.query("SELECT pg_advisory_lock(99887766)");
+    console.log("[BOOT] Exclusive database initialization advisory lock acquired!");
+  } catch (lockErr: any) {
+    console.error("[BOOT] Failed to acquire PostgreSQL advisory lock:", lockErr.message || lockErr);
+  }
+  
   try {
     console.log("[BOOT] Schema migrations starting...");
     console.log("[DB] Creating PostgreSQL schema tables and indexes...");
@@ -2746,6 +2757,18 @@ export async function initDb(): Promise<void> {
     }
   } catch (err) {
     console.error("[DB] Failed to initialize PostgreSQL tables/relations:", err);
+  } finally {
+    if (advisoryLockClient) {
+      try {
+        await advisoryLockClient.query("SELECT pg_advisory_unlock(99887766)");
+        console.log("[BOOT] Exclusive database initialization advisory lock released.");
+      } catch (unlockErr: any) {
+        console.warn("[BOOT] Failed to release PostgreSQL advisory lock:", unlockErr.message || unlockErr);
+      }
+      try {
+        advisoryLockClient.release();
+      } catch (e) {}
+    }
   }
 }
 

@@ -53,7 +53,7 @@ function adaptResponse(response: Response, url: string): Response {
 export async function authFetch(
   url: string,
   options: RequestInit = {},
-  customOptions: { suppressForbiddenToast?: boolean } = {}
+  customOptions: { suppressForbiddenToast?: boolean; suppressUnauthorized?: boolean } = {}
 ): Promise<Response> {
   if (isVercelMissingApi) {
     console.error(`[CATASTROPHIC] Blocked relative API request to ${url} on vercel.app due to missing VITE_API_BASE_URL config.`);
@@ -138,8 +138,8 @@ export async function authFetch(
           
           // Handle 401/403 security context boundaries without silent failures
           if (response.status === 401) {
-            if (url.includes("/api/auth/login")) {
-              console.log(`[LOGIN CHALLENGE] 401 response on login credentials verification for ${url}.`);
+            if (url.includes("/api/auth/login") || url.includes("/api/auth/logout") || customOptions?.suppressUnauthorized) {
+              console.log(`[LOGIN CHALLENGE / SILENT] 401 response on credentials, logout, or suppressed verification for ${url}.`);
             } else {
               console.error(`[SESSION EXPIRED] 401 Unauthorized detected for ${url}. Current session state invalid.`);
               if (typeof window !== "undefined") {

@@ -626,7 +626,7 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      await authFetch("/api/auth/logout", { method: "POST" });
+      await authFetch("/api/auth/logout", { method: "POST" }, { suppressUnauthorized: true });
     } catch (e) {
       console.error("Cookie clearing network exception:", e);
     }
