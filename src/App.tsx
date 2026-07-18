@@ -514,6 +514,9 @@ export default function App() {
   };
 
   const fetchCustomFields = async () => {
+    if (!session?.isAuthenticated) {
+      return;
+    }
     try {
       const res = await authFetch("/api/custom-fields");
       if (res.ok) {

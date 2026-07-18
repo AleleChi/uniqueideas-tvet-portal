@@ -8044,7 +8044,7 @@ export class DbRepo {
     }
 
     if (lga && lga !== "all" && lga !== "ALL") {
-      whereClause += ` AND (b.city ILIKE $${valIndex} OR b.lga ILIKE $${valIndex})`;
+      whereClause += ` AND (b.city ILIKE $${valIndex} OR b.custom_fields->>'lga' ILIKE $${valIndex})`;
       values.push(`%${lga}%`);
       valIndex++;
     }
@@ -8412,7 +8412,7 @@ export class DbRepo {
         values.push(params.lgaId);
       }
       if (params.lga && params.lga !== "all") {
-        whereClause += ` AND (b.city ILIKE $${pIdx} OR b.lga ILIKE $${pIdx})`;
+        whereClause += ` AND (b.city ILIKE $${pIdx} OR b.custom_fields->>'lga' ILIKE $${pIdx})`;
         values.push(`%${params.lga}%`);
         pIdx++;
       }
@@ -8473,7 +8473,7 @@ export class DbRepo {
           b.gender,
           b.state,
           b.state_id,
-          b.lga,
+          COALESCE(b.city, b.custom_fields->>'lga') as lga,
           b.lga_id,
           b.tsp,
           b.tsp_id,
