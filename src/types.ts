@@ -545,5 +545,38 @@ export interface AttendanceRecord {
   cohort?: string;
 }
 
+export interface ReportingRoster {
+  id: string;
+  tsp_id: string;
+  cohort_id?: string;
+  name: string;
+  reporting_year?: string;
+  allocation_limit: number;
+  status: "DRAFT" | "LOCKED";
+  is_active: boolean;
+  locked_at?: string;
+  locked_by?: string;
+  created_by?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ReportingRosterMember {
+  id: string;
+  roster_id: string;
+  beneficiary_id: string;
+  sort_order: number;
+  selected_at?: string;
+  selected_by?: string;
+  effective_from?: string;
+  effective_to?: string;
+  replacement_for_member_id?: string;
+  removal_reason?: string;
+  removed_at?: string;
+  removed_by?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
 
 

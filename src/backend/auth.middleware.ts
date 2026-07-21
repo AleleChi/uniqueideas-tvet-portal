@@ -76,9 +76,6 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
 
     const isTspUser = session.role === "TSP" || session.role.startsWith("TSP") || session.role === "REVIEW_OFFICER" || session.role === "ADMIN_OFFICER";
     let tspId = session.tsp_id || undefined;
-    if (isTspUser && !tspId) {
-      tspId = "00000000-0000-0000-0000-000000000001";
-    }
 
     req.user = {
       id: session.user_id,

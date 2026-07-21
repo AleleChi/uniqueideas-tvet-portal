@@ -14,6 +14,7 @@ import { authFetch } from "../utils/authFetch";
 import { API_BASE_URL } from "../config/api";
 import { DispatchCenter } from "./DispatchCenter";
 import { PaginationControl } from "./PaginationControl";
+import { TraineeAdmissionDetailsModal } from "./TraineeAdmissionDetailsModal";
 
 interface AdmissionsWorkspaceProps {
   session?: { username?: string; role?: string; email?: string } | null;
@@ -97,6 +98,7 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
   const [bulkProcessingAction, setBulkProcessingAction] = useState<string | null>(null);
   const [bulkProcessingProgress, setBulkProcessingProgress] = useState<number>(0);
   const [analyticsCollapse, setAnalyticsCollapse] = useState<boolean>(false);
+  const [selectedAdmissionCandidate, setSelectedAdmissionCandidate] = useState<any | null>(null);
 
   // Dynamic Multi-variable Compliance Scorer
   const getFormCompliance = (c: any) => {
@@ -255,12 +257,10 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
         } else if (actionType === "unlock") {
           endpoint = `/api/admissions/${id}/unlock-form`;
         } else if (actionType === "send") {
-          endpoint = `/api/dispatch/send`;
+          endpoint = `/api/admissions/send-offer`;
           method = "POST";
           body = {
-            beneficiaryId: id,
-            channel: "email",
-            templateName: "admission_notification"
+            beneficiaryId: id
           };
         }
 
@@ -1301,7 +1301,7 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
                     <tr 
                       key={c.id} 
                       className={`hover:bg-slate-50/70 border-b border-slate-50 transition cursor-pointer ${isChecked ? "bg-indigo-500/5 hover:bg-indigo-500/10" : ""}`}
-                      onClick={() => onSelectCandidate(c)}
+                      onClick={() => setSelectedAdmissionCandidate(c)}
                     >
                       <td className="py-3 px-4 text-center" onClick={(e) => e.stopPropagation()}>
                         <input 
@@ -1362,7 +1362,7 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
 
                           <button
                             type="button"
-                            onClick={() => onSelectCandidate(c)}
+                            onClick={() => setSelectedAdmissionCandidate(c)}
                             title="Open candidate detailed dossier profile"
                             className="p-1 px-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 border border-indigo-100 rounded flex items-center justify-center transition min-w-[28px] cursor-pointer"
                           >
@@ -3255,6 +3255,16 @@ export function AdmissionsWorkspace({ session, onSelectCandidate, activeSubTab, 
             </div>
           </div>
         </div>
+      )}
+
+      {selectedAdmissionCandidate && (
+        <TraineeAdmissionDetailsModal
+          candidate={selectedAdmissionCandidate}
+          onClose={() => {
+            setSelectedAdmissionCandidate(null);
+            fetchList();
+          }}
+        />
       )}
 
     </div>

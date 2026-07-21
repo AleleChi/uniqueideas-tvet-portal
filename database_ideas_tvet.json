@@ -36,7 +36,573 @@
       "required": true
     }
   ],
-  "beneficiaries": [],
+  "beneficiaries": [
+    {
+      "id": "beneficiary_imo_1",
+      "firstName": "Chinedu",
+      "lastName": "Okeke",
+      "otherName": "Emmanuel",
+      "gender": "M",
+      "dateOfBirth": "1998-04-12",
+      "physicalChallenge": "NO",
+      "phoneNumber": "+2348031234567",
+      "nin": "12345678901",
+      "bvn": "22222222222",
+      "bankAccountHolder": "Chinedu Emmanuel Okeke",
+      "bankAccountNumber": "0123456789",
+      "bankName": "Access Bank",
+      "bankSortCode": "044150149",
+      "email": "chinedu.okeke@tvet.local",
+      "state": "Imo",
+      "city": "Owerri Municipal",
+      "guardianName": "Amadi Okeke",
+      "guardianAddress": "12 Wetheral Road, Owerri, Imo State",
+      "guardianPhone": "+2348039876543",
+      "educationQualification": "B.Sc Computer Science",
+      "tsp_id": "00000000-0000-0000-0000-000000000001",
+      "tsp": "Unique Nigeria Technology Ltd",
+      "status": "TRAINING",
+      "skillSector": "Computer Hardware Repairs",
+      "batch": "Batch 2026-C",
+      "still_on_portal": true,
+      "still_attending": true,
+      "remarks": "Exemplary progress.",
+      "attendanceLogs": [
+        {
+          "date": "2026-06-01",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-02",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-03",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-04",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-05",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-08",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-09",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-10",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-11",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-12",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-15",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-16",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-17",
+          "status": "LATE"
+        },
+        {
+          "date": "2026-06-18",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-19",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-22",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-23",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-24",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-25",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-26",
+          "status": "PRESENT"
+        }
+      ]
+    },
+    {
+      "id": "beneficiary_imo_2",
+      "firstName": "Chioma",
+      "lastName": "Nwachukwu",
+      "otherName": "Grace",
+      "gender": "F",
+      "dateOfBirth": "2000-09-24",
+      "physicalChallenge": "NO",
+      "phoneNumber": "+2348052345678",
+      "nin": "23456789012",
+      "bvn": "33333333333",
+      "bankAccountHolder": "Chioma Grace Nwachukwu",
+      "bankAccountNumber": "0234567890",
+      "bankName": "Zenith Bank",
+      "bankSortCode": "057150143",
+      "email": "chioma.n@tvet.local",
+      "state": "Imo",
+      "city": "Orlu",
+      "guardianName": "Obinna Nwachukwu",
+      "guardianAddress": "45 Orlu Road, Owerri, Imo State",
+      "guardianPhone": "+2348058765432",
+      "educationQualification": "ND Computer Engineering",
+      "tsp_id": "00000000-0000-0000-0000-000000000001",
+      "tsp": "Unique Nigeria Technology Ltd",
+      "status": "TRAINING",
+      "skillSector": "Computer Hardware Repairs",
+      "batch": "Batch 2026-C",
+      "still_on_portal": true,
+      "still_attending": true,
+      "remarks": "Consistent performance.",
+      "attendanceLogs": [
+        {
+          "date": "2026-06-01",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-02",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-03",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-04",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-05",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-08",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-09",
+          "status": "ABSENT"
+        },
+        {
+          "date": "2026-06-10",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-11",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-12",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-15",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-16",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-17",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-18",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-19",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-22",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-23",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-24",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-25",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-26",
+          "status": "PRESENT"
+        }
+      ]
+    },
+    {
+      "id": "beneficiary_imo_3",
+      "firstName": "Obinna",
+      "lastName": "Eze",
+      "otherName": "Francis",
+      "gender": "M",
+      "dateOfBirth": "1997-11-05",
+      "physicalChallenge": "YES",
+      "phoneNumber": "+2348063456789",
+      "nin": "34567890123",
+      "bvn": "44444444444",
+      "bankAccountHolder": "Obinna Francis Eze",
+      "bankAccountNumber": "0345678901",
+      "bankName": "Guaranty Trust Bank",
+      "bankSortCode": "058150125",
+      "email": "obinna.eze@tvet.local",
+      "state": "Imo",
+      "city": "Okigwe",
+      "guardianName": "Helen Eze",
+      "guardianAddress": "8 Okigwe Road, Owerri, Imo State",
+      "guardianPhone": "+2348068765432",
+      "educationQualification": "Senior Secondary School Certificate",
+      "tsp_id": "00000000-0000-0000-0000-000000000001",
+      "tsp": "Unique Nigeria Technology Ltd",
+      "status": "TRAINING",
+      "skillSector": "Computer Hardware Repairs",
+      "batch": "Batch 2026-C",
+      "still_on_portal": true,
+      "still_attending": true,
+      "remarks": "Very determined trainee.",
+      "attendanceLogs": [
+        {
+          "date": "2026-06-01",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-02",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-03",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-04",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-05",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-08",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-09",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-10",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-11",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-12",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-15",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-16",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-17",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-18",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-19",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-22",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-23",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-24",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-25",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-26",
+          "status": "PRESENT"
+        }
+      ]
+    },
+    {
+      "id": "beneficiary_imo_4",
+      "firstName": "Uchechi",
+      "lastName": "Igwe",
+      "otherName": "Sandra",
+      "gender": "F",
+      "dateOfBirth": "2001-02-18",
+      "physicalChallenge": "NO",
+      "phoneNumber": "+2348074567890",
+      "nin": "45678901234",
+      "bvn": "55555555555",
+      "bankAccountHolder": "Uchechi Sandra Igwe",
+      "bankAccountNumber": "0456789012",
+      "bankName": "United Bank for Africa",
+      "bankSortCode": "033150111",
+      "email": "uchechi.igwe@tvet.local",
+      "state": "Imo",
+      "city": "Mbaitoli",
+      "guardianName": "Dennis Igwe",
+      "guardianAddress": "14 Mbaitoli Ave, Owerri, Imo State",
+      "guardianPhone": "+2348078765432",
+      "educationQualification": "ND Computer Science",
+      "tsp_id": "00000000-0000-0000-0000-000000000001",
+      "tsp": "Unique Nigeria Technology Ltd",
+      "status": "TRAINING",
+      "skillSector": "Computer Hardware Repairs",
+      "batch": "Batch 2026-C",
+      "still_on_portal": true,
+      "still_attending": true,
+      "remarks": "Below threshold warning issued.",
+      "attendanceLogs": [
+        {
+          "date": "2026-06-01",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-02",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-03",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-04",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-05",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-08",
+          "status": "ABSENT"
+        },
+        {
+          "date": "2026-06-09",
+          "status": "ABSENT"
+        },
+        {
+          "date": "2026-06-10",
+          "status": "ABSENT"
+        },
+        {
+          "date": "2026-06-11",
+          "status": "ABSENT"
+        },
+        {
+          "date": "2026-06-12",
+          "status": "ABSENT"
+        },
+        {
+          "date": "2026-06-15",
+          "status": "ABSENT"
+        },
+        {
+          "date": "2026-06-16",
+          "status": "ABSENT"
+        },
+        {
+          "date": "2026-06-17",
+          "status": "ABSENT"
+        },
+        {
+          "date": "2026-06-18",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-19",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-22",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-23",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-24",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-25",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-26",
+          "status": "PRESENT"
+        }
+      ]
+    },
+    {
+      "id": "beneficiary_kano_1",
+      "firstName": "Sani",
+      "lastName": "Ibrahim",
+      "otherName": "Abubakar",
+      "gender": "M",
+      "dateOfBirth": "1999-07-15",
+      "physicalChallenge": "NO",
+      "phoneNumber": "+2348095678901",
+      "nin": "56789012345",
+      "bvn": "66666666666",
+      "bankAccountHolder": "Sani Abubakar Ibrahim",
+      "bankAccountNumber": "0567890123",
+      "bankName": "First Bank of Nigeria",
+      "bankSortCode": "011150148",
+      "email": "sani.ibrahim@tvet.local",
+      "state": "Kano",
+      "city": "Fagge",
+      "guardianName": "Ibrahim Sani",
+      "guardianAddress": "92 Fagge Road, Kano, Kano State",
+      "guardianPhone": "+2348098765432",
+      "educationQualification": "NID Software Engineering",
+      "tsp_id": "00000000-0000-0000-0000-000000000001",
+      "tsp": "Unique Nigeria Technology Ltd",
+      "status": "TRAINING",
+      "skillSector": "Computer Hardware Repairs",
+      "batch": "Batch 2026-C",
+      "still_on_portal": true,
+      "still_attending": true,
+      "remarks": "Very diligent in lab work.",
+      "attendanceLogs": [
+        {
+          "date": "2026-06-01",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-02",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-03",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-04",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-05",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-08",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-09",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-10",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-11",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-12",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-15",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-16",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-17",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-18",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-19",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-22",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-23",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-24",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-25",
+          "status": "PRESENT"
+        },
+        {
+          "date": "2026-06-26",
+          "status": "PRESENT"
+        }
+      ]
+    }
+  ],
   "auditLogs": [],
   "institutionLetterheads": [],
   "admissionFormTemplates": [],

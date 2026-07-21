@@ -48,7 +48,230 @@ function TraineeAvatar({ t, sizeClass = "w-9 h-9" }: { t: any; sizeClass?: strin
 }
 
 export default function TspAttendanceCenter({ session, showToast }: TspAttendanceCenterProps) {
-  const [activeTab, setActiveTab] = useState<"register" | "compliance">("register");
+  const [activeTab, setActiveTab] = useState<"register" | "compliance" | "backfill">("register");
+  
+  // Backfill Specific State (Deliverable 2)
+  const [backfillStartDate, setBackfillStartDate] = useState("2026-06-15");
+  const [backfillEndDate, setBackfillEndDate] = useState(new Date().toISOString().split("T")[0]);
+  const [backfillScope, setBackfillScope] = useState<"OFFICIAL_ROSTER" | "ALL_ELIGIBLE">("ALL_ELIGIBLE");
+  const [backfillCohort, setBackfillCohort] = useState("all");
+  const [backfillBatch, setBackfillBatch] = useState("all");
+  const [backfillWeekdays, setBackfillWeekdays] = useState<number[]>([1, 3, 5]); // Mon, Wed, Fri
+  const [backfillStatus, setBackfillStatus] = useState("PRESENT");
+  const [backfillOverwritePolicy, setBackfillOverwritePolicy] = useState<"CREATE_MISSING_ONLY" | "UPDATE_MANUAL_ONLY" | "REPLACE_EXISTING_WITH_REASON">("CREATE_MISSING_ONLY");
+  const [backfillCounts, setBackfillCounts] = useState({ eligible: "...", roster: "..." });
+  const [backfillRemarks, setBackfillRemarks] = useState("Historical Backfill");
+  const [backfillPreview, setBackfillPreview] = useState<any | null>(null);
+  const [backfillError, setBackfillError] = useState<any | null>(null);
+  const [previewingBackfill, setPreviewingBackfill] = useState(false);
+  const [savingBackfill, setSavingBackfill] = useState(false);
+  const [confirmBackfillSubmit, setConfirmBackfillSubmit] = useState(false);
+  const [fiveDayOverride, setFiveDayOverride] = useState(false);
+  const [showOverrideConfirm, setShowOverrideConfirm] = useState(false);
+
+  const [scheduleConfig, setScheduleConfig] = useState({
+    scheduleStart: "2026-06-15",
+    scheduleEnd: "2026-09-15",
+    weekdays: [1, 3, 5]
+  });
+
+  const resetBackfillResult = () => {
+    setBackfillPreview(null);
+    setBackfillError(null);
+    setConfirmBackfillSubmit(false);
+  };
+
+  function getApiErrorMessage(error: unknown): string {
+    if (error instanceof Error && error.message) {
+      return error.message;
+    }
+
+    if (typeof error === "string") {
+      return error;
+    }
+
+    if (error && typeof error === "object") {
+      const value = error as any;
+
+      if (typeof value.message === "string") {
+        return value.message;
+      }
+
+      if (typeof value.error === "string") {
+        return value.error;
+      }
+
+      if (
+        value.error &&
+        typeof value.error === "object" &&
+        typeof value.error.message === "string"
+      ) {
+        return value.error.message;
+      }
+
+      if (
+        value.response?.data?.error &&
+        typeof value.response.data.error.message === "string"
+      ) {
+        return value.response.data.error.message;
+      }
+
+      if (typeof value.response?.data?.message === "string") {
+        return value.response.data.message;
+      }
+    }
+
+    return "Could not generate the attendance preview.";
+  }
+
+  useEffect(() => {
+    fetch("/api/tsp/attendance/schedule")
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          setScheduleConfig({
+            scheduleStart: data.scheduleStart || "2026-06-15",
+            scheduleEnd: data.scheduleEnd || "2026-09-15",
+            weekdays: data.weekdays || [1, 3, 5]
+          });
+          setBackfillStartDate(data.scheduleStart || "2026-06-15");
+        }
+      })
+      .catch(err => {
+        console.error("Failed to fetch schedule config:", err);
+      });
+  }, []);
+
+  useEffect(() => {
+    const qParams = new URLSearchParams({
+      cohort_id: backfillCohort,
+      batch_id: backfillBatch,
+    });
+    fetch(`/api/tsp/attendance/backfill-counts?${qParams.toString()}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          setBackfillCounts({
+            eligible: String(data.counts.eligible),
+            roster: String(data.counts.roster)
+          });
+        }
+      })
+      .catch(err => {
+        console.error("Failed to fetch backfill counts:", err);
+      });
+  }, [backfillCohort, backfillBatch]);
+
+  const toggleBackfillWeekday = (day: number) => {
+    if (backfillWeekdays.includes(day)) {
+      setBackfillWeekdays(prev => prev.filter(d => d !== day));
+    } else {
+      setBackfillWeekdays(prev => [...prev, day].sort());
+    }
+  };
+
+  const handleBackfillPreview = async () => {
+    if (!backfillStartDate || !backfillEndDate) {
+      showToast("Please select a valid start and end date range.", "error");
+      return;
+    }
+    if (backfillStartDate < scheduleConfig.scheduleStart) {
+      showToast(`Historical backfill range must start on or after ${scheduleConfig.scheduleStart}.`, "error");
+      return;
+    }
+    if (backfillStartDate > backfillEndDate) {
+      showToast("Start date cannot be after the end date.", "error");
+      return;
+    }
+    if (backfillWeekdays.length === 0) {
+      showToast("Please select at least one training weekday.", "error");
+      return;
+    }
+
+    setPreviewingBackfill(true);
+    setBackfillError(null);
+    try {
+      const qParams = new URLSearchParams({
+        cohort_id: backfillCohort,
+        batch_id: backfillBatch,
+        start_date: backfillStartDate,
+        end_date: backfillEndDate,
+        weekdays: backfillWeekdays.join(","),
+        trainee_scope: backfillScope,
+        overwrite_policy: backfillOverwritePolicy,
+        five_day_override: fiveDayOverride.toString()
+      });
+      const res = await authFetch(`/api/tsp/attendance/backfill-preview?${qParams.toString()}`);
+      const data = await secureJsonParse(res);
+      if (data.success) {
+        setBackfillPreview(data);
+        setBackfillError(null);
+        if (data.totalTargetedTrainees === 0) {
+          showToast("Roster preview loaded but contains 0 matching trainees.", "info");
+        } else {
+          showToast(`Preview loaded successfully: ${data.targetDates.length} training dates found.`, "success");
+        }
+      } else {
+        const errorMsg = getApiErrorMessage(data);
+        showToast("Error loading preview: " + errorMsg, "error");
+        setBackfillPreview(null);
+        setBackfillError(data.error || { message: errorMsg });
+      }
+    } catch (err: any) {
+      const errorMsg = getApiErrorMessage(err);
+      showToast("Failed to compile preview: " + errorMsg, "error");
+      setBackfillPreview(null);
+      setBackfillError({ message: errorMsg });
+    } finally {
+      setPreviewingBackfill(false);
+    }
+  };
+
+  const handleBackfillSubmit = async () => {
+    if (!backfillPreview) {
+      showToast("Please generate a preview first.", "error");
+      return;
+    }
+    if (!confirmBackfillSubmit) {
+      showToast("Please check the confirmation box to authorize this operation.", "error");
+      return;
+    }
+
+    setSavingBackfill(true);
+    try {
+      const res = await authFetch("/api/tsp/attendance/backfill-save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cohort_id: backfillCohort,
+          batch_id: backfillBatch,
+          start_date: backfillStartDate,
+          end_date: backfillEndDate,
+          weekdays: backfillWeekdays,
+          status: backfillStatus,
+          overwrite_policy: backfillOverwritePolicy,
+          remarks: backfillRemarks,
+          trainee_scope: backfillScope,
+          five_day_override: fiveDayOverride
+        })
+      });
+
+      const data = await secureJsonParse(res);
+      if (data.success) {
+        showToast(`Successfully completed historical backfill! Mapped ${data.recordsCount} attendance logs.`, "success");
+        resetBackfillResult();
+        loadData(); // reload register lists
+      } else {
+        const errorMsg = getApiErrorMessage(data);
+        showToast("Historical backfill failed: " + errorMsg, "error");
+      }
+    } catch (err: any) {
+      const errorMsg = getApiErrorMessage(err);
+      showToast("Backfill execution error: " + errorMsg, "error");
+    } finally {
+      setSavingBackfill(false);
+    }
+  };
   const [loading, setLoading] = useState(false);
   const [savingBulk, setSavingBulk] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -164,9 +387,10 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
         const mapped = bData.records.map((b: any) => {
           return {
             ...b,
+            id: b.id || b.beneficiary_id,
             attendanceStatus: b.attendance_status || "ABSENT",
-            checkIn: b.check_in_time ? b.check_in_time.substring(11, 16) : "08:00",
-            checkOut: b.check_out_time ? b.check_out_time.substring(11, 16) : "14:00",
+            checkIn: typeof b.check_in_time === "string" ? b.check_in_time.substring(11, 16) : "08:00",
+            checkOut: typeof b.check_out_time === "string" ? b.check_out_time.substring(11, 16) : "14:00",
             hoursLogged: b.hours_logged !== null && b.hours_logged !== undefined ? parseFloat(b.hours_logged) : (b.attendance_status === "PRESENT" || b.attendance_status === "LATE" ? 6.0 : 0.0),
             cohort: b.batch || "Batch 2026-C"
           };
@@ -758,6 +982,16 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
           >
             Monthly Stipend Compliance
           </button>
+          <button
+            onClick={() => setActiveTab("backfill")}
+            className={`py-3 px-4 text-xs font-black tracking-wider uppercase border-b-2 cursor-pointer transition ${
+              activeTab === "backfill" 
+                ? "border-indigo-600 text-indigo-600 font-bold" 
+                : "border-transparent text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            Bulk & Historical Backfill
+          </button>
         </div>
 
         {/* Global Toolbar */}
@@ -1062,7 +1296,7 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
                                 {t.first_name} {t.last_name}
                               </span>
                               <span className="text-[10px] font-mono font-semibold text-slate-400">
-                                TV-IMO-HW-{t.id.substring(0,6).toUpperCase()}
+                                TV-IMO-HW-{(t.id || "").substring(0,6).toUpperCase()}
                               </span>
                             </div>
                           </div>
@@ -1193,7 +1427,7 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
                                 {c.first_name} {c.last_name}
                               </span>
                               <span className="text-[10px] font-mono font-semibold text-slate-400">
-                                TV-IMO-HW-{c.id.substring(0,6).toUpperCase()}
+                                TV-IMO-HW-{(c.id || "").substring(0,6).toUpperCase()}
                               </span>
                             </div>
                           </div>
@@ -1241,6 +1475,439 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* BULK ATTENDANCE & HISTORICAL BACKFILL TAB VIEW (DELIVERABLE 2) */}
+      {activeTab === "backfill" && (
+        <div className="space-y-6">
+          <div className="bg-gradient-to-r from-indigo-500/10 via-purple-500/5 to-slate-500/5 border border-indigo-150 rounded-2xl p-6 shadow-xxs">
+            <div className="flex gap-4 items-start">
+              <div className="p-3 bg-indigo-600 text-white rounded-xl shadow-sm shrink-0">
+                <Database className="w-6 h-6" />
+              </div>
+              <div className="space-y-1 text-left">
+                <h3 className="text-base font-bold text-slate-900 uppercase tracking-tight">Bulk Attendance & Historical Backfill Engine</h3>
+                <p className="text-xs text-slate-500 max-w-3xl leading-relaxed">
+                  Backfill attendance sheets retroactively starting from <strong>1 June 2026</strong>. This module writes directly to the core 
+                  canonical database, respecting custom training schedules (e.g. Unique's Mon/Wed/Fri schedule) and excluding regional/national holidays.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Form Configuration Column */}
+            <div className="lg:col-span-1 bg-white border border-slate-200 rounded-xl p-5 space-y-5 text-left shadow-xxs">
+              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider font-mono pb-2 border-b border-slate-100 flex items-center gap-1.5">
+                <Filter className="w-3.5 h-3.5 text-indigo-500" />
+                Backfill Scope & Rules
+              </h4>
+
+              {/* Date Range */}
+              <div className="space-y-1.5">
+                <label className="block text-[11px] font-bold text-slate-600 uppercase font-mono">Date Range</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <span className="text-[9px] text-slate-400 uppercase font-mono block mb-0.5">Start Date</span>
+                    <input
+                      type="date"
+                      value={backfillStartDate}
+                      onChange={(e) => {
+                        setBackfillStartDate(e.target.value);
+                        resetBackfillResult();
+                      }}
+                      min={scheduleConfig.scheduleStart}
+                      className="w-full px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-indigo-500 outline-none font-medium text-slate-700"
+                    />
+                  </div>
+                  <div>
+                    <span className="text-[9px] text-slate-400 uppercase font-mono block mb-0.5">End Date</span>
+                    <input
+                      type="date"
+                      value={backfillEndDate}
+                      onChange={(e) => {
+                        setBackfillEndDate(e.target.value);
+                        resetBackfillResult();
+                      }}
+                      className="w-full px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-indigo-500 outline-none font-medium text-slate-700"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Targeted Weekdays */}
+              <div className="space-y-1.5">
+                <label className="block text-[11px] font-bold text-slate-600 uppercase font-mono">Targeted Weekdays</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    { label: "Mon", value: 1 },
+                    { label: "Tue", value: 2 },
+                    { label: "Wed", value: 3 },
+                    { label: "Thu", value: 4 },
+                    { label: "Fri", value: 5 },
+                    { label: "Sat", value: 6 },
+                    { label: "Sun", value: 0 }
+                  ].map((day) => {
+                    const isSelected = backfillWeekdays.includes(day.value);
+                    return (
+                      <button
+                        key={day.value}
+                        type="button"
+                        onClick={() => {
+                          toggleBackfillWeekday(day.value);
+                          resetBackfillResult();
+                        }}
+                        className={`px-2.5 py-1 text-xs font-bold rounded-md transition cursor-pointer ${
+                          isSelected
+                            ? "bg-indigo-600 text-white shadow-xxs"
+                            : "bg-slate-100 text-slate-600 hover:bg-slate-150"
+                        }`}
+                      >
+                        {day.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <span className="text-[10px] text-slate-400 block mt-1 leading-normal">
+                  * Unique trains Mon, Wed, Fri. Days not selected remain blank.
+                </span>
+              </div>
+
+              {/* Five-Day Training Override Option */}
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 space-y-2">
+                <div className="flex items-start gap-2.5">
+                  <input
+                    type="checkbox"
+                    id="fiveDayOverride"
+                    checked={fiveDayOverride}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setShowOverrideConfirm(true);
+                      } else {
+                        setFiveDayOverride(false);
+                        setBackfillWeekdays([1, 3, 5]);
+                        resetBackfillResult();
+                      }
+                    }}
+                    className="mt-0.5 rounded text-amber-600 focus:ring-amber-500 cursor-pointer h-3.5 w-3.5"
+                  />
+                  <div className="space-y-0.5 text-left">
+                    <label htmlFor="fiveDayOverride" className="text-xs font-black text-amber-900 cursor-pointer uppercase tracking-wide font-mono block">
+                      Five-Day Training Override
+                    </label>
+                    <p className="text-[10.5px] text-amber-700 leading-normal font-medium">
+                      Enable to treat all weekdays (Mon-Fri) as genuine scheduled training days for this period. This will record schedule history and update training schedules.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Trainee Scope Selector */}
+              <div>
+                <label className="block text-[11px] font-bold text-slate-600 uppercase font-mono mb-1">Trainee Scope</label>
+                <select
+                  value={backfillScope}
+                  onChange={(e) => {
+                    setBackfillScope(e.target.value as "OFFICIAL_ROSTER" | "ALL_ELIGIBLE");
+                    resetBackfillResult();
+                  }}
+                  className="w-full px-2.5 py-2 text-xs bg-indigo-50/50 border border-indigo-200 rounded-lg outline-none font-semibold text-slate-800"
+                >
+                  <option value="ALL_ELIGIBLE">All Eligible Trainees — TSP ({backfillCounts.eligible})</option>
+                  <option value="OFFICIAL_ROSTER">Official Reporting Roster Only ({backfillCounts.roster})</option>
+                </select>
+                <span className="text-[10px] text-slate-400 block mt-1 leading-normal font-mono">
+                  * Official Reporting Roster scope is restricted to active members.
+                </span>
+              </div>
+
+              {/* Trainee Filters */}
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 uppercase font-mono mb-1">Cohort</label>
+                  <select
+                    value={backfillCohort}
+                    onChange={(e) => {
+                      setBackfillCohort(e.target.value);
+                      resetBackfillResult();
+                    }}
+                    className="w-full px-2 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg outline-none font-medium text-slate-700"
+                  >
+                    <option value="all">All Cohorts</option>
+                    <option value="Batch 2026-C">Batch 2026-C</option>
+                    <option value="Cohort 1">Cohort 1</option>
+                    <option value="Cohort 2">Cohort 2</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 uppercase font-mono mb-1">Batch</label>
+                  <select
+                    value={backfillBatch}
+                    onChange={(e) => {
+                      setBackfillBatch(e.target.value);
+                      resetBackfillResult();
+                    }}
+                    className="w-full px-2 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg outline-none font-medium text-slate-700"
+                  >
+                    <option value="all">All Batches</option>
+                    <option value="Batch 1">Batch 1</option>
+                    <option value="Batch 2">Batch 2</option>
+                    <option value="Batch 3">Batch 3</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Status and Overwrite Option */}
+              <div className="space-y-3 pt-2 border-t border-slate-100">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 uppercase font-mono mb-1">Mark Status</label>
+                    <select
+                      value={backfillStatus}
+                      onChange={(e) => setBackfillStatus(e.target.value)}
+                      className="w-full px-2 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg outline-none font-bold text-indigo-750"
+                    >
+                      <option value="PRESENT">PRESENT (✔)</option>
+                      <option value="ABSENT">ABSENT (✘)</option>
+                      <option value="EXCUSED">EXCUSED (E)</option>
+                      <option value="LATE">LATE (L)</option>
+                      <option value="FIELDWORK">FIELDWORK (F)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 uppercase font-mono mb-1">Overwrite Rule</label>
+                    <select
+                      value={backfillOverwritePolicy}
+                      onChange={(e) => {
+                        setBackfillOverwritePolicy(e.target.value as any);
+                        resetBackfillResult();
+                      }}
+                      className="w-full px-2 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg outline-none font-medium text-slate-700"
+                    >
+                      <option value="CREATE_MISSING_ONLY">Create Missing Only</option>
+                      <option value="UPDATE_MANUAL_ONLY">Update Manual Only</option>
+                      <option value="REPLACE_EXISTING_WITH_REASON">Replace Existing with Reason</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 uppercase font-mono mb-1">Remarks / Reference</label>
+                  <input
+                    type="text"
+                    value={backfillRemarks}
+                    onChange={(e) => setBackfillRemarks(e.target.value)}
+                    placeholder="e.g. Backfill June Cohort Attendance"
+                    className="w-full px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-indigo-500 outline-none font-medium text-slate-700"
+                  />
+                </div>
+              </div>
+
+              {/* Submit Buttons */}
+              <button
+                type="button"
+                disabled={previewingBackfill}
+                onClick={handleBackfillPreview}
+                className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-2 transition cursor-pointer shadow-xs"
+              >
+                {previewingBackfill ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Sparkles className="w-4 h-4" />
+                )}
+                Analyze & Generate Preview
+              </button>
+            </div>
+
+            {/* Preview Column */}
+            <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-5 text-left shadow-xxs flex flex-col justify-between">
+              <div className="space-y-4">
+                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider font-mono pb-2 border-b border-slate-100 flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 text-indigo-500" />
+                  Audit Engine Preview Summary
+                </h4>
+
+                {backfillError ? (
+                  backfillError.code === "OFFICIAL_ROSTER_EMPTY" ? (
+                    <div className="py-8 px-5 bg-amber-50 border border-amber-200 rounded-2xl space-y-4 text-slate-800 text-xs animate-in fade-in duration-200">
+                      <div className="flex items-center gap-2 text-amber-800 font-bold uppercase tracking-wide font-mono">
+                        <AlertTriangle className="w-4.5 h-4.5" />
+                        Official Reporting Roster Empty
+                      </div>
+                      <p className="leading-relaxed text-slate-700 font-medium">
+                        No trainees are currently saved to the Official Reporting Roster. Go to Allocated Trainee Roster and save the selected trainees, or change Trainee Scope to All Eligible Trainees.
+                      </p>
+                      <div className="flex flex-wrap gap-2.5 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            window.dispatchEvent(new CustomEvent("ideas-navigate-tab", { detail: { tab: "allocated-roster" } }));
+                          }}
+                          className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold rounded-lg transition shadow-xxs cursor-pointer"
+                        >
+                          Open Allocated Trainee Roster
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBackfillScope("ALL_ELIGIBLE");
+                            setBackfillPreview(null);
+                            setBackfillError(null);
+                          }}
+                          className="px-3.5 py-1.5 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 text-[11px] font-bold rounded-lg transition cursor-pointer"
+                        >
+                          Use All Eligible Trainees
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="py-8 px-5 bg-rose-50 border border-rose-150 rounded-2xl space-y-3 text-rose-950 text-xs animate-in fade-in duration-200">
+                      <div className="flex items-center gap-2 text-rose-800 font-bold uppercase tracking-wide font-mono">
+                        <AlertTriangle className="w-4 h-4" />
+                        Preview Generation Failure
+                      </div>
+                      <p className="leading-relaxed font-semibold text-rose-900">
+                        Could not generate the attendance preview. No attendance records were changed.
+                      </p>
+                      {backfillError.message && (
+                        <p className="text-rose-800 font-mono text-[11px] bg-white/50 p-2 rounded border border-rose-100 leading-normal">
+                          {backfillError.message}
+                        </p>
+                      )}
+                      <div className="text-[10px] text-slate-500 font-mono pt-1">
+                        Request ID: {backfillError.requestId || "Unknown"}
+                      </div>
+                    </div>
+                  )
+                ) : !backfillPreview ? (
+                  <div className="py-24 flex flex-col justify-center items-center gap-2.5 text-slate-400 text-center">
+                    <Database className="w-10 h-10 text-slate-300 stroke-[1.5]" />
+                    <span className="text-xs font-bold font-mono">No Active Preview Loaded</span>
+                    <p className="text-[10px] text-slate-400 max-w-xs leading-normal">
+                      Configure your backfill dates, targeted weekdays, and trainees, then click "Analyze" to run verification.
+                    </p>
+                  </div>
+                ) : backfillPreview.totalTargetedTrainees === 0 ? (
+                  <div className="py-12 px-5 bg-rose-50 border border-rose-150 rounded-2xl space-y-2.5 text-rose-950 text-xs animate-in fade-in duration-200">
+                    <div className="flex items-center gap-2 text-rose-800 font-bold uppercase tracking-wide font-mono">
+                      <AlertTriangle className="w-4 h-4" />
+                      Empty Trainee Scope
+                    </div>
+                    <p className="leading-relaxed font-semibold text-rose-900">
+                      No trainees matched the filters in this scope. Please change Cohort, Batch, or Trainee Scope settings.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-4 animate-in fade-in duration-200">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      <div className="p-3 bg-indigo-50/50 border border-indigo-100 rounded-xl space-y-1">
+                        <span className="text-[9px] font-bold text-indigo-400 uppercase font-mono block">Targeted Dates</span>
+                        <span className="text-base font-black text-indigo-950 font-mono block">{backfillPreview.targetDates.length} Days</span>
+                        <span className="text-[9.5px] text-indigo-600 leading-normal block">Matched schedule training days</span>
+                      </div>
+                      <div className="p-3 bg-indigo-50/50 border border-indigo-100 rounded-xl space-y-1">
+                        <span className="text-[9px] font-bold text-indigo-400 uppercase font-mono block">Targeted Trainees</span>
+                        <span className="text-base font-black text-indigo-950 block">{backfillPreview.totalTargetedTrainees} Enrolled</span>
+                        <span className="text-[9.5px] text-indigo-600 leading-normal block">Filtering by cohort and batch</span>
+                      </div>
+                      <div className="p-3 bg-emerald-50 border border-emerald-100 rounded-xl space-y-1">
+                        <span className="text-[9px] font-bold text-emerald-600 uppercase font-mono block">Expected Writes</span>
+                        <span className="text-base font-black text-emerald-950 block">
+                          {(backfillPreview.targetDates.length * backfillPreview.totalTargetedTrainees).toLocaleString()} Records
+                        </span>
+                        <span className="text-[9.5px] text-emerald-700 leading-normal block">Idempotent upsert commits</span>
+                      </div>
+                    </div>
+
+                    {/* Mapped Dates Badges */}
+                    <div className="space-y-1.5">
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase font-mono">Dates Targeted ({backfillPreview.targetDates.length}):</label>
+                      <div className="flex flex-wrap gap-1 max-h-[85px] overflow-y-auto p-2 bg-slate-50 rounded-lg border border-slate-100 font-mono">
+                        {backfillPreview.targetDates.map((dateStr: string) => (
+                          <span key={dateStr} className="px-1.5 py-0.5 rounded bg-white border border-slate-150 text-slate-700 text-[9px] font-semibold">
+                            {dateStr}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Mapped Trainees List */}
+                    <div className="space-y-1.5">
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase font-mono">Targeted Trainees Preview ({backfillPreview.totalTargetedTrainees}):</label>
+                      <div className="max-h-[140px] overflow-y-auto border border-slate-150 rounded-lg divide-y divide-slate-100">
+                        {backfillPreview.targetedTrainees.map((t: any, idx: number) => (
+                          <div key={t.id} className="p-2 flex items-center justify-between text-[11px] hover:bg-slate-50">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[9px] text-slate-400 font-mono">#{idx + 1}</span>
+                              <span className="font-bold text-slate-800">{t.first_name} {t.last_name}</span>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <span className="text-[9.5px] text-slate-400 font-mono">{t.tvet_id || "No TVET ID"}</span>
+                              <span className="text-[9.5px] font-bold text-slate-500 uppercase font-mono bg-slate-100 px-1.5 py-0.5 rounded">{t.cohort || "Batch 2026-C"}</span>
+                            </div>
+                          </div>
+                        ))}
+                        {backfillPreview.totalTargetedTrainees > 100 && (
+                          <div className="p-2 text-center text-slate-400 italic text-[10px]">
+                            Showing first 100 trainees... (+{backfillPreview.totalTargetedTrainees - 100} more)
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {backfillPreview && (
+                <div className="mt-5 pt-4 border-t border-slate-200 space-y-4">
+                  {backfillPreview.totalTargetedTrainees > 0 && (
+                    <div className="flex items-start gap-2.5 bg-amber-50/50 border border-amber-200 p-3 rounded-xl">
+                      <input
+                        type="checkbox"
+                        id="confirmBackfillSubmit"
+                        checked={confirmBackfillSubmit}
+                        onChange={(e) => setConfirmBackfillSubmit(e.target.checked)}
+                        className="mt-0.5 rounded text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5 cursor-pointer"
+                      />
+                      <label htmlFor="confirmBackfillSubmit" className="text-xs text-amber-900 leading-relaxed cursor-pointer select-none">
+                        <strong>Authorization Mandate:</strong> I verify that I want to commit 
+                        <strong> {(backfillPreview.targetDates.length * backfillPreview.totalTargetedTrainees).toLocaleString()} </strong> 
+                        attendance updates. I understand these records write directly to compliance ledgers and update stipend status calculations.
+                      </label>
+                    </div>
+                  )}
+
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        resetBackfillResult();
+                      }}
+                      className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg transition cursor-pointer"
+                    >
+                      Clear
+                    </button>
+                    {backfillPreview.totalTargetedTrainees > 0 && (
+                      <button
+                        type="button"
+                        disabled={savingBackfill || !confirmBackfillSubmit}
+                        onClick={handleBackfillSubmit}
+                        className="flex-1 py-2 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-2 transition cursor-pointer"
+                      >
+                        {savingBackfill ? (
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Check className="w-4 h-4" />
+                        )}
+                        Commit Backfill Updates
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -1299,7 +1966,7 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
                       {selectedTraineeForDrawer.first_name} {selectedTraineeForDrawer.last_name}
                     </h4>
                     <span className="text-xs font-mono font-bold text-slate-400 block mt-0.5">
-                      TVET-ID: TV-{selectedTraineeForDrawer.id.toUpperCase().substring(0, 10)}
+                      TVET-ID: TV-{(selectedTraineeForDrawer.id || "").toUpperCase().substring(0, 10)}
                     </span>
                     <div className="mt-2.5">
                       {getCompactStipendBadge(selectedTraineeForDrawer.stipend_status)}
@@ -1584,6 +2251,45 @@ export default function TspAttendanceCenter({ session, showToast }: TspAttendanc
           </>
         )}
       </AnimatePresence>
+
+      {showOverrideConfirm && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl space-y-4 animate-in zoom-in-95 duration-200">
+            <h3 className="text-sm font-bold uppercase font-mono tracking-wider text-slate-800">
+              Confirm Five-Day Override
+            </h3>
+            <p className="text-xs text-slate-500 leading-normal text-left">
+              You are enabling the <strong>Five-Day Training Override</strong>. This will set all weekdays (Monday to Friday) as scheduled training days for this period, allowing bulk Present to create/update attendance on all 5 days. 
+              The Annex 9 Excel export % rate will use a 5-day denominator instead of the normal 3-day.
+            </p>
+            <div className="flex justify-end gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowOverrideConfirm(false);
+                  setFiveDayOverride(false);
+                }}
+                className="px-3.5 py-1.5 font-bold text-slate-500 hover:bg-slate-100 rounded-lg transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowOverrideConfirm(false);
+                  setFiveDayOverride(true);
+                  setBackfillWeekdays([1, 2, 3, 4, 5]); // All weekdays Mon-Fri
+                  resetBackfillResult();
+                  showToast("Five-Day Training Override enabled. All weekdays (Mon-Fri) are selected.", "success");
+                }}
+                className="px-4 py-1.5 font-bold bg-amber-600 hover:bg-amber-700 text-white rounded-lg shadow-sm transition cursor-pointer"
+              >
+                Confirm Override
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

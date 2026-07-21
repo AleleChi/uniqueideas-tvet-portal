@@ -80,6 +80,7 @@ import RestorationCenter from "./components/RestorationCenter";
 import EmailDeliverySystem from "./components/EmailDeliverySystem";
 import EligibleBeneficiariesWorkspace from "./components/EligibleBeneficiariesWorkspace";
 import TspAttendanceCenter from "./components/TspAttendanceCenter";
+import AllocatedTraineeRoster from "./components/AllocatedTraineeRoster";
 
 import { FederalLayout } from "./layouts/FederalLayout";
 import { StateLayout } from "./layouts/StateLayout";
@@ -93,6 +94,8 @@ import { ProgrammesPage } from "./pages/federal/ProgrammesPage";
 import { InternshipPage } from "./pages/federal/InternshipPage";
 import DocumentsCenter from "./modules/documents";
 import { AdmissionsWorkspace } from "./components/AdmissionsWorkspace";
+import { OfficialReportsWorkspace } from "./components/OfficialReportsWorkspace";
+import { Annex9CompletionWorkspace } from "./components/Annex9CompletionWorkspace";
 import { EOIWorkspace } from "./modules/eoi/EOIWorkspace";
 import { SkillsRegistry } from "./modules/skills/SkillsRegistry";
 import { SectorRegistry } from "./modules/sectors/SectorRegistry";
@@ -112,7 +115,7 @@ export default function App() {
       return null;
     }
   });
-  const [activeTab, setActiveTab ] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility" | "trainee-operations" | "certification" | "outcomes" | "evidence" | "toolkits" | "executive-m-and-e" | "quality-accreditation" | "communications" | "locations" | "tsp-profile" | "organizations" | "system-status" | "restoration-center" | "email-audit" | "eligible-beneficiaries" | "attendance-center" | "financials-roi">("dashboard");
+  const [activeTab, setActiveTab ] = useState<"dashboard" | "registry" | "album" | "custom" | "audits" | "settings" | "eligibility" | "trainee-operations" | "certification" | "outcomes" | "evidence" | "toolkits" | "executive-m-and-e" | "quality-accreditation" | "communications" | "locations" | "tsp-profile" | "organizations" | "system-status" | "restoration-center" | "email-audit" | "eligible-beneficiaries" | "attendance-center" | "financials-roi" | "allocated-roster" | "official-reports" | "annex9-completion" | "admissions-letters">("dashboard");
   const [admissionsSubTab, setAdmissionsSubTab] = useState<"dashboard" | "letters" | "forms" | "acceptance" | "dispatches">("dashboard");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [registryViewMode, setRegistryViewMode] = useState<"list" | "details" | "create">("list");
@@ -223,6 +226,19 @@ export default function App() {
     window.addEventListener("hashchange", handleHashChange);
     return () => {
       window.removeEventListener("hashchange", handleHashChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleNavigation = (e: Event) => {
+      const customEvent = e as CustomEvent<{ tab: string }>;
+      if (customEvent.detail && customEvent.detail.tab) {
+        setActiveTab(customEvent.detail.tab as any);
+      }
+    };
+    window.addEventListener("ideas-navigate-tab" as any, handleNavigation);
+    return () => {
+      window.removeEventListener("ideas-navigate-tab" as any, handleNavigation);
     };
   }, []);
 
@@ -1287,6 +1303,24 @@ export default function App() {
             </React.Suspense>
           )}
 
+          {activeTab === "official-reports" && (
+            <React.Suspense fallback={<SkeletonLoader label="Loading Official Reports & Exports..." />}>
+              <OfficialReportsWorkspace session={session} onNavigateToTab={(tab) => setActiveTab(tab)} />
+            </React.Suspense>
+          )}
+
+          {activeTab === "annex9-completion" && (
+            <React.Suspense fallback={<SkeletonLoader label="Loading Annex 9 Completion Module..." />}>
+              <Annex9CompletionWorkspace />
+            </React.Suspense>
+          )}
+
+          {activeTab === "admissions-letters" && (
+            <React.Suspense fallback={<SkeletonLoader label="Loading Admissions Ecosystem..." />}>
+              <AdmissionsWorkspace session={session} onSelectCandidate={() => {}} />
+            </React.Suspense>
+          )}
+
           {activeTab === "eligible-beneficiaries" && (
             <EligibleBeneficiariesWorkspace 
               session={session} 
@@ -1444,6 +1478,13 @@ export default function App() {
 
           {activeTab === "attendance-center" && (
             <TspAttendanceCenter 
+              session={session} 
+              showToast={showToast} 
+            />
+          )}
+
+          {activeTab === "allocated-roster" && (
+            <AllocatedTraineeRoster 
               session={session} 
               showToast={showToast} 
             />

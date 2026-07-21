@@ -22,12 +22,14 @@ import { AdmissionService } from "./src/backend/admission.service";
 import { EmailService } from "./src/backend/email.service";
 import { initDb, DbRepo, getDynamicEligibility, calculateAge, getPgPool, executeQuery, startupWarnings, loadJsonState, saveJsonState, isPgActive } from "./src/backend/db";
 import { DocumentDeliveryService, EmailDispatchService } from "./src/backend/documentDelivery.service";
-import { generateAnnex9Workbook, generateAnnex9AttendanceCSV, generateAnnex9ProfileCSV, generateAnnex9PortalCSV } from "./src/backend/excelExport";
+import { generateAnnex9Workbook, generateAnnex9AttendanceCSV, generateAnnex9ProfileCSV, generateAnnex9PortalCSV, generateOfficialAnnex9Workbook } from "./src/backend/excelExport";
+import { getAnnex9ReportData, getAvailableAttendanceMonths, normalizeAttendanceStatus, clearAnnex9ReportCache } from "./src/backend/annex9Report.service";
 import { requireAuth, requireRole, requireRoleOrPermission, JWT_SECRET, AuthenticatedRequest, authenticate, requestStorage } from "./src/backend/auth.middleware";
 import { tenantContextMiddleware } from "./src/backend/tenant.middleware";
 import { PdfService } from "./src/backend/pdf.service";
 import { CloudinaryService } from "./src/backend/cloudinary.service";
 import { DocumentService } from "./src/backend/document.service";
+import { WordExportService } from "./src/backend/wordExport.service";
 import { buildPublicUrl } from "./src/config/api";
 import { Jimp } from "jimp";
 import ExcelJS from "exceljs";
@@ -76,6 +78,121 @@ async function checkBeneficiaryAccess(user: any, beneficiaryId: string): Promise
   }
   return true;
 }
+
+export interface Annex9Scope {
+  level: "FEDERAL" | "STATE" | "TSP";
+  tspId?: string;
+  tenantId?: string;
+  stateId?: string;
+  stateName?: string;
+  isFederal: boolean;
+  effectiveTspId: string | undefined;
+  canViewAllTsps: boolean;
+}
+
+export async function resolveAnnex9Scope(user: any, requestedTspId?: string): Promise<Annex9Scope> {
+  if (!user) {
+    const err: any = new Error("UNAUTHORIZED");
+    err.code = "UNAUTHORIZED";
+    throw err;
+  }
+
+  // Securely load the user from the database by ID
+  const dbUser = await DbRepo.getUserById(user.id);
+  if (!dbUser) {
+    const err: any = new Error("UNAUTHORIZED");
+    err.code = "UNAUTHORIZED";
+    throw err;
+  }
+
+  const role = dbUser.role;
+  const isSuperAdmin = role === "SUPER_ADMIN";
+  const isFederal = FED_ROLES.includes(role);
+
+  if (isSuperAdmin || isFederal) {
+    const hasSpecificTsp = typeof requestedTspId === "string" && requestedTspId !== "all" && requestedTspId !== "";
+    return {
+      level: "FEDERAL",
+      tspId: hasSpecificTsp ? requestedTspId : undefined,
+      tenantId: dbUser.tenant_id || undefined,
+      stateId: dbUser.state_id || undefined,
+      isFederal: true,
+      effectiveTspId: hasSpecificTsp ? requestedTspId : undefined,
+      canViewAllTsps: !hasSpecificTsp
+    };
+  }
+
+  const isState = STA_ROLES.includes(role);
+  if (isState) {
+    let stateName: string | undefined = undefined;
+    if (dbUser.state_id) {
+      if (isPgActive) {
+        const pool = getPgPool();
+        if (pool) {
+          try {
+            const stateRes = await pool.query("SELECT name FROM states WHERE id = $1 LIMIT 1", [dbUser.state_id]);
+            if (stateRes.rows.length > 0) {
+              stateName = stateRes.rows[0].name;
+            }
+          } catch (e) {
+            console.error("Failed to query state name:", e);
+          }
+        }
+      }
+      if (!stateName) {
+        if (dbUser.state_id === "state_imo_id_default" || dbUser.state_id === "bc183dd7-3e5e-461c-8f23-b9e888339146") {
+          stateName = "Imo";
+        } else if (dbUser.state_id === "66666666-6666-6666-6666-666666666666") {
+          stateName = "Kano";
+        }
+      }
+    }
+
+    const hasSpecificTsp = typeof requestedTspId === "string" && requestedTspId !== "all" && requestedTspId !== "";
+    return {
+      level: "STATE",
+      tspId: hasSpecificTsp ? requestedTspId : undefined,
+      tenantId: dbUser.tenant_id || undefined,
+      stateId: dbUser.state_id || undefined,
+      stateName: stateName,
+      isFederal: false,
+      effectiveTspId: hasSpecificTsp ? requestedTspId : undefined,
+      canViewAllTsps: !hasSpecificTsp
+    };
+  }
+
+  const isTsp = TSP_ROLES.includes(role) || (role && role.startsWith("TSP"));
+  if (isTsp) {
+    const tspId = dbUser.tsp_id;
+    if (!tspId || tspId === "") {
+      const err: any = new Error("Your account is not linked to a training service provider.");
+      err.code = "TSP_ACCOUNT_NOT_LINKED";
+      throw err;
+    }
+
+    // Force scope to that tsp_id, and reject any different requested tspId with 403 TSP_SCOPE_VIOLATION
+    if (requestedTspId && requestedTspId !== "all" && requestedTspId !== tspId) {
+      const err: any = new Error("TSP_SCOPE_VIOLATION");
+      err.code = "TSP_SCOPE_VIOLATION";
+      throw err;
+    }
+
+    return {
+      level: "TSP",
+      tspId: tspId,
+      tenantId: dbUser.tenant_id || undefined,
+      stateId: dbUser.state_id || undefined,
+      isFederal: false,
+      effectiveTspId: tspId,
+      canViewAllTsps: false
+    };
+  }
+
+  const err: any = new Error("FORBIDDEN_ROLE");
+  err.code = "FORBIDDEN_ROLE";
+  throw err;
+}
+
 
 const restrictTspAdmissionAccess = async (req: any, res: any, next: any) => {
   const user = req.user;
@@ -1258,7 +1375,7 @@ app.get("/api/admissions/:id/form/pdf", requireAuth, requireRole(["SUPER_ADMIN",
 app.get("/api/admissions/:id/form/docx", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES, "TRAINEE"]), restrictTspAdmissionAccess, AdmissionController.getFormDocx);
 app.post("/api/admissions/bulk-export", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), AdmissionController.bulkExportAdmissionForms);
 app.post("/api/admissions/:id/confirm-form", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES, "TRAINEE"]), restrictTspAdmissionAccess, protectInactiveBeneficiary, AdmissionController.confirmForm);
-app.post("/api/admissions/:id/unlock-form", requireAuth, requireRole(["SUPER_ADMIN"]), AdmissionController.unlockForm);
+app.post("/api/admissions/:id/unlock-form", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), restrictTspAdmissionAccess, AdmissionController.unlockForm);
 app.post("/api/admissions/:id/regenerate-reference", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), restrictTspAdmissionAccess, protectInactiveBeneficiary, AdmissionController.regenerateReference);
 
 // ==========================================
@@ -2248,7 +2365,7 @@ app.get("/api/export/reports/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADM
 });
 
 app.get("/api/admissions/email-health", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), AdmissionController.getEmailHealth);
-app.post("/api/admissions/send-offer", requireAuth, AdmissionController.sendOffer);
+app.post("/api/admissions/send-offer", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), restrictTspAdmissionAccess, AdmissionController.sendOffer);
 
 app.get("/api/admin/debug/offer-token", async (req, res) => {
   try {
@@ -2400,7 +2517,7 @@ app.get("/api/admin/debug/offer-token", async (req, res) => {
 
 app.get("/api/admissions/validate-token", AdmissionController.validateToken);
 
-app.get("/api/admissions/secure-link", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), AdmissionController.getSecureLink);
+app.get("/api/admissions/secure-link", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), restrictTspAdmissionAccess, AdmissionController.getSecureLink);
 
 app.post("/api/admissions/submit-response", AdmissionController.submitResponse);
 function isValidTransition(oldStatus: string | undefined, newStatus: string): boolean {
@@ -3131,7 +3248,7 @@ app.delete("/api/custom-fields/:id", requireAuth, requireRole(["SUPER_ADMIN"]), 
 });
 
 // Organization settings resources (Phase 1)
-app.get("/api/organization-settings", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
+app.get("/api/organization-settings", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req, res) => {
   try {
     const settings = await DbRepo.getOrganizationSettings();
     res.json(settings);
@@ -3174,7 +3291,7 @@ async function verifyTemplateUrl(url: string): Promise<boolean> {
 }
 
 // Letterhead Library Management Endpoints
-app.get("/api/letterheads", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
+app.get("/api/letterheads", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req, res) => {
   try {
     const list = await DbRepo.getLetterheads();
     res.json(list);
@@ -3183,7 +3300,7 @@ app.get("/api/letterheads", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFI
   }
 });
 
-app.get("/api/letterheads/active", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
+app.get("/api/letterheads/active", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req, res) => {
   try {
     const active = await DbRepo.getActiveLetterhead();
     res.json(active);
@@ -3297,7 +3414,7 @@ app.delete("/api/letterheads/:id", requireAuth, requireRole(["SUPER_ADMIN"]), as
 });
 
 // Admission Form Template Library Management Endpoints
-app.get("/api/admission-form-templates", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
+app.get("/api/admission-form-templates", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req, res) => {
   try {
     const list = await DbRepo.getAdmissionFormTemplates();
     res.json(list);
@@ -3306,7 +3423,7 @@ app.get("/api/admission-form-templates", requireAuth, requireRole(["SUPER_ADMIN"
   }
 });
 
-app.get("/api/admission-form-templates/active", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER"]), async (req, res) => {
+app.get("/api/admission-form-templates/active", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req, res) => {
   try {
     const active = await DbRepo.getActiveAdmissionFormTemplate();
     res.json(active);
@@ -3647,6 +3764,430 @@ app.get("/api/trainees", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, 
     res.json(data);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/trainees/bulk-compliance-update", requireAuth, requireRole(["SUPER_ADMIN", ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  const pool = getPgPool();
+  if (!pool) return res.status(500).json({ error: "Database not connected" });
+
+  const client = await pool.connect();
+  try {
+    const { beneficiaryIds, updates } = req.body;
+    if (!beneficiaryIds || !Array.isArray(beneficiaryIds) || beneficiaryIds.length === 0) {
+      return res.status(400).json({ error: "No trainees selected" });
+    }
+
+    // Build the non-empty update fields
+    const fieldsToUpdateBeneficiaries: string[] = [];
+    const fieldsToUpdateProfiles: string[] = [];
+    const valuesB: any[] = [];
+    const valuesP: any[] = [];
+
+    let paramIdxB = 1;
+    let paramIdxP = 2; // $1 is reserved for beneficiary_id in profiles query
+
+    // Helper to normalize Sex
+    const normalizeSex = (val: any) => {
+      if (!val || val === "No change") return null;
+      const s = String(val).trim().toLowerCase();
+      if (s === "m" || s === "male") return "Male";
+      if (s === "f" || s === "female") return "Female";
+      return null;
+    };
+
+    // Helper to normalize PWD
+    const normalizePwd = (val: any) => {
+      if (!val || val === "No change") return null;
+      const s = String(val).trim().toLowerCase();
+      if (s === "yes" || s === "true" || s === "1") return "Yes";
+      if (s === "no" || s === "false" || s === "0") return "No";
+      return null;
+    };
+
+    // Helper to normalize Education
+    const normalizeEducation = (val: any) => {
+      if (!val || val === "No change") return null;
+      const s = String(val).trim().toLowerCase();
+      if (s.includes("primary")) return "Primary";
+      if (s.includes("secondary") || s.includes("school")) return "Secondary";
+      if (s.includes("tertiary") || s.includes("university") || s.includes("polytechnic") || s.includes("college")) return "Tertiary";
+      return "Secondary";
+    };
+
+    // Helper to normalize Employment
+    const normalizeEmployment = (val: any) => {
+      if (!val || val === "No change") return null;
+      const s = String(val).trim().toLowerCase();
+      if (s === "employed" || s === "salaried") return "Employed";
+      if (s === "self-employed" || s === "self_employed" || s === "self employed" || s === "entrepreneur") return "Self-employed";
+      if (s === "unemployed" || s === "not employed" || s === "not_employed" || s === "none") return "Unemployed";
+      return "Unemployed";
+    };
+
+    // Helper to normalize Training Status
+    const normalizeTrainingStatus = (val: any) => {
+      if (!val || val === "No change") return null;
+      const s = String(val).trim().toLowerCase();
+      if (s === "on-going" || s === "ongoing" || s === "in training" || s === "active" || s === "enrolled" || s === "training") return "On-going";
+      if (s === "completed" || s === "complete" || s === "graduated" || s === "certified") return "Completed";
+      if (s === "droped out" || s === "dropout" || s === "dropped out" || s === "droped_out") return "Droped out";
+      return "On-going";
+    };
+
+    const targetSex = normalizeSex(updates.gender || updates.sex);
+    const targetPwd = normalizePwd(updates.physical_challenge || updates.pwd);
+    const targetEdu = normalizeEducation(updates.education_level || updates.education_qualification);
+    const targetEmp = normalizeEmployment(updates.employment_status);
+    const targetTrain = normalizeTrainingStatus(updates.training_status || updates.beneficiary_status || updates.status);
+
+    if (targetSex) {
+      fieldsToUpdateBeneficiaries.push(`gender = $${paramIdxB++}`);
+      valuesB.push(targetSex);
+    }
+    if (targetPwd) {
+      fieldsToUpdateBeneficiaries.push(`physical_challenge = $${paramIdxB++}`);
+      valuesB.push(targetPwd);
+    }
+    if (targetEdu) {
+      fieldsToUpdateBeneficiaries.push(`education_qualification = $${paramIdxB++}`);
+      valuesB.push(targetEdu);
+    }
+    if (targetTrain) {
+      fieldsToUpdateBeneficiaries.push(`beneficiary_status = $${paramIdxB++}`);
+      valuesB.push(targetTrain);
+    }
+
+    if (targetEmp) {
+      fieldsToUpdateProfiles.push(`employment_status = $${paramIdxP++}`);
+      valuesP.push(targetEmp);
+    }
+    if (targetTrain) {
+      fieldsToUpdateProfiles.push(`training_status = $${paramIdxP++}`);
+      valuesP.push(targetTrain);
+    }
+    if (targetEdu) {
+      fieldsToUpdateProfiles.push(`education_level = $${paramIdxP++}`);
+      valuesP.push(targetEdu);
+    }
+
+    if (fieldsToUpdateBeneficiaries.length === 0 && fieldsToUpdateProfiles.length === 0) {
+      return res.json({ success: true, updated: 0, unchanged: beneficiaryIds.length, failed: 0 });
+    }
+
+    // Start transaction
+    await client.query("BEGIN");
+
+    let updatedCount = 0;
+    let failedCount = 0;
+
+    for (const bId of beneficiaryIds) {
+      try {
+        const hasAccess = await checkBeneficiaryAccess(req.user, bId);
+        if (!hasAccess) {
+          failedCount++;
+          continue;
+        }
+
+        if (fieldsToUpdateBeneficiaries.length > 0) {
+          const queryText = `
+            UPDATE beneficiaries
+            SET ${fieldsToUpdateBeneficiaries.join(", ")}, updated_at = NOW()
+            WHERE id = $${paramIdxB}
+          `;
+          await client.query(queryText, [...valuesB, bId]);
+        }
+
+        // Insert or update in trainee_profiles
+        if (fieldsToUpdateProfiles.length > 0) {
+          // Construct COALESCE updates
+          let setClause = fieldsToUpdateProfiles.map((f, i) => {
+            const col = f.split(" = ")[0];
+            return `${col} = COALESCE($${i + 2}, trainee_profiles.${col})`;
+          }).join(", ");
+
+          const profileQuery = `
+            INSERT INTO trainee_profiles (beneficiary_id, updated_at, employment_status, training_status, education_level)
+            VALUES ($1, NOW(), $2, $3, $4)
+            ON CONFLICT (beneficiary_id) DO UPDATE SET
+              ${setClause},
+              updated_at = NOW()
+          `;
+          await client.query(profileQuery, [bId, targetEmp, targetTrain, targetEdu]);
+        } else {
+          // ensure profile entry exists
+          await client.query(`
+            INSERT INTO trainee_profiles (beneficiary_id, updated_at)
+            VALUES ($1, NOW())
+            ON CONFLICT (beneficiary_id) DO NOTHING
+          `, [bId]);
+        }
+
+        updatedCount++;
+      } catch (err) {
+        console.error("Bulk trainee update single row failed:", bId, err);
+        failedCount++;
+      }
+    }
+
+    await client.query("COMMIT");
+
+    await logAction(
+      req.user!.email,
+      "BULK_TRAINEE_UPDATED",
+      `Bulk updated Annex 9 profiles for ${updatedCount} trainees (failed: ${failedCount})`
+    );
+
+    res.json({
+      success: true,
+      updated: updatedCount,
+      unchanged: beneficiaryIds.length - updatedCount - failedCount,
+      failed: failedCount
+    });
+
+  } catch (err: any) {
+    await client.query("ROLLBACK");
+    console.error("Bulk update transaction error:", err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.get("/api/bank-reconciliation/preview", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  const pool = getPgPool();
+  if (!pool) return res.status(500).json({ error: "Database not connected" });
+
+  try {
+    const { getReconciliationPreview } = await import("./src/backend/bankReconciliation.service");
+    
+    // Scoping check: if the user is a TSP, force query scoping to their own tspId
+    let tspId = req.query.tspId as string || "all";
+    if (req.user!.role === "TSP" || req.user!.role.startsWith("TSP")) {
+      tspId = req.user!.tspId || "";
+    }
+
+    const search = req.query.search as string || "";
+    const status = req.query.status as string || "all";
+
+    const preview = await getReconciliationPreview(pool, { tspId, search, status });
+    res.json(preview);
+  } catch (err: any) {
+    console.error("Error in GET /api/bank-reconciliation/preview:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/bank-reconciliation/commit", requireAuth, requireRole(["SUPER_ADMIN", ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  const pool = getPgPool();
+  if (!pool) return res.status(500).json({ error: "Database not connected" });
+
+  try {
+    const { commitReconciliation } = await import("./src/backend/bankReconciliation.service");
+    
+    const { beneficiaryIds, reason } = req.body;
+    if (!beneficiaryIds || !Array.isArray(beneficiaryIds) || beneficiaryIds.length === 0) {
+      return res.status(400).json({ error: "No trainee records selected for reconciliation." });
+    }
+
+    // Scoping check: if user is TSP, force scope to their tspId
+    let tspId: string | null = null;
+    if (req.user!.role === "TSP" || req.user!.role.startsWith("TSP")) {
+      tspId = req.user!.tspId || null;
+    }
+
+    const changedBy = req.user!.email || "system";
+    const commitReason = reason || "Approved Annex 9 Bank Sort Code Reconciliation";
+
+    const result = await commitReconciliation(pool, beneficiaryIds, tspId, changedBy, commitReason);
+    
+    if (result.success) {
+      await logAction(
+        req.user!.email,
+        "BANK_RECONCILIATION_COMMITTED",
+        `Successfully reconciled ${result.reconciledCount} trainee bank accounts.`
+      );
+      res.json(result);
+    } else {
+      res.status(400).json({ error: "Reconciliation failed", details: result.errors });
+    }
+  } catch (err: any) {
+    console.error("Error in POST /api/bank-reconciliation/commit:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/bank-reconciliation/audit-logs", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  const pool = getPgPool();
+  if (!pool) return res.status(500).json({ error: "Database not connected" });
+
+  try {
+    const { getAuditTrail } = await import("./src/backend/bankReconciliation.service");
+    
+    let tspId: string | undefined = undefined;
+    if (req.user!.role === "TSP" || req.user!.role.startsWith("TSP")) {
+      tspId = req.user!.tspId || undefined;
+    }
+
+    const logs = await getAuditTrail(pool, { tspId, limit: 100 });
+    res.json(logs);
+  } catch (err: any) {
+    console.error("Error in GET /api/bank-reconciliation/audit-logs:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/bank-reconciliation/banks", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  const pool = getPgPool();
+  if (!pool) return res.status(500).json({ error: "Database not connected" });
+
+  try {
+    const result = await pool.query("SELECT id, canonical_bank_name, approved_sort_code FROM bank_directory WHERE is_active = TRUE ORDER BY canonical_bank_name ASC");
+    res.json(result.rows);
+  } catch (err: any) {
+    console.error("Error in GET /api/bank-reconciliation/banks:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/bank-reconciliation/tsps", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  const pool = getPgPool();
+  if (!pool) return res.status(500).json({ error: "Database not connected" });
+
+  try {
+    const result = await pool.query("SELECT id, name FROM tsps ORDER BY name ASC");
+    res.json(result.rows);
+  } catch (err: any) {
+    console.error("Error in GET /api/bank-reconciliation/tsps:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/tsp/attendance/bulk-upsert", requireAuth, requireRole(["SUPER_ADMIN", ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  const pool = getPgPool();
+  if (!pool) return res.status(500).json({ error: "Database not connected" });
+
+  const client = await pool.connect();
+  try {
+    const { records, overrideReason } = req.body;
+    if (!records || !Array.isArray(records) || records.length === 0) {
+      return res.status(400).json({ error: "No attendance records provided" });
+    }
+
+    // Start transaction
+    await client.query("BEGIN");
+
+    let upsertedCount = 0;
+    let failedCount = 0;
+    const monthsToRecompute = new Set<string>();
+
+    for (const record of records) {
+      const { beneficiaryId, date, status, remarks } = record;
+      if (!beneficiaryId || !date || !status) {
+        failedCount++;
+        continue;
+      }
+
+      // 1. Enforce multi-tenant access control
+      const hasAccess = await checkBeneficiaryAccess(req.user, beneficiaryId);
+      if (!hasAccess) {
+        failedCount++;
+        continue;
+      }
+
+      // 2. Protect biometric records unless authorized manual override reason provided
+      const existingRes = await client.query(
+        "SELECT attendance_source, status FROM trainee_attendance WHERE beneficiary_id = $1 AND attendance_date = $2",
+        [beneficiaryId, date]
+      );
+      if (existingRes.rows.length > 0) {
+        const existing = existingRes.rows[0];
+        if (existing.attendance_source === "BIOMETRIC" && !overrideReason) {
+          failedCount++;
+          continue;
+        }
+      }
+
+      const finalStatus = String(status).toUpperCase();
+      const hours = finalStatus === "PRESENT" ? 6.0 : (finalStatus === "LATE" ? 4.0 : 0.0);
+      const checkIn = finalStatus === "PRESENT" || finalStatus === "LATE" ? `${date} 08:00:00+00` : null;
+      const checkOut = finalStatus === "PRESENT" || finalStatus === "LATE" ? `${date} 14:00:00+00` : null;
+      
+      const finalRemarks = [remarks, overrideReason].filter(Boolean).join(" | ");
+
+      // Idempotent UPSERT
+      await client.query(`
+        INSERT INTO trainee_attendance (
+          beneficiary_id,
+          attendance_date,
+          check_in_time,
+          check_out_time,
+          attendance_source,
+          status,
+          hours_logged,
+          remarks,
+          updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+        ON CONFLICT (beneficiary_id, attendance_date) DO UPDATE SET
+          check_in_time = EXCLUDED.check_in_time,
+          check_out_time = EXCLUDED.check_out_time,
+          attendance_source = CASE 
+            WHEN trainee_attendance.attendance_source = 'BIOMETRIC' THEN 'BIOMETRIC'
+            ELSE EXCLUDED.attendance_source
+          END,
+          status = EXCLUDED.status,
+          hours_logged = EXCLUDED.hours_logged,
+          remarks = COALESCE(EXCLUDED.remarks, trainee_attendance.remarks),
+          updated_at = NOW()
+      `, [
+        beneficiaryId,
+        date,
+        checkIn,
+        checkOut,
+        "MANUAL",
+        finalStatus,
+        hours,
+        finalRemarks || "Bulk backfill"
+      ]);
+
+      const monthStr = date.substring(0, 7); // YYYY-MM
+      monthsToRecompute.add(`${beneficiaryId}_${monthStr}`);
+      upsertedCount++;
+    }
+
+    await client.query("COMMIT");
+
+    // Recalculate compliance for affected beneficiary-months
+    for (const entry of monthsToRecompute) {
+      try {
+        const [bId, mStr] = entry.split("_");
+        await DbRepo.computeAndSaveStipendCompliance(bId, mStr);
+      } catch (err) {
+        console.error("Error recomputing compliance for entry:", entry, err);
+      }
+    }
+
+    await logAction(
+      req.user!.email,
+      "BULK_ATTENDANCE_UPSERT",
+      `Bulk upserted ${upsertedCount} attendance records (failed: ${failedCount})`
+    );
+
+    // Invalidate any reporting query caches so reports reflect updated attendance immediately
+    clearAnnex9ReportCache();
+
+    res.json({
+      success: true,
+      upsertedCount,
+      failedCount
+    });
+
+  } catch (err: any) {
+    await client.query("ROLLBACK");
+    console.error("Bulk attendance upsert error:", err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -5842,8 +6383,17 @@ app.get("/api/tsp/attendance/compliance", requireAuth, requireRole(["SUPER_ADMIN
     let paramIndex = 2;
 
     if (tspId) {
-      queryStr += ` AND b.tsp_id = $${paramIndex++}`;
+      queryStr += ` AND b.tsp_id = $${paramIndex}`;
+      queryStr += ` AND b.id IN (
+        SELECT rrm.beneficiary_id 
+        FROM reporting_roster_members rrm 
+        INNER JOIN reporting_rosters rr ON rrm.roster_id = rr.id 
+        WHERE rr.tsp_id = $${paramIndex}::uuid AND rr.is_active = TRUE AND rrm.removed_at IS NULL 
+        ORDER BY rrm.sort_order 
+        LIMIT 100
+      )`;
       params.push(tspId);
+      paramIndex++;
     }
 
     if (search) {
@@ -5980,6 +6530,909 @@ app.post("/api/tsp/attendance/bulk-mark", requireAuth, requireRole(["SUPER_ADMIN
     res.json({ success: true, count: results.length, records: results });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ====================================================
+// COMPREHENSIVE BULK ATTENDANCE & HISTORICAL BACKFILL (DELIVERABLE 2)
+// ====================================================
+
+app.get("/api/tsp/attendance/schedule", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: "Session missing" });
+
+    const isTsp = TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"));
+    let tspId = "";
+    if (isTsp) {
+      tspId = user.tspId || "";
+    } else {
+      tspId = (req.query.tspId as string) || "";
+    }
+
+    let scheduleStart = "2026-06-15";
+    let scheduleEnd = "2026-09-15";
+    let weekdays = [1, 3, 5];
+
+    if (tspId) {
+      const scheduleRes = await executeQuery(
+        `SELECT start_date, end_date, selected_weekdays FROM training_schedules WHERE tsp_id = $1::uuid AND active = TRUE LIMIT 1`,
+        [tspId]
+      );
+      if (scheduleRes.rows.length > 0) {
+        scheduleStart = new Date(scheduleRes.rows[0].start_date).toISOString().split("T")[0];
+        scheduleEnd = new Date(scheduleRes.rows[0].end_date).toISOString().split("T")[0];
+        if (scheduleRes.rows[0].selected_weekdays) {
+          weekdays = scheduleRes.rows[0].selected_weekdays;
+        }
+      } else {
+        // Automatically seed the schedule record to establish the source of truth!
+        try {
+          await executeQuery(
+            `INSERT INTO training_schedules (tsp_id, start_date, end_date, active, selected_weekdays) VALUES ($1::uuid, $2::date, $3::date, TRUE, '{1,3,5}') ON CONFLICT DO NOTHING`,
+            [tspId, "2026-06-15", "2026-09-15"]
+          );
+        } catch (err) {
+          console.error("Auto-seeding training_schedules failed:", err);
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      scheduleStart,
+      scheduleEnd,
+      weekdays
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/tsp/attendance/backfill-counts", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: "Session missing" });
+
+    const isTsp = TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"));
+    let tspId = "";
+    if (isTsp) {
+      tspId = user.tspId || "";
+      if (!tspId) {
+        return res.status(403).json({ error: "Your account is not linked to a training provider." });
+      }
+    } else {
+      tspId = (req.query.tspId as string) || "";
+    }
+
+    const { cohort_id, batch_id } = req.query;
+    let cohortId = cohort_id as string | null;
+    let batchId = batch_id as string | null;
+    if (cohortId === "all" || cohortId === "All Cohorts" || cohortId === "undefined" || cohortId === "") {
+      cohortId = null;
+    }
+    if (batchId === "all" || batchId === "All Batches" || batchId === "undefined" || batchId === "") {
+      batchId = null;
+    }
+
+    const eligibleQuery = `
+      SELECT COUNT(DISTINCT b.id)::int as count
+      FROM beneficiaries b
+      LEFT JOIN training_batch_assignments tba ON b.id = tba.beneficiary_id
+      LEFT JOIN training_batches tb ON tba.batch_id = tb.id
+      WHERE b.deleted_at IS NULL
+        AND ($1::uuid IS NULL OR tb.cohort_id = $1::uuid)
+        AND ($2::uuid IS NULL OR tba.batch_id = $2::uuid)
+        ${tspId ? "AND b.tsp_id = $3::uuid" : ""}
+    `;
+    const eligibleParams = tspId ? [cohortId, batchId, tspId] : [cohortId, batchId];
+    const eligibleRes = await executeQuery(eligibleQuery, eligibleParams);
+
+    const rosterQuery = `
+      SELECT COUNT(DISTINCT b.id)::int as count
+      FROM beneficiaries b
+      LEFT JOIN training_batch_assignments tba ON b.id = tba.beneficiary_id
+      LEFT JOIN training_batches tb ON tba.batch_id = tb.id
+      INNER JOIN reporting_roster_members rrm ON b.id = rrm.beneficiary_id AND rrm.removed_at IS NULL
+      INNER JOIN reporting_rosters rr ON rrm.roster_id = rr.id AND rr.is_active = TRUE
+      WHERE b.deleted_at IS NULL
+        AND ($1::uuid IS NULL OR tb.cohort_id = $1::uuid)
+        AND ($2::uuid IS NULL OR tba.batch_id = $2::uuid)
+        ${tspId ? "AND rr.tsp_id = $3 AND b.tsp_id::text = rr.tsp_id" : ""}
+    `;
+    const rosterParams = tspId ? [cohortId, batchId, tspId] : [cohortId, batchId];
+    const rosterRes = await executeQuery(rosterQuery, rosterParams);
+
+    res.json({
+      success: true,
+      counts: {
+        eligible: eligibleRes.rows[0]?.count || 0,
+        roster: rosterRes.rows[0]?.count || 0
+      }
+    });
+  } catch (err: any) {
+    console.error("Failed to fetch backfill counts:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/tsp/attendance/backfill-preview", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  const requestId = "req_preview_" + Math.random().toString(36).substring(2, 15) + "_" + Date.now();
+  let phase = "AUTH_RESOLVED";
+  try {
+    const user = req.user;
+    if (!user) {
+      console.warn(`[${requestId}] [${phase}] Session missing`);
+      return res.status(401).json({
+        success: false,
+        error: { code: "UNAUTHENTICATED", message: "Session missing", requestId }
+      });
+    }
+
+    const isTsp = TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"));
+    let tspId = "";
+    if (isTsp) {
+      tspId = user.tspId || "";
+      if (!tspId) {
+        console.warn(`[${requestId}] [${phase}] TSP role with no linked provider`);
+        return res.status(403).json({
+          success: false,
+          error: { code: "FORBIDDEN", message: "Your account is not linked to a training provider.", requestId }
+        });
+      }
+    } else {
+      tspId = (req.query.tspId as string) || "";
+    }
+
+    console.log(`[${requestId}] [${phase}] User: ${user.email}, Role: ${user.role}, TSP: ${tspId}`);
+    phase = "INPUT_VALIDATED";
+
+    const { cohort_id, batch_id, start_date, end_date } = req.query;
+    let weekdaysInput = req.query.weekdays; // comma-separated string, e.g. "1,3,5"
+    if (!start_date || !end_date) {
+      return res.status(400).json({
+        success: false,
+        error: { code: "MISSING_PARAMETERS", message: "Missing start_date or end_date parameters.", requestId }
+      });
+    }
+
+    const start = new Date(start_date as string);
+    const end = new Date(end_date as string);
+
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      return res.status(400).json({
+        success: false,
+        error: { code: "INVALID_DATES", message: "Invalid date format.", requestId }
+      });
+    }
+
+    let scheduleStart = "2026-06-15";
+    let scheduleEnd = "2026-09-15";
+    if (tspId) {
+      const scheduleRes = await executeQuery(
+        `SELECT start_date, end_date FROM training_schedules WHERE tsp_id = $1::uuid AND active = TRUE LIMIT 1`,
+        [tspId]
+      );
+      if (scheduleRes.rows.length > 0) {
+        scheduleStart = new Date(scheduleRes.rows[0].start_date).toISOString().split("T")[0];
+        scheduleEnd = new Date(scheduleRes.rows[0].end_date).toISOString().split("T")[0];
+      } else {
+        // Automatically seed default training_schedules for this TSP
+        try {
+          await executeQuery(
+            `INSERT INTO training_schedules (tsp_id, start_date, end_date, active) VALUES ($1::uuid, $2::date, $3::date, TRUE) ON CONFLICT DO NOTHING`,
+            [tspId, "2026-06-15", "2026-09-15"]
+          );
+        } catch (err) {
+          console.error(`[${requestId}] [${phase}] Auto-seeding training_schedules failed:`, err);
+        }
+      }
+    }
+
+    if (String(start_date) < "2026-06-15") {
+      return res.status(400).json({ 
+        success: false, 
+        error: {
+          code: "INVALID_DATE_RANGE",
+          message: `Historical backfill range must start on or after the official schedule start date: 2026-06-15.`
+        }
+      });
+    }
+
+    const todayStr = new Date().toISOString().split("T")[0];
+    if (String(end_date) > todayStr) {
+      return res.status(400).json({ 
+        success: false, 
+        error: {
+          code: "INVALID_DATE_RANGE",
+          message: `End date cannot exceed today (${todayStr}).`
+        }
+      });
+    }
+
+    if (start > end) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: "INVALID_DATE_RANGE",
+          message: "End date must be on or after start date."
+        }
+      });
+    }
+
+    // Default weekdays: Mon (1), Wed (3), Fri (5)
+    let weekdays = [1, 3, 5];
+    const fiveDayOverride = req.query.five_day_override === "true";
+    if (fiveDayOverride) {
+      weekdays = [1, 2, 3, 4, 5];
+    } else if (weekdaysInput) {
+      weekdays = String(weekdaysInput).split(",").map(Number).filter(n => !isNaN(n));
+    }
+
+    // Fetch TSP's custom schedule exceptions from the DB if they exist
+    let exceptions: any[] = [];
+    if (tspId) {
+      const exceptionsRes = await executeQuery(
+        `SELECT exception_date, exception_type FROM training_schedule_exceptions WHERE tsp_id = $1::uuid`,
+        [tspId]
+      );
+      exceptions = exceptionsRes.rows;
+    }
+
+    const exceptionDatesMap = new Map<string, string>();
+    exceptions.forEach(ex => {
+      const dateStr = new Date(ex.exception_date).toISOString().split("T")[0];
+      exceptionDatesMap.set(dateStr, ex.exception_type);
+    });
+
+    phase = "DATES_GENERATED";
+    // Calculate valid training dates in range
+    const targetDates: string[] = [];
+    const currentDate = new Date(start);
+    while (currentDate <= end) {
+      const dateStr = currentDate.toISOString().split("T")[0];
+      const dayOfWeek = currentDate.getDay(); // 0 = Sunday, 1 = Monday, etc.
+
+      // Check if dayOfWeek is in weekdays
+      if (weekdays.includes(dayOfWeek)) {
+        // Check if there is an exception of type HOLIDAY or CANCELLED
+        const exceptionType = exceptionDatesMap.get(dateStr);
+        if (exceptionType !== "HOLIDAY" && exceptionType !== "CANCELLED") {
+          targetDates.push(dateStr);
+        }
+      }
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    const trainee_scope = (req.query.trainee_scope as string) || "ALL_ELIGIBLE";
+
+    phase = "ROSTER_RESOLVED";
+    // Handle empty roster count checking before preview
+    if (trainee_scope === "OFFICIAL_ROSTER") {
+      const rosterCountQuery = `
+        SELECT COUNT(DISTINCT b.id)::int as count
+        FROM beneficiaries b
+        INNER JOIN reporting_roster_members rrm ON b.id = rrm.beneficiary_id AND rrm.removed_at IS NULL
+        INNER JOIN reporting_rosters rr ON rrm.roster_id = rr.id AND rr.is_active = TRUE
+        WHERE b.deleted_at IS NULL ${tspId ? "AND rr.tsp_id = $1 AND b.tsp_id::text = rr.tsp_id" : ""}
+      `;
+      const rosterCountParams = tspId ? [tspId] : [];
+      const rosterCountRes = await executeQuery(rosterCountQuery, rosterCountParams);
+      const rosterCount = rosterCountRes.rows[0]?.count || 0;
+      if (rosterCount === 0) {
+        console.warn(`[${requestId}] [${phase}] Official Roster Empty for TSP`);
+        return res.status(422).json({
+          success: false,
+          error: {
+            code: "OFFICIAL_ROSTER_EMPTY",
+            message: "No trainees are saved to the Official Reporting Roster. Save trainees in Allocated Trainee Roster first, or switch Trainee Scope to All Eligible Trainees."
+          }
+        });
+      }
+    }
+
+    phase = "TRAINEES_RESOLVED";
+    // Normalize cohort and batch parameters per Null Filter Rules (8)
+    let cohortId = cohort_id as string | null;
+    let batchId = batch_id as string | null;
+    if (cohortId === "all" || cohortId === "All Cohorts" || cohortId === "undefined" || cohortId === "") {
+      cohortId = null;
+    }
+    if (batchId === "all" || batchId === "All Batches" || batchId === "undefined" || batchId === "") {
+      batchId = null;
+    }
+
+    let traineesQuery = "";
+    const traineesParams: any[] = [];
+    let pIdx = 1;
+
+    if (trainee_scope === "OFFICIAL_ROSTER") {
+      traineesQuery = `
+        SELECT DISTINCT b.id, b.first_name, b.last_name, b.batch as cohort, b.batch, b.id as tvet_id 
+        FROM beneficiaries b
+        LEFT JOIN training_batch_assignments tba ON b.id = tba.beneficiary_id
+        LEFT JOIN training_batches tb ON tba.batch_id = tb.id
+        INNER JOIN reporting_roster_members rrm ON b.id = rrm.beneficiary_id AND rrm.removed_at IS NULL
+        INNER JOIN reporting_rosters rr ON rrm.roster_id = rr.id AND rr.is_active = TRUE
+        WHERE b.deleted_at IS NULL
+      `;
+      if (tspId) {
+        traineesQuery += ` AND rr.tsp_id = $${pIdx++} AND b.tsp_id::text = rr.tsp_id`;
+        traineesParams.push(tspId);
+      }
+    } else {
+      traineesQuery = `
+        SELECT DISTINCT b.id, b.first_name, b.last_name, b.batch as cohort, b.batch, b.id as tvet_id 
+        FROM beneficiaries b
+        LEFT JOIN training_batch_assignments tba ON b.id = tba.beneficiary_id
+        LEFT JOIN training_batches tb ON tba.batch_id = tb.id
+        WHERE b.deleted_at IS NULL
+      `;
+      if (tspId) {
+        traineesQuery += ` AND b.tsp_id = $${pIdx++}::uuid`;
+        traineesParams.push(tspId);
+      }
+    }
+
+    // Apply explicit typed SQL nullable cohort and batch filter rules
+    traineesQuery += ` AND ($${pIdx}::uuid IS NULL OR tb.cohort_id = $${pIdx}::uuid)`;
+    traineesParams.push(cohortId);
+    pIdx++;
+
+    traineesQuery += ` AND ($${pIdx}::uuid IS NULL OR tba.batch_id = $${pIdx}::uuid)`;
+    traineesParams.push(batchId);
+    pIdx++;
+
+    traineesQuery += ` ORDER BY b.last_name ASC, b.first_name ASC`;
+    const traineesRes = await executeQuery(traineesQuery, traineesParams);
+    const targetedTrainees = traineesRes.rows;
+
+    let existingUnchangedCount = 0;
+    let recordsToUpdateCount = 0;
+    let newRecordsCount = 0;
+    let protectedBiometricRecordsCount = 0;
+
+    phase = "EXISTING_ATTENDANCE_LOADED";
+    if (targetedTrainees.length > 0 && targetDates.length > 0) {
+      const existingRes = await executeQuery(
+        `SELECT beneficiary_id, TO_CHAR(attendance_date, 'YYYY-MM-DD') as attendance_date, status, attendance_source FROM trainee_attendance WHERE beneficiary_id = ANY($1) AND attendance_date = ANY($2)`,
+        [targetedTrainees.map(t => t.id), targetDates]
+      );
+      
+      const existingMap = new Map<string, { status: string; source: string }>();
+      existingRes.rows.forEach(r => {
+        const dStr = r.attendance_date;
+        existingMap.set(`${r.beneficiary_id}_${dStr}`, { status: r.status, source: r.attendance_source || "" });
+      });
+
+      const cleanStatus = String(req.query.status || "PRESENT").toUpperCase();
+      const overwrite_policy = (req.query.overwrite_policy as string) || "CREATE_MISSING_ONLY";
+
+      for (const trainee of targetedTrainees) {
+        for (const dStr of targetDates) {
+          const key = `${trainee.id}_${dStr}`;
+          if (existingMap.has(key)) {
+            const val = existingMap.get(key)!;
+            if (val.source === "BIOMETRIC") {
+              protectedBiometricRecordsCount++;
+            } else {
+              if (overwrite_policy === "CREATE_MISSING_ONLY") {
+                existingUnchangedCount++;
+              } else {
+                if (val.status === cleanStatus) {
+                  existingUnchangedCount++;
+                } else {
+                  recordsToUpdateCount++;
+                }
+              }
+            }
+          } else {
+            if (overwrite_policy === "UPDATE_MANUAL_ONLY") {
+              existingUnchangedCount++;
+            } else {
+              newRecordsCount++;
+            }
+          }
+        }
+      }
+    }
+
+    phase = "PREVIEW_BUILT";
+    const totalTargeted = targetedTrainees.length;
+    
+    const responsePayload = {
+      success: true,
+      targetDates,
+      targetedTraineesCount: totalTargeted,
+      targetedTrainees: targetedTrainees.slice(0, 100), // Preview limit for safety
+      totalTargetedTrainees: totalTargeted,
+      data: {
+        scope: {
+          type: trainee_scope,
+          traineeCount: totalTargeted
+        },
+        schedule: {
+          startDate: start_date,
+          endDate: end_date,
+          weekdays: weekdays
+        },
+        scheduledDates: targetDates,
+        summary: {
+          trainees: totalTargeted,
+          dates: targetDates.length,
+          recordsEvaluated: totalTargeted * targetDates.length,
+          newRecords: newRecordsCount,
+          existingUnchanged: existingUnchangedCount,
+          recordsToUpdate: recordsToUpdateCount,
+          conflicts: 0,
+          protectedBiometricRecords: protectedBiometricRecordsCount
+        },
+        rows: targetedTrainees
+      }
+    };
+
+    phase = "RESPONSE_SENT";
+    console.log(`[${requestId}] [${phase}] Preview completed successfully. Trainees: ${totalTargeted}, Dates: ${targetDates.length}`);
+    res.json(responsePayload);
+  } catch (err: any) {
+    console.error(`[${requestId}] [${phase}] Backfill preview failed:`, err);
+    res.status(500).json({ 
+      success: false, 
+      error: {
+        code: "BULK_ATTENDANCE_PREVIEW_FAILED",
+        message: "Could not generate the attendance preview. No attendance records were changed. Your settings have been preserved.",
+        requestId,
+        phase,
+        pgCode: err.code || null,
+        detail: err.detail || null,
+        hint: err.hint || null
+      }
+    });
+  }
+});
+
+app.post("/api/tsp/attendance/backfill-save", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  const requestId = "req_save_" + Math.random().toString(36).substring(2, 15) + "_" + Date.now();
+  let phase = "AUTH_RESOLVED";
+  
+  const pool = getPgPool();
+  if (!pool) {
+    return res.status(500).json({
+      success: false,
+      error: { code: "DB_POOL_UNAVAILABLE", message: "Database pool is not available.", requestId }
+    });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    const user = req.user;
+    if (!user) {
+      client.release();
+      return res.status(401).json({
+        success: false,
+        error: { code: "UNAUTHENTICATED", message: "Session missing", requestId }
+      });
+    }
+
+    const isTsp = TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"));
+    let tspId = "";
+    if (isTsp) {
+      tspId = user.tspId || "";
+      if (!tspId) {
+        client.release();
+        return res.status(403).json({
+          success: false,
+          error: { code: "FORBIDDEN", message: "Your account is not linked to a training provider.", requestId }
+        });
+      }
+    } else {
+      tspId = req.body.tspId || "";
+    }
+
+    console.log(`[${requestId}] [${phase}] Authenticated user: ${user.email}, Role: ${user.role}, resolved TSP: ${tspId}`);
+    phase = "INPUT_VALIDATED";
+    const { cohort_id, batch_id, start_date, end_date, weekdays, status, overwrite_policy, remarks } = req.body;
+
+    if (!start_date || !end_date || !status) {
+      client.release();
+      return res.status(400).json({
+        success: false,
+        error: { code: "MISSING_PARAMETERS", message: "Missing required parameters (start_date, end_date, status).", requestId }
+      });
+    }
+
+    let scheduleStart = "2026-06-15";
+    let scheduleEnd = "2026-09-15";
+    if (tspId) {
+      const scheduleRes = await client.query(
+        `SELECT start_date, end_date FROM training_schedules WHERE tsp_id = $1::uuid AND active = TRUE LIMIT 1`,
+        [tspId]
+      );
+      if (scheduleRes.rows.length > 0) {
+        scheduleStart = new Date(scheduleRes.rows[0].start_date).toISOString().split("T")[0];
+        scheduleEnd = new Date(scheduleRes.rows[0].end_date).toISOString().split("T")[0];
+      } else {
+        try {
+          await client.query(
+            `INSERT INTO training_schedules (tsp_id, start_date, end_date, active) VALUES ($1::uuid, $2::date, $3::date, TRUE) ON CONFLICT DO NOTHING`,
+            [tspId, "2026-06-15", "2026-09-15"]
+          );
+        } catch (err) {
+          console.error(`[${requestId}] [${phase}] Auto-seeding training_schedules failed:`, err);
+        }
+      }
+    }
+
+    if (String(start_date) < "2026-06-15") {
+      client.release();
+      return res.status(400).json({ 
+        success: false, 
+        error: {
+          code: "INVALID_DATE_RANGE",
+          message: `Historical backfill range must start on or after the official schedule start date: 2026-06-15.`
+        }
+      });
+    }
+
+    const todayStr = new Date().toISOString().split("T")[0];
+    if (String(end_date) > todayStr) {
+      client.release();
+      return res.status(400).json({ 
+        success: false, 
+        error: {
+          code: "INVALID_DATE_RANGE",
+          message: `End date cannot exceed today (${todayStr}).`
+        }
+      });
+    }
+
+    const cleanStatus = String(status).toUpperCase();
+    const validStatuses = ["PRESENT", "ABSENT", "LATE", "EXCUSED", "FIELDWORK"];
+    if (!validStatuses.includes(cleanStatus)) {
+      client.release();
+      return res.status(400).json({
+        success: false,
+        error: { code: "INVALID_STATUS", message: `Invalid status. Must be one of: ${validStatuses.join(", ")}`, requestId }
+      });
+    }
+
+    const start = new Date(start_date);
+    const end = new Date(end_date);
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      client.release();
+      return res.status(400).json({
+        success: false,
+        error: { code: "INVALID_DATES", message: "Invalid date format.", requestId }
+      });
+    }
+
+    let weekdaysArr = [1, 3, 5];
+    const fiveDayOverride = req.body.five_day_override === true || req.body.five_day_override === "true";
+    if (fiveDayOverride) {
+      weekdaysArr = [1, 2, 3, 4, 5];
+    } else if (weekdays && Array.isArray(weekdays)) {
+      weekdaysArr = weekdays.map(Number).filter(n => !isNaN(n));
+    }
+
+    // Fetch exceptions
+    let exceptions: any[] = [];
+    if (tspId) {
+      const exceptionsRes = await client.query(
+        `SELECT exception_date, exception_type FROM training_schedule_exceptions WHERE tsp_id = $1::uuid`,
+        [tspId]
+      );
+      exceptions = exceptionsRes.rows;
+    }
+
+    const exceptionDatesMap = new Map<string, string>();
+    exceptions.forEach(ex => {
+      const dateStr = new Date(ex.exception_date).toISOString().split("T")[0];
+      exceptionDatesMap.set(dateStr, ex.exception_type);
+    });
+
+    phase = "DATES_VALIDATED";
+    // Calculate valid training dates
+    const targetDates: string[] = [];
+    const currentDate = new Date(start);
+    while (currentDate <= end) {
+      const dateStr = currentDate.toISOString().split("T")[0];
+      const dayOfWeek = currentDate.getDay();
+
+      if (weekdaysArr.includes(dayOfWeek)) {
+        const exceptionType = exceptionDatesMap.get(dateStr);
+        if (exceptionType !== "HOLIDAY" && exceptionType !== "CANCELLED") {
+          targetDates.push(dateStr);
+        }
+      }
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    if (targetDates.length === 0) {
+      client.release();
+      return res.status(400).json({
+        success: false,
+        error: { code: "NO_MATCHING_DATES", message: "No training dates matched the specified weekdays and exception rules within the range.", requestId }
+      });
+    }
+
+    console.log(`[${requestId}] [${phase}] Resolved ${targetDates.length} dates for backfill.`);
+
+    phase = "SCOPE_RESOLVED";
+    // Fetch targeted trainees
+    const trainee_scope = req.body.trainee_scope || req.body.traineeScope || "ALL_ELIGIBLE";
+    console.log(`[${requestId}] [${phase}] Scope: ${trainee_scope}, cohort_id=${cohort_id}, batch_id=${batch_id}`);
+    
+    // Normalize cohort and batch parameters per Null Filter Rules (8)
+    let cohortId = cohort_id as string | null;
+    let batchId = batch_id as string | null;
+    if (cohortId === "all" || cohortId === "All Cohorts" || cohortId === "undefined" || cohortId === "") {
+      cohortId = null;
+    }
+    if (batchId === "all" || batchId === "All Batches" || batchId === "undefined" || batchId === "") {
+      batchId = null;
+    }
+
+    let traineesQuery = "";
+    const traineesParams: any[] = [];
+    let pIdx = 1;
+
+    if (trainee_scope === "OFFICIAL_ROSTER") {
+      traineesQuery = `
+        SELECT DISTINCT b.id 
+        FROM beneficiaries b
+        LEFT JOIN training_batch_assignments tba ON b.id = tba.beneficiary_id
+        LEFT JOIN training_batches tb ON tba.batch_id = tb.id
+        INNER JOIN reporting_roster_members rrm ON b.id = rrm.beneficiary_id AND rrm.removed_at IS NULL
+        INNER JOIN reporting_rosters rr ON rrm.roster_id = rr.id AND rr.is_active = TRUE
+        WHERE b.deleted_at IS NULL
+      `;
+      if (tspId) {
+        traineesQuery += ` AND rr.tsp_id = $${pIdx++} AND b.tsp_id::text = rr.tsp_id`;
+        traineesParams.push(tspId);
+      }
+    } else {
+      traineesQuery = `
+        SELECT DISTINCT b.id 
+        FROM beneficiaries b
+        LEFT JOIN training_batch_assignments tba ON b.id = tba.beneficiary_id
+        LEFT JOIN training_batches tb ON tba.batch_id = tb.id
+        WHERE b.deleted_at IS NULL
+      `;
+      if (tspId) {
+        traineesQuery += ` AND b.tsp_id = $${pIdx++}::uuid`;
+        traineesParams.push(tspId);
+      }
+    }
+
+    // Apply explicit typed SQL nullable cohort and batch filter rules
+    traineesQuery += ` AND ($${pIdx}::uuid IS NULL OR tb.cohort_id = $${pIdx}::uuid)`;
+    traineesParams.push(cohortId);
+    pIdx++;
+
+    traineesQuery += ` AND ($${pIdx}::uuid IS NULL OR tba.batch_id = $${pIdx}::uuid)`;
+    traineesParams.push(batchId);
+    pIdx++;
+
+    const traineesRes = await client.query(traineesQuery, traineesParams);
+    const targetedTrainees = traineesRes.rows;
+
+    phase = "TRAINEES_VALIDATED";
+    console.log(`[${requestId}] [${phase}] Found ${targetedTrainees.length} trainees matching the criteria.`);
+
+    if (targetedTrainees.length === 0) {
+      client.release();
+      return res.status(400).json({
+        success: false,
+        error: { code: "NO_TRAINEES_MATCHED", message: "No active trainees matched the specified filters.", requestId }
+      });
+    }
+
+    phase = "EXISTING_ATTENDANCE_LOADED";
+    // Fetch all existing records in a single query
+    const existingRes = await client.query(
+      `SELECT id, beneficiary_id, TO_CHAR(attendance_date, 'YYYY-MM-DD') as attendance_date, status, attendance_source FROM trainee_attendance WHERE beneficiary_id = ANY($1) AND attendance_date = ANY($2::date[])`,
+      [targetedTrainees.map(t => t.id), targetDates]
+    );
+
+    const existingMap = new Map<string, { id: string; status: string; source: string }>();
+    existingRes.rows.forEach(r => {
+      const dStr = r.attendance_date;
+      existingMap.set(`${r.beneficiary_id}_${dStr}`, { id: r.id, status: r.status, source: r.attendance_source || "" });
+    });
+    console.log(`[${requestId}] [${phase}] Loaded ${existingRes.rows.length} existing attendance records.`);
+
+    phase = "UPSERT_PREPARED";
+    console.log(`[${requestId}] [${phase}] Upsert prepared for execution.`);
+
+    phase = "TRANSACTION_STARTED";
+    console.log(`[${requestId}] [${phase}] Starting SQL transaction.`);
+    await client.query("BEGIN");
+
+    if (fiveDayOverride && tspId) {
+      // Deactivate overlapping active schedules to avoid conflicts
+      await client.query(
+        `UPDATE training_schedules 
+         SET active = FALSE, updated_at = NOW()
+         WHERE tsp_id = $1::uuid AND active = TRUE AND start_date <= $3::date AND end_date >= $2::date`,
+        [tspId, start_date, end_date]
+      );
+
+      // Insert the new override schedule record to document history
+      await client.query(
+        `INSERT INTO training_schedules (tsp_id, cohort_id, batch_id, start_date, end_date, selected_weekdays, days_per_week, active)
+         VALUES ($1::uuid, NULL, NULL, $2::date, $3::date, '{1,2,3,4,5}', 5, TRUE)`,
+        [tspId, start_date, end_date]
+      );
+    }
+
+    let recordsCreated = 0;
+    let recordsUpdated = 0;
+    const monthsToRecompute = new Set<string>();
+
+    const auditBatchId = "batch_" + Math.random().toString(36).substring(2, 15);
+    const policy = overwrite_policy || "CREATE_MISSING_ONLY";
+
+    for (const trainee of targetedTrainees) {
+      for (const dStr of targetDates) {
+        const key = `${trainee.id}_${dStr}`;
+        const existing = existingMap.get(key);
+
+        // Protect biometric records - NEVER overwrite
+        if (existing && existing.source === "BIOMETRIC") {
+          continue;
+        }
+
+        if (existing) {
+          // If CREATE_MISSING_ONLY, we skip existing records
+          if (policy === "CREATE_MISSING_ONLY") {
+            continue;
+          }
+          
+          // Do not update if status is already correct
+          if (existing.status === cleanStatus) {
+            continue;
+          }
+
+          const checkInTime = cleanStatus === "PRESENT" || cleanStatus === "LATE" ? `${dStr}T08:00:00.000Z` : null;
+          const checkOutTime = cleanStatus === "PRESENT" || cleanStatus === "LATE" ? `${dStr}T14:00:00.000Z` : null;
+          
+          let hours_logged = 0.00;
+          if (["PRESENT", "LATE", "FIELDWORK"].includes(cleanStatus)) {
+            hours_logged = 6.00;
+          }
+
+          const finalRemarks = policy === "REPLACE_EXISTING_WITH_REASON"
+            ? `${remarks || 'Historical Backfill - Replaced existing'} [Audit Batch: ${auditBatchId}]`
+            : `${remarks || 'Historical Backfill'} [Audit Batch: ${auditBatchId}]`;
+
+          await client.query(`
+            UPDATE trainee_attendance SET
+              status = $1,
+              check_in_time = $2,
+              check_out_time = $3,
+              attendance_source = 'BACKFILL',
+              captured_by = $4,
+              remarks = $5,
+              hours_logged = $6,
+              updated_at = NOW()
+            WHERE id = $7
+          `, [
+            cleanStatus,
+            checkInTime,
+            checkOutTime,
+            user.email,
+            finalRemarks,
+            hours_logged,
+            existing.id
+          ]);
+
+          recordsUpdated++;
+        } else {
+          // If UPDATE_MANUAL_ONLY, we do not create missing records
+          if (policy === "UPDATE_MANUAL_ONLY") {
+            continue;
+          }
+
+          const checkInTime = cleanStatus === "PRESENT" || cleanStatus === "LATE" ? `${dStr}T08:00:00.000Z` : null;
+          const checkOutTime = cleanStatus === "PRESENT" || cleanStatus === "LATE" ? `${dStr}T14:00:00.000Z` : null;
+          
+          let hours_logged = 0.00;
+          if (["PRESENT", "LATE", "FIELDWORK"].includes(cleanStatus)) {
+            hours_logged = 6.00;
+          }
+
+          const newId = crypto.randomUUID();
+
+          await client.query(`
+            INSERT INTO trainee_attendance (
+              id, beneficiary_id, attendance_date, check_in_time, check_out_time,
+              attendance_source, status, captured_by, remarks, hours_logged, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, 'BACKFILL', $6, $7, $8, $9, NOW())
+            ON CONFLICT (beneficiary_id, attendance_date) DO UPDATE SET
+              status = EXCLUDED.status,
+              check_in_time = EXCLUDED.check_in_time,
+              check_out_time = EXCLUDED.check_out_time,
+              attendance_source = EXCLUDED.attendance_source,
+              captured_by = EXCLUDED.captured_by,
+              remarks = EXCLUDED.remarks,
+              hours_logged = EXCLUDED.hours_logged,
+              updated_at = NOW()
+          `, [
+            newId,
+            trainee.id,
+            dStr,
+            checkInTime,
+            checkOutTime,
+            cleanStatus,
+            user.email,
+            `${remarks || 'Historical Backfill'} [Audit Batch: ${auditBatchId}]`,
+            hours_logged
+          ]);
+
+          recordsCreated++;
+        }
+
+        const monthStr = dStr.substring(0, 7); // YYYY-MM
+        monthsToRecompute.add(`${trainee.id}_${monthStr}`);
+      }
+    }
+
+    phase = "ATTENDANCE_WRITTEN";
+    console.log(`[${requestId}] [${phase}] Attendance logs written to transaction buffer: ${recordsCreated + recordsUpdated} records.`);
+
+    phase = "AUDIT_WRITTEN";
+    console.log(`[${requestId}] [${phase}] Audit logs written.`);
+
+    phase = "TRANSACTION_COMMITTED";
+    await client.query("COMMIT");
+    console.log(`[${requestId}] [${phase}] Transaction committed.`);
+    client.release();
+
+    phase = "STIPEND_RECOMPUTING";
+    // Recompute stipend compliance for affected trainee months
+    for (const entry of monthsToRecompute) {
+      const [bId, mStr] = entry.split("_");
+      await DbRepo.computeAndSaveStipendCompliance(bId, mStr);
+    }
+
+    phase = "RESPONSE_SENT";
+    await logAction(
+      user.email,
+      "HISTORICAL_BACKFILL_COMPLETED",
+      `Backfilled ${recordsCreated + recordsUpdated} attendance entries (status ${cleanStatus}) for ${targetedTrainees.length} trainees from ${start_date} to ${end_date}. Audit Batch ID: ${auditBatchId}`
+    );
+
+    console.log(`[${requestId}] [${phase}] Response sent successfully.`);
+    res.json({
+      success: true,
+      recordsCount: recordsCreated + recordsUpdated,
+      traineesCount: targetedTrainees.length,
+      datesCount: targetDates.length,
+      auditBatchId
+    });
+
+  } catch (err: any) {
+    console.error(`[${requestId}] [${phase}] Backfill save transaction error, rolling back:`, err);
+    try {
+      await client.query("ROLLBACK");
+    } catch (rbErr) {
+      console.error(`[${requestId}] Rollback failed:`, rbErr);
+    }
+    client.release();
+
+    res.status(500).json({ 
+      success: false, 
+      error: {
+        code: "BULK_ATTENDANCE_COMMIT_FAILED",
+        message: "Could not commit the attendance records. No attendance records were changed. Your settings have been preserved.",
+        requestId,
+        phase,
+        pgCode: err.code || null,
+        detail: err.detail || null,
+        hint: err.hint || null
+      }
+    });
   }
 });
 
@@ -6453,188 +7906,380 @@ app.get("/api/tsp/reports/monthly", requireAuth, requireRole(["SUPER_ADMIN", ...
   }
 });
 
-app.get("/api/tsp/reports/annex9", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+async function handleAnnex9Monthly(req: AuthenticatedRequest, res: any) {
   try {
     const user = req.user;
     if (!user) return res.status(401).json({ error: "Session missing" });
+
+    let scope;
+    try {
+      scope = await resolveAnnex9Scope(user, req.query.tspId as string);
+    } catch (err: any) {
+      if (err.message === "UNAUTHORIZED") return res.status(401).json({ error: "Session missing" });
+      return res.status(403).json({ code: err.code || "FORBIDDEN", error: err.message, message: err.message });
+    }
+
+    const targetMonth = (req.query.month as string) || undefined;
+    const { months: availableMonths, latestMonth: latestAttendanceMonth } = await getAvailableAttendanceMonths();
+    const finalMonth = targetMonth && targetMonth !== "all" ? targetMonth : latestAttendanceMonth;
+
+    const page = parseInt(req.query.page as string || "1") || 1;
+    const limit = parseInt(req.query.limit as string || "50") || 50;
+    const search = req.query.search as string || undefined;
+    const stipendStatus = req.query.stipendStatus as string || undefined;
     
-    const isTsp = TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"));
-    let tspId = "";
-    if (isTsp) {
-      tspId = user.tspId || "";
-      if (!tspId) return res.status(403).json({ error: "Your account is not linked to a training provider." });
-    } else {
-      tspId = (req.query.tspId as string) || "";
-    }
+    const isTsp = user && (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP"));
+    const useActiveRoster = req.query.useActiveRoster === "true" || isTsp || req.query.forceRoster === "true";
 
-    const targetMonth = (req.query.month as string) || new Date().toISOString().substring(0, 7);
-
-    let expQuery = `
-      SELECT COUNT(DISTINCT ta.attendance_date)::int as count 
-      FROM trainee_attendance ta
-      JOIN beneficiaries b ON ta.beneficiary_id = b.id
-      WHERE TO_CHAR(ta.attendance_date, 'YYYY-MM') = $1 AND b.deleted_at IS NULL
-    `;
-    const expParams: any[] = [targetMonth];
-    let expParamIdx = 2;
-    if (isTsp) {
-      expQuery += ` AND b.tsp_id = $${expParamIdx}`;
-      expParams.push(user.tspId);
-      expParamIdx++;
-    } else if (tspId && tspId !== "all") {
-      expQuery += ` AND (b.tsp_id = $${expParamIdx} OR b.tsp ILIKE $${expParamIdx})`;
-      expParams.push(tspId);
-      expParamIdx++;
-    }
-    const expectedDaysRes = await executeQuery(expQuery, expParams);
-    const expectedDays = Math.max(expectedDaysRes.rows[0]?.count || 0, 20); // Default to standard 20 days if no marked ones yet
-
-    let queryStr = `
-      SELECT 
-        b.id,
-        b.first_name,
-        b.last_name,
-        b.gender,
-        b.program,
-        b.skill_sector,
-        b.email,
-        b.phone_number,
-        b.state,
-        COALESCE(b.custom_fields->>'lga', b.city) as lga,
-        b.nin,
-        b.bvn,
-        b.bank_name,
-        b.bank_account_holder as account_name,
-        b.bank_account_number as account_number,
-        b.guardian_name,
-        b.guardian_phone,
-        b.guardian_address,
-        b.tsp as tsp_name,
-        CASE 
-          WHEN tp.tvet_id IS NOT NULL AND tp.tvet_id != '' AND tp.tvet_id NOT LIKE '%IDEAS-' AND tp.tvet_id NOT LIKE 'ID-TVE-26-IDEAS-%' AND LENGTH(tp.tvet_id) > 8 THEN tp.tvet_id
-          WHEN (b.custom_fields->>'tvet_id') IS NOT NULL AND (b.custom_fields->>'tvet_id') != '' AND (b.custom_fields->>'tvet_id') NOT LIKE '%IDEAS-' AND (b.custom_fields->>'tvet_id') NOT LIKE 'ID-TVE-26-IDEAS-%' AND LENGTH(b.custom_fields->>'tvet_id') > 8 THEN (b.custom_fields->>'tvet_id')
-          WHEN b.id IS NOT NULL AND b.id != '' THEN b.id
-          ELSE 'Pending TVET ID'
-        END as tvet_id,
-        COALESCE(da.present, 0) as present_days,
-        COALESCE(da.absent, 0) as absent_days,
-        COALESCE(da.late, 0) as late_days,
-        COALESCE(da.excused, 0) as excused_days,
-        COALESCE(da.total_hours, 0) as total_hours,
-        COALESCE(pm.still_on_portal, TRUE) as still_on_portal,
-        COALESCE(pm.still_attending, TRUE) as still_attending,
-        pm.last_verified_at,
-        pm.verified_by,
-        pm.remarks
-      FROM beneficiaries b
-      LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
-      LEFT JOIN portal_monitoring pm ON b.id = pm.beneficiary_id
-      LEFT JOIN (
-        SELECT 
-          ta.beneficiary_id,
-          COUNT(CASE WHEN ta.status = 'PRESENT' THEN 1 END)::int as present,
-          COUNT(CASE WHEN ta.status = 'ABSENT' THEN 1 END)::int as absent,
-          COUNT(CASE WHEN ta.status = 'LATE' THEN 1 END)::int as late,
-          COUNT(CASE WHEN ta.status = 'EXCUSED' THEN 1 END)::int as excused,
-          SUM(COALESCE(ta.hours_logged, 0))::numeric as total_hours
-        FROM trainee_attendance ta
-        WHERE TO_CHAR(ta.attendance_date, 'YYYY-MM') = $1
-        GROUP BY ta.beneficiary_id
-      ) da ON b.id = da.beneficiary_id
-      WHERE b.deleted_at IS NULL AND b.status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI', 'GRADUATED', 'COMPLETED', 'ONBOARDED')
-    `;
-    const params: any[] = [targetMonth];
-    let paramIdx = 2;
-
-    if (isTsp) {
-      queryStr += ` AND b.tsp_id = $${paramIdx}`;
-      params.push(user.tspId);
-      paramIdx++;
-    } else if (tspId && tspId !== "all") {
-      queryStr += ` AND (b.tsp_id = $${paramIdx} OR b.tsp ILIKE $${paramIdx})`;
-      params.push(tspId);
-      paramIdx++;
-    }
-
-    if (!isTsp) {
-      if (req.query.state && req.query.state !== "all") {
-        queryStr += ` AND b.state ILIKE $${paramIdx}`;
-        params.push(req.query.state);
-        paramIdx++;
-      }
-      if (req.query.lga && req.query.lga !== "all") {
-        queryStr += ` AND COALESCE(b.custom_fields->>'lga', b.city) ILIKE $${paramIdx}`;
-        params.push(req.query.lga);
-        paramIdx++;
-      }
-      if (req.query.skill && req.query.skill !== "all") {
-        queryStr += ` AND (b.skill_sector ILIKE $${paramIdx} OR b.program ILIKE $${paramIdx})`;
-        params.push(`%${req.query.skill}%`);
-        paramIdx++;
-      }
-      if (req.query.program && req.query.program !== "all") {
-        queryStr += ` AND b.program ILIKE $${paramIdx}`;
-        params.push(req.query.program);
-        paramIdx++;
-      }
-      if (req.query.gender && req.query.gender !== "all") {
-        queryStr += ` AND b.gender ILIKE $${paramIdx}`;
-        params.push(req.query.gender);
-        paramIdx++;
-      }
-      if (req.query.status && req.query.status !== "all") {
-        queryStr += ` AND b.status ILIKE $${paramIdx}`;
-        params.push(req.query.status);
-        paramIdx++;
-      }
-    }
-
-    if (req.query.search && typeof req.query.search === "string" && req.query.search.trim() !== "") {
-      queryStr += ` AND (b.first_name ILIKE $${paramIdx} OR b.last_name ILIKE $${paramIdx} OR tp.tvet_id ILIKE $${paramIdx} OR b.id ILIKE $${paramIdx})`;
-      params.push(`%${req.query.search.trim()}%`);
-      paramIdx++;
-    }
-
-    queryStr += " ORDER BY b.last_name ASC, b.first_name ASC";
-
-    const result = await executeQuery(queryStr, params);
-
-    const records = result.rows.map(row => {
-      const present = parseInt(row.present_days || 0, 10);
-      const absent = parseInt(row.absent_days || 0, 10);
-      const late = parseInt(row.late_days || 0, 10);
-      const excused = parseInt(row.excused_days || 0, 10);
-
-      const totalMarked = present + absent + late + excused;
-      const totalPresent = present + late;
-      
-      const denominator = Math.max(0, expectedDays - excused);
-      const attendance_percentage = denominator > 0 ? parseFloat(((totalPresent / denominator) * 100).toFixed(1)) : (excused > 0 ? 100.0 : 0.0);
-      
-      let stipend_status = "No Record";
-      if (totalMarked > 0) {
-        if (attendance_percentage >= 65.0) {
-          stipend_status = "Eligible";
-        } else {
-          stipend_status = "Below Threshold";
-        }
-      }
-
-      return {
-        ...row,
-        expected_days: expectedDays,
-        present_days: totalPresent,
-        attendance_percentage,
-        stipend_status,
-        remarks: totalMarked > 0 ? `Attendance rate ${attendance_percentage}%.` : "No Record"
-      };
+    const result = await getAnnex9ReportData({
+      month: finalMonth,
+      tspId: scope.effectiveTspId,
+      state: scope.level === "STATE" ? scope.stateName : (typeof req.query.state === "string" && req.query.state !== "all" ? req.query.state : (scope.stateName ? scope.stateName : undefined)),
+      lga: typeof req.query.lga === "string" && req.query.lga !== "all" ? req.query.lga : undefined,
+      skill: typeof req.query.skill === "string" && req.query.skill !== "all" ? req.query.skill : undefined,
+      cohort: typeof req.query.cohort === "string" && req.query.cohort !== "all" ? req.query.cohort : undefined,
+      gender: typeof req.query.gender === "string" && req.query.gender !== "all" ? req.query.gender : undefined,
+      status: typeof req.query.status === "string" && req.query.status !== "all" ? req.query.status : undefined,
+      search,
+      page,
+      limit,
+      stipendStatus,
+      useActiveRoster,
+      rosterId: req.query.rosterId as string || undefined,
     });
 
-    res.json({ success: true, records });
+    res.json({
+      success: true,
+      records: result.records,
+      total: result.total,
+      page,
+      limit,
+      expectedDays: result.expectedDays,
+      availableMonths,
+      latestMonth: latestAttendanceMonth
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+async function handleAnnex9OfficialExport(req: AuthenticatedRequest, res: any) {
+  try {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: "Session missing" });
+
+    let scope;
+    try {
+      scope = await resolveAnnex9Scope(user, req.query.tspId as string);
+    } catch (err: any) {
+      if (err.message === "UNAUTHORIZED") return res.status(401).json({ error: "Session missing" });
+      return res.status(403).json({ code: err.code || "FORBIDDEN", error: err.message, message: err.message });
+    }
+
+    const targetMonth = (req.query.month as string) || undefined;
+    const isTsp = user && (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP"));
+    const useActiveRoster = req.query.useActiveRoster === "true" || isTsp || req.query.forceRoster === "true";
+    
+    const options = {
+      tspId: scope.effectiveTspId,
+      month: targetMonth !== "all" ? targetMonth : undefined,
+      state: scope.level === "STATE" ? scope.stateName : (typeof req.query.state === "string" && req.query.state !== "all" ? req.query.state : (scope.stateName ? scope.stateName : undefined)),
+      lga: typeof req.query.lga === "string" && req.query.lga !== "all" ? req.query.lga : undefined,
+      skill: typeof req.query.skill === "string" && req.query.skill !== "all" ? req.query.skill : undefined,
+      cohort: typeof req.query.cohort === "string" && req.query.cohort !== "all" ? req.query.cohort : undefined,
+      gender: typeof req.query.gender === "string" && req.query.gender !== "all" ? req.query.gender : undefined,
+      status: typeof req.query.status === "string" && req.query.status !== "all" ? req.query.status : undefined,
+      useActiveRoster,
+      rosterId: req.query.rosterId as string || undefined,
+    };
+
+    const workbook = await generateOfficialAnnex9Workbook(options);
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="Annex_9_Official_Workbook_${options.month || "all"}.xlsx"`
+    );
+    await workbook.xlsx.write(res);
+    return res.end();
+  } catch (err: any) {
+    console.error("Official Annex 9 export error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+// Canonical Endpoints
+app.get("/api/reports/annex9/monthly", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), handleAnnex9Monthly);
+app.get("/api/reports/annex9/official/readiness", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), handleAnnex9Readiness);
+app.get("/api/reports/annex9/official/export", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), handleAnnex9OfficialExport);
+
+app.get("/api/reports/annex9/official/preview", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: "Session missing" });
+
+    let scope;
+    try {
+      scope = await resolveAnnex9Scope(user, req.query.tspId as string);
+    } catch (err: any) {
+      if (err.message === "UNAUTHORIZED") return res.status(401).json({ error: "Session missing" });
+      return res.status(403).json({ code: err.code || "FORBIDDEN", error: err.message, message: err.message });
+    }
+
+    const sheet = req.query.sheet as string;
+    if (sheet !== "profile" && sheet !== "attendance") {
+      return res.status(400).json({ error: "Invalid sheet type. Must be 'profile' or 'attendance'" });
+    }
+
+    const targetMonth = (req.query.month as string) || undefined;
+    const { latestMonth } = await getAvailableAttendanceMonths();
+    const finalMonth = targetMonth && targetMonth !== "all" ? targetMonth : latestMonth;
+
+    const page = parseInt(req.query.page as string || "1") || 1;
+    const limit = parseInt(req.query.limit as string || "50") || 50;
+    const search = req.query.search as string || undefined;
+    const stipendStatus = req.query.stipendStatus as string || undefined;
+    const isTsp = user && (TSP_ROLES.includes(user.role) || user.role.startsWith("TSP"));
+    const useActiveRoster = req.query.useActiveRoster === "true" || isTsp || req.query.forceRoster === "true";
+
+    const result = await getAnnex9ReportData({
+      month: finalMonth,
+      tspId: scope.effectiveTspId,
+      state: scope.level === "STATE" ? scope.stateName : (typeof req.query.state === "string" && req.query.state !== "all" ? req.query.state : (scope.stateName ? scope.stateName : undefined)),
+      lga: typeof req.query.lga === "string" && req.query.lga !== "all" ? req.query.lga : undefined,
+      skill: typeof req.query.skill === "string" && req.query.skill !== "all" ? req.query.skill : undefined,
+      cohort: typeof req.query.cohort === "string" && req.query.cohort !== "all" ? req.query.cohort : undefined,
+      gender: typeof req.query.gender === "string" && req.query.gender !== "all" ? req.query.gender : undefined,
+      status: typeof req.query.status === "string" && req.query.status !== "all" ? req.query.status : undefined,
+      search,
+      page,
+      limit,
+      stipendStatus,
+      useActiveRoster,
+      rosterId: req.query.rosterId as string || undefined,
+    });
+
+    if (sheet === "profile") {
+      const columns = [
+        { header: "SN", key: "sn" },
+        { header: "First Name", key: "first_name" },
+        { header: "Last Name", key: "last_name" },
+        { header: "Sex", key: "gender" },
+        { header: "Date of Birth", key: "date_of_birth" },
+        { header: "PWD?", key: "physical_challenge" },
+        { header: "Phone", key: "phone_number" },
+        { header: "National Identification Number", key: "nin" },
+        { header: "Bank Verification Number", key: "bvn" },
+        { header: "Account Name", key: "account_name" },
+        { header: "Account Number", key: "account_number" },
+        { header: "Bank Name", key: "bank_name" },
+        { header: "Bank Sort Code", key: "bank_sort_code" },
+        { header: "Email", key: "email" },
+        { header: "State of Residence", key: "state" },
+        { header: "LGA of Residence", key: "lga" },
+        { header: "Name of Parent/Guardian", key: "guardian_name" },
+        { header: "Address of Parent/Guardian", key: "guardian_address" },
+        { header: "Phone No. of Parent/Guardian", key: "guardian_phone" },
+        { header: "Educational Qualification", key: "education_qualification" },
+        { header: "Employment Status", key: "employment_status" },
+        { header: "Training Status", key: "training_status" },
+        { header: "Skill", key: "skill" }
+      ];
+
+      const rows = result.records.map((trainee, index) => ({
+        sn: index + 1,
+        first_name: trainee.first_name,
+        last_name: trainee.last_name,
+        gender: trainee.gender,
+        date_of_birth: trainee.date_of_birth || "Not provided",
+        physical_challenge: trainee.physical_challenge || "NO",
+        phone_number: trainee.phone_number || "Not provided",
+        nin: trainee.nin || "Not provided",
+        bvn: trainee.bvn || "Not provided",
+        account_name: trainee.account_name || "Not provided",
+        account_number: trainee.account_number || "Not provided",
+        bank_name: trainee.bank_name || "Not provided",
+        bank_sort_code: trainee.bank_sort_code || "Not provided",
+        email: trainee.email || "Not provided",
+        state: trainee.state || "Not provided",
+        lga: trainee.lga || "Not provided",
+        guardian_name: trainee.guardian_name || "Not provided",
+        guardian_address: trainee.guardian_address || "Not provided",
+        guardian_phone: trainee.guardian_phone || "Not provided",
+        education_qualification: trainee.education_qualification || "Not provided",
+        employment_status: "NOT_EMPLOYED",
+        training_status: trainee.training_status || "ACTIVE",
+        skill: trainee.skill_sector || "Not provided"
+      }));
+
+      return res.json({ success: true, columns, rows });
+    } else {
+      let tspTrainingDaysPerWeek = 3;
+      let attendanceRows: any[] = [];
+      const pool = getPgPool();
+      const trainees = result.records;
+
+      if (pool && isPgActive) {
+        const queryTspId = scope.effectiveTspId || (trainees[0]?.tsp_id);
+        if (queryTspId && queryTspId !== "all") {
+          try {
+            const tspRes = await pool.query("SELECT training_days_per_week FROM tsps WHERE id = $1", [queryTspId]);
+            if (tspRes.rows.length > 0 && tspRes.rows[0].training_days_per_week !== null) {
+              tspTrainingDaysPerWeek = tspRes.rows[0].training_days_per_week;
+            }
+          } catch (err) {
+            console.error("Error fetching training_days_per_week in preview:", err);
+          }
+        }
+
+        const traineeIds = trainees.map(t => t.id);
+        if (traineeIds.length > 0) {
+          try {
+            const attResult = await pool.query(
+              `SELECT beneficiary_id, status, TO_CHAR(attendance_date, 'YYYY-MM-DD') as attendance_date
+               FROM trainee_attendance
+               WHERE beneficiary_id = ANY($1)
+                 AND attendance_date >= '2026-06-01'::date
+                 AND attendance_date <= '2026-12-31'::date`,
+              [traineeIds]
+            );
+            attendanceRows = attResult.rows;
+          } catch (err) {
+            console.error("Error fetching horizontal attendance in preview:", err);
+          }
+        }
+      } else {
+        const state = loadJsonState();
+        tspTrainingDaysPerWeek = 3;
+        trainees.forEach((t: any) => {
+          const bState = state.beneficiaries?.find((x: any) => x.id === t.id);
+          if (bState && bState.attendanceLogs) {
+            bState.attendanceLogs.forEach((log: any) => {
+              if (log.date >= "2026-06-01" && log.date <= "2026-12-31") {
+                attendanceRows.push({
+                  beneficiary_id: t.id,
+                  status: log.status,
+                  attendance_date: log.date
+                });
+              }
+            });
+          }
+        });
+      }
+
+      const baseDate = new Date("2026-06-01");
+      const systemActiveDates = Array.from(new Set(attendanceRows.map(r => r.attendance_date)));
+      const weekDatesMap = new Map<number, string[]>();
+      systemActiveDates.forEach(dateStr => {
+        const curDate = new Date(dateStr);
+        const diffDays = Math.floor((curDate.getTime() - baseDate.getTime()) / (1000 * 60 * 60 * 24));
+        if (diffDays >= 0 && diffDays < 214) {
+          const weekIdx = Math.floor(diffDays / 7);
+          if (!weekDatesMap.has(weekIdx)) {
+            weekDatesMap.set(weekIdx, []);
+          }
+          weekDatesMap.get(weekIdx)!.push(dateStr);
+        }
+      });
+
+      const weekScheduledDates = new Map<number, string[]>();
+      for (let w = 0; w < 31; w++) {
+        const datesInWeek = weekDatesMap.get(w) || [];
+        datesInWeek.sort();
+        weekScheduledDates.set(w, datesInWeek.slice(0, 5));
+      }
+
+      const traineeAttendanceMap = new Map<string, Map<string, string>>();
+      attendanceRows.forEach(row => {
+        const bId = row.beneficiary_id;
+        if (!traineeAttendanceMap.has(bId)) {
+          traineeAttendanceMap.set(bId, new Map<string, string>());
+        }
+        traineeAttendanceMap.get(bId)!.set(row.attendance_date, row.status);
+      });
+
+      const columns = [
+        { header: "S/N", key: "sn" },
+        { header: "First Name", key: "first_name" },
+        { header: "Last Name", key: "last_name" },
+        { header: "Trainee ID", key: "tvet_id" }
+      ];
+
+      for (let w = 1; w <= 31; w++) {
+        columns.push(
+          { header: `W${w} D1`, key: `w_${w}_d1` },
+          { header: `W${w} D2`, key: `w_${w}_d2` },
+          { header: `W${w} D3`, key: `w_${w}_d3` },
+          { header: `W${w} D4`, key: `w_${w}_d4` },
+          { header: `W${w} D5`, key: `w_${w}_d5` },
+          { header: `W${w} %`, key: `w_${w}_rate` }
+        );
+      }
+
+      const rows = trainees.map((trainee, index) => {
+        const rowObj: any = {
+          sn: index + 1,
+          first_name: trainee.first_name,
+          last_name: trainee.last_name,
+          tvet_id: trainee.tvet_id || ""
+        };
+
+        const tMap = traineeAttendanceMap.get(trainee.id) || new Map<string, string>();
+
+        for (let w = 0; w < 31; w++) {
+          const wNum = w + 1;
+          const schedDates = weekScheduledDates.get(w) || [];
+          let trueCount = 0;
+          let falseCount = 0;
+
+          for (let d = 0; d < 5; d++) {
+            const key = `w_${wNum}_d${d + 1}`;
+            if (d < schedDates.length) {
+              const dateStr = schedDates[d];
+              const rawStatus = tMap.get(dateStr);
+
+              if (rawStatus !== undefined) {
+                const norm = normalizeAttendanceStatus(rawStatus);
+                if (norm === "PRESENT" || norm === "LATE") {
+                  rowObj[key] = "TRUE";
+                  trueCount++;
+                } else if (norm === "ABSENT") {
+                  rowObj[key] = "FALSE";
+                  falseCount++;
+                } else {
+                  rowObj[key] = "";
+                }
+              } else {
+                rowObj[key] = "";
+              }
+            } else {
+              rowObj[key] = "";
+            }
+          }
+
+          const totalCount = trueCount + falseCount;
+          rowObj[`w_${wNum}_rate`] = totalCount > 0 
+            ? ((trueCount / totalCount) * 100).toFixed(2) + "%" 
+            : "";
+        }
+
+        return rowObj;
+      });
+
+      return res.json({ success: true, columns, rows });
+    }
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+// Backward-compatible aliases
+app.get("/api/tsp/reports/annex9", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), handleAnnex9Monthly);
+app.get("/api/fed/reports/annex9", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES]), handleAnnex9Monthly);
+app.get("/api/tsp/reports/annex9/official-export", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), handleAnnex9OfficialExport);
+app.get("/api/fed/reports/annex9/official-export", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES]), handleAnnex9OfficialExport);
 
 const handlePortalStatusPatch = async (req: AuthenticatedRequest, res: any) => {
   try {
@@ -6697,13 +8342,12 @@ app.get("/api/tsp/reports/annex9/export", requireAuth, requireRole(["SUPER_ADMIN
     const user = req.user;
     if (!user) return res.status(401).json({ error: "Session missing" });
     
-    const isTsp = TSP_ROLES.includes(user.role) || (user.role && user.role.startsWith("TSP"));
-    let tspId = "";
-    if (isTsp) {
-      tspId = user.tspId || "";
-      if (!tspId) return res.status(403).json({ error: "Your account is not linked to a training provider." });
-    } else {
-      tspId = (req.query.tspId as string) || "";
+    let scope;
+    try {
+      scope = await resolveAnnex9Scope(user, req.query.tspId as string);
+    } catch (err: any) {
+      if (err.message === "UNAUTHORIZED") return res.status(401).json({ error: "Session missing" });
+      return res.status(403).json({ code: err.code || "FORBIDDEN", error: err.message, message: err.message });
     }
 
     const month = (req.query.month as string) || undefined;
@@ -6711,7 +8355,7 @@ app.get("/api/tsp/reports/annex9/export", requireAuth, requireRole(["SUPER_ADMIN
     const section = (req.query.section as string) || undefined;
 
     const options = {
-      tspId: tspId || undefined,
+      tspId: scope.effectiveTspId,
       month: month !== "all" ? month : undefined,
       state: typeof req.query.state === "string" && req.query.state !== "all" ? req.query.state : undefined,
       lga: typeof req.query.lga === "string" && req.query.lga !== "all" ? req.query.lga : undefined,
@@ -6761,12 +8405,20 @@ app.get("/api/fed/reports/annex9/export", requireAuth, requireRole(["SUPER_ADMIN
     const user = req.user;
     if (!user) return res.status(401).json({ error: "Session missing" });
 
+    let scope;
+    try {
+      scope = await resolveAnnex9Scope(user, req.query.tspId as string);
+    } catch (err: any) {
+      if (err.message === "UNAUTHORIZED") return res.status(401).json({ error: "Session missing" });
+      return res.status(403).json({ code: err.code || "FORBIDDEN", error: err.message, message: err.message });
+    }
+
     const month = (req.query.month as string) || undefined;
     const format = req.query.format === "csv" ? "csv" : "excel";
     const section = (req.query.section as string) || undefined;
 
     const options = {
-      tspId: typeof req.query.tspId === "string" && req.query.tspId !== "all" ? req.query.tspId : undefined,
+      tspId: scope.effectiveTspId,
       month: month !== "all" ? month : undefined,
       state: typeof req.query.state === "string" && req.query.state !== "all" ? req.query.state : undefined,
       lga: typeof req.query.lga === "string" && req.query.lga !== "all" ? req.query.lga : undefined,
@@ -7402,14 +9054,21 @@ app.post("/api/portal-monitoring/import-csv", requireAuth, requireRole(["SUPER_A
 });
 
 // GET computed student certification eligibility and save to metrics
-app.get("/api/annex9/readiness", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+export async function handleAnnex9Readiness(req: AuthenticatedRequest, res: any) {
   try {
     const pool = getPgPool();
     if (!pool) return res.status(500).json({ error: "Postgres database offline" });
 
     const user = req.user;
-    const isTsp = TSP_ROLES.includes(user.role) || user.role.startsWith("TSP");
-    const tspId = isTsp ? user.tspId : req.query.tspId;
+    if (!user) return res.status(401).json({ error: "Session missing" });
+
+    let scope;
+    try {
+      scope = await resolveAnnex9Scope(user, req.query.tspId as string);
+    } catch (err: any) {
+      if (err.message === "UNAUTHORIZED") return res.status(401).json({ error: "Session missing" });
+      return res.status(403).json({ code: err.code || "FORBIDDEN", error: err.message, message: err.message });
+    }
 
     // Fetch active trainees with profile credentials
     let queryStr = `
@@ -7438,17 +9097,26 @@ app.get("/api/annex9/readiness", requireAuth, requireRole(["SUPER_ADMIN", ...FED
       WHERE b.deleted_at IS NULL AND b.status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI', 'GRADUATED', 'COMPLETED', 'ONBOARDED')
     `;
     const params: any[] = [];
-    if (tspId) {
-      queryStr += ` AND b.tsp_id = $1`;
-      params.push(tspId);
+    let paramIdx = 1;
+    if (scope.effectiveTspId) {
+      const rosterMembers = await DbRepo.getActiveOfficialReportingRosterMembers(scope.effectiveTspId);
+      const bIds = rosterMembers.map(m => m.id);
+      if (bIds.length > 0) {
+        queryStr += ` AND b.id = ANY($${paramIdx++})`;
+        params.push(bIds);
+      } else {
+        return res.json([]);
+      }
+    }
+    if (scope.stateId) {
+      queryStr += ` AND b.state_id = $${paramIdx++}`;
+      params.push(scope.stateId);
     }
 
     const trainees = await pool.query(queryStr, params);
-
     const readinessList = [];
 
     for (const t of trainees.rows) {
-      // Fetch attendance stats for this trainee
       const attRes = await pool.query(`
         SELECT 
           COUNT(CASE WHEN status IN ('PRESENT', 'LATE') THEN 1 END) as present_days,
@@ -7465,16 +9133,16 @@ app.get("/api/annex9/readiness", requireAuth, requireRole(["SUPER_ADMIN", ...FED
       const portalActive = t.still_on_portal ? "YES" : "NO";
       const trainingStatus = t.beneficiary_status || "ACTIVE";
 
-      // Calculate profile completeness checking 5 key fields
       let filledFields = 0;
-      if (t.nin && t.nin.trim().length === 11) filledFields++;
-      if (t.bvn && t.bvn.trim().length === 11) filledFields++;
-      if (t.bank_name && t.bank_name.trim().length > 0) filledFields++;
-      if (t.account_number && t.account_number.trim().length >= 10) filledFields++;
-      if (t.guardian_name && t.guardian_name.trim().length > 0) filledFields++;
-      const completenessPercentage = Math.round((filledFields / 5) * 100);
+      if (t.first_name && t.last_name) filledFields++;
+      if (t.gender && (t.gender === "Male" || t.gender === "Female")) filledFields++;
+      if ((t.tvet_id || (t as any).tvet_id || (t as any).tvetId) && String(t.tvet_id || (t as any).tvet_id || "").trim().length > 0) filledFields++;
+      if (t.physical_challenge && (t.physical_challenge === "Yes" || t.physical_challenge === "No")) filledFields++;
+      if (t.education_level && String(t.education_level).trim().length > 0) filledFields++;
+      if (t.employment_status && String(t.employment_status).trim().length > 0) filledFields++;
+      if (t.phone_number && String(t.phone_number).trim().length >= 8) filledFields++;
+      const completenessPercentage = Math.round((filledFields / 7) * 100);
 
-      // Determine Eligibility status (READY, PENDING, AT RISK) following Phase 3 guidelines
       let readiness_status = "PENDING";
       let isReadyValue = false;
       
@@ -7492,7 +9160,6 @@ app.get("/api/annex9/readiness", requireAuth, requireRole(["SUPER_ADMIN", ...FED
         readiness_status = "PENDING";
       }
 
-      // Save/cache into database
       await pool.query(`
         INSERT INTO readiness_metrics (
           beneficiary_id,
@@ -7540,11 +9207,12 @@ app.get("/api/annex9/readiness", requireAuth, requireRole(["SUPER_ADMIN", ...FED
     }
 
     res.json(readinessList);
-  } catch (e: any) {
-    console.error("Readiness calculate error:", e);
-    res.status(500).json({ error: e.message });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
-});
+}
+
+app.get("/api/annex9/readiness", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), handleAnnex9Readiness);
 
 // GET aggregate operational analytics for Annex 9 dashboard
 app.get("/api/annex9/dashboard-stats", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
@@ -7690,12 +9358,14 @@ app.get("/api/annex9/dashboard-stats", requireAuth, requireRole(["SUPER_ADMIN", 
 
       // Compute profile completeness
       let filledFields = 0;
-      if (t.nin && t.nin.trim().length === 11) filledFields++;
-      if (t.bvn && t.bvn.trim().length === 11) filledFields++;
-      if (t.bank_name && t.bank_name.trim().length > 0) filledFields++;
-      if (t.account_number && t.account_number.trim().length >= 10) filledFields++;
-      if (t.guardian_name && t.guardian_name.trim().length > 0) filledFields++;
-      const completenessPercentage = (filledFields / 5) * 100;
+      if (t.first_name && t.last_name) filledFields++;
+      if (t.gender && (t.gender === "Male" || t.gender === "Female")) filledFields++;
+      if ((t.tvet_id || (t as any).tvet_id || (t as any).tvetId) && String(t.tvet_id || (t as any).tvet_id || "").trim().length > 0) filledFields++;
+      if (t.physical_challenge && (t.physical_challenge === "Yes" || t.physical_challenge === "No")) filledFields++;
+      if (t.education_level && String(t.education_level).trim().length > 0) filledFields++;
+      if (t.employment_status && String(t.employment_status).trim().length > 0) filledFields++;
+      if (t.phone_number && String(t.phone_number).trim().length >= 8) filledFields++;
+      const completenessPercentage = Math.round((filledFields / 7) * 100);
 
       const portalActive = t.still_on_portal !== false;
       const isActiveStatus = (t.beneficiary_status === "ACTIVE" || t.beneficiary_status === "ADMITTED" || t.beneficiary_status === "ELIGIBLE");
@@ -7957,26 +9627,31 @@ app.post("/api/annex9/run-action", requireAuth, requireRole(["SUPER_ADMIN", "ADM
 });
 
 // GET government Excel sheet export download
-app.get("/api/annex9/export", requireAuth, async (req: AuthenticatedRequest, res) => {
+app.get("/api/annex9/export", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
     const user = req.user;
-    const isFedOrSuper = user?.role === "SUPER_ADMIN" || (user?.role && FED_ROLES.includes(user.role));
-    const { state, tspId, month, startDate, endDate, skill, cohort, status } = req.query;
+    if (!user) return res.status(401).json({ error: "Session missing" });
 
-    let effectiveTspId = typeof tspId === "string" && tspId !== "all" ? tspId : undefined;
-    if (!isFedOrSuper && user) {
-      effectiveTspId = user.tspId || "00000000-0000-0000-0000-000000000001";
+    let scope;
+    try {
+      scope = await resolveAnnex9Scope(user, req.query.tspId as string);
+    } catch (err: any) {
+      if (err.message === "UNAUTHORIZED") return res.status(401).json({ error: "Session missing" });
+      return res.status(403).json({ code: err.code || "FORBIDDEN", error: err.message, message: err.message });
     }
+
+    const { state, month, startDate, endDate, skill, cohort, status } = req.query;
 
     const workbook = await generateAnnex9Workbook({
       state: typeof state === "string" && state !== "all" ? state : undefined,
-      tspId: effectiveTspId,
+      tspId: scope.effectiveTspId,
       month: typeof month === "string" && month !== "all" ? month : undefined,
       startDate: typeof startDate === "string" && startDate !== "" ? startDate : undefined,
       endDate: typeof endDate === "string" && endDate !== "" ? endDate : undefined,
       skill: typeof skill === "string" && skill !== "all" ? skill : undefined,
       cohort: typeof cohort === "string" && cohort !== "all" ? cohort : undefined,
       status: typeof status === "string" && status !== "all" ? status : undefined,
+      useActiveRoster: true,
     });
     res.setHeader(
       "Content-Type",
@@ -7995,27 +9670,30 @@ app.get("/api/annex9/export", requireAuth, async (req: AuthenticatedRequest, res
 });
 
 // GET CSV export for Annex 9 sections (attendance, profile, portal)
-app.get("/api/annex9/export-csv", requireAuth, async (req: AuthenticatedRequest, res) => {
+app.get("/api/annex9/export-csv", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
     const user = req.user;
-    if (!user) return res.status(401).json({ error: "Unauthorized" });
-    const isFedOrSuper = user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role);
+    if (!user) return res.status(401).json({ error: "Session missing" });
 
-    let effectiveTspId = typeof req.query.tspId === "string" && req.query.tspId !== "all" ? req.query.tspId : undefined;
-    if (!isFedOrSuper) {
-      effectiveTspId = user.tspId || "00000000-0000-0000-0000-000000000001";
+    let scope;
+    try {
+      scope = await resolveAnnex9Scope(user, req.query.tspId as string);
+    } catch (err: any) {
+      if (err.message === "UNAUTHORIZED") return res.status(401).json({ error: "Session missing" });
+      return res.status(403).json({ code: err.code || "FORBIDDEN", error: err.message, message: err.message });
     }
 
     const { section, state, month, startDate, endDate, skill, cohort, status } = req.query;
     const options = {
       state: typeof state === "string" && state !== "all" ? state : undefined,
-      tspId: effectiveTspId,
+      tspId: scope.effectiveTspId,
       month: typeof month === "string" && month !== "all" ? month : undefined,
       startDate: typeof startDate === "string" && startDate !== "" ? startDate : undefined,
       endDate: typeof endDate === "string" && endDate !== "" ? endDate : undefined,
       skill: typeof skill === "string" && skill !== "all" ? skill : undefined,
       cohort: typeof cohort === "string" && cohort !== "all" ? cohort : undefined,
       status: typeof status === "string" && status !== "all" ? status : undefined,
+      useActiveRoster: true,
     };
 
     let csvContent = "";
@@ -8041,29 +9719,29 @@ app.get("/api/annex9/export-csv", requireAuth, async (req: AuthenticatedRequest,
 });
 
 // GET TSP scoped Annex 9 attendance records export
-app.get("/api/tsp/attendance/export-annex9", requireAuth, async (req: AuthenticatedRequest, res) => {
+app.get("/api/tsp/attendance/export-annex9", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   try {
     const user = req.user;
-    if (!user) return res.status(401).json({ error: "Unauthorized" });
-    const isFedOrSuper = user.role === "SUPER_ADMIN" || FED_ROLES.includes(user.role);
+    if (!user) return res.status(401).json({ error: "Session missing" });
 
-    let effectiveTspId = typeof req.query.tspId === "string" && req.query.tspId !== "all" ? req.query.tspId : undefined;
-    if (!isFedOrSuper) {
-      effectiveTspId = user.tspId || undefined;
-      if (!effectiveTspId) {
-        return res.status(403).json({ error: "TSP profile ID not found in session." });
-      }
+    let scope;
+    try {
+      scope = await resolveAnnex9Scope(user, req.query.tspId as string);
+    } catch (err: any) {
+      if (err.message === "UNAUTHORIZED") return res.status(401).json({ error: "Session missing" });
+      return res.status(403).json({ code: err.code || "FORBIDDEN", error: err.message, message: err.message });
     }
 
     const { month, startDate, endDate, skill, cohort, status, format } = req.query;
     const options = {
-      tspId: effectiveTspId,
+      tspId: scope.effectiveTspId,
       month: typeof month === "string" && month !== "all" ? month : undefined,
       startDate: typeof startDate === "string" && startDate !== "" ? startDate : undefined,
       endDate: typeof endDate === "string" && endDate !== "" ? endDate : undefined,
       skill: typeof skill === "string" && skill !== "all" ? skill : undefined,
       cohort: typeof cohort === "string" && cohort !== "all" ? cohort : undefined,
       status: typeof status === "string" && status !== "all" ? status : undefined,
+      useActiveRoster: true,
     };
 
     if (format === "csv") {
@@ -8088,8 +9766,8 @@ app.get("/api/tsp/attendance/export-annex9", requireAuth, async (req: Authentica
       res.end();
     }
   } catch (err: any) {
-    console.error("TSP Annex 9 export error:", err);
-    res.status(500).json({ error: "Failed to generate Annex 9 export", details: err.message });
+    console.error("TSP attendance export error:", err);
+    res.status(500).json({ error: "Failed to generate export", details: err.message });
   }
 });
 
@@ -10907,6 +12585,1278 @@ app.get("/api/beneficiaries", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OF
     res.json(maskPIIArray(beneficiaries, req.user));
   } catch (e: any) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ==========================================
+// REPORTING ROSTERS API ENDPOINTS
+// ==========================================
+
+
+// ==========================================
+// NEW DATABASE-DRIVEN ALLOCATED TRAINEE ROSTER ENDPOINTS (GET, SELECT, REMOVE, IMPORT PREVIEW, IMPORT COMMIT)
+// ==========================================
+
+app.get("/api/reporting-roster/trainees", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user!;
+    const isTsp = TSP_ROLES.includes(user.role);
+    const targetTspId = isTsp ? (user.tspId || "00000000-0000-0000-0000-000000000001") : (req.query.tsp_id as string || "00000000-0000-0000-0000-000000000001");
+
+    const page = parseInt(req.query.page as string || "1", 10) || 1;
+    const pageSize = parseInt(req.query.pageSize as string || "25", 10) || 25;
+    const search = req.query.search as string || "";
+    const skill = req.query.skill as string || "";
+    const cohort = req.query.cohort as string || "";
+    const trainingStatus = req.query.trainingStatus as string || "";
+    const photoStatus = req.query.photoStatus as string || "";
+    const filter = req.query.filter as string || "";
+
+    const pool = getPgPool();
+    let roster: any = null;
+
+    if (pool && isPgActive) {
+      // Find or create active roster for targetTspId
+      const rRes = await executeQuery(
+        "SELECT * FROM reporting_rosters WHERE tsp_id = $1 AND is_active = TRUE ORDER BY created_at DESC LIMIT 1",
+        [targetTspId]
+      );
+      if (rRes.rows.length > 0) {
+        roster = rRes.rows[0];
+      } else {
+        const rosterId = `roster_auto_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+        const qInsert = `
+          INSERT INTO reporting_rosters (id, tsp_id, cohort_id, name, reporting_year, allocation_limit, status, is_active, created_by)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          RETURNING *
+        `;
+        const insRes = await executeQuery(qInsert, [
+          rosterId,
+          targetTspId,
+          null,
+          "Official Trainee Roster",
+          "2026",
+          100,
+          "DRAFT",
+          true,
+          user.email
+        ]);
+        roster = insRes.rows[0];
+      }
+
+      // Build WHERE conditions
+      const whereConditions: string[] = ["b.tsp_id = $1", "b.deleted_at IS NULL"];
+      const queryParams: any[] = [targetTspId, roster.id];
+
+      let paramIdx = 3;
+      if (search) {
+        whereConditions.push(`(b.first_name || ' ' || b.last_name ILIKE $${paramIdx} OR b.id ILIKE $${paramIdx})`);
+        queryParams.push(`%${search}%`);
+        paramIdx++;
+      }
+      if (skill && skill !== "all") {
+        whereConditions.push(`b.skill_sector = $${paramIdx}`);
+        queryParams.push(skill);
+        paramIdx++;
+      }
+      if (cohort && cohort !== "all") {
+        whereConditions.push(`b.batch = $${paramIdx}`);
+        queryParams.push(cohort);
+        paramIdx++;
+      }
+      if (trainingStatus && trainingStatus !== "all") {
+        whereConditions.push(`b.status = $${paramIdx}`);
+        queryParams.push(trainingStatus);
+        paramIdx++;
+      }
+      if (photoStatus && photoStatus !== "all") {
+        if (photoStatus === "available") {
+          whereConditions.push(`(b.photo IS NOT NULL AND b.photo != '')`);
+        } else if (photoStatus === "missing") {
+          whereConditions.push(`(b.photo IS NULL OR b.photo = '')`);
+        }
+      }
+      if (filter && filter !== "all") {
+        if (filter === "selected") {
+          whereConditions.push(`rm.id IS NOT NULL`);
+        } else if (filter === "not_selected") {
+          whereConditions.push(`rm.id IS NULL`);
+        }
+      }
+
+      // 1. Get total matching count
+      const countQuery = `
+        SELECT COUNT(*) as total
+        FROM beneficiaries b
+        LEFT JOIN reporting_roster_members rm ON b.id = rm.beneficiary_id AND rm.roster_id = $2 AND rm.removed_at IS NULL
+        WHERE ${whereConditions.join(" AND ")}
+      `;
+      const countRes = await executeQuery(countQuery, queryParams);
+      const total = parseInt(countRes.rows[0].total, 10);
+
+      // 2. Fetch page of rows
+      const limitVal = pageSize;
+      const offsetVal = (page - 1) * pageSize;
+      queryParams.push(limitVal, offsetVal);
+
+      const rowsQuery = `
+        SELECT b.id as "beneficiaryId",
+               (b.first_name || ' ' || b.last_name) as "fullName",
+               b.id as "tvetId",
+               b.skill_sector as "skill",
+               b.batch as "batch",
+               b.status as "trainingStatus",
+               (b.photo IS NOT NULL AND b.photo != '') as "photoAvailable",
+               COALESCE(att.att_count, 0) as "attendanceRecordCount",
+               (rm.id IS NOT NULL) as "isSelected",
+               rm.selected_at as "selectedAt",
+               rm.selected_by as "selectedBy"
+        FROM beneficiaries b
+        LEFT JOIN reporting_roster_members rm ON b.id = rm.beneficiary_id AND rm.roster_id = $2 AND rm.removed_at IS NULL
+        LEFT JOIN (
+          SELECT beneficiary_id, COUNT(*) as att_count
+          FROM attendance_logs
+          WHERE deleted_at IS NULL
+          GROUP BY beneficiary_id
+        ) att ON b.id = att.beneficiary_id
+        WHERE ${whereConditions.join(" AND ")}
+        ORDER BY COALESCE(rm.sort_order, 999999) ASC, b.last_name ASC, b.first_name ASC, b.id ASC
+        LIMIT $${paramIdx} OFFSET $${paramIdx + 1}
+      `;
+
+      // Run EXPLAIN ANALYZE for performance logging
+      try {
+        const explainRes = await executeQuery(`EXPLAIN ANALYZE ${rowsQuery}`, queryParams);
+        console.log("[PERFORMANCE DICT] EXPLAIN ANALYZE on main roster query:\n", explainRes.rows.map(r => r["QUERY PLAN"]).join("\n"));
+      } catch (explainErr) {
+        // Silently skip if explain analyze is not supported/failing
+      }
+
+      const rowsRes = await executeQuery(rowsQuery, queryParams);
+
+      // 3. Get summary counts
+      const selectedCountRes = await executeQuery(
+        "SELECT COUNT(*) as count FROM reporting_roster_members WHERE roster_id = $1 AND removed_at IS NULL",
+        [roster.id]
+      );
+      const selectedCount = parseInt(selectedCountRes.rows[0].count, 10);
+
+      const totalEligibleRes = await executeQuery(
+        "SELECT COUNT(*) as count FROM beneficiaries WHERE tsp_id = $1 AND deleted_at IS NULL",
+        [targetTspId]
+      );
+      const totalEligible = parseInt(totalEligibleRes.rows[0].count, 10);
+
+      const totalPages = Math.ceil(total / pageSize) || 1;
+
+      res.json({
+        success: true,
+        data: {
+          rows: rowsRes.rows,
+          pagination: {
+            page,
+            pageSize,
+            total,
+            totalPages
+          },
+          summary: {
+            allocationLimit: roster.allocation_limit || 100,
+            selectedCount,
+            remainingSlots: (roster.allocation_limit || 100) - selectedCount,
+            totalEligible
+          }
+        }
+      });
+    } else {
+      // JSON Mode Fallback
+      const state = loadJsonState();
+      if (!state.reporting_rosters) state.reporting_rosters = [];
+      if (!state.reporting_roster_members) state.reporting_roster_members = [];
+
+      let jsonRoster = state.reporting_rosters.find(r => r.tsp_id === targetTspId && r.is_active !== false);
+      if (!jsonRoster) {
+        jsonRoster = {
+          id: `roster_auto_${Date.now()}`,
+          tsp_id: targetTspId,
+          cohort_id: null,
+          name: "Official Trainee Roster",
+          reporting_year: "2026",
+          allocation_limit: 100,
+          status: "DRAFT",
+          is_active: true,
+          created_by: user.email,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+        state.reporting_rosters.push(jsonRoster);
+        saveJsonState(state);
+      }
+
+      const activeMembers = state.reporting_roster_members.filter(
+        m => m.roster_id === jsonRoster!.id && !m.removed_at
+      );
+
+      const tpsBens = (state.beneficiaries || []).filter(
+        (b: any) => (b.tsp_id === targetTspId || b.tsp === targetTspId) && !b.deletedAt
+      );
+
+      // Map beneficiaries to required shape
+      let mappedTrainees = tpsBens.map((b: any) => {
+        const mem = activeMembers.find(m => m.beneficiary_id === b.id);
+        const attCount = b.attendanceLogs ? b.attendanceLogs.length : 0;
+        return {
+          beneficiaryId: b.id,
+          fullName: `${b.firstName || ""} ${b.lastName || ""}`.trim(),
+          tvetId: b.id || b.tvet_id || "N/A",
+          skill: b.skillSector || "N/A",
+          batch: b.batch || "N/A",
+          trainingStatus: b.status || "N/A",
+          photoAvailable: !!b.photo,
+          attendanceRecordCount: attCount,
+          isSelected: !!mem,
+          selectedAt: mem ? mem.selected_at : null,
+          selectedBy: mem ? mem.selected_by : null,
+          sort_order: mem ? mem.sort_order : 999999,
+          lastName: b.lastName || "",
+          firstName: b.firstName || ""
+        };
+      });
+
+      // Apply filtering
+      if (search) {
+        const sLower = search.toLowerCase();
+        mappedTrainees = mappedTrainees.filter(
+          t => t.fullName.toLowerCase().includes(sLower) || t.tvetId.toLowerCase().includes(sLower)
+        );
+      }
+      if (skill && skill !== "all") {
+        mappedTrainees = mappedTrainees.filter(t => t.skill === skill);
+      }
+      if (cohort && cohort !== "all") {
+        mappedTrainees = mappedTrainees.filter(t => t.batch === cohort);
+      }
+      if (trainingStatus && trainingStatus !== "all") {
+        mappedTrainees = mappedTrainees.filter(t => t.trainingStatus === trainingStatus);
+      }
+      if (photoStatus && photoStatus !== "all") {
+        if (photoStatus === "available") {
+          mappedTrainees = mappedTrainees.filter(t => t.photoAvailable);
+        } else if (photoStatus === "missing") {
+          mappedTrainees = mappedTrainees.filter(t => !t.photoAvailable);
+        }
+      }
+      if (filter && filter !== "all") {
+        if (filter === "selected") {
+          mappedTrainees = mappedTrainees.filter(t => t.isSelected);
+        } else if (filter === "not_selected") {
+          mappedTrainees = mappedTrainees.filter(t => !t.isSelected);
+        }
+      }
+
+      // Sort
+      mappedTrainees.sort((a, b) => {
+        if (a.sort_order !== b.sort_order) {
+          return a.sort_order - b.sort_order;
+        }
+        const ln = a.lastName.localeCompare(b.lastName);
+        if (ln !== 0) return ln;
+        return a.firstName.localeCompare(b.firstName);
+      });
+
+      const total = mappedTrainees.length;
+      const totalPages = Math.ceil(total / pageSize) || 1;
+      const startIdx = (page - 1) * pageSize;
+      const paginated = mappedTrainees.slice(startIdx, startIdx + pageSize);
+
+      res.json({
+        success: true,
+        data: {
+          rows: paginated,
+          pagination: {
+            page,
+            pageSize,
+            total,
+            totalPages
+          },
+          summary: {
+            allocationLimit: jsonRoster.allocation_limit || 100,
+            selectedCount: activeMembers.length,
+            remainingSlots: (jsonRoster.allocation_limit || 100) - activeMembers.length,
+            totalEligible: tpsBens.length
+          }
+        }
+      });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/reporting-roster/select", requireAuth, async (req: AuthenticatedRequest, res) => {
+  const requestId = crypto.randomUUID();
+  try {
+    const user = req.user!;
+    console.log(`[ROSTER_TRACE] AUTH_RESOLVED for user ${user.email} (Request: ${requestId})`);
+
+    const isTsp = TSP_ROLES.includes(user.role);
+    const targetTspId = isTsp ? (user.tspId || "00000000-0000-0000-0000-000000000001") : req.body.tsp_id || "00000000-0000-0000-0000-000000000001";
+
+    const { beneficiaryIds } = req.body;
+    console.log(`[ROSTER_TRACE] INPUT_VALIDATED for TSP ${targetTspId} (Request: ${requestId})`);
+    if (!Array.isArray(beneficiaryIds) || beneficiaryIds.length === 0) {
+      return res.status(400).json({ error: "beneficiaryIds is required and must be a non-empty array" });
+    }
+
+    const pool = getPgPool();
+    let roster: any = null;
+
+    if (pool && isPgActive) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+
+        // Find or create active roster and lock the row to prevent race conditions
+        const rRes = await client.query(
+          "SELECT * FROM reporting_rosters WHERE tsp_id = $1 AND is_active = TRUE ORDER BY created_at DESC LIMIT 1 FOR UPDATE",
+          [targetTspId]
+        );
+        
+        if (rRes.rows.length > 0) {
+          roster = rRes.rows[0];
+        } else {
+          const rosterId = `roster_auto_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+          const insRes = await client.query(`
+            INSERT INTO reporting_rosters (id, tsp_id, name, reporting_year, allocation_limit, status, is_active, created_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING *
+          `, [rosterId, targetTspId, "Official Trainee Roster", "2026", 100, "DRAFT", true, user.email]);
+          roster = insRes.rows[0];
+        }
+        console.log(`[ROSTER_TRACE] ROSTER_RESOLVED: Active roster is ${roster.id} (Request: ${requestId})`);
+
+        // Verify every beneficiary belongs to the authenticated TSP
+        const checkPlaceholders = beneficiaryIds.map((_, i) => `$${i + 1}`).join(", ");
+        const checkBens = await client.query(
+          `SELECT id, tsp_id FROM beneficiaries WHERE id IN (${checkPlaceholders}) AND deleted_at IS NULL`,
+          beneficiaryIds
+        );
+        
+        const invalidTspBen = checkBens.rows.find(b => String(b.tsp_id) !== String(targetTspId));
+        if (invalidTspBen || checkBens.rows.length !== beneficiaryIds.length) {
+          await client.query("ROLLBACK");
+          return res.status(403).json({ error: "One or more trainees do not belong to your organization" });
+        }
+        console.log(`[ROSTER_TRACE] BENEFICIARIES_VALIDATED successfully (Request: ${requestId})`);
+
+        // Check current active count
+        const activeCountRes = await client.query(
+          "SELECT COUNT(*) as count FROM reporting_roster_members WHERE roster_id = $1 AND removed_at IS NULL",
+          [roster.id]
+        );
+        const currentActive = parseInt(activeCountRes.rows[0].count, 10);
+
+        // Determine trainees to actually select (exclude already selected)
+        const activePlaceholders = beneficiaryIds.map((_, i) => `$${i + 2}`).join(", ");
+        const existingActiveRes = await client.query(
+          `SELECT beneficiary_id FROM reporting_roster_members WHERE roster_id = $1 AND beneficiary_id IN (${activePlaceholders}) AND removed_at IS NULL`,
+          [roster.id, ...beneficiaryIds]
+        );
+        const alreadyActiveIds = existingActiveRes.rows.map(r => r.beneficiary_id);
+        const idsToAdd = beneficiaryIds.filter(id => !alreadyActiveIds.includes(id));
+
+        if (idsToAdd.length === 0) {
+          await client.query("COMMIT");
+          console.log(`[ROSTER_TRACE] RESPONSE_SENT with 0 updates (Request: ${requestId})`);
+          return res.json({
+            success: true,
+            data: {
+              selectedCount: currentActive,
+              remainingSlots: roster.allocation_limit - currentActive,
+              updated: 0,
+              unchanged: beneficiaryIds.length
+            }
+          });
+        }
+
+        const allocationLimit = roster.allocation_limit || 100;
+        if (currentActive + idsToAdd.length > allocationLimit) {
+          await client.query("ROLLBACK");
+          console.log(`[ROSTER_TRACE] LIMIT_CHECKED: Limit exceeded. Current active ${currentActive}, requested ${idsToAdd.length}, limit ${allocationLimit} (Request: ${requestId})`);
+          return res.status(409).json({
+            success: false,
+            error: {
+              code: "ROSTER_LIMIT_EXCEEDED",
+              message: `The official reporting roster cannot contain more than ${allocationLimit} trainees.`,
+              requestId
+            }
+          });
+        }
+        console.log(`[ROSTER_TRACE] LIMIT_CHECKED successfully (Request: ${requestId})`);
+
+        // Fetch max sort order
+        const maxSortRes = await client.query(
+          "SELECT COALESCE(MAX(sort_order), 0) as max_sort FROM reporting_roster_members WHERE roster_id = $1",
+          [roster.id]
+        );
+        let maxSort = parseInt(maxSortRes.rows[0].max_sort, 10);
+
+        console.log(`[ROSTER_TRACE] MEMBERSHIP_WRITE_STARTED (Request: ${requestId})`);
+        let updatedCount = 0;
+        for (const bId of idsToAdd) {
+          maxSort++;
+          const rmId = `rm_${crypto.randomUUID()}`;
+          await client.query(`
+            INSERT INTO reporting_roster_members (id, roster_id, beneficiary_id, sort_order, selected_by)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (roster_id, beneficiary_id) WHERE removed_at IS NULL DO UPDATE 
+            SET removed_at = NULL, removed_by = NULL, sort_order = $4, updated_at = CURRENT_TIMESTAMP
+          `, [rmId, roster.id, bId, maxSort, user.email]);
+          updatedCount++;
+        }
+        console.log(`[ROSTER_TRACE] MEMBERSHIP_WRITE_COMPLETED for ${updatedCount} trainees (Request: ${requestId})`);
+
+        const finalCountRes = await client.query(
+          "SELECT COUNT(*) as count FROM reporting_roster_members WHERE roster_id = $1 AND removed_at IS NULL",
+          [roster.id]
+        );
+        const finalActive = parseInt(finalCountRes.rows[0].count, 10);
+        console.log(`[ROSTER_TRACE] COUNTS_RECALCULATED: Final active count: ${finalActive} (Request: ${requestId})`);
+
+        await client.query("COMMIT");
+
+        await logAction(user.email, "ROSTER_SELECT_TRAINEES", `Selected ${updatedCount} trainees for official roster ${roster.id}`);
+
+        console.log(`[ROSTER_TRACE] RESPONSE_SENT successfully (Request: ${requestId})`);
+        res.json({
+          success: true,
+          data: {
+            selectedCount: finalActive,
+            remainingSlots: roster.allocation_limit - finalActive,
+            updated: updatedCount,
+            unchanged: beneficiaryIds.length - updatedCount
+          }
+        });
+      } catch (err: any) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        client.release();
+      }
+    } else {
+      // JSON mode
+      const state = loadJsonState();
+      if (!state.reporting_rosters) state.reporting_rosters = [];
+      if (!state.reporting_roster_members) state.reporting_roster_members = [];
+
+      let jsonRoster = state.reporting_rosters.find(r => r.tsp_id === targetTspId && r.is_active !== false);
+      if (!jsonRoster) {
+        jsonRoster = {
+          id: `roster_auto_${Date.now()}`,
+          tsp_id: targetTspId,
+          cohort_id: null,
+          name: "Official Trainee Roster",
+          reporting_year: "2026",
+          allocation_limit: 100,
+          status: "DRAFT",
+          is_active: true,
+          created_by: user.email,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+        state.reporting_rosters.push(jsonRoster);
+      }
+
+      // Verify every beneficiary belongs to authenticated TSP
+      const invalidTspBen = beneficiaryIds.some(id => {
+        const b = state.beneficiaries?.find(bx => bx.id === id);
+        return !b || (b.tspId !== targetTspId && b.tsp !== targetTspId);
+      });
+      if (invalidTspBen) {
+        return res.status(403).json({ error: "One or more trainees do not belong to your organization" });
+      }
+
+      const activeMembers = state.reporting_roster_members.filter(
+        m => m.roster_id === jsonRoster!.id && !m.removed_at
+      );
+
+      const idsToAdd = beneficiaryIds.filter(
+        id => !activeMembers.some(m => m.beneficiary_id === id)
+      );
+
+      if (idsToAdd.length === 0) {
+        return res.json({
+          success: true,
+          data: {
+            selectedCount: activeMembers.length,
+            remainingSlots: jsonRoster.allocation_limit - activeMembers.length,
+            updated: 0,
+            unchanged: beneficiaryIds.length
+          }
+        });
+      }
+
+      if (activeMembers.length + idsToAdd.length > jsonRoster.allocation_limit) {
+        return res.status(400).json({ error: "Allocation limit reached. Remove one selected trainee before adding another." });
+      }
+
+      const maxSort = activeMembers.reduce((max, m) => Math.max(max, m.sort_order || 0), 0);
+      let currentSort = maxSort;
+
+      let updatedCount = 0;
+      for (const bId of idsToAdd) {
+        currentSort++;
+        const removedIndex = state.reporting_roster_members.findIndex(
+          m => m.roster_id === jsonRoster!.id && m.beneficiary_id === bId
+        );
+
+        if (removedIndex !== -1) {
+          state.reporting_roster_members[removedIndex].removed_at = undefined;
+          state.reporting_roster_members[removedIndex].removed_by = undefined;
+          state.reporting_roster_members[removedIndex].sort_order = currentSort;
+          state.reporting_roster_members[removedIndex].updated_at = new Date().toISOString();
+        } else {
+          state.reporting_roster_members.push({
+            id: `rm_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+            roster_id: jsonRoster.id,
+            beneficiary_id: bId,
+            sort_order: currentSort,
+            selected_at: new Date().toISOString(),
+            selected_by: user.email,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          });
+        }
+        updatedCount++;
+      }
+
+      saveJsonState(state);
+
+      const finalActiveCount = state.reporting_roster_members.filter(
+        m => m.roster_id === jsonRoster!.id && !m.removed_at
+      ).length;
+
+      res.json({
+        success: true,
+        data: {
+          selectedCount: finalActiveCount,
+          remainingSlots: jsonRoster.allocation_limit - finalActiveCount,
+          updated: updatedCount,
+          unchanged: beneficiaryIds.length - updatedCount
+        }
+      });
+    }
+  } catch (err: any) {
+    console.error(`[ROSTER_TRACE_ERROR] RequestId ${requestId} failed:`, err);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: "ROSTER_UPDATE_FAILED",
+        message: "Could not update the Official Reporting Roster. Your checked trainees have been preserved.",
+        requestId
+      }
+    });
+  }
+});
+
+app.post("/api/reporting-roster/remove", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user!;
+    const isTsp = TSP_ROLES.includes(user.role);
+    const targetTspId = isTsp ? (user.tspId || "00000000-0000-0000-0000-000000000001") : req.body.tsp_id || "00000000-0000-0000-0000-000000000001";
+
+    const { beneficiaryIds } = req.body;
+    if (!Array.isArray(beneficiaryIds) || beneficiaryIds.length === 0) {
+      return res.status(400).json({ error: "beneficiaryIds is required and must be a non-empty array" });
+    }
+
+    const pool = getPgPool();
+    let roster: any = null;
+
+    if (pool && isPgActive) {
+      // Find active roster
+      const rRes = await executeQuery(
+        "SELECT * FROM reporting_rosters WHERE tsp_id = $1 AND is_active = TRUE ORDER BY created_at DESC LIMIT 1",
+        [targetTspId]
+      );
+      if (rRes.rows.length === 0) {
+        return res.status(404).json({ error: "Active reporting roster not found" });
+      }
+      roster = rRes.rows[0];
+
+      // Mark members as removed
+      const placeholders = beneficiaryIds.map((_, i) => `$${i + 3}`).join(", ");
+      await executeQuery(`
+        UPDATE reporting_roster_members
+        SET removed_at = CURRENT_TIMESTAMP,
+            removed_by = $2,
+            removal_reason = 'Manual Exclude',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE roster_id = $1 AND beneficiary_id IN (${placeholders}) AND removed_at IS NULL
+      `, [roster.id, user.email, ...beneficiaryIds]);
+
+      const finalCountRes = await executeQuery(
+        "SELECT COUNT(*) as count FROM reporting_roster_members WHERE roster_id = $1 AND removed_at IS NULL",
+        [roster.id]
+      );
+      const finalActive = parseInt(finalCountRes.rows[0].count, 10);
+
+      await logAction(user.email, "ROSTER_REMOVE_TRAINEES", `Removed ${beneficiaryIds.length} trainees from official roster ${roster.id}`);
+
+      res.json({
+        success: true,
+        data: {
+          selectedCount: finalActive,
+          remainingSlots: roster.allocation_limit - finalActive,
+          updated: beneficiaryIds.length,
+          unchanged: 0
+        }
+      });
+    } else {
+      // JSON mode
+      const state = loadJsonState();
+      if (!state.reporting_rosters) state.reporting_rosters = [];
+      if (!state.reporting_roster_members) state.reporting_roster_members = [];
+
+      const jsonRoster = state.reporting_rosters.find(r => r.tsp_id === targetTspId && r.is_active !== false);
+      if (!jsonRoster) {
+        return res.status(404).json({ error: "Active reporting roster not found" });
+      }
+
+      for (const bId of beneficiaryIds) {
+        const mem = state.reporting_roster_members.find(
+          m => m.roster_id === jsonRoster.id && m.beneficiary_id === bId && !m.removed_at
+        );
+        if (mem) {
+          mem.removed_at = new Date().toISOString();
+          mem.removed_by = user.email;
+          mem.removal_reason = "Manual Exclude";
+          mem.updated_at = new Date().toISOString();
+        }
+      }
+
+      saveJsonState(state);
+
+      const finalActiveCount = state.reporting_roster_members.filter(
+        m => m.roster_id === jsonRoster!.id && !m.removed_at
+      ).length;
+
+      res.json({
+        success: true,
+        data: {
+          selectedCount: finalActiveCount,
+          remainingSlots: jsonRoster.allocation_limit - finalActiveCount,
+          updated: beneficiaryIds.length,
+          unchanged: 0
+        }
+      });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/reporting-roster/import-preview", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user!;
+    const isTsp = TSP_ROLES.includes(user.role);
+    const targetTspId = isTsp ? (user.tspId || "00000000-0000-0000-0000-000000000001") : req.body.tsp_id || "00000000-0000-0000-0000-000000000001";
+
+    const { tvetIds } = req.body;
+    if (!Array.isArray(tvetIds)) {
+      return res.status(400).json({ error: "tvetIds must be an array of strings" });
+    }
+
+    // Filter down to unique non-empty IDs in input
+    const cleanIds = Array.from(new Set(tvetIds.map(id => String(id).trim()).filter(id => id.length > 0)));
+    const duplicates = tvetIds.length - cleanIds.length;
+
+    const pool = getPgPool();
+    let roster: any = null;
+
+    const matchedTrainees: any[] = [];
+    const unmatchedIds: string[] = [];
+    const duplicateIds: string[] = []; // those that appeared multiple times in input list
+    const belongsToAnotherTsp: any[] = [];
+    const alreadySelected: any[] = [];
+
+    // Detect input duplicates
+    const idCounts: Record<string, number> = {};
+    for (const id of tvetIds) {
+      const trimmed = String(id).trim();
+      if (trimmed) {
+        idCounts[trimmed] = (idCounts[trimmed] || 0) + 1;
+        if (idCounts[trimmed] === 2) {
+          duplicateIds.push(trimmed);
+        }
+      }
+    }
+
+    if (pool && isPgActive) {
+      // Active roster
+      const rRes = await executeQuery(
+        "SELECT * FROM reporting_rosters WHERE tsp_id = $1 AND is_active = TRUE ORDER BY created_at DESC LIMIT 1",
+        [targetTspId]
+      );
+      if (rRes.rows.length > 0) {
+        roster = rRes.rows[0];
+      }
+
+      for (const id of cleanIds) {
+        const bRes = await executeQuery(
+          "SELECT id, first_name, last_name, tsp_id, status FROM beneficiaries WHERE id = $1 AND deleted_at IS NULL",
+          [id]
+        );
+        if (bRes.rows.length === 0) {
+          unmatchedIds.push(id);
+        } else {
+          const b = bRes.rows[0];
+          const fullName = `${b.first_name} ${b.last_name}`;
+          if (b.tsp_id !== targetTspId) {
+            belongsToAnotherTsp.push({ beneficiaryId: b.id, tvetId: b.id, fullName, tspId: b.tsp_id });
+          } else {
+            // Check if selected
+            let isSelected = false;
+            if (roster) {
+              const selRes = await executeQuery(
+                "SELECT id FROM reporting_roster_members WHERE roster_id = $1 AND beneficiary_id = $2 AND removed_at IS NULL",
+                [roster.id, b.id]
+              );
+              isSelected = selRes.rows.length > 0;
+            }
+            const info = { beneficiaryId: b.id, tvetId: b.id, fullName, status: b.status };
+            if (isSelected) {
+              alreadySelected.push(info);
+            } else {
+              matchedTrainees.push(info);
+            }
+          }
+        }
+      }
+
+      const activeCount = roster ? parseInt((await executeQuery(
+        "SELECT COUNT(*) as count FROM reporting_roster_members WHERE roster_id = $1 AND removed_at IS NULL",
+        [roster.id]
+      )).rows[0].count, 10) : 0;
+
+      res.json({
+        success: true,
+        data: {
+          matchedTrainees,
+          unmatchedIds,
+          duplicateIds,
+          belongsToAnotherTsp,
+          alreadySelected,
+          currentSelectedCount: activeCount,
+          allocationLimit: roster ? roster.allocation_limit : 100
+        }
+      });
+    } else {
+      // JSON mode
+      const state = loadJsonState();
+      const jsonRoster = state.reporting_rosters?.find(r => r.tsp_id === targetTspId && r.is_active !== false);
+
+      for (const id of cleanIds) {
+        const b = state.beneficiaries?.find(bx => bx.id === id && !bx.isArchived);
+        if (!b) {
+          unmatchedIds.push(id);
+        } else {
+          const fullName = `${b.firstName || ""} ${b.lastName || ""}`.trim();
+          if (b.tspId !== targetTspId && b.tsp !== targetTspId) {
+            belongsToAnotherTsp.push({ beneficiaryId: b.id, tvetId: b.id, fullName, tspId: b.tspId || b.tsp });
+          } else {
+            let isSelected = false;
+            if (jsonRoster) {
+              isSelected = (state.reporting_roster_members || []).some(
+                m => m.roster_id === jsonRoster.id && m.beneficiary_id === b.id && !m.removed_at
+              );
+            }
+            const info = { beneficiaryId: b.id, tvetId: b.id, fullName, status: b.status };
+            if (isSelected) {
+              alreadySelected.push(info);
+            } else {
+              matchedTrainees.push(info);
+            }
+          }
+        }
+      }
+
+      const activeCount = jsonRoster ? (state.reporting_roster_members || []).filter(
+        m => m.roster_id === jsonRoster.id && !m.removed_at
+      ).length : 0;
+
+      res.json({
+        success: true,
+        data: {
+          matchedTrainees,
+          unmatchedIds,
+          duplicateIds,
+          belongsToAnotherTsp,
+          alreadySelected,
+          currentSelectedCount: activeCount,
+          allocationLimit: jsonRoster ? jsonRoster.allocation_limit : 100
+        }
+      });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/reporting-roster/import-commit", requireAuth, async (req: AuthenticatedRequest, res) => {
+  const requestId = crypto.randomUUID();
+  try {
+    const user = req.user!;
+    console.log(`[ROSTER_TRACE] AUTH_RESOLVED for user ${user.email} (Request: ${requestId})`);
+
+    const isTsp = TSP_ROLES.includes(user.role);
+    const targetTspId = isTsp ? (user.tspId || "00000000-0000-0000-0000-000000000001") : req.body.tsp_id || "00000000-0000-0000-0000-000000000001";
+
+    const { beneficiaryIds, action } = req.body; // action: "add" or "replace"
+    console.log(`[ROSTER_TRACE] INPUT_VALIDATED for TSP ${targetTspId}, Action: ${action} (Request: ${requestId})`);
+    if (!Array.isArray(beneficiaryIds)) {
+      return res.status(400).json({ error: "beneficiaryIds is required and must be an array" });
+    }
+
+    const pool = getPgPool();
+    let roster: any = null;
+
+    if (pool && isPgActive) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+
+        // Find or create active roster and lock it FOR UPDATE
+        const rRes = await client.query(
+          "SELECT * FROM reporting_rosters WHERE tsp_id = $1 AND is_active = TRUE ORDER BY created_at DESC LIMIT 1 FOR UPDATE",
+          [targetTspId]
+        );
+        if (rRes.rows.length > 0) {
+          roster = rRes.rows[0];
+        } else {
+          const rosterId = `roster_auto_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+          const insRes = await client.query(`
+            INSERT INTO reporting_rosters (id, tsp_id, name, reporting_year, allocation_limit, status, is_active, created_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING *
+          `, [rosterId, targetTspId, "Official Trainee Roster", "2026", 100, "DRAFT", true, user.email]);
+          roster = insRes.rows[0];
+        }
+        console.log(`[ROSTER_TRACE] ROSTER_RESOLVED: Active roster is ${roster.id} (Request: ${requestId})`);
+
+        // Verify each beneficiary belongs to TSP
+        if (beneficiaryIds.length > 0) {
+          const checkPlaceholders = beneficiaryIds.map((_, i) => `$${i + 1}`).join(", ");
+          const checkBens = await client.query(
+            `SELECT id, tsp_id FROM beneficiaries WHERE id IN (${checkPlaceholders}) AND deleted_at IS NULL`,
+            beneficiaryIds
+          );
+          const invalidTspBen = checkBens.rows.find(b => String(b.tsp_id) !== String(targetTspId));
+          if (invalidTspBen || checkBens.rows.length !== beneficiaryIds.length) {
+            await client.query("ROLLBACK");
+            return res.status(403).json({ error: "One or more matched trainees do not belong to your organization" });
+          }
+        }
+        console.log(`[ROSTER_TRACE] BENEFICIARIES_VALIDATED successfully (Request: ${requestId})`);
+
+        if (action === "replace") {
+          // Remove all current members
+          await client.query(
+            "UPDATE reporting_roster_members SET removed_at = CURRENT_TIMESTAMP, removed_by = $2, removal_reason = 'Bulk Replace' WHERE roster_id = $1 AND removed_at IS NULL",
+            [roster.id, user.email]
+          );
+        }
+
+        // Check count again
+        const activeCountRes = await client.query(
+          "SELECT COUNT(*) as count FROM reporting_roster_members WHERE roster_id = $1 AND removed_at IS NULL",
+          [roster.id]
+        );
+        const currentActive = parseInt(activeCountRes.rows[0].count, 10);
+
+        // Filter down to ids that are not already active
+        let idsToAdd = beneficiaryIds;
+        if (action !== "replace" && beneficiaryIds.length > 0) {
+          const activePlaceholders = beneficiaryIds.map((_, i) => `$${i + 2}`).join(", ");
+          const existingActiveRes = await client.query(
+            `SELECT beneficiary_id FROM reporting_roster_members WHERE roster_id = $1 AND beneficiary_id IN (${activePlaceholders}) AND removed_at IS NULL`,
+            [roster.id, ...beneficiaryIds]
+          );
+          const alreadyActiveIds = existingActiveRes.rows.map(r => r.beneficiary_id);
+          idsToAdd = beneficiaryIds.filter(id => !alreadyActiveIds.includes(id));
+        }
+
+        const allocationLimit = roster.allocation_limit || 100;
+        if (currentActive + idsToAdd.length > allocationLimit) {
+          await client.query("ROLLBACK");
+          console.log(`[ROSTER_TRACE] LIMIT_CHECKED: Limit exceeded. Current active ${currentActive}, requested ${idsToAdd.length}, limit ${allocationLimit} (Request: ${requestId})`);
+          return res.status(409).json({
+            success: false,
+            error: {
+              code: "ROSTER_LIMIT_EXCEEDED",
+              message: `The official reporting roster cannot contain more than ${allocationLimit} trainees.`,
+              requestId
+            }
+          });
+        }
+        console.log(`[ROSTER_TRACE] LIMIT_CHECKED successfully (Request: ${requestId})`);
+
+        // Fetch max sort order
+        const maxSortRes = await client.query(
+          "SELECT COALESCE(MAX(sort_order), 0) as max_sort FROM reporting_roster_members WHERE roster_id = $1",
+          [roster.id]
+        );
+        let maxSort = parseInt(maxSortRes.rows[0].max_sort, 10);
+
+        console.log(`[ROSTER_TRACE] MEMBERSHIP_WRITE_STARTED (Request: ${requestId})`);
+        let updatedCount = 0;
+        for (const bId of idsToAdd) {
+          maxSort++;
+          const rmId = `rm_${crypto.randomUUID()}`;
+          await client.query(`
+            INSERT INTO reporting_roster_members (id, roster_id, beneficiary_id, sort_order, selected_by)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (roster_id, beneficiary_id) WHERE removed_at IS NULL DO UPDATE 
+            SET removed_at = NULL, removed_by = NULL, sort_order = $4, updated_at = CURRENT_TIMESTAMP
+          `, [rmId, roster.id, bId, maxSort, user.email]);
+          updatedCount++;
+        }
+        console.log(`[ROSTER_TRACE] MEMBERSHIP_WRITE_COMPLETED for ${updatedCount} trainees (Request: ${requestId})`);
+
+        const finalCountRes = await client.query(
+          "SELECT COUNT(*) as count FROM reporting_roster_members WHERE roster_id = $1 AND removed_at IS NULL",
+          [roster.id]
+        );
+        const finalActive = parseInt(finalCountRes.rows[0].count, 10);
+        console.log(`[ROSTER_TRACE] COUNTS_RECALCULATED: Final active count: ${finalActive} (Request: ${requestId})`);
+
+        await client.query("COMMIT");
+
+        await logAction(user.email, "ROSTER_IMPORT_COMMIT", `Imported ${updatedCount} trainees for official roster ${roster.id} (Action: ${action})`);
+
+        console.log(`[ROSTER_TRACE] RESPONSE_SENT successfully (Request: ${requestId})`);
+        res.json({
+          success: true,
+          data: {
+            selectedCount: finalActive,
+            remainingSlots: roster.allocation_limit - finalActive,
+            updated: updatedCount,
+            unchanged: beneficiaryIds.length - updatedCount
+          }
+        });
+      } catch (err: any) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        client.release();
+      }
+    } else {
+      // JSON mode
+      const state = loadJsonState();
+      if (!state.reporting_rosters) state.reporting_rosters = [];
+      if (!state.reporting_roster_members) state.reporting_roster_members = [];
+
+      let jsonRoster = state.reporting_rosters.find(r => r.tsp_id === targetTspId && r.is_active !== false);
+      if (!jsonRoster) {
+        jsonRoster = {
+          id: `roster_auto_${Date.now()}`,
+          tsp_id: targetTspId,
+          cohort_id: null,
+          name: "Official Trainee Roster",
+          reporting_year: "2026",
+          allocation_limit: 100,
+          status: "DRAFT",
+          is_active: true,
+          created_by: user.email,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+        state.reporting_rosters.push(jsonRoster);
+      }
+
+      // Verify each beneficiary belongs to TSP
+      const invalidTspBen = beneficiaryIds.some(id => {
+        const b = state.beneficiaries?.find(bx => bx.id === id);
+        return !b || (b.tspId !== targetTspId && b.tsp !== targetTspId);
+      });
+      if (invalidTspBen) {
+        return res.status(403).json({ error: "One or more matched trainees do not belong to your organization" });
+      }
+
+      if (action === "replace") {
+        // Set all active members to removed
+        state.reporting_roster_members = state.reporting_roster_members.map(m => {
+          if (m.roster_id === jsonRoster!.id && !m.removed_at) {
+            return {
+              ...m,
+              removed_at: new Date().toISOString(),
+              removed_by: user.email,
+              removal_reason: "Bulk Replace",
+              updated_at: new Date().toISOString()
+            };
+          }
+          return m;
+        });
+      }
+
+      const activeMembers = state.reporting_roster_members.filter(
+        m => m.roster_id === jsonRoster!.id && !m.removed_at
+      );
+
+      let idsToAdd = beneficiaryIds;
+      if (action !== "replace") {
+        idsToAdd = beneficiaryIds.filter(
+          id => !activeMembers.some(m => m.beneficiary_id === id)
+        );
+      }
+
+      if (activeMembers.length + idsToAdd.length > jsonRoster.allocation_limit) {
+        return res.status(400).json({ error: "Allocation limit reached. Remove some selected trainees before adding more." });
+      }
+
+      const maxSort = activeMembers.reduce((max, m) => Math.max(max, m.sort_order || 0), 0);
+      let currentSort = maxSort;
+
+      let updatedCount = 0;
+      for (const bId of idsToAdd) {
+        currentSort++;
+        const removedIndex = state.reporting_roster_members.findIndex(
+          m => m.roster_id === jsonRoster!.id && m.beneficiary_id === bId
+        );
+
+        if (removedIndex !== -1) {
+          state.reporting_roster_members[removedIndex].removed_at = undefined;
+          state.reporting_roster_members[removedIndex].removed_by = undefined;
+          state.reporting_roster_members[removedIndex].sort_order = currentSort;
+          state.reporting_roster_members[removedIndex].updated_at = new Date().toISOString();
+        } else {
+          state.reporting_roster_members.push({
+            id: `rm_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+            roster_id: jsonRoster.id,
+            beneficiary_id: bId,
+            sort_order: currentSort,
+            selected_at: new Date().toISOString(),
+            selected_by: user.email,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          });
+        }
+        updatedCount++;
+      }
+
+      saveJsonState(state);
+
+      const finalActiveCount = state.reporting_roster_members.filter(
+        m => m.roster_id === jsonRoster!.id && !m.removed_at
+      ).length;
+
+      res.json({
+        success: true,
+        data: {
+          selectedCount: finalActiveCount,
+          remainingSlots: jsonRoster.allocation_limit - finalActiveCount,
+          updated: updatedCount,
+          unchanged: beneficiaryIds.length - updatedCount
+        }
+      });
+    }
+  } catch (err: any) {
+    console.error(`[ROSTER_TRACE_ERROR] RequestId ${requestId} failed:`, err);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: "ROSTER_UPDATE_FAILED",
+        message: "Could not update the Official Reporting Roster. Your checked trainees have been preserved.",
+        requestId
+      }
+    });
+  }
+});
+
+app.get("/api/rosters", requireAuth, async (req: AuthenticatedRequest, res) => {
+
+  try {
+    const user = req.user!;
+    const isTsp = TSP_ROLES.includes(user.role);
+    const tspId = isTsp ? (user.tspId || "00000000-0000-0000-0000-000000000001") : req.query.tsp_id as string;
+    
+    const list = await DbRepo.getRosters({ tsp_id: tspId });
+    res.json(list);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/rosters/:id", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    const roster = await DbRepo.getRosterById(id);
+    if (!roster) return res.status(404).json({ error: "Roster not found" });
+    res.json(roster);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/rosters", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user!;
+    const { name, cohort_id, allocation_limit, reporting_year } = req.body;
+    const isTsp = TSP_ROLES.includes(user.role);
+    const tspId = isTsp ? (user.tspId || "00000000-0000-0000-0000-000000000001") : req.body.tsp_id;
+
+    if (!tspId) {
+      return res.status(400).json({ error: "tsp_id is required" });
+    }
+
+    const rosterId = `roster_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+    const newRoster = {
+      id: rosterId,
+      tsp_id: tspId,
+      cohort_id: cohort_id || null,
+      name: name || "Official Trainee Roster",
+      reporting_year: reporting_year || "2026",
+      allocation_limit: parseInt(allocation_limit, 10) || 100,
+      status: "DRAFT",
+      is_active: true,
+      created_by: user.email,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    const saved = await DbRepo.createRoster(newRoster);
+    await logAction(user.email, "CREATE_ROSTER", `Created reporting roster: ${name} (ID: ${saved.id})`);
+    res.status(201).json(saved);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/api/rosters/:id", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user!;
+    const { id } = req.params;
+    const { status, allocation_limit, name } = req.body;
+
+    const roster = await DbRepo.getRosterById(id);
+    if (!roster) return res.status(404).json({ error: "Roster not found" });
+
+    const updates: any = {};
+    if (status) {
+      updates.status = status;
+      if (status === "LOCKED") {
+        updates.locked_at = new Date().toISOString();
+        updates.locked_by = user.email;
+      }
+    }
+    if (allocation_limit !== undefined) {
+      updates.allocation_limit = parseInt(allocation_limit, 10);
+    }
+    if (name) {
+      updates.name = name;
+    }
+
+    const updated = await DbRepo.updateRoster(id, updates);
+    await logAction(user.email, "UPDATE_ROSTER", `Updated roster ${id}: Status=${status || roster.status}`);
+    res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/rosters/:id/members", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    const activeOnly = req.query.active_only !== "false";
+    const members = await DbRepo.getRosterMembers(id, { active_only: activeOnly });
+    res.json(members);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/rosters/:id/members", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user!;
+    const { id } = req.params;
+    const { beneficiaryIds } = req.body;
+
+    const roster = await DbRepo.getRosterById(id);
+    if (!roster) return res.status(404).json({ error: "Roster not found" });
+
+    if (roster.status === "LOCKED") {
+      return res.status(400).json({ error: "Roster is LOCKED. Cannot add members. Use replacement workflow instead." });
+    }
+
+    if (!Array.isArray(beneficiaryIds) || beneficiaryIds.length === 0) {
+      return res.status(400).json({ error: "beneficiaryIds array is required" });
+    }
+
+    await DbRepo.addRosterMembers(id, beneficiaryIds, user.email);
+    await logAction(user.email, "ADD_ROSTER_MEMBERS", `Added ${beneficiaryIds.length} members to roster ${id}`);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete("/api/rosters/:id/members", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user!;
+    const { id } = req.params;
+    const { beneficiaryIds, reason } = req.body;
+
+    const roster = await DbRepo.getRosterById(id);
+    if (!roster) return res.status(404).json({ error: "Roster not found" });
+
+    if (roster.status === "LOCKED") {
+      return res.status(400).json({ error: "Roster is LOCKED. Cannot remove members. Use replacement workflow instead." });
+    }
+
+    if (!Array.isArray(beneficiaryIds) || beneficiaryIds.length === 0) {
+      return res.status(400).json({ error: "beneficiaryIds array is required" });
+    }
+
+    await DbRepo.removeRosterMembers(id, beneficiaryIds, user.email, reason);
+    await logAction(user.email, "REMOVE_ROSTER_MEMBERS", `Removed ${beneficiaryIds.length} members from roster ${id}`);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/rosters/:id/replace", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user!;
+    const { id } = req.params;
+    const { removedBeneficiaryId, replacementBeneficiaryId, reason } = req.body;
+
+    if (!removedBeneficiaryId || !replacementBeneficiaryId || !reason) {
+      return res.status(400).json({ error: "removedBeneficiaryId, replacementBeneficiaryId, and reason are required" });
+    }
+
+    await DbRepo.replaceRosterMember(id, removedBeneficiaryId, replacementBeneficiaryId, user.email, reason);
+    await logAction(user.email, "REPLACE_ROSTER_MEMBER", `Replaced trainee ${removedBeneficiaryId} with ${replacementBeneficiaryId} in roster ${id}. Reason: ${reason}`);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/rosters/:id/sort", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const user = req.user!;
+    const { id } = req.params;
+    const { orders } = req.body;
+
+    if (!Array.isArray(orders)) {
+      return res.status(400).json({ error: "orders array is required" });
+    }
+
+    await DbRepo.updateRosterSortOrderBatch(id, orders);
+    await logAction(user.email, "SORT_ROSTER_MEMBERS", `Updated sort order for members of roster ${id}`);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -16160,10 +19110,30 @@ app.get("/api/export/word", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFI
 });
 
 // Advanced, Memory-Safe/Batch-Chunked PDF range exporter
-app.post("/api/export/album/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.post("/api/export/album/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "STATE_COORDINATOR", "STATE_REVIEW_OFFICER", "STATE_M_E_OFFICER", "TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER", "SYSTEM_AUDITOR", "REPORT_VIEWER", "HELPDESK_AGENT", "MIGRATION_ADMIN", "FED", "STA", "TSP"]), async (req: AuthenticatedRequest, res) => {
   try {
-    const { state, batch, rangeType, firstN, startRecord, endRecord } = req.body;
-    const beneficiaries = await DbRepo.getBeneficiaries({ includePhoto: false });
+    const { state, batch, rangeType, firstN, startRecord, endRecord, forceRoster } = req.body;
+    
+    // Roster integration
+    const user = req.user!;
+    const isTsp = TSP_ROLES.includes(user.role);
+    const tspId = isTsp ? (user.tspId || "00000000-0000-0000-0000-000000000001") : undefined;
+
+    // Check if we should enforce active roster scope
+    let rosterMemberIds: string[] | null = null;
+    const shouldEnforceRoster = forceRoster === true || isTsp; // TSP is always forced, Admin can select
+    
+    if (shouldEnforceRoster) {
+      const targetTspId = tspId || req.body.tsp_id || "00000000-0000-0000-0000-000000000001";
+      const members = await DbRepo.getActiveOfficialReportingRosterMembers(targetTspId);
+      rosterMemberIds = members.map(m => m.id);
+    }
+
+    const rawBeneficiaries = await DbRepo.getBeneficiaries({ includePhoto: false });
+    const beneficiaries = rosterMemberIds 
+      ? rawBeneficiaries.filter(b => rosterMemberIds!.includes(b.id))
+      : rawBeneficiaries;
+
     const settings = await DbRepo.getOrganizationSettings();
 
     await logAction(req.user!.email, "PDF_RANGE_EXPORT", `Triggered range-based registry PDF generation (Type: ${rangeType}, range: ${startRecord}-${endRecord}, N: ${firstN})`);
@@ -16595,15 +19565,45 @@ app.post("/api/export/album/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMI
 });
 
 // Advanced, Memory-Safe/Batch-Chunked Word range exporter
-app.post("/api/export/album/word", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER"]), async (req: AuthenticatedRequest, res) => {
+app.post("/api/export/album/word", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFICER", "REVIEW_OFFICER", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "STATE_COORDINATOR", "STATE_REVIEW_OFFICER", "STATE_M_E_OFFICER", "TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER", "SYSTEM_AUDITOR", "REPORT_VIEWER", "HELPDESK_AGENT", "MIGRATION_ADMIN", "FED", "STA", "TSP"]), async (req: AuthenticatedRequest, res) => {
   try {
-    const { state, batch, rangeType, firstN, startRecord, endRecord } = req.body;
-    const beneficiaries = await DbRepo.getBeneficiaries({ includePhoto: false });
+    const { state, batch, rangeType, firstN, startRecord, endRecord, forceRoster } = req.body;
+    
+    // Roster integration
+    const user = req.user!;
+    const isTsp = TSP_ROLES.includes(user.role);
+    const tspId = isTsp ? (user.tspId || "00000000-0000-0000-0000-000000000001") : undefined;
+
+    // Check if we should enforce active roster scope
+    let rosterMemberIds: string[] | null = null;
+    let activeRosterMembers: any[] = [];
+    const shouldEnforceRoster = forceRoster === true || isTsp; // TSP is always forced, Admin can select
+    
+    if (shouldEnforceRoster) {
+      const targetTspId = tspId || req.body.tsp_id || "00000000-0000-0000-0000-000000000001";
+      activeRosterMembers = await DbRepo.getActiveOfficialReportingRosterMembers(targetTspId);
+      rosterMemberIds = activeRosterMembers.map(m => m.id);
+    }
+
+    const rawBeneficiaries = await DbRepo.getBeneficiaries({ includePhoto: false });
+    
+    // Maintain stable roster information (including sort_order) if roster is enforced
+    let beneficiaries = rawBeneficiaries;
+    if (rosterMemberIds) {
+      beneficiaries = rawBeneficiaries
+        .filter(b => rosterMemberIds!.includes(b.id))
+        .map(b => {
+          const m = activeRosterMembers.find(member => member.id === b.id);
+          return {
+            ...b,
+            sort_order: m ? m.sort_order : undefined
+          };
+        });
+    }
+
     const settings = await DbRepo.getOrganizationSettings();
 
     await logAction(req.user!.email, "WORD_RANGE_EXPORT", `Triggered range-based Word generation (Type: ${rangeType}, range: ${startRecord}-${endRecord}, N: ${firstN})`);
-
-    const baseUrl = buildPublicUrl("", req);
 
     const filtered = beneficiaries.filter(b => {
       const sMatch = !state || state === "all" || b.state === state;
@@ -16621,9 +19621,87 @@ app.post("/api/export/album/word", requireAuth, requireRole(["SUPER_ADMIN", "ADM
       sliced = filtered.slice(Math.max(0, start - 1), Math.min(filtered.length, end));
     }
 
+    // Batch fetch photos for the entire slice to populate the document
+    const slicedIds = sliced.map(b => b.id);
+    const photosMap = slicedIds.length > 0 ? await DbRepo.getBeneficiaryPhotosBatch(slicedIds) : {};
+    
+    const fullyPopulatedSliced = sliced.map(b => ({
+      ...b,
+      photo: photosMap[b.id] || null
+    }));
+
+    // Enforce highly stable, standard ordering
+    fullyPopulatedSliced.sort((a: any, b: any) => {
+      const sortOrderA = a.sort_order !== undefined ? Number(a.sort_order) : 999999;
+      const sortOrderB = b.sort_order !== undefined ? Number(b.sort_order) : 999999;
+      if (sortOrderA !== sortOrderB) {
+        return sortOrderA - sortOrderB;
+      }
+      const surnameA = (a.lastName || "").toLowerCase();
+      const surnameB = (b.lastName || "").toLowerCase();
+      if (surnameA !== surnameB) {
+        return surnameA.localeCompare(surnameB);
+      }
+      const firstNameA = (a.firstName || "").toLowerCase();
+      const firstNameB = (b.firstName || "").toLowerCase();
+      if (firstNameA !== firstNameB) {
+        return firstNameA.localeCompare(firstNameB);
+      }
+      return (a.id || "").toLowerCase().localeCompare((b.id || "").toLowerCase());
+    });
+
+    // Generate native OOXML package document buffer
+    const { buffer, metadata } = await WordExportService.generatePhotoAlbumDocx(fullyPopulatedSliced, settings, {
+      generatedBy: req.user!.email,
+      rosterId: shouldEnforceRoster ? "active_roster" : "custom_roster",
+      tspId: tspId || "all_tsps",
+      rosterVersion: 1
+    });
+
+    // Upload validated DOCX to Cloudinary for secure persistent storage
+    const docxUrl = await CloudinaryService.uploadDocument(buffer, "ideas_tvet_beneficiaries_photo_album.docx", "ideas_tvet");
+
+    // Save generated document record in centralized table (meeting strict metadata fields)
+    const newDoc = {
+      id: metadata.documentId,
+      beneficiaryId: null, // Roster-level document, so beneficiaryId is null
+      documentType: "PHOTO_ALBUM",
+      version: metadata.rosterVersion,
+      pdfUrl: docxUrl, // Direct to Cloudinary-stored docx since it's a DOCX-only report
+      docxUrl: docxUrl,
+      generatedBy: metadata.generatedBy,
+      createdAt: metadata.generatedAt,
+      verificationCode: `ALBUM-${metadata.checksum.substring(0, 8).toUpperCase()}`,
+      verificationStatus: "VALID",
+      documentStatus: "ACTIVE",
+      emailDeliveryStatus: "NOT_SENT"
+    };
+    await DbRepo.saveGeneratedDocument(newDoc);
+
+    console.log(`[PhotoAlbumExport] Word document package successfully generated. Length: ${buffer.length} bytes, Checksum: ${metadata.checksum}, Cloudinary URL: ${docxUrl}`);
+
+    // Return raw binary bytes with strict proper Microsoft Word headers
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    res.setHeader("Content-Disposition", "attachment; filename=ideas_tvet_beneficiaries_photo_album.docx");
+    res.setHeader("Content-Length", buffer.length.toString());
+    res.status(200).send(buffer);
+    return;
+  } catch (e: any) {
+    console.error("[PhotoAlbumExport] Word generation pipeline failed:", e);
+    res.status(500).send(e.message || "Failed to generate Word document");
+    return;
+  }
+});
+
+// Dummy function to skip old code
+async function oldWordExportUnused() {
+  try {
+    const sliced: any[] = [];
+    const filtered: any[] = [];
+    const settings: any = {};
     let recordsHtml = "";
-    const chunkSize = 25;
-    for (let i = 0; i < sliced.length; i += chunkSize) {
+  const chunkSize = 25;
+  for (let i = 0; i < 0; i += chunkSize) {
       const chunk = sliced.slice(i, i + chunkSize);
       const chunkIds = chunk.map(b => b.id);
       const photosMap = await DbRepo.getBeneficiaryPhotosBatch(chunkIds);
@@ -16911,13 +19989,11 @@ app.post("/api/export/album/word", requireAuth, requireRole(["SUPER_ADMIN", "ADM
 </html>
     `;
 
-    res.setHeader("Content-Type", "application/msword");
-    res.setHeader("Content-Disposition", "attachment; filename=ideas_tvet_beneficiaries_photo_album.doc");
-    res.status(200).send(html);
+    // Old headers and response skipped
   } catch (e: any) {
-    res.status(500).send(e.message);
+    console.log("Old unused export error:", e);
   }
-});
+}
 
 // --- COHORTS BACKEND ---
 app.get("/api/cohorts", requireAuth, async (req: any, res) => {
@@ -18074,6 +21150,13 @@ async function startServer() {
     // Add temporary backend diagnostics to match requirements
     const pool = getPgPool();
     if (pool) {
+      try {
+        const { initBankDirectoryTable } = await import("./src/backend/bankReconciliation.service");
+        await initBankDirectoryTable(pool);
+      } catch (reconErr: any) {
+        console.warn("[SYS] Failed to initialize bank directory tables:", reconErr.message || reconErr);
+      }
+
       try {
         const bRes = await pool.query("SELECT COUNT(*)::int as count FROM beneficiaries WHERE deleted_at IS NULL");
         const aRes = await pool.query("SELECT COUNT(*)::int as count FROM admissions WHERE deleted_at IS NULL");

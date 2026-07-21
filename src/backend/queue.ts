@@ -4,6 +4,7 @@ import { DocumentService } from "./document.service";
 import { TokenService } from "./token.service";
 import { AdmissionService } from "./admission.service";
 import { DocumentType } from "../types";
+import { buildPublicUrl } from "../config/api";
 
 export interface CampaignConfig {
   campaignId: string;
@@ -145,8 +146,8 @@ export class EmailCampaignQueue {
         const lastName = beneficiary.lastName || "";
         const email = recipient.email;
 
-        // Custom domain for portal links (Vite preview has current origin or we use default dev url)
-        const customDomain = process.env.VITE_API_URL || "https://ais-dev-nsgofjneehq5yhv2fp247q-526547409209.europe-west1.run.app";
+        // Custom domain for portal links (using the single source of truth helper)
+        const customDomain = buildPublicUrl("");
         const tokenRes = await AdmissionService.getOrCreateActiveOfferToken(beneficiary.id, customDomain);
         const secureToken = tokenRes.secureToken;
         const secureLink = tokenRes.secureLink;

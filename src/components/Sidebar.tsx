@@ -7,7 +7,7 @@ import React from "react";
 import { 
   Users, Image as ImageIcon, Sliders, ShieldCheck, LogOut, 
   Settings, Landmark, Cpu, LayoutDashboard, History, Check, X, FileCheck, UserCheck, Award, FileText, Clock,
-  TrendingUp, ClipboardCheck, Briefcase, BarChart3, Wallet, Mail, Database, CheckSquare
+  TrendingUp, ClipboardCheck, Briefcase, BarChart3, Wallet, Mail, Database, CheckSquare, FileSpreadsheet
 } from "lucide-react";
 
 interface SidebarProps {
@@ -243,6 +243,21 @@ export const Sidebar = React.memo(function Sidebar({
 
           <button 
             onClick={() => {
+              setActiveTab("allocated-roster");
+              setIsSidebarOpen(false);
+            }}
+            className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+              activeTab === "allocated-roster"
+                ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+            }`}
+          >
+            <CheckSquare className="w-4 h-4 text-inherit" />
+            <span>Allocated Trainee Roster</span>
+          </button>
+
+          <button 
+            onClick={() => {
               setActiveTab("eligibility");
               setIsSidebarOpen(false);
             }}
@@ -391,17 +406,47 @@ export const Sidebar = React.memo(function Sidebar({
 
           <button 
             onClick={() => {
-              setActiveTab("album");
+              setActiveTab("official-reports");
               setIsSidebarOpen(false);
             }}
             className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
-              activeTab === "album" 
+              activeTab === "official-reports" 
                 ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
                 : "text-slate-400 hover:text-white hover:bg-slate-800/40"
             }`}
           >
-            <ImageIcon className="w-4 h-4 text-inherit" />
-            <span>Reports</span>
+            <FileSpreadsheet className="w-4 h-4 text-inherit" />
+            <span>Official Reports & Exports</span>
+          </button>
+
+          <button 
+            onClick={() => {
+              setActiveTab("annex9-completion");
+              setIsSidebarOpen(false);
+            }}
+            className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+              activeTab === "annex9-completion" 
+                ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+            }`}
+          >
+            <Sliders className="w-4 h-4 text-inherit" />
+            <span>Annex 9 Data Completion</span>
+          </button>
+
+          <button 
+            onClick={() => {
+              setActiveTab("admissions-letters");
+              setIsSidebarOpen(false);
+            }}
+            className={`w-full py-2.5 px-3 rounded-lg font-display font-medium text-xs tracking-wide transition flex items-center gap-3 cursor-pointer text-left ${
+              activeTab === "admissions-letters" 
+                ? "bg-indigo-600/15 text-indigo-400 border-l-[3px] border-indigo-500 font-bold" 
+                : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+            }`}
+          >
+            <UserCheck className="w-4 h-4 text-inherit" />
+            <span>Admissions & Letters</span>
           </button>
 
           {!isTspUser && (

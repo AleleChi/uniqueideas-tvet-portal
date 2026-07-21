@@ -777,6 +777,14 @@ total=${totalTime.toFixed(2)}ms`);
       }
     }
 
+    // Force Owerri/Unique Technology details instead of Kano defaults if name/id matches
+    if (tspDetails.name.toLowerCase().includes("unique technology") || tspId === "00000000-0000-0000-0000-000000000001") {
+      tspDetails.address = tspDetails.address && !tspDetails.address.includes("Kano") ? tspDetails.address : "No. 12 Okigwe Road, Owerri, Imo State, Nigeria";
+      tspDetails.training_venue = tspDetails.training_venue && !tspDetails.training_venue.includes("Kano") ? tspDetails.training_venue : "Unique Technology TVET Center, Owerri, Imo State";
+      tspDetails.contact_email = tspDetails.contact_email || "uniqueideasproject@gmail.com";
+      tspDetails.tpm_name = tspDetails.tpm_name || "Tom Okwa";
+    }
+
     // Determine the letterhead priority using the unified resolver:
     const letterheadResult = await PdfService.resolveOfficialLetterhead("admission", beneficiary);
     const letterheadUrl = letterheadResult.url;
@@ -1079,6 +1087,14 @@ total=${totalTime.toFixed(2)}ms`);
           console.error("[PdfService] JSON fallback error resolving TSP details in generateAcceptanceFormPdf:", jsonErr);
         }
       }
+    }
+
+    // Force Owerri/Unique Technology details instead of Kano defaults if name/id matches
+    if (tspDetails.name.toLowerCase().includes("unique technology") || tspId === "00000000-0000-0000-0000-000000000001") {
+      tspDetails.address = tspDetails.address && !tspDetails.address.includes("Kano") ? tspDetails.address : "No. 12 Okigwe Road, Owerri, Imo State, Nigeria";
+      tspDetails.training_venue = tspDetails.training_venue && !tspDetails.training_venue.includes("Kano") ? tspDetails.training_venue : "Unique Technology TVET Center, Owerri, Imo State";
+      tspDetails.contact_email = tspDetails.contact_email || "uniqueideasproject@gmail.com";
+      tspDetails.tpm_name = tspDetails.tpm_name || "Tom Okwa";
     }
 
     // Determine the letterhead priority using the unified resolver:

@@ -19,7 +19,12 @@ interface ReportsWorkspaceProps {
 }
 
 export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: ReportsWorkspaceProps) {
-  const isTspUser = ["TSP", "TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER", "ADMIN_OFFICER", "REVIEW_OFFICER"].includes(session?.role || "") || (session?.role && session?.role.startsWith("TSP"));
+  const isFederalUser = ["SUPER_ADMIN", "FED", "FED_SUPER_ADMIN", "FEDERAL_SUPER_ADMIN", "FEDERAL_PROGRAM_MANAGER", "FEDERAL_REVIEW_MANAGER", "FEDERAL_ME_OFFICER"].includes(session?.role || "");
+  const isTspUser = !isFederalUser && (
+    !!session?.tspId ||
+    ["TSP", "TSP_ADMIN", "TSP_TRAINING_MANAGER", "TSP_REVIEW_OFFICER", "ADMIN_OFFICER", "REVIEW_OFFICER"].includes(session?.role || "") ||
+    (session?.role && session?.role.startsWith("TSP"))
+  );
   const [activeReportTab, setActiveReportTab] = useState<"excel" | "album" | "pdf" | "admissions" | "locations" | "governance">(
     isTspUser ? "admissions" : "excel"
   );
@@ -37,7 +42,7 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
 
   // Admissions reporting state controls
   const [selectedAdmissionsReport, setSelectedAdmissionsReport] = useState<
-    "funnel" | "tsp" | "state" | "admitted" | "rejected" | "acceptance"
+    "funnel" | "tsp" | "state" | "admitted" | "rejected" | "acceptance" | "annex9"
   >("funnel");
 
   // Filters for listings
@@ -71,6 +76,56 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
   const [tspAnnex9, setTspAnnex9] = useState<any[]>([]);
   const [tspMonthly, setTspMonthly] = useState<any[]>([]);
   const [annex9Month, setAnnex9Month] = useState("2026-06");
+  const [annex9AvailableMonths, setAnnex9AvailableMonths] = useState<any[]>([]);
+  const [isInitialMonthLoaded, setIsInitialMonthLoaded] = useState(false);
+
+  // Annex 9 Two-View Architecture States
+  const [annex9ViewTab, setAnnex9ViewTab] = useState<"monthly" | "official">("monthly");
+  const [officialSheetTab, setOfficialSheetTab] = useState<"profile" | "attendance">("profile");
+  const [readinessData, setReadinessData] = useState<any[]>([]);
+  const [previewColumns, setPreviewColumns] = useState<any[]>([]);
+  const [previewRows, setPreviewRows] = useState<any[]>([]);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewPage, setPreviewPage] = useState(1);
+
+  const fetchOfficialAnnex9Data = async () => {
+    setPreviewLoading(true);
+    try {
+      const params = new URLSearchParams({
+        month: annex9Month,
+        state: selectedState,
+        lga: selectedLga,
+        skill: selectedSkill,
+        cohort: selectedBatch,
+        gender: selectedGender,
+      });
+      if (!isTspUser) {
+        params.append("tspId", selectedTsp);
+      }
+
+      // Fetch readiness metrics for checklist
+      const readinessRes = await authFetch(`/api/reports/annex9/official/readiness?${params.toString()}`);
+      if (readinessRes.ok) {
+        const rData = await readinessRes.json();
+        setReadinessData(rData);
+      }
+
+      // Fetch preview rows and columns
+      params.append("sheet", officialSheetTab);
+      const previewRes = await authFetch(`/api/reports/annex9/official/preview?${params.toString()}`);
+      if (previewRes.ok) {
+        const pData = await previewRes.json();
+        if (pData.success) {
+          setPreviewColumns(pData.columns || []);
+          setPreviewRows(pData.rows || []);
+        }
+      }
+    } catch (err: any) {
+      showToast(err.message || "Failed to load preview data", "error");
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
 
   // Annex 9 Filters, Toast, and Editing states
   const [annex9Search, setAnnex9Search] = useState("");
@@ -88,13 +143,61 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
     }, 4000);
   };
 
-  const refreshAnnex9Data = async () => {
+  const refreshAnnex9Data = async (targetMonth?: string) => {
     setLoadingReport(true);
     try {
-      const res = await authFetch(`/api/tsp/reports/annex9?month=${annex9Month}`);
-      if (!res.ok) throw new Error("Failed to load TSP Annex 9 sheet");
+      const monthToFetch = targetMonth || annex9Month;
+      const baseRoute = isTspUser ? "/api/tsp/reports/annex9" : "/api/fed/reports/annex9";
+      
+      const params = new URLSearchParams({
+        month: monthToFetch,
+        state: selectedState,
+        lga: selectedLga,
+        skill: selectedSkill,
+        cohort: selectedBatch,
+        gender: selectedGender,
+      });
+      if (!isTspUser) {
+        params.append("tspId", selectedTsp);
+      }
+
+      const res = await authFetch(`${baseRoute}?${params.toString()}`);
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || "Failed to load Annex 9 sheet");
+      }
       const d = await res.json();
       setTspAnnex9(d.records || []);
+      
+      if (d.availableMonths) {
+        setAnnex9AvailableMonths(d.availableMonths);
+      }
+      
+      if (!isInitialMonthLoaded && d.latestAttendanceMonth) {
+        setIsInitialMonthLoaded(true);
+        if (d.latestAttendanceMonth !== monthToFetch) {
+          setAnnex9Month(d.latestAttendanceMonth);
+          const fallbackParams = new URLSearchParams({
+            month: d.latestAttendanceMonth,
+            state: selectedState,
+            lga: selectedLga,
+            skill: selectedSkill,
+            cohort: selectedBatch,
+            gender: selectedGender,
+          });
+          if (!isTspUser) {
+            fallbackParams.append("tspId", selectedTsp);
+          }
+          const fallbackRes = await authFetch(`${baseRoute}?${fallbackParams.toString()}`);
+          if (fallbackRes.ok) {
+            const fallbackData = await fallbackRes.json();
+            setTspAnnex9(fallbackData.records || []);
+          }
+        }
+      } else {
+        setIsInitialMonthLoaded(true);
+      }
+      
       showToast("Annex 9 data reloaded successfully", "success");
     } catch (err: any) {
       showToast(err.message || "Failed to refresh", "error");
@@ -104,6 +207,10 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
   };
 
   const handlePortalStatusToggle = async (beneficiaryId: string, field: "stillOnPortal" | "stillAttending", value: boolean) => {
+    if (!isTspUser) {
+      showToast("Access denied: only TSP users can update compliance indicators", "error");
+      return;
+    }
     try {
       // Optimistically update client state
       setTspAnnex9(prev => prev.map((row: any) => {
@@ -137,11 +244,19 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
   };
 
   const handleOpenRemarksModal = (row: any) => {
+    if (!isTspUser) {
+      showToast("Access denied: only TSP users can update operational remarks", "error");
+      return;
+    }
     setEditingRow(row);
     setRemarksInput(row.remarks || "");
   };
 
   const handleSaveRemarks = async () => {
+    if (!isTspUser) {
+      showToast("Access denied: only TSP users can update operational remarks", "error");
+      return;
+    }
     if (!editingRow) return;
     try {
       const res = await authFetch(`/api/tsp/reports/tvet-list-status/${editingRow.id}`, {
@@ -173,11 +288,27 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
     }
   };
 
+  const getAnnex9ExportQueryString = (additionalParams: Record<string, string> = {}) => {
+    const params = new URLSearchParams({
+      month: annex9Month,
+      state: selectedState,
+      lga: selectedLga,
+      skill: selectedSkill,
+      cohort: selectedBatch,
+      gender: selectedGender,
+      ...additionalParams
+    });
+    if (!isTspUser) {
+      params.append("tspId", selectedTsp);
+    }
+    return params.toString();
+  };
+
   const exportOfficialWorkbook = async () => {
     try {
       showToast("Generating Official Annex 9 Workbook...", "info");
-      const baseRoute = isTspUser ? "/api/tsp/reports/annex9/export" : "/api/fed/reports/annex9/export";
-      const url = `${baseRoute}?month=${annex9Month}&format=excel`;
+      const baseRoute = isTspUser ? "/api/tsp/reports/annex9/official-export" : "/api/fed/reports/annex9/official-export";
+      const url = `${baseRoute}?${getAnnex9ExportQueryString()}`;
       
       const response = await authFetch(url);
       if (!response.ok) {
@@ -204,7 +335,7 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
     try {
       showToast("Generating Attendance CSV...", "info");
       const baseRoute = isTspUser ? "/api/tsp/reports/annex9/export" : "/api/fed/reports/annex9/export";
-      const url = `${baseRoute}?month=${annex9Month}&format=csv&section=attendance`;
+      const url = `${baseRoute}?${getAnnex9ExportQueryString({ format: "csv", section: "attendance" })}`;
       
       const response = await authFetch(url);
       if (!response.ok) {
@@ -238,7 +369,7 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
 
   // Fetch report data on interaction
   useEffect(() => {
-    if (activeReportTab !== "admissions" || isTspUser) return;
+    if (activeReportTab !== "admissions" || isTspUser || selectedAdmissionsReport === "annex9") return;
 
     const fetchReportData = async () => {
       setLoadingReport(true);
@@ -309,62 +440,142 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
 
   // Fetch TSP report data on interaction (Phases 9 & 10)
   useEffect(() => {
-    if (!isTspUser || activeReportTab !== "admissions") return;
+    const isAnnex9TabActive = (isTspUser && selectedTspSubTab === "annex9") || (!isTspUser && selectedAdmissionsReport === "annex9");
+    const isOtherTspTabActive = isTspUser && selectedTspSubTab !== "annex9";
+
+    if (activeReportTab !== "admissions" || (!isAnnex9TabActive && !isOtherTspTabActive)) return;
 
     const fetchTspReport = async () => {
       setLoadingReport(true);
       setErrorReport(null);
       try {
-        if (selectedTspSubTab === "summary") {
-          const res = await authFetch("/api/tsp/reports/summary");
-          if (!res.ok) throw new Error("Failed to load TSP summary report");
-          const d = await res.json();
-          setTspSummary(d.summary);
-        } else if (selectedTspSubTab === "admissions") {
-          const res = await authFetch("/api/tsp/reports/admissions");
-          if (!res.ok) throw new Error("Failed to load TSP admissions report");
-          const d = await res.json();
-          setTspAdmissions(d.funnel);
-        } else if (selectedTspSubTab === "attendance") {
-          const res = await authFetch("/api/tsp/reports/attendance");
-          if (!res.ok) throw new Error("Failed to load TSP attendance report");
-          const d = await res.json();
-          setTspAttendance(d.monthlyTrends);
-        } else if (selectedTspSubTab === "stipends") {
-          const res = await authFetch("/api/tsp/reports/summary");
-          if (!res.ok) throw new Error("Failed to load TSP stipend report");
-          const d = await res.json();
-          setTspSummary(d.summary);
-        } else if (selectedTspSubTab === "documents") {
-          const res = await authFetch("/api/tsp/reports/documents");
-          if (!res.ok) throw new Error("Failed to load TSP documents report");
-          const d = await res.json();
-          setTspDocuments(d.documentStats);
-        } else if (selectedTspSubTab === "completion") {
-          const res = await authFetch("/api/tsp/reports/completion");
-          if (!res.ok) throw new Error("Failed to load TSP completion report");
-          const d = await res.json();
-          setTspCompletion(d.completion);
-        } else if (selectedTspSubTab === "annex9") {
-          const res = await authFetch(`/api/tsp/reports/annex9?month=${annex9Month}`);
-          if (!res.ok) throw new Error("Failed to load TSP Annex 9 sheet");
-          const d = await res.json();
-          setTspAnnex9(d.records || []);
-        } else if (selectedTspSubTab === "monthly_submissions") {
-          const res = await authFetch("/api/tsp/reports/monthly");
-          if (!res.ok) throw new Error("Failed to load TSP monthly report submissions");
-          const d = await res.json();
-          setTspMonthly(d.submissions || []);
+        if (isTspUser) {
+          if (selectedTspSubTab === "summary") {
+            const res = await authFetch("/api/tsp/reports/summary");
+            if (!res.ok) throw new Error("Failed to load TSP summary report");
+            const d = await res.json();
+            setTspSummary(d.summary);
+          } else if (selectedTspSubTab === "admissions") {
+            const res = await authFetch("/api/tsp/reports/admissions");
+            if (!res.ok) throw new Error("Failed to load TSP admissions report");
+            const d = await res.json();
+            setTspAdmissions(d.funnel);
+          } else if (selectedTspSubTab === "attendance") {
+            const res = await authFetch("/api/tsp/reports/attendance");
+            if (!res.ok) throw new Error("Failed to load TSP attendance report");
+            const d = await res.json();
+            setTspAttendance(d.monthlyTrends);
+          } else if (selectedTspSubTab === "stipends") {
+            const res = await authFetch("/api/tsp/reports/summary");
+            if (!res.ok) throw new Error("Failed to load TSP stipend report");
+            const d = await res.json();
+            setTspSummary(d.summary);
+          } else if (selectedTspSubTab === "documents") {
+            const res = await authFetch("/api/tsp/reports/documents");
+            if (!res.ok) throw new Error("Failed to load TSP documents report");
+            const d = await res.json();
+            setTspDocuments(d.documentStats);
+          } else if (selectedTspSubTab === "completion") {
+            const res = await authFetch("/api/tsp/reports/completion");
+            if (!res.ok) throw new Error("Failed to load TSP completion report");
+            const d = await res.json();
+            setTspCompletion(d.completion);
+          } else if (selectedTspSubTab === "annex9") {
+            const res = await authFetch(`/api/tsp/reports/annex9?month=${annex9Month}`);
+            if (!res.ok) throw new Error("Failed to load TSP Annex 9 sheet");
+            const d = await res.json();
+            setTspAnnex9(d.records || []);
+            if (d.availableMonths) {
+              setAnnex9AvailableMonths(d.availableMonths);
+            }
+            if (!isInitialMonthLoaded && d.latestAttendanceMonth) {
+              setIsInitialMonthLoaded(true);
+              if (d.latestAttendanceMonth !== annex9Month) {
+                setAnnex9Month(d.latestAttendanceMonth);
+              }
+            } else {
+              setIsInitialMonthLoaded(true);
+            }
+          } else if (selectedTspSubTab === "monthly_submissions") {
+            const res = await authFetch("/api/tsp/reports/monthly");
+            if (!res.ok) throw new Error("Failed to load TSP monthly report submissions");
+            const d = await res.json();
+            setTspMonthly(d.submissions || []);
+          }
+        } else {
+          // Federal user Annex 9 fetch
+          if (selectedAdmissionsReport === "annex9") {
+            const params = new URLSearchParams({
+              month: annex9Month,
+              state: selectedState,
+              lga: selectedLga,
+              skill: selectedSkill,
+              cohort: selectedBatch,
+              gender: selectedGender,
+            });
+            params.append("tspId", selectedTsp);
+
+            const res = await authFetch(`/api/fed/reports/annex9?${params.toString()}`);
+            if (!res.ok) {
+              const errData = await res.json().catch(() => ({}));
+              throw new Error(errData.error || "Failed to load Federal Annex 9 compliance data");
+            }
+            const d = await res.json();
+            setTspAnnex9(d.records || []);
+            if (d.availableMonths) {
+              setAnnex9AvailableMonths(d.availableMonths);
+            }
+            if (!isInitialMonthLoaded && d.latestAttendanceMonth) {
+              setIsInitialMonthLoaded(true);
+              if (d.latestAttendanceMonth !== annex9Month) {
+                setAnnex9Month(d.latestAttendanceMonth);
+              }
+            } else {
+              setIsInitialMonthLoaded(true);
+            }
+          }
         }
       } catch (err: any) {
-        setErrorReport(err.message || "An error occurred while loading TSP reports");
+        setErrorReport(err.message || "An error occurred while loading reports");
       } finally {
         setLoadingReport(false);
       }
     };
 
     fetchTspReport();
-  }, [isTspUser, activeReportTab, selectedTspSubTab, annex9Month]);
+  }, [
+    isTspUser,
+    activeReportTab,
+    selectedTspSubTab,
+    selectedAdmissionsReport,
+    annex9Month,
+    selectedTsp,
+    selectedState,
+    selectedLga,
+    selectedSkill,
+    selectedBatch,
+    selectedGender
+  ]);
+
+  useEffect(() => {
+    const isAnnex9TabActive = (isTspUser && selectedTspSubTab === "annex9") || (!isTspUser && selectedAdmissionsReport === "annex9");
+    if (isAnnex9TabActive && annex9ViewTab === "official") {
+      fetchOfficialAnnex9Data();
+    }
+  }, [
+    annex9ViewTab,
+    officialSheetTab,
+    annex9Month,
+    selectedTsp,
+    selectedState,
+    selectedLga,
+    selectedSkill,
+    selectedBatch,
+    selectedGender,
+    isTspUser,
+    selectedTspSubTab,
+    selectedAdmissionsReport
+  ]);
 
   // Client-side Annex 9 CSV Builder (Phase 12)
   const downloadAnnex9Csv = () => {
@@ -510,6 +721,665 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
   const existingProgrammes = Array.from(new Set(beneficiaries.map(b => b.program || "IDEAS-TVET Program").filter(Boolean))).sort();
   const existingBatches = Array.from(new Set(beneficiaries.map(b => b.batch).filter(Boolean))).sort();
   const existingGenders = ["MALE", "FEMALE", "OTHER"];
+
+  const renderAnnex9CompliancePanel = () => {
+    return (
+      <div className="space-y-6 animate-in fade-in duration-200 text-left">
+        {/* Header Block */}
+        <div className="border-b border-slate-100 pb-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div>
+            <h4 className="text-sm font-bold text-slate-900 uppercase tracking-tight">Official Annex 9 Attendance & TVET List Ledger</h4>
+            <p className="text-[11px] text-slate-400 font-mono">Verify monthly attendance rates, active TVET list statuses, and stipend eligibility sheets for compliance oversight.</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => {
+                if (annex9ViewTab === "monthly") {
+                  refreshAnnex9Data();
+                } else {
+                  fetchOfficialAnnex9Data();
+                }
+              }}
+              className="px-3 py-1.5 text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg flex items-center gap-1.5 transition cursor-pointer"
+              title="Reload real-time data from database"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loadingReport || previewLoading ? "animate-spin" : ""}`} />
+              Refresh
+            </button>
+            <button
+              onClick={exportOfficialWorkbook}
+              className="px-3 py-1.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg flex items-center gap-1.5 transition cursor-pointer shadow-sm"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5" />
+              Export Annex 9 (.xlsx)
+            </button>
+            <button
+              onClick={exportAttendanceCsv}
+              className="px-3 py-1.5 text-xs font-bold bg-slate-800 hover:bg-slate-700 text-white rounded-lg flex items-center gap-1.5 transition cursor-pointer shadow-sm"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Export CSV
+            </button>
+          </div>
+        </div>
+
+        {/* Second-Level Switch/Tab Control */}
+        <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200 w-fit">
+          <button
+            onClick={() => setAnnex9ViewTab("monthly")}
+            className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+              annex9ViewTab === "monthly"
+                ? "bg-white text-indigo-950 shadow-sm"
+                : "text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            Monthly Annex 9 Compliance
+          </button>
+          <button
+            onClick={() => setAnnex9ViewTab("official")}
+            className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+              annex9ViewTab === "official"
+                ? "bg-white text-indigo-950 shadow-sm"
+                : "text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            Official Annex 9 Workbook
+          </button>
+        </div>
+
+        {annex9ViewTab === "monthly" ? (
+          <>
+            {/* View 1: Monthly Compliance Interactive Ledger */}
+            {/* Filters Row */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200">
+              {/* Reporting Month */}
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 font-mono">Reporting Month</label>
+                {annex9AvailableMonths && annex9AvailableMonths.length > 0 ? (
+                  <select
+                    value={annex9Month}
+                    onChange={(e) => setAnnex9Month(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                  >
+                    {annex9AvailableMonths.map((m) => (
+                      <option key={m.value} value={m.value}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="month"
+                    value={annex9Month}
+                    onChange={(e) => setAnnex9Month(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                  />
+                )}
+              </div>
+
+              {/* Search bar */}
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 font-mono">Search Trainee / TVET ID</label>
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    placeholder="Type name or TVET ID..."
+                    value={annex9Search}
+                    onChange={(e) => setAnnex9Search(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-medium text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                  />
+                </div>
+              </div>
+
+              {/* Stipend Status filter */}
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 font-mono">Stipend Status</label>
+                <select
+                  value={annex9StipendFilter}
+                  onChange={(e) => setAnnex9StipendFilter(e.target.value)}
+                  className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                >
+                  <option value="all">All Stipend States</option>
+                  <option value="Eligible">Eligible</option>
+                  <option value="Below Threshold">Below Threshold</option>
+                  <option value="No Record">No Record</option>
+                </select>
+              </div>
+
+              {/* Still on Portal filter */}
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 font-mono">On Portal (TVET List)</label>
+                <select
+                  value={annex9PortalFilter}
+                  onChange={(e) => setAnnex9PortalFilter(e.target.value)}
+                  className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                >
+                  <option value="all">All States</option>
+                  <option value="yes">YES</option>
+                  <option value="no">NO</option>
+                </select>
+              </div>
+
+              {/* Still Attending filter */}
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 font-mono">Active Attending</label>
+                <select
+                  value={annex9AttendingFilter}
+                  onChange={(e) => setAnnex9AttendingFilter(e.target.value)}
+                  className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                >
+                  <option value="all">All States</option>
+                  <option value="yes">YES</option>
+                  <option value="no">NO</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Data Table */}
+            <div className="overflow-x-auto border border-slate-150 rounded-xl">
+              <table className="w-full text-[11px] text-slate-600 border-collapse text-left">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-[10px] text-slate-400 font-bold uppercase">
+                    <th className="py-3 px-3">Trainee Candidate Name</th>
+                    <th className="py-3 px-3">TVET ID</th>
+                    <th className="py-3 px-3 text-center">Expected Days</th>
+                    <th className="py-3 px-3 text-center">Present Days</th>
+                    <th className="py-3 px-3 text-center">Absent Days</th>
+                    <th className="py-3 px-3 text-center">Late Days</th>
+                    <th className="py-3 px-3 text-center">Excused Days</th>
+                    <th className="py-3 px-3 text-right">Biometric Rate</th>
+                    <th className="py-3 px-3 text-right">Stipend Status</th>
+                    <th className="py-3 px-3 text-center">On Portal (TVET List)?</th>
+                    <th className="py-3 px-3 text-center">Still Attending?</th>
+                    <th className="py-3 px-3 text-center">Verification Date</th>
+                    <th className="py-3 px-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {(() => {
+                    const searchLower = annex9Search.toLowerCase().trim();
+                    const filtered = tspAnnex9.filter((row: any) => {
+                      const nameMatch = `${row.first_name || ""} ${row.last_name || ""}`.toLowerCase().includes(searchLower) ||
+                        (row.tvet_id || "").toLowerCase().includes(searchLower);
+                      
+                      if (!nameMatch) return false;
+
+                      if (annex9StipendFilter !== "all") {
+                        if (row.stipend_status !== annex9StipendFilter) return false;
+                      }
+
+                      if (annex9PortalFilter !== "all") {
+                        const expected = annex9PortalFilter === "yes";
+                        if (row.still_on_portal !== expected) return false;
+                      }
+
+                      if (annex9AttendingFilter !== "all") {
+                        const expected = annex9AttendingFilter === "yes";
+                        if (row.still_attending !== expected) return false;
+                      }
+
+                      return true;
+                    });
+
+                    if (filtered.length === 0) {
+                      return (
+                        <tr>
+                          <td colSpan={13} className="py-12 text-center text-slate-400 italic">
+                            No Annex 9 records match your current criteria.
+                          </td>
+                        </tr>
+                      );
+                    }
+
+                    return filtered.map((row: any) => (
+                      <tr key={row.id} className="hover:bg-slate-50/40 transition-colors">
+                        <td className="py-3 px-3 font-bold text-indigo-950">
+                          <div>{row.first_name} {row.last_name}</div>
+                          {row.remarks && (
+                            <div className="text-[10px] text-slate-400 font-normal italic mt-0.5" title={row.remarks}>
+                              "{row.remarks}"
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 px-3 font-mono font-bold text-[10px] text-slate-500">
+                          {row.tvet_id}
+                        </td>
+                        <td className="py-3 px-3 text-center font-semibold text-slate-600">
+                          {row.expected_days}
+                        </td>
+                        <td className="py-3 px-3 text-center text-emerald-600 font-bold">
+                          {row.present_days}
+                        </td>
+                        <td className="py-3 px-3 text-center text-rose-500 font-semibold">
+                          {row.absent_days}
+                        </td>
+                        <td className="py-3 px-3 text-center text-amber-500 font-semibold">
+                          {row.late_days}
+                        </td>
+                        <td className="py-3 px-3 text-center text-slate-500 font-semibold">
+                          {row.excused_days}
+                        </td>
+                        <td className="py-3 px-3 text-right font-bold text-slate-950 font-mono text-xs">
+                          {row.attendance_percentage}%
+                        </td>
+                        <td className="py-3 px-3 text-right">
+                          <span className={`p-1 px-2.5 rounded-full text-[9px] font-extrabold uppercase tracking-wide border ${
+                            row.stipend_status === "Eligible" || row.stipend_status === "ELIGIBLE"
+                              ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+                              : row.stipend_status === "Below Threshold"
+                              ? "bg-rose-50 border-rose-200 text-rose-700"
+                              : "bg-slate-50 border-slate-200 text-slate-600"
+                          }`}>
+                            {row.stipend_status}
+                          </span>
+                        </td>
+
+                        {/* Still on Portal Toggle */}
+                        <td className="py-3 px-3 text-center bg-indigo-50/10">
+                          <div className="flex items-center justify-center gap-1.5">
+                            <button
+                              onClick={() => handlePortalStatusToggle(row.id, "stillOnPortal", true)}
+                              disabled={!isTspUser}
+                              className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold tracking-wider transition-all duration-150 cursor-pointer ${
+                                row.still_on_portal === true
+                                  ? "bg-emerald-600 text-white shadow-sm"
+                                  : "bg-slate-100 hover:bg-slate-200 text-slate-600"
+                              } ${!isTspUser ? "opacity-60 cursor-not-allowed" : ""}`}
+                            >
+                              YES
+                            </button>
+                            <button
+                              onClick={() => handlePortalStatusToggle(row.id, "stillOnPortal", false)}
+                              disabled={!isTspUser}
+                              className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold tracking-wider transition-all duration-150 cursor-pointer ${
+                                row.still_on_portal === false
+                                  ? "bg-rose-600 text-white shadow-sm"
+                                  : "bg-slate-100 hover:bg-slate-200 text-slate-600"
+                              } ${!isTspUser ? "opacity-60 cursor-not-allowed" : ""}`}
+                            >
+                              NO
+                            </button>
+                          </div>
+                        </td>
+
+                        {/* Still Attending Toggle */}
+                        <td className="py-3 px-3 text-center bg-indigo-50/10">
+                          <div className="flex items-center justify-center gap-1.5">
+                            <button
+                              onClick={() => handlePortalStatusToggle(row.id, "stillAttending", true)}
+                              disabled={!isTspUser}
+                              className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold tracking-wider transition-all duration-150 cursor-pointer ${
+                                row.still_attending === true
+                                  ? "bg-emerald-600 text-white shadow-sm"
+                                  : "bg-slate-100 hover:bg-slate-200 text-slate-600"
+                              } ${!isTspUser ? "opacity-60 cursor-not-allowed" : ""}`}
+                            >
+                              YES
+                            </button>
+                            <button
+                              onClick={() => handlePortalStatusToggle(row.id, "stillAttending", false)}
+                              disabled={!isTspUser}
+                              className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold tracking-wider transition-all duration-150 cursor-pointer ${
+                                row.still_attending === false
+                                  ? "bg-rose-600 text-white shadow-sm"
+                                  : "bg-slate-100 hover:bg-slate-200 text-slate-600"
+                              } ${!isTspUser ? "opacity-60 cursor-not-allowed" : ""}`}
+                            >
+                              NO
+                            </button>
+                          </div>
+                        </td>
+
+                        {/* Last Verified */}
+                        <td className="py-3 px-3 text-center font-mono text-[10px] text-slate-500">
+                          {row.last_verified_at ? (
+                            <div className="flex flex-col items-center">
+                              <span className="font-bold text-slate-700">
+                                {new Date(row.last_verified_at).toISOString().split("T")[0]}
+                              </span>
+                              <span className="text-[9px] text-slate-400">
+                                by {row.verified_by || "TSP"}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 italic">Not Verified</span>
+                          )}
+                        </td>
+
+                        {/* Actions */}
+                        <td className="py-3 px-3 text-right">
+                          <button
+                            onClick={() => handleOpenRemarksModal(row)}
+                            disabled={!isTspUser}
+                            className={`p-1.5 bg-slate-100 hover:bg-indigo-50 text-slate-600 hover:text-indigo-600 rounded-lg transition-colors cursor-pointer ${
+                              !isTspUser ? "opacity-50 cursor-not-allowed hover:text-slate-600" : ""
+                            }`}
+                            title={isTspUser ? "Add operational remarks or notes" : "Operational remarks (Read-Only for Federal)"}
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ));
+                  })()}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : (
+          <div className="space-y-6 animate-in fade-in duration-200">
+            {/* View 2: Official Annex 9 Workbook Panel & Previews */}
+
+            {/* Official Government Workbook Explanatory Card */}
+            <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-indigo-50 border border-emerald-200 rounded-2xl p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-6 shadow-xs">
+              <div className="flex gap-4 items-start">
+                <div className="p-3 bg-emerald-600 text-white rounded-xl shadow-sm">
+                  <FileSpreadsheet className="w-6 h-6" />
+                </div>
+                <div>
+                  <h5 className="text-sm font-bold text-emerald-950 uppercase tracking-tight">Official Government Annex 9 Workbook (.xlsx)</h5>
+                  <p className="text-xs text-emerald-950 leading-relaxed max-w-2xl mt-1">
+                    Download the final, comprehensive, and audited government compliance report. This package contains exactly two worksheets:
+                    <strong className="text-emerald-900 block mt-1">1. TRAINEE PROFILE:</strong> full personal bio registry details, including PWD indicators, and complete parent/guardian contacts.
+                    <strong className="text-emerald-900 block">2. ATTENDANCE:</strong> a consolidated attendance rate sheet mapped precisely to the database.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={exportOfficialWorkbook}
+                className="w-full md:w-auto shrink-0 px-5 py-3 text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl flex items-center justify-center gap-2 transition cursor-pointer shadow-md hover:shadow active:scale-[0.98]"
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                Download Official Workbook (.xlsx)
+              </button>
+            </div>
+
+            {/* Verification Checklist Section */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4 shadow-sm">
+              <div className="flex items-center gap-2 pb-2 border-b border-slate-100">
+                <CheckSquare className="w-4 h-4 text-indigo-600" />
+                <h5 className="text-xs font-bold text-slate-800 uppercase tracking-wider font-mono">Government Compliance & Readiness Checklist</h5>
+              </div>
+
+              {previewLoading ? (
+                <div className="py-6 flex justify-center items-center gap-2 text-slate-400">
+                  <RefreshCw className="w-4 h-4 animate-spin text-indigo-600" />
+                  <span className="text-xs">Computing real-time compliance metrics...</span>
+                </div>
+              ) : (
+                (() => {
+                  const total = readinessData.length;
+                  const avgCompleteness = total > 0
+                    ? Math.round(readinessData.reduce((acc, curr) => acc + curr.profile_completeness, 0) / total)
+                    : 0;
+                  const avgAttendance = total > 0
+                    ? parseFloat((readinessData.reduce((acc, curr) => acc + curr.attendance_percentage, 0) / total).toFixed(2))
+                    : 0;
+                  const activePortal = total > 0
+                    ? Math.round((readinessData.filter(t => t.portal_active === "YES").length / total) * 100)
+                    : 0;
+
+                  const readyCount = readinessData.filter(t => t.readiness_status === "READY").length;
+                  const pendingCount = readinessData.filter(t => t.readiness_status === "PENDING").length;
+                  const riskCount = readinessData.filter(t => t.readiness_status === "AT RISK").length;
+
+                  return (
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                      {/* Metric 1 */}
+                      <div className="p-3 bg-slate-50 border border-slate-150 rounded-xl space-y-1">
+                        <div className="text-[10px] font-bold text-slate-400 uppercase font-mono">Audit Headcount</div>
+                        <div className="text-xl font-extrabold text-indigo-950">{total} Trainees</div>
+                        <div className="text-[10px] text-slate-500">Currently enrolled in cohort</div>
+                      </div>
+
+                      {/* Metric 2 */}
+                      <div className="p-3 bg-slate-50 border border-slate-150 rounded-xl space-y-1">
+                        <div className="text-[10px] font-bold text-slate-400 uppercase font-mono">Profile Completeness</div>
+                        <div className="text-xl font-extrabold text-slate-900">{avgCompleteness}% Avg</div>
+                        <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden mt-1">
+                          <div className="bg-indigo-600 h-full" style={{ width: `${avgCompleteness}%` }}></div>
+                        </div>
+                      </div>
+
+                      {/* Metric 3 */}
+                      <div className="p-3 bg-slate-50 border border-slate-150 rounded-xl space-y-1">
+                        <div className="text-[10px] font-bold text-slate-400 uppercase font-mono">Biometric Compliance</div>
+                        <div className="text-xl font-extrabold text-slate-900">{avgAttendance}% Rate</div>
+                        <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden mt-1">
+                          <div className="bg-emerald-500 h-full" style={{ width: `${Math.min(avgAttendance, 100)}%` }}></div>
+                        </div>
+                      </div>
+
+                      {/* Metric 4: Readiness Count */}
+                      <div className="p-3 bg-slate-50 border border-slate-150 rounded-xl space-y-2">
+                        <div className="text-[10px] font-bold text-slate-400 uppercase font-mono">Readiness Distribution</div>
+                        <div className="flex gap-2 items-center flex-wrap">
+                          <span className="p-1 px-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-extrabold uppercase">
+                            {readyCount} Ready
+                          </span>
+                          <span className="p-1 px-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-[10px] font-extrabold uppercase">
+                            {pendingCount} Pending
+                          </span>
+                          <span className="p-1 px-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-[10px] font-extrabold uppercase">
+                            {riskCount} At Risk
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()
+              )}
+            </div>
+
+            {/* Workbook Live Preview Area */}
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between pb-2 border-b border-slate-200 gap-4">
+                <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200 w-fit">
+                  <button
+                    onClick={() => {
+                      setOfficialSheetTab("profile");
+                      setPreviewPage(1);
+                    }}
+                    className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                      officialSheetTab === "profile"
+                        ? "bg-white text-indigo-950 shadow-sm"
+                        : "text-slate-500 hover:text-slate-800"
+                    }`}
+                  >
+                    Sheet 1: Trainee Profile
+                  </button>
+                  <button
+                    onClick={() => {
+                      setOfficialSheetTab("attendance");
+                      setPreviewPage(1);
+                    }}
+                    className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                      officialSheetTab === "attendance"
+                        ? "bg-white text-indigo-950 shadow-sm"
+                        : "text-slate-500 hover:text-slate-800"
+                    }`}
+                  >
+                    Sheet 2: Attendance
+                  </button>
+                </div>
+
+                <div className="text-xs text-slate-400 font-mono">
+                  Live Workbook Preview: {officialSheetTab === "profile" ? "TRAINEE PROFILE" : "ATTENDANCE"}
+                </div>
+              </div>
+
+              {previewLoading ? (
+                <div className="py-20 flex flex-col justify-center items-center gap-3 text-slate-400">
+                  <RefreshCw className="w-8 h-8 animate-spin text-indigo-600" />
+                  <span className="text-xs font-bold font-mono">Regenerating live sheet preview from database...</span>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="overflow-x-auto border border-slate-150 rounded-xl shadow-xs max-h-[600px]">
+                    <table className="w-full text-[11px] text-slate-600 border-collapse text-left bg-white">
+                      {officialSheetTab === "attendance" ? (
+                        <>
+                          <thead>
+                            {/* Row 1: Months */}
+                            <tr className="bg-slate-50 text-[10px] text-slate-500 font-bold uppercase border-b border-slate-200">
+                              <th colSpan={4} className="py-2.5 px-3 sticky left-0 z-20 bg-slate-100 border-r border-slate-200 text-center uppercase tracking-wider font-semibold">
+                                Trainee Identification
+                              </th>
+                              {[
+                                { name: "JUNE", colSpan: 24, bg: "bg-emerald-50 text-emerald-800 border-emerald-100" },
+                                { name: "JULY", colSpan: 30, bg: "bg-sky-50 text-sky-800 border-sky-100" },
+                                { name: "AUGUST", colSpan: 24, bg: "bg-emerald-50 text-emerald-800 border-emerald-100" },
+                                { name: "SEPTEMBER", colSpan: 30, bg: "bg-sky-50 text-sky-800 border-sky-100" },
+                                { name: "OCTOBER", colSpan: 24, bg: "bg-emerald-50 text-emerald-800 border-emerald-100" },
+                                { name: "NOVEMBER", colSpan: 30, bg: "bg-sky-50 text-sky-800 border-sky-100" },
+                                { name: "DECEMBER", colSpan: 24, bg: "bg-emerald-50 text-emerald-800 border-emerald-100" }
+                              ].map((m, idx) => (
+                                <th key={idx} colSpan={m.colSpan} className={`py-2.5 px-3 text-center border-r border-slate-200 font-extrabold text-[11px] uppercase ${m.bg}`}>
+                                  {m.name}
+                                </th>
+                              ))}
+                            </tr>
+                            {/* Row 2: Weeks */}
+                            <tr className="bg-slate-50 text-[10px] text-slate-500 font-bold uppercase border-b border-slate-200">
+                              <th colSpan={4} className="py-2 px-3 sticky left-0 z-20 bg-slate-100 border-r border-slate-200"></th>
+                              {Array.from({ length: 31 }, (_, i) => i + 1).map((w) => (
+                                <th key={w} colSpan={6} className="py-2 px-2 text-center border-r border-slate-200 font-bold text-[9px] bg-slate-50 text-slate-600">
+                                  WEEK {w}
+                                </th>
+                              ))}
+                            </tr>
+                            {/* Row 3: Day 1-5 + % Rate */}
+                            <tr className="bg-slate-100 text-[9px] text-slate-500 font-bold uppercase border-b border-slate-200 sticky top-0 z-10">
+                              <th className="py-3 px-3 whitespace-nowrap sticky left-0 z-20 bg-slate-100 border-r border-slate-200 w-12 text-center">S/N</th>
+                              <th className="py-3 px-3 whitespace-nowrap sticky left-[48px] z-20 bg-slate-100 border-r border-slate-200 w-36">FIRST NAME</th>
+                              <th className="py-3 px-3 whitespace-nowrap sticky left-[192px] z-20 bg-slate-100 border-r border-slate-200 w-36">LAST NAME (SURNAME)</th>
+                              <th className="py-3 px-3 whitespace-nowrap sticky left-[336px] z-20 bg-slate-100 border-r border-slate-200 w-36 text-center">TRAINEE I.D</th>
+                              {Array.from({ length: 31 }).map((_, wIdx) => (
+                                <React.Fragment key={wIdx}>
+                                  <th className="py-2 px-1 text-center border-r border-slate-200 font-mono text-[8px] min-w-[45px]">D1</th>
+                                  <th className="py-2 px-1 text-center border-r border-slate-200 font-mono text-[8px] min-w-[45px]">D2</th>
+                                  <th className="py-2 px-1 text-center border-r border-slate-200 font-mono text-[8px] min-w-[45px]">D3</th>
+                                  <th className="py-2 px-1 text-center border-r border-slate-200 font-mono text-[8px] min-w-[45px]">D4</th>
+                                  <th className="py-2 px-1 text-center border-r border-slate-200 font-mono text-[8px] min-w-[45px]">D5</th>
+                                  <th className="py-2 px-1.5 text-center border-r border-slate-200 font-mono text-[8px] bg-indigo-50 text-indigo-900 font-bold min-w-[55px]">% RATE</th>
+                                </React.Fragment>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {(() => {
+                              const limit = 10;
+                              const startIdx = (previewPage - 1) * limit;
+                              const displayed = previewRows.slice(startIdx, startIdx + limit);
+
+                              if (displayed.length === 0) {
+                                return (
+                                  <tr>
+                                    <td colSpan={190} className="py-12 text-center text-slate-400 italic">
+                                      No records available to display in preview.
+                                    </td>
+                                  </tr>
+                                );
+                              }
+
+                              return displayed.map((row, rIdx) => (
+                                <tr key={rIdx} className="hover:bg-slate-50/40 transition-colors border-b border-slate-100">
+                                  {/* Identity Columns Sticky left */}
+                                  <td className="py-2 px-3 whitespace-nowrap sticky left-0 z-10 bg-white border-r border-slate-150 text-center font-mono font-medium text-slate-500">{row.sn}</td>
+                                  <td className="py-2 px-3 whitespace-nowrap sticky left-[48px] z-10 bg-white border-r border-slate-150 font-bold text-slate-800">{row.first_name}</td>
+                                  <td className="py-2 px-3 whitespace-nowrap sticky left-[192px] z-10 bg-white border-r border-slate-150 font-bold text-slate-800">{row.last_name}</td>
+                                  <td className="py-2 px-3 whitespace-nowrap sticky left-[336px] z-10 bg-white border-r border-slate-200 text-center font-mono text-slate-600 font-semibold">{row.tvet_id || "-"}</td>
+                                  
+                                  {/* 31 Weeks Grid */}
+                                  {Array.from({ length: 31 }).map((_, w) => {
+                                    const wNum = w + 1;
+                                    const rateVal = row[`w_${wNum}_rate`];
+                                    
+                                    return (
+                                      <React.Fragment key={w}>
+                                        {[1, 2, 3, 4, 5].map((d) => {
+                                          const val = row[`w_${wNum}_d${d}`];
+                                          let colorClass = "text-slate-300";
+                                          if (val === "TRUE") colorClass = "bg-emerald-50 text-emerald-700 font-bold text-center border-emerald-100/40";
+                                          else if (val === "FALSE") colorClass = "bg-rose-50 text-rose-700 font-bold text-center border-rose-100/40";
+                                          
+                                          return (
+                                            <td key={d} className={`py-1.5 px-1 border-r border-slate-150 text-center font-mono text-[9px] ${colorClass}`}>
+                                              {val === "TRUE" ? "✔" : val === "FALSE" ? "✘" : ""}
+                                            </td>
+                                          );
+                                        })}
+                                        <td className="py-1.5 px-1.5 border-r border-slate-200 text-center font-mono font-bold text-[9.5px] bg-indigo-50/50 text-indigo-950">
+                                          {rateVal || ""}
+                                        </td>
+                                      </React.Fragment>
+                                    );
+                                  })}
+                                </tr>
+                              ));
+                            })()}
+                          </tbody>
+                        </>
+                      ) : (
+                        <>
+                          <thead>
+                            <tr className="border-b border-slate-200 bg-slate-50 text-[10px] text-slate-400 font-bold uppercase">
+                              {previewColumns.map((col, idx) => (
+                                <th key={idx} className="py-3 px-3 whitespace-nowrap">
+                                  {col.header}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {(() => {
+                              const limit = 10;
+                              const startIdx = (previewPage - 1) * limit;
+                              const displayed = previewRows.slice(startIdx, startIdx + limit);
+
+                              if (displayed.length === 0) {
+                                return (
+                                  <tr>
+                                    <td colSpan={previewColumns.length || 1} className="py-12 text-center text-slate-400 italic">
+                                      No records available to display in preview.
+                                    </td>
+                                  </tr>
+                                );
+                              }
+
+                              return displayed.map((row, rIdx) => (
+                                <tr key={rIdx} className="hover:bg-slate-50/40 transition-colors">
+                                  {previewColumns.map((col, cIdx) => (
+                                    <td key={cIdx} className="py-2.5 px-3 whitespace-nowrap max-w-xs truncate font-medium text-slate-700">
+                                      {String(row[col.key] ?? "")}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ));
+                            })()}
+                          </tbody>
+                        </>
+                      )}
+                    </table>
+                  </div>
+
+                  <PaginationControl
+                    currentPage={previewPage}
+                    totalCount={previewRows.length}
+                    pageSize={10}
+                    onPageChange={setPreviewPage}
+                    onPageSizeChange={() => {}}
+                    idPrefix="annex9_preview"
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="space-y-6 font-sans select-none max-w-7xl mx-auto animate-in fade-in duration-300">
@@ -1215,7 +2085,7 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
           </div>
 
           {/* Toggle Report Workspace Categories */}
-          <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 bg-slate-100 p-1.5 rounded-2xl border border-slate-200">
+          <div className="grid grid-cols-2 sm:grid-cols-7 gap-2 bg-slate-100 p-1.5 rounded-2xl border border-slate-200">
             <button
               onClick={() => handleFilterChange(setSelectedAdmissionsReport, "funnel")}
               className={`px-3 py-2.5 rounded-xl text-center text-xs font-bold transition flex flex-col items-center gap-1.5 cursor-pointer ${
@@ -1286,6 +2156,18 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
             >
               <CheckSquare className="w-4 h-4 text-amber-500" />
               <span>Acceptance Audit</span>
+            </button>
+
+            <button
+              onClick={() => handleFilterChange(setSelectedAdmissionsReport, "annex9")}
+              className={`px-3 py-2.5 rounded-xl text-center text-xs font-bold transition flex flex-col items-center gap-1.5 cursor-pointer ${
+                selectedAdmissionsReport === "annex9"
+                  ? "bg-white text-indigo-950 shadow-sm border border-slate-200/50"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-500" />
+              <span>Annex 9 Compliance</span>
             </button>
           </div>
 
@@ -1718,6 +2600,8 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
               </div>
             )}
 
+            {selectedAdmissionsReport === "annex9" && renderAnnex9CompliancePanel()}
+
           </div>
 
         </div>
@@ -2129,289 +3013,7 @@ export function ReportsWorkspace({ beneficiaries, session, onRefreshRoot }: Repo
             )}
 
             {/* PANEL 7: ANNEX 9 SHEETS */}
-            {selectedTspSubTab === "annex9" && (
-              <div className="space-y-6 animate-in fade-in duration-200 text-left">
-                {/* Header Block */}
-                <div className="border-b border-slate-100 pb-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-                  <div>
-                    <h4 className="text-sm font-bold text-slate-900 uppercase tracking-tight">Official Annex 9 Attendance & TVET List Ledger</h4>
-                    <p className="text-[11px] text-slate-400">Verify monthly attendance rates, active TVET list statuses, and stipend eligibility sheets for compliance oversight.</p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      onClick={refreshAnnex9Data}
-                      className="px-3 py-1.5 text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg flex items-center gap-1.5 transition cursor-pointer"
-                      title="Reload real-time data from database"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${loadingReport ? "animate-spin" : ""}`} />
-                      Refresh
-                    </button>
-                    <button
-                      onClick={exportOfficialWorkbook}
-                      className="px-3 py-1.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg flex items-center gap-1.5 transition cursor-pointer shadow-sm"
-                    >
-                      <FileSpreadsheet className="w-3.5 h-3.5" />
-                      Export Annex 9 (.xlsx)
-                    </button>
-                    <button
-                      onClick={exportAttendanceCsv}
-                      className="px-3 py-1.5 text-xs font-bold bg-slate-800 hover:bg-slate-700 text-white rounded-lg flex items-center gap-1.5 transition cursor-pointer shadow-sm"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      Export CSV
-                    </button>
-                  </div>
-                </div>
-
-                {/* Filters Row */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200">
-                  {/* Reporting Month */}
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 font-mono">Reporting Month</label>
-                    <input
-                      type="month"
-                      value={annex9Month}
-                      onChange={(e) => setAnnex9Month(e.target.value)}
-                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-                    />
-                  </div>
-
-                  {/* Search bar */}
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 font-mono">Search Trainee / TVET ID</label>
-                    <div className="relative">
-                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
-                      <input
-                        type="text"
-                        placeholder="Type name or TVET ID..."
-                        value={annex9Search}
-                        onChange={(e) => setAnnex9Search(e.target.value)}
-                        className="w-full pl-9 pr-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-medium text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Stipend Status filter */}
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 font-mono">Stipend Status</label>
-                    <select
-                      value={annex9StipendFilter}
-                      onChange={(e) => setAnnex9StipendFilter(e.target.value)}
-                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-                    >
-                      <option value="all">All Stipend States</option>
-                      <option value="Eligible">Eligible</option>
-                      <option value="Below Threshold">Below Threshold</option>
-                      <option value="No Record">No Record</option>
-                    </select>
-                  </div>
-
-                  {/* Still on Portal filter */}
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 font-mono">Still on TVET List?</label>
-                    <select
-                      value={annex9PortalFilter}
-                      onChange={(e) => setAnnex9PortalFilter(e.target.value)}
-                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-                    >
-                      <option value="all">All States</option>
-                      <option value="yes">Yes (Active)</option>
-                      <option value="no">No (Inactive)</option>
-                    </select>
-                  </div>
-
-                  {/* Still Attending filter */}
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 font-mono">Still Attending Classes?</label>
-                    <select
-                      value={annex9AttendingFilter}
-                      onChange={(e) => setAnnex9AttendingFilter(e.target.value)}
-                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-                    >
-                      <option value="all">All States</option>
-                      <option value="yes">Yes (Attending)</option>
-                      <option value="no">No (Not Attending)</option>
-                    </select>
-                  </div>
-                </div>
-
-                {/* Table container */}
-                <div className="overflow-x-auto border border-slate-200 rounded-xl shadow-sm">
-                  <table className="w-full text-[11px] text-slate-600 border-collapse text-left min-w-[1200px]">
-                    <thead>
-                      <tr className="border-b border-slate-200 bg-slate-50 text-[10px] text-slate-500 font-bold uppercase tracking-wider">
-                        <th className="py-3 px-3">Trainee Name</th>
-                        <th className="py-3 px-3">TVET ID</th>
-                        <th className="py-3 px-3 text-center">Expected Days</th>
-                        <th className="py-3 px-3 text-center">Present Days</th>
-                        <th className="py-3 px-3 text-center">Absent Days</th>
-                        <th className="py-3 px-3 text-center">Late Days</th>
-                        <th className="py-3 px-3 text-center">Excused Days</th>
-                        <th className="py-3 px-3 text-right">Attendance %</th>
-                        <th className="py-3 px-3 text-right">Stipend Status</th>
-                        <th className="py-3 px-3 text-center bg-indigo-50/40">Still on TVET List?</th>
-                        <th className="py-3 px-3 text-center bg-indigo-50/40">Still Attending Classes?</th>
-                        <th className="py-3 px-3 text-center">Last Verified</th>
-                        <th className="py-3 px-3 text-right">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 bg-white">
-                      {(() => {
-                        const filtered = tspAnnex9.filter((row: any) => {
-                          if (annex9Search.trim() !== "") {
-                            const s = annex9Search.toLowerCase();
-                            const nameMatch = `${row.first_name || ""} ${row.last_name || ""}`.toLowerCase().includes(s);
-                            const idMatch = (row.tvet_id || "").toLowerCase().includes(s);
-                            if (!nameMatch && !idMatch) return false;
-                          }
-                          if (annex9StipendFilter !== "all") {
-                            if (row.stipend_status?.toLowerCase() !== annex9StipendFilter.toLowerCase()) return false;
-                          }
-                          if (annex9PortalFilter !== "all") {
-                            const targetVal = annex9PortalFilter === "yes";
-                            if (row.still_on_portal !== targetVal) return false;
-                          }
-                          if (annex9AttendingFilter !== "all") {
-                            const targetVal = annex9AttendingFilter === "yes";
-                            if (row.still_attending !== targetVal) return false;
-                          }
-                          return true;
-                        });
-
-                        if (filtered.length === 0) {
-                          return (
-                            <tr>
-                              <td colSpan={13} className="py-16 text-center font-medium text-slate-400 text-xs">
-                                No matching trainee records found. Try modifying your search or filters.
-                              </td>
-                            </tr>
-                          );
-                        }
-
-                        return filtered.map((row: any) => (
-                          <tr key={row.id} className="hover:bg-slate-50/40 transition-colors">
-                            <td className="py-3 px-3 font-bold text-indigo-950">
-                              {row.first_name} {row.last_name}
-                            </td>
-                            <td className="py-3 px-3 font-mono font-bold text-[10px] text-slate-500">
-                              {row.tvet_id}
-                            </td>
-                            <td className="py-3 px-3 text-center font-semibold text-slate-600">
-                              {row.expected_days}
-                            </td>
-                            <td className="py-3 px-3 text-center text-emerald-600 font-bold">
-                              {row.present_days}
-                            </td>
-                            <td className="py-3 px-3 text-center text-rose-500 font-semibold">
-                              {row.absent_days}
-                            </td>
-                            <td className="py-3 px-3 text-center text-amber-500 font-semibold">
-                              {row.late_days}
-                            </td>
-                            <td className="py-3 px-3 text-center text-slate-500 font-semibold">
-                              {row.excused_days}
-                            </td>
-                            <td className="py-3 px-3 text-right font-bold text-slate-950 font-mono text-xs">
-                              {row.attendance_percentage}%
-                            </td>
-                            <td className="py-3 px-3 text-right">
-                              <span className={`p-1 px-2.5 rounded-full text-[9px] font-extrabold uppercase tracking-wide border ${
-                                row.stipend_status === "Eligible" || row.stipend_status === "ELIGIBLE"
-                                  ? "bg-emerald-50 text-emerald-800 border-emerald-100"
-                                  : row.stipend_status === "Below Threshold" || row.stipend_status === "BELOW_THRESHOLD"
-                                  ? "bg-rose-50 text-rose-800 border-rose-100 animate-pulse"
-                                  : "bg-slate-50 text-slate-500 border-slate-200"
-                              }`}>
-                                {row.stipend_status}
-                              </span>
-                            </td>
-
-                            {/* Still on Portal Toggle */}
-                            <td className="py-3 px-3 text-center bg-indigo-50/10">
-                              <div className="flex items-center justify-center gap-1.5">
-                                <button
-                                  onClick={() => handlePortalStatusToggle(row.id, "stillOnPortal", true)}
-                                  className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold tracking-wider transition-all duration-150 cursor-pointer ${
-                                    row.still_on_portal === true
-                                      ? "bg-emerald-600 text-white shadow-sm"
-                                      : "bg-slate-100 hover:bg-slate-200 text-slate-600"
-                                  }`}
-                                >
-                                  YES
-                                </button>
-                                <button
-                                  onClick={() => handlePortalStatusToggle(row.id, "stillOnPortal", false)}
-                                  className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold tracking-wider transition-all duration-150 cursor-pointer ${
-                                    row.still_on_portal === false
-                                      ? "bg-rose-600 text-white shadow-sm"
-                                      : "bg-slate-100 hover:bg-slate-200 text-slate-600"
-                                  }`}
-                                >
-                                  NO
-                                </button>
-                              </div>
-                            </td>
-
-                            {/* Still Attending Toggle */}
-                            <td className="py-3 px-3 text-center bg-indigo-50/10">
-                              <div className="flex items-center justify-center gap-1.5">
-                                <button
-                                  onClick={() => handlePortalStatusToggle(row.id, "stillAttending", true)}
-                                  className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold tracking-wider transition-all duration-150 cursor-pointer ${
-                                    row.still_attending === true
-                                      ? "bg-emerald-600 text-white shadow-sm"
-                                      : "bg-slate-100 hover:bg-slate-200 text-slate-600"
-                                  }`}
-                                >
-                                  YES
-                                </button>
-                                <button
-                                  onClick={() => handlePortalStatusToggle(row.id, "stillAttending", false)}
-                                  className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold tracking-wider transition-all duration-150 cursor-pointer ${
-                                    row.still_attending === false
-                                      ? "bg-rose-600 text-white shadow-sm"
-                                      : "bg-slate-100 hover:bg-slate-200 text-slate-600"
-                                  }`}
-                                >
-                                  NO
-                                </button>
-                              </div>
-                            </td>
-
-                            {/* Last Verified */}
-                            <td className="py-3 px-3 text-center font-mono text-[10px] text-slate-500">
-                              {row.last_verified_at ? (
-                                <div className="flex flex-col items-center">
-                                  <span className="font-bold text-slate-700">
-                                    {new Date(row.last_verified_at).toISOString().split("T")[0]}
-                                  </span>
-                                  <span className="text-[9px] text-slate-400">
-                                    by {row.verified_by || "TSP"}
-                                  </span>
-                                </div>
-                              ) : (
-                                <span className="text-slate-400 italic">Not Verified</span>
-                              )}
-                            </td>
-
-                            {/* Actions */}
-                            <td className="py-3 px-3 text-right">
-                              <button
-                                onClick={() => handleOpenRemarksModal(row)}
-                                className="p-1.5 bg-slate-100 hover:bg-indigo-50 text-slate-600 hover:text-indigo-600 rounded-lg transition-colors cursor-pointer"
-                                title="Add operational remarks or notes"
-                              >
-                                <Edit2 className="w-3.5 h-3.5" />
-                              </button>
-                            </td>
-                          </tr>
-                        ));
-                      })()}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
+            {selectedTspSubTab === "annex9" && renderAnnex9CompliancePanel()}
 
             {/* PANEL 8: MONTHLY REPORT SUBMISSIONS */}
             {selectedTspSubTab === "monthly_submissions" && (

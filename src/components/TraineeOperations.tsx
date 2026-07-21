@@ -12,6 +12,7 @@ import {
   Wifi, WifiOff, Trash2, Calendar, Check, Play, Cpu, Tablet, CloudLightning
 } from "lucide-react";
 import { authFetch } from "../utils/authFetch";
+import { BulkAnnex9UpdateView } from "./BulkAnnex9UpdateView";
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, Legend, BarChart, Bar
 } from "recharts";
@@ -30,6 +31,7 @@ interface TraineeProfile {
   education_level: string;
   employment_status: string;
   training_status: string;
+  physical_challenge?: string;
   sector: string;
   skill: string;
   state: string;
@@ -192,11 +194,12 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
   const getProfileCompleteness = (t: TraineeProfile): number => {
     let score = 0;
     if (t.first_name && t.last_name) score += 20;
-    if (t.nin && t.nin.trim().length === 11) score += 20;
-    if (t.bvn && t.bvn.trim().length === 11) score += 20;
-    if (t.phone_number && t.phone_number.trim().length >= 8) score += 15;
-    if (t.account_number && t.bank_name) score += 15;
-    if (t.guardian_name && t.guardian_phone) score += 10;
+    if (t.gender && (t.gender === "Male" || t.gender === "Female")) score += 15;
+    if (t.tvet_id && t.tvet_id.trim().length > 0) score += 15;
+    if (t.physical_challenge && (t.physical_challenge === "Yes" || t.physical_challenge === "No")) score += 10;
+    if (t.education_level && t.education_level.trim().length > 0) score += 15;
+    if (t.employment_status && t.employment_status.trim().length > 0) score += 15;
+    if (t.phone_number && t.phone_number.trim().length >= 8) score += 10;
     return score;
   };
 
@@ -1150,6 +1153,7 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
           {[
             { id: "overview", label: "Executive Overview", icon: LayoutDashboard },
             { id: "registry", label: "Trainee Registry", icon: Users },
+            { id: "bulk_annex9_update", label: "Bulk Annex 9 Update", icon: Sliders },
             { id: "attendance", label: "Attendance Intelligence", icon: Clock },
             { id: "assessments", label: "Assessments Module", icon: Award },
             { id: "documents", label: "Documents Vault", icon: Database },
@@ -1377,6 +1381,10 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
             </div>
           )}
         </div>
+      )}
+
+      {activeSubTab === "bulk_annex9_update" && (
+        <BulkAnnex9UpdateView session={session} showToast={showToast} />
       )}
 
       {/* 2. TRAINEE REGISTER WORKSPACE TAB */}
@@ -3903,6 +3911,78 @@ export function TraineeOperationsView({ session, showToast }: { session: any, sh
                     <option value="WITHDRAWN">WITHDRAWN</option>
                     <option value="COMPLETED_TRAINING">COMPLETED_TRAINING</option>
                   </select>
+                </div>
+
+                {/* ANNEX 9 / COMPLIANCE DETAILS */}
+                <div className="sm:col-span-2 border-t border-slate-100 pt-4 mt-2">
+                  <h4 className="text-xs font-black uppercase text-indigo-500 tracking-wider font-mono mb-3">
+                    Annex 9 / Official Compliance Details
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div>
+                      <label className="text-[10pt] font-bold text-slate-650 block mb-1">Sex</label>
+                      <select
+                        value={editFormData.gender || "Male"}
+                        onChange={(e) => setEditFormData({ ...editFormData, gender: e.target.value })}
+                        className="p-2 border border-slate-200 bg-slate-50 focus:bg-white rounded-xl focus:border-indigo-600 outline-hidden w-full font-sans font-bold cursor-pointer"
+                        required
+                      >
+                        <option value="Male">Male</option>
+                        <option value="Female">Female</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10pt] font-bold text-slate-650 block mb-1">PWD Status (Physical Challenge)</label>
+                      <select
+                        value={editFormData.physical_challenge || "No"}
+                        onChange={(e) => setEditFormData({ ...editFormData, physical_challenge: e.target.value })}
+                        className="p-2 border border-slate-200 bg-slate-50 focus:bg-white rounded-xl focus:border-indigo-600 outline-hidden w-full font-sans font-bold cursor-pointer"
+                        required
+                      >
+                        <option value="No">No</option>
+                        <option value="Yes">Yes</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10pt] font-bold text-slate-650 block mb-1">Education Qualification</label>
+                      <select
+                        value={editFormData.education_level || "Secondary"}
+                        onChange={(e) => setEditFormData({ ...editFormData, education_level: e.target.value })}
+                        className="p-2 border border-slate-200 bg-slate-50 focus:bg-white rounded-xl focus:border-indigo-600 outline-hidden w-full font-sans font-bold cursor-pointer"
+                        required
+                      >
+                        <option value="Primary">Primary</option>
+                        <option value="Secondary">Secondary</option>
+                        <option value="Tertiary">Tertiary</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10pt] font-bold text-slate-650 block mb-1">Employment Status</label>
+                      <select
+                        value={editFormData.employment_status || "Unemployed"}
+                        onChange={(e) => setEditFormData({ ...editFormData, employment_status: e.target.value })}
+                        className="p-2 border border-slate-200 bg-slate-50 focus:bg-white rounded-xl focus:border-indigo-600 outline-hidden w-full font-sans font-bold cursor-pointer"
+                        required
+                      >
+                        <option value="Employed">Employed</option>
+                        <option value="Self-employed">Self-employed</option>
+                        <option value="Unemployed">Unemployed</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10pt] font-bold text-slate-650 block mb-1">Official Training Status</label>
+                      <select
+                        value={editFormData.training_status || "On-going"}
+                        onChange={(e) => setEditFormData({ ...editFormData, training_status: e.target.value })}
+                        className="p-2 border border-slate-200 bg-slate-50 focus:bg-white rounded-xl focus:border-indigo-600 outline-hidden w-full font-sans font-bold cursor-pointer"
+                        required
+                      >
+                        <option value="On-going">On-going</option>
+                        <option value="Completed">Completed</option>
+                        <option value="Droped out">Droped out</option>
+                      </select>
+                    </div>
+                  </div>
                 </div>
               </div>
 

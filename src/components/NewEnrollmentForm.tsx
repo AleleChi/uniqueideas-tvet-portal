@@ -20,6 +20,29 @@ interface NewEnrollmentFormProps {
   beneficiaries?: Beneficiary[];
 }
 
+const AUTHORITATIVE_BANKS = [
+  { name: "Access Bank", sortCode: "044150149" },
+  { name: "Zenith Bank", sortCode: "057150143" },
+  { name: "Guaranty Trust Bank", sortCode: "058150125" },
+  { name: "United Bank for Africa", sortCode: "033150111" },
+  { name: "First Bank of Nigeria", sortCode: "011150148" },
+  { name: "Fidelity Bank", sortCode: "070150003" },
+  { name: "Union Bank of Nigeria", sortCode: "032150007" },
+  { name: "Stanbic IBTC Bank", sortCode: "039150002" },
+  { name: "Sterling Bank", sortCode: "232150008" },
+  { name: "Wema Bank", sortCode: "035150103" },
+  { name: "Ecobank Nigeria", sortCode: "050150010" },
+  { name: "Keystone Bank", sortCode: "082150017" },
+  { name: "Polaris Bank", sortCode: "076150001" },
+  { name: "First City Monument Bank", sortCode: "214150018" },
+  { name: "Providus Bank", sortCode: "101150001" },
+  { name: "Jaiz Bank", sortCode: "301150001" },
+  { name: "Taj Bank", sortCode: "302150001" },
+  { name: "Globus Bank", sortCode: "103150001" },
+  { name: "SunTrust Bank", sortCode: "100150001" },
+  { name: "Signature Bank", sortCode: "107150001" }
+];
+
 export function NewEnrollmentForm({
   customFields = [],
   onSave,
@@ -58,6 +81,8 @@ export function NewEnrollmentForm({
   const [bankAccountNumber, setBankAccountNumber] = useState(beneficiary?.bankAccountNumber || "");
   const [educationQualification, setEducationQualification] = useState(beneficiary?.educationQualification || "");
   const [dateOfBirth, setDateOfBirth] = useState(beneficiary?.dateOfBirth || "");
+  const [bankSearch, setBankSearch] = useState(beneficiary?.bankName || "");
+  const [showBankDropdown, setShowBankDropdown] = useState(false);
   
   // Dynamic fields state
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>(() => {
@@ -968,16 +993,43 @@ export function NewEnrollmentForm({
               </div>
 
               {/* Bank Name */}
-              <div className="space-y-1.5 text-left font-sans">
-                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Bank Name (Full Name)</label>
+              <div className="space-y-1.5 text-left font-sans relative">
+                <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Bank Name (Searchable)</label>
                 <input 
                   type="text" 
-                  placeholder="e.g. First Bank of Nigeria"
-                  value={bankName}
-                  onChange={(e) => handleFieldChange("bankName", e.target.value, setBankName)}
-                  onBlur={() => handleFieldBlur("bankName", bankName)}
+                  placeholder="Type to search e.g. Access Bank"
+                  value={bankSearch}
+                  onChange={(e) => {
+                    setBankSearch(e.target.value);
+                    handleFieldChange("bankName", e.target.value, setBankName);
+                    setShowBankDropdown(true);
+                  }}
+                  onFocus={() => setShowBankDropdown(true)}
+                  onBlur={() => {
+                    // Slight delay to allow clicking list item
+                    setTimeout(() => setShowBankDropdown(false), 200);
+                    handleFieldBlur("bankName", bankSearch);
+                  }}
                   className={inputClass("bankName")}
                 />
+                {showBankDropdown && (
+                  <div className="absolute left-0 right-0 mt-1 max-h-40 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg z-50 divide-y divide-slate-100 text-xs">
+                    {AUTHORITATIVE_BANKS.filter(b => b.name.toLowerCase().includes(bankSearch.toLowerCase())).map(b => (
+                      <div
+                        key={b.name}
+                        onMouseDown={() => {
+                          setBankSearch(b.name);
+                          handleFieldChange("bankName", b.name, setBankName);
+                          handleFieldChange("bankSortCode", b.sortCode, setBankSortCode);
+                          setShowBankDropdown(false);
+                        }}
+                        className="p-2 hover:bg-indigo-50 cursor-pointer font-medium text-slate-700 transition"
+                      >
+                        {b.name} <span className="text-[10px] font-mono text-slate-400 float-right">Code: {b.sortCode}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {errors.bankName && touched.bankName && (
                   <p className="text-[10px] text-rose-500 font-medium flex items-center gap-1 mt-1">
                     <AlertCircle className="w-3 h-3 flex-shrink-0" />
@@ -991,14 +1043,11 @@ export function NewEnrollmentForm({
                 <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Bank Sort Code</label>
                 <input 
                   type="text" 
-                  placeholder="e.g. 011151003"
+                  readOnly
+                  placeholder="Auto-filled sort code"
                   value={bankSortCode}
-                  onChange={(e) => {
-                    const val = e.target.value.replace(/\D/g, "");
-                    handleFieldChange("bankSortCode", val, setBankSortCode);
-                  }}
                   onBlur={() => handleFieldBlur("bankSortCode", bankSortCode)}
-                  className={inputClass("bankSortCode")}
+                  className="w-full px-3 py-2 text-slate-500 bg-slate-100 border border-slate-200 rounded-lg outline-none font-mono text-xs font-medium"
                 />
                 {errors.bankSortCode && touched.bankSortCode && (
                   <p className="text-[10px] text-rose-500 font-medium flex items-center gap-1 mt-1">

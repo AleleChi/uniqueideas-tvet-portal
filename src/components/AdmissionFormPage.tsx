@@ -29,6 +29,29 @@ interface AdmissionFormPageProps {
   onRefresh: () => Promise<void>;
 }
 
+const AUTHORITATIVE_BANKS = [
+  { name: "Access Bank", sortCode: "044150149" },
+  { name: "Zenith Bank", sortCode: "057150143" },
+  { name: "Guaranty Trust Bank", sortCode: "058150125" },
+  { name: "United Bank for Africa", sortCode: "033150111" },
+  { name: "First Bank of Nigeria", sortCode: "011150148" },
+  { name: "Fidelity Bank", sortCode: "070150003" },
+  { name: "Union Bank of Nigeria", sortCode: "032150007" },
+  { name: "Stanbic IBTC Bank", sortCode: "039150002" },
+  { name: "Sterling Bank", sortCode: "232150008" },
+  { name: "Wema Bank", sortCode: "035150103" },
+  { name: "Ecobank Nigeria", sortCode: "050150010" },
+  { name: "Keystone Bank", sortCode: "082150017" },
+  { name: "Polaris Bank", sortCode: "076150001" },
+  { name: "First City Monument Bank", sortCode: "214150018" },
+  { name: "Providus Bank", sortCode: "101150001" },
+  { name: "Jaiz Bank", sortCode: "301150001" },
+  { name: "Taj Bank", sortCode: "302150001" },
+  { name: "Globus Bank", sortCode: "103150001" },
+  { name: "SunTrust Bank", sortCode: "100150001" },
+  { name: "Signature Bank", sortCode: "107150001" }
+];
+
 export function AdmissionFormPage({ candidate, onRefresh }: AdmissionFormPageProps) {
   const { showToast } = useNotification();
   const [isSavingDraft, setIsSavingDraft] = useState(false);
@@ -45,6 +68,8 @@ export function AdmissionFormPage({ candidate, onRefresh }: AdmissionFormPagePro
   const [bankSortCode, setBankSortCode] = useState("");
   const [bankAccountNumber, setBankAccountNumber] = useState("");
   const [bvn, setBvn] = useState("");
+  const [bankSearch, setBankSearch] = useState("");
+  const [showBankDropdown, setShowBankDropdown] = useState(false);
 
   // Lock State Confirmation Checkboxes
   const [declarationChecked, setDeclarationChecked] = useState(false);
@@ -61,6 +86,7 @@ export function AdmissionFormPage({ candidate, onRefresh }: AdmissionFormPagePro
       setBankSortCode(candidate.bankSortCode || "");
       setBankAccountNumber(candidate.bankAccountNumber || "");
       setBvn(candidate.bvn || "");
+      setBankSearch(candidate.bankName || "");
 
       // Send a VIEWED ping if status is GENERATED and form was not previously viewed
       if (candidate.admissionFormStatus === "GENERATED" && candidate.admissionFormPdfUrl) {
@@ -532,18 +558,45 @@ export function AdmissionFormPage({ candidate, onRefresh }: AdmissionFormPagePro
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
-                  <div>
+                  <div className="relative">
                     <label className="text-[10px] font-mono uppercase font-black text-slate-500 block">
                       Bank Name <span className="text-rose-500">*</span>
                     </label>
                     <input
                       type="text"
-                      value={bankName}
+                      value={bankSearch}
                       disabled={isFormLocked}
-                      onChange={(e) => setBankName(e.target.value)}
+                      onChange={(e) => {
+                        setBankSearch(e.target.value);
+                        setBankName(e.target.value);
+                        setShowBankDropdown(true);
+                      }}
+                      onFocus={() => !isFormLocked && setShowBankDropdown(true)}
+                      onBlur={() => {
+                        // Delay to permit selecting options
+                        setTimeout(() => setShowBankDropdown(false), 200);
+                      }}
                       placeholder="e.g. Access Bank"
                       className="mt-1 block w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg shadow-inner focus:ring-1 focus:ring-indigo-600 focus:bg-white focus:outline-none disabled:bg-slate-100 disabled:text-slate-500"
                     />
+                    {showBankDropdown && (
+                      <div className="absolute left-0 right-0 mt-1 max-h-40 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg z-50 divide-y divide-slate-100 text-xs">
+                        {AUTHORITATIVE_BANKS.filter(b => b.name.toLowerCase().includes(bankSearch.toLowerCase())).map(b => (
+                          <div
+                            key={b.name}
+                            onMouseDown={() => {
+                              setBankSearch(b.name);
+                              setBankName(b.name);
+                              setBankSortCode(b.sortCode);
+                              setShowBankDropdown(false);
+                            }}
+                            className="p-2 hover:bg-indigo-50 cursor-pointer font-medium text-slate-700 transition"
+                          >
+                            {b.name} <span className="text-[10px] font-mono text-slate-400 float-right">Code: {b.sortCode}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   <div>
@@ -552,11 +605,11 @@ export function AdmissionFormPage({ candidate, onRefresh }: AdmissionFormPagePro
                     </label>
                     <input
                       type="text"
+                      readOnly
                       value={bankSortCode}
                       disabled={isFormLocked}
-                      onChange={(e) => setBankSortCode(e.target.value)}
-                      placeholder="e.g. 058150"
-                      className="mt-1 block w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg shadow-inner focus:ring-1 focus:ring-indigo-600 focus:bg-white focus:outline-none disabled:bg-slate-100 disabled:text-slate-500 font-mono"
+                      placeholder="Auto-filled sort code"
+                      className="mt-1 block w-full px-3 py-2 text-xs bg-slate-150 border border-slate-200 rounded-lg shadow-inner focus:outline-none disabled:bg-slate-100 disabled:text-slate-500 font-mono text-slate-600"
                     />
                   </div>
                 </div>

@@ -742,6 +742,13 @@ const SCHEMA_DDL = `
   CREATE INDEX IF NOT EXISTS idx_beneficiaries_tsp ON beneficiaries(tsp) WHERE deleted_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_beneficiaries_skill_sector ON beneficiaries(skill_sector) WHERE deleted_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_admissions_status ON admissions(admission_status) WHERE deleted_at IS NULL;
+
+  -- Performance indices for Annex 9 and search
+  CREATE EXTENSION IF NOT EXISTS pg_trgm;
+  CREATE INDEX IF NOT EXISTS idx_beneficiaries_first_name_trgm ON beneficiaries USING gin (first_name gin_trgm_ops) WHERE deleted_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_beneficiaries_last_name_trgm ON beneficiaries USING gin (last_name gin_trgm_ops) WHERE deleted_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_beneficiaries_phone_number ON beneficiaries(phone_number) WHERE deleted_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_trainee_profiles_tvet_id ON trainee_profiles(tvet_id);
   CREATE INDEX IF NOT EXISTS idx_admissions_acceptance_status ON admissions(acceptance_letter_status) WHERE deleted_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_beneficiaries_state_status ON beneficiaries(state, status) WHERE deleted_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_beneficiaries_tsp_status ON beneficiaries(tsp, status) WHERE deleted_at IS NULL;
@@ -1097,6 +1104,45 @@ const SCHEMA_DDL = `
 
   CREATE INDEX IF NOT EXISTS idx_eoi_status ON eoi_applications(application_status);
   CREATE INDEX IF NOT EXISTS idx_skills_sector ON skills(sector_id);
+
+  -- Create reporting_rosters table
+  CREATE TABLE IF NOT EXISTS reporting_rosters (
+    id VARCHAR(100) PRIMARY KEY,
+    tsp_id VARCHAR(100) NOT NULL,
+    cohort_id VARCHAR(100),
+    name VARCHAR(255) NOT NULL,
+    reporting_year VARCHAR(50),
+    allocation_limit INTEGER DEFAULT 100,
+    status VARCHAR(50) DEFAULT 'DRAFT',
+    is_active BOOLEAN DEFAULT TRUE,
+    locked_at TIMESTAMP WITH TIME ZONE,
+    locked_by VARCHAR(255),
+    created_by VARCHAR(255),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- Create reporting_roster_members table
+  CREATE TABLE IF NOT EXISTS reporting_roster_members (
+    id VARCHAR(100) PRIMARY KEY,
+    roster_id VARCHAR(100) REFERENCES reporting_rosters(id) ON DELETE CASCADE,
+    beneficiary_id VARCHAR(100) NOT NULL,
+    sort_order INTEGER DEFAULT 0,
+    selected_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    selected_by VARCHAR(255),
+    effective_from TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    effective_to TIMESTAMP WITH TIME ZONE,
+    replacement_for_member_id VARCHAR(100),
+    removal_reason TEXT,
+    removed_at TIMESTAMP WITH TIME ZONE,
+    removed_by VARCHAR(255),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_roster_members_active_b ON reporting_roster_members(roster_id, beneficiary_id) WHERE removed_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_reporting_rosters_tsp ON reporting_rosters(tsp_id);
+  CREATE INDEX IF NOT EXISTS idx_reporting_rosters_active ON reporting_rosters(is_active);
 `;
 
 /**
@@ -1790,6 +1836,7 @@ export async function initDb(): Promise<void> {
       ALTER TABLE tsps ADD COLUMN IF NOT EXISTS training_end_date VARCHAR(100);
       ALTER TABLE tsps ADD COLUMN IF NOT EXISTS attendance_threshold INT DEFAULT 80;
       ALTER TABLE tsps ADD COLUMN IF NOT EXISTS completion_threshold INT DEFAULT 75;
+      ALTER TABLE tsps ADD COLUMN IF NOT EXISTS training_days_per_week INT DEFAULT 3;
 
       -- Add requested performance indexes from Phase 8
       CREATE INDEX IF NOT EXISTS idx_tsps_state ON tsps(state);
@@ -2246,6 +2293,40 @@ export async function initDb(): Promise<void> {
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
       CREATE INDEX IF NOT EXISTS idx_program_costs_category ON program_costs(cost_category);
+
+      -- 14. Create training_schedules and exceptions tables
+      CREATE TABLE IF NOT EXISTS training_schedules (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tsp_id UUID NOT NULL REFERENCES tsps(id) ON DELETE CASCADE,
+        cohort_id VARCHAR(100),
+        batch_id VARCHAR(100),
+        start_date DATE NOT NULL,
+        end_date DATE NOT NULL,
+        selected_weekdays INT[] DEFAULT '{1,3,5}', -- 1=Monday, 3=Wednesday, 5=Friday
+        days_per_week INT DEFAULT 3,
+        active BOOLEAN DEFAULT TRUE,
+        timezone VARCHAR(100) DEFAULT 'Africa/Lagos',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_training_schedules_tsp ON training_schedules(tsp_id);
+
+      CREATE TABLE IF NOT EXISTS training_schedule_exceptions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        schedule_id UUID REFERENCES training_schedules(id) ON DELETE CASCADE,
+        tsp_id UUID NOT NULL REFERENCES tsps(id) ON DELETE CASCADE,
+        exception_date DATE NOT NULL,
+        exception_type VARCHAR(50) NOT NULL, -- 'HOLIDAY', 'CANCELLED', 'MAKE_UP', 'REPLACEMENT'
+        replacement_date DATE,
+        reason TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_training_sched_exceptions_date ON training_schedule_exceptions(exception_date);
+
+      -- Add extra performance indexes
+      CREATE INDEX IF NOT EXISTS idx_beneficiaries_tsp_id_active ON beneficiaries(tsp_id, status) WHERE deleted_at IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_trainee_attendance_compound ON trainee_attendance(beneficiary_id, attendance_date);
     `);
 
     console.log("[DB] PostgreSQL schema verified and migration performed.");
@@ -2360,7 +2441,7 @@ export async function initDb(): Promise<void> {
             COALESCE(guardian_name, ''),
             COALESCE(guardian_phone, ''),
             COALESCE(education_qualification, ''),
-            'NOT_EMPLOYED',
+            'Unemployed',
             'ACTIVE_TRAINING',
             COALESCE(skill_sector, ''),
             COALESCE(skill_sector, ''),
@@ -2749,6 +2830,15 @@ export async function initDb(): Promise<void> {
       startupWarnings.push(`RLS policies error: ${rlsErr.message || rlsErr}`);
     }
 
+    // Initialize Bank Directory tables and seed data
+    try {
+      const { initBankDirectoryTable } = await import("./bankReconciliation.service");
+      await initBankDirectoryTable(pool);
+    } catch (bankErr: any) {
+      console.error("[BOOT] Failed to initialize bank directory tables:", bankErr.message || bankErr);
+      startupWarnings.push(`Bank directory error: ${bankErr.message || bankErr}`);
+    }
+
     // Automatically recover and check template URLs on server startup/bootstrap
     try {
       await DbRepo.recoverTemplateUrls();
@@ -2789,6 +2879,8 @@ export function loadJsonState(): {
   sectors?: any[];
   skills?: any[];
   eoiApplications?: any[];
+  reporting_rosters?: any[];
+  reporting_roster_members?: any[];
 } {
   try {
     if (fs.existsSync(DB_FILE)) {
@@ -2915,8 +3007,285 @@ export function loadJsonState(): {
       if (hasLegacySectors || hasLegacySkills) {
         fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), "utf-8");
       }
+      if (!data.beneficiaries || data.beneficiaries.length === 0) {
+        data.beneficiaries = [
+          {
+            id: "beneficiary_imo_1",
+            firstName: "Chinedu",
+            lastName: "Okeke",
+            otherName: "Emmanuel",
+            gender: "M",
+            dateOfBirth: "1998-04-12",
+            physicalChallenge: "NO",
+            phoneNumber: "+2348031234567",
+            nin: "12345678901",
+            bvn: "22222222222",
+            bankAccountHolder: "Chinedu Emmanuel Okeke",
+            bankAccountNumber: "0123456789",
+            bankName: "Access Bank",
+            bankSortCode: "044150149",
+            email: "chinedu.okeke@tvet.local",
+            state: "Imo",
+            city: "Owerri Municipal",
+            guardianName: "Amadi Okeke",
+            guardianAddress: "12 Wetheral Road, Owerri, Imo State",
+            guardianPhone: "+2348039876543",
+            educationQualification: "B.Sc Computer Science",
+            tsp_id: "00000000-0000-0000-0000-000000000001",
+            tsp: "Unique Nigeria Technology Ltd",
+            status: "TRAINING",
+            skillSector: "Computer Hardware Repairs",
+            batch: "Batch 2026-C",
+            still_on_portal: true,
+            still_attending: true,
+            remarks: "Exemplary progress.",
+            attendanceLogs: [
+              { date: "2026-06-01", status: "PRESENT" },
+              { date: "2026-06-02", status: "PRESENT" },
+              { date: "2026-06-03", status: "PRESENT" },
+              { date: "2026-06-04", status: "PRESENT" },
+              { date: "2026-06-05", status: "PRESENT" },
+              { date: "2026-06-08", status: "PRESENT" },
+              { date: "2026-06-09", status: "PRESENT" },
+              { date: "2026-06-10", status: "PRESENT" },
+              { date: "2026-06-11", status: "PRESENT" },
+              { date: "2026-06-12", status: "PRESENT" },
+              { date: "2026-06-15", status: "PRESENT" },
+              { date: "2026-06-16", status: "PRESENT" },
+              { date: "2026-06-17", status: "LATE" },
+              { date: "2026-06-18", status: "PRESENT" },
+              { date: "2026-06-19", status: "PRESENT" },
+              { date: "2026-06-22", status: "PRESENT" },
+              { date: "2026-06-23", status: "PRESENT" },
+              { date: "2026-06-24", status: "PRESENT" },
+              { date: "2026-06-25", status: "PRESENT" },
+              { date: "2026-06-26", status: "PRESENT" }
+            ]
+          },
+          {
+            id: "beneficiary_imo_2",
+            firstName: "Chioma",
+            lastName: "Nwachukwu",
+            otherName: "Grace",
+            gender: "F",
+            dateOfBirth: "2000-09-24",
+            physicalChallenge: "NO",
+            phoneNumber: "+2348052345678",
+            nin: "23456789012",
+            bvn: "33333333333",
+            bankAccountHolder: "Chioma Grace Nwachukwu",
+            bankAccountNumber: "0234567890",
+            bankName: "Zenith Bank",
+            bankSortCode: "057150143",
+            email: "chioma.n@tvet.local",
+            state: "Imo",
+            city: "Orlu",
+            guardianName: "Obinna Nwachukwu",
+            guardianAddress: "45 Orlu Road, Owerri, Imo State",
+            guardianPhone: "+2348058765432",
+            educationQualification: "ND Computer Engineering",
+            tsp_id: "00000000-0000-0000-0000-000000000001",
+            tsp: "Unique Nigeria Technology Ltd",
+            status: "TRAINING",
+            skillSector: "Computer Hardware Repairs",
+            batch: "Batch 2026-C",
+            still_on_portal: true,
+            still_attending: true,
+            remarks: "Consistent performance.",
+            attendanceLogs: [
+              { date: "2026-06-01", status: "PRESENT" },
+              { date: "2026-06-02", status: "PRESENT" },
+              { date: "2026-06-03", status: "PRESENT" },
+              { date: "2026-06-04", status: "PRESENT" },
+              { date: "2026-06-05", status: "PRESENT" },
+              { date: "2026-06-08", status: "PRESENT" },
+              { date: "2026-06-09", status: "ABSENT" },
+              { date: "2026-06-10", status: "PRESENT" },
+              { date: "2026-06-11", status: "PRESENT" },
+              { date: "2026-06-12", status: "PRESENT" },
+              { date: "2026-06-15", status: "PRESENT" },
+              { date: "2026-06-16", status: "PRESENT" },
+              { date: "2026-06-17", status: "PRESENT" },
+              { date: "2026-06-18", status: "PRESENT" },
+              { date: "2026-06-19", status: "PRESENT" },
+              { date: "2026-06-22", status: "PRESENT" },
+              { date: "2026-06-23", status: "PRESENT" },
+              { date: "2026-06-24", status: "PRESENT" },
+              { date: "2026-06-25", status: "PRESENT" },
+              { date: "2026-06-26", status: "PRESENT" }
+            ]
+          },
+          {
+            id: "beneficiary_imo_3",
+            firstName: "Obinna",
+            lastName: "Eze",
+            otherName: "Francis",
+            gender: "M",
+            dateOfBirth: "1997-11-05",
+            physicalChallenge: "YES",
+            phoneNumber: "+2348063456789",
+            nin: "34567890123",
+            bvn: "44444444444",
+            bankAccountHolder: "Obinna Francis Eze",
+            bankAccountNumber: "0345678901",
+            bankName: "Guaranty Trust Bank",
+            bankSortCode: "058150125",
+            email: "obinna.eze@tvet.local",
+            state: "Imo",
+            city: "Okigwe",
+            guardianName: "Helen Eze",
+            guardianAddress: "8 Okigwe Road, Owerri, Imo State",
+            guardianPhone: "+2348068765432",
+            educationQualification: "Senior Secondary School Certificate",
+            tsp_id: "00000000-0000-0000-0000-000000000001",
+            tsp: "Unique Nigeria Technology Ltd",
+            status: "TRAINING",
+            skillSector: "Computer Hardware Repairs",
+            batch: "Batch 2026-C",
+            still_on_portal: true,
+            still_attending: true,
+            remarks: "Very determined trainee.",
+            attendanceLogs: [
+              { date: "2026-06-01", status: "PRESENT" },
+              { date: "2026-06-02", status: "PRESENT" },
+              { date: "2026-06-03", status: "PRESENT" },
+              { date: "2026-06-04", status: "PRESENT" },
+              { date: "2026-06-05", status: "PRESENT" },
+              { date: "2026-06-08", status: "PRESENT" },
+              { date: "2026-06-09", status: "PRESENT" },
+              { date: "2026-06-10", status: "PRESENT" },
+              { date: "2026-06-11", status: "PRESENT" },
+              { date: "2026-06-12", status: "PRESENT" },
+              { date: "2026-06-15", status: "PRESENT" },
+              { date: "2026-06-16", status: "PRESENT" },
+              { date: "2026-06-17", status: "PRESENT" },
+              { date: "2026-06-18", status: "PRESENT" },
+              { date: "2026-06-19", status: "PRESENT" },
+              { date: "2026-06-22", status: "PRESENT" },
+              { date: "2026-06-23", status: "PRESENT" },
+              { date: "2026-06-24", status: "PRESENT" },
+              { date: "2026-06-25", status: "PRESENT" },
+              { date: "2026-06-26", status: "PRESENT" }
+            ]
+          },
+          {
+            id: "beneficiary_imo_4",
+            firstName: "Uchechi",
+            lastName: "Igwe",
+            otherName: "Sandra",
+            gender: "F",
+            dateOfBirth: "2001-02-18",
+            physicalChallenge: "NO",
+            phoneNumber: "+2348074567890",
+            nin: "45678901234",
+            bvn: "55555555555",
+            bankAccountHolder: "Uchechi Sandra Igwe",
+            bankAccountNumber: "0456789012",
+            bankName: "United Bank for Africa",
+            bankSortCode: "033150111",
+            email: "uchechi.igwe@tvet.local",
+            state: "Imo",
+            city: "Mbaitoli",
+            guardianName: "Dennis Igwe",
+            guardianAddress: "14 Mbaitoli Ave, Owerri, Imo State",
+            guardianPhone: "+2348078765432",
+            educationQualification: "ND Computer Science",
+            tsp_id: "00000000-0000-0000-0000-000000000001",
+            tsp: "Unique Nigeria Technology Ltd",
+            status: "TRAINING",
+            skillSector: "Computer Hardware Repairs",
+            batch: "Batch 2026-C",
+            still_on_portal: true,
+            still_attending: true,
+            remarks: "Below threshold warning issued.",
+            attendanceLogs: [
+              { date: "2026-06-01", status: "PRESENT" },
+              { date: "2026-06-02", status: "PRESENT" },
+              { date: "2026-06-03", status: "PRESENT" },
+              { date: "2026-06-04", status: "PRESENT" },
+              { date: "2026-06-05", status: "PRESENT" },
+              { date: "2026-06-08", status: "ABSENT" },
+              { date: "2026-06-09", status: "ABSENT" },
+              { date: "2026-06-10", status: "ABSENT" },
+              { date: "2026-06-11", status: "ABSENT" },
+              { date: "2026-06-12", status: "ABSENT" },
+              { date: "2026-06-15", status: "ABSENT" },
+              { date: "2026-06-16", status: "ABSENT" },
+              { date: "2026-06-17", status: "ABSENT" },
+              { date: "2026-06-18", status: "PRESENT" },
+              { date: "2026-06-19", status: "PRESENT" },
+              { date: "2026-06-22", status: "PRESENT" },
+              { date: "2026-06-23", status: "PRESENT" },
+              { date: "2026-06-24", status: "PRESENT" },
+              { date: "2026-06-25", status: "PRESENT" },
+              { date: "2026-06-26", status: "PRESENT" }
+            ]
+          },
+          {
+            id: "beneficiary_kano_1",
+            firstName: "Sani",
+            lastName: "Ibrahim",
+            otherName: "Abubakar",
+            gender: "M",
+            dateOfBirth: "1999-07-15",
+            physicalChallenge: "NO",
+            phoneNumber: "+2348095678901",
+            nin: "56789012345",
+            bvn: "66666666666",
+            bankAccountHolder: "Sani Abubakar Ibrahim",
+            bankAccountNumber: "0567890123",
+            bankName: "First Bank of Nigeria",
+            bankSortCode: "011150148",
+            email: "sani.ibrahim@tvet.local",
+            state: "Kano",
+            city: "Fagge",
+            guardianName: "Ibrahim Sani",
+            guardianAddress: "92 Fagge Road, Kano, Kano State",
+            guardianPhone: "+2348098765432",
+            educationQualification: "NID Software Engineering",
+            tsp_id: "00000000-0000-0000-0000-000000000001",
+            tsp: "Unique Nigeria Technology Ltd",
+            status: "TRAINING",
+            skillSector: "Computer Hardware Repairs",
+            batch: "Batch 2026-C",
+            still_on_portal: true,
+            still_attending: true,
+            remarks: "Very diligent in lab work.",
+            attendanceLogs: [
+              { date: "2026-06-01", status: "PRESENT" },
+              { date: "2026-06-02", status: "PRESENT" },
+              { date: "2026-06-03", status: "PRESENT" },
+              { date: "2026-06-04", status: "PRESENT" },
+              { date: "2026-06-05", status: "PRESENT" },
+              { date: "2026-06-08", status: "PRESENT" },
+              { date: "2026-06-09", status: "PRESENT" },
+              { date: "2026-06-10", status: "PRESENT" },
+              { date: "2026-06-11", status: "PRESENT" },
+              { date: "2026-06-12", status: "PRESENT" },
+              { date: "2026-06-15", status: "PRESENT" },
+              { date: "2026-06-16", status: "PRESENT" },
+              { date: "2026-06-17", status: "PRESENT" },
+              { date: "2026-06-18", status: "PRESENT" },
+              { date: "2026-06-19", status: "PRESENT" },
+              { date: "2026-06-22", status: "PRESENT" },
+              { date: "2026-06-23", status: "PRESENT" },
+              { date: "2026-06-24", status: "PRESENT" },
+              { date: "2026-06-25", status: "PRESENT" },
+              { date: "2026-06-26", status: "PRESENT" }
+            ]
+          }
+        ];
+        fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), "utf-8");
+        console.log("[SEED] Automatically seeded 5 mock beneficiaries with detailed 20-day attendance logs for June 2026.");
+      }
       if (!data.eoiApplications) {
         data.eoiApplications = [];
+      }
+      if (!data.reporting_rosters) {
+        data.reporting_rosters = [];
+      }
+      if (!data.reporting_roster_members) {
+        data.reporting_roster_members = [];
       }
       return data;
     }
@@ -2936,7 +3305,9 @@ export function loadJsonState(): {
     programCosts: [],
     sectors: [],
     skills: [],
-    eoiApplications: []
+    eoiApplications: [],
+    reporting_rosters: [],
+    reporting_roster_members: []
   };
 }
 
@@ -2957,6 +3328,8 @@ export function saveJsonState(state: {
   sectors?: any[];
   skills?: any[];
   eoiApplications?: any[];
+  reporting_rosters?: any[];
+  reporting_roster_members?: any[];
 }) {
   try {
     if (!state.institutionLetterheads) {
@@ -2988,6 +3361,12 @@ export function saveJsonState(state: {
     }
     if (!state.eoiApplications) {
       state.eoiApplications = [];
+    }
+    if (!state.reporting_rosters) {
+      state.reporting_rosters = [];
+    }
+    if (!state.reporting_roster_members) {
+      state.reporting_roster_members = [];
     }
     fs.writeFileSync(DB_FILE, JSON.stringify(state, null, 2), "utf-8");
   } catch (e) {
@@ -3207,7 +3586,8 @@ export async function seedLocationInfrastructure(pool: pg.Pool): Promise<void> {
               lga = 'Owerri Municipal',
               tsp_code = 'TVET-TSP-IMO-0001',
               account_status = 'ACTIVE',
-              profile_completed = true
+              profile_completed = true,
+              training_days_per_week = COALESCE(training_days_per_week, 3)
             WHERE id = '00000000-0000-0000-0000-000000000001'
           `, [stateImoId]);
           
@@ -3595,6 +3975,422 @@ export async function migrateJsonToPostgres(): Promise<void> {
 // ==========================================
 
 export class DbRepo {
+  // ==========================================
+  // REPORTING ROSTERS OPERATIONS
+  // ==========================================
+  
+  static async getRosters(options?: { tsp_id?: string; active_only?: boolean }): Promise<any[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      let list = state.reporting_rosters || [];
+      if (options?.tsp_id) {
+        list = list.filter(r => r.tsp_id === options.tsp_id);
+      }
+      if (options?.active_only) {
+        list = list.filter(r => r.is_active !== false);
+      }
+      return list;
+    }
+
+    try {
+      let query = "SELECT * FROM reporting_rosters WHERE 1=1";
+      const params: any[] = [];
+      if (options?.tsp_id) {
+        params.push(options.tsp_id);
+        query += ` AND tsp_id = $${params.length}`;
+      }
+      if (options?.active_only) {
+        query += " AND is_active = TRUE";
+      }
+      query += " ORDER BY created_at DESC";
+      const res = await executeQuery(query, params);
+      return res.rows;
+    } catch (err) {
+      console.error("[DbRepo] Error in getRosters:", err);
+      return [];
+    }
+  }
+
+  static async getRosterById(id: string): Promise<any | null> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      const list = state.reporting_rosters || [];
+      return list.find(r => r.id === id) || null;
+    }
+
+    try {
+      const res = await executeQuery("SELECT * FROM reporting_rosters WHERE id = $1", [id]);
+      return res.rows[0] || null;
+    } catch (err) {
+      console.error("[DbRepo] Error in getRosterById:", err);
+      return null;
+    }
+  }
+
+  static async createRoster(roster: any): Promise<any> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      if (!state.reporting_rosters) state.reporting_rosters = [];
+      state.reporting_rosters.push(roster);
+      saveJsonState(state);
+      return roster;
+    }
+
+    try {
+      const query = `
+        INSERT INTO reporting_rosters (id, tsp_id, cohort_id, name, reporting_year, allocation_limit, status, is_active, created_by)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING *
+      `;
+      const res = await executeQuery(query, [
+        roster.id,
+        roster.tsp_id,
+        roster.cohort_id || null,
+        roster.name,
+        roster.reporting_year || null,
+        roster.allocation_limit || 100,
+        roster.status || "DRAFT",
+        roster.is_active !== false,
+        roster.created_by || null
+      ]);
+      return res.rows[0];
+    } catch (err) {
+      console.error("[DbRepo] Error in createRoster:", err);
+      throw err;
+    }
+  }
+
+  static async updateRoster(id: string, updates: any): Promise<any> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      const list = state.reporting_rosters || [];
+      const idx = list.findIndex(r => r.id === id);
+      if (idx !== -1) {
+        list[idx] = { ...list[idx], ...updates, updated_at: new Date().toISOString() };
+        saveJsonState(state);
+        return list[idx];
+      }
+      return null;
+    }
+
+    try {
+      const keys = Object.keys(updates);
+      const values: any[] = [];
+      let setClause = "";
+      keys.forEach((k, index) => {
+        setClause += `${k.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`)} = $${index + 2}, `;
+        values.push(updates[k]);
+      });
+      setClause += "updated_at = CURRENT_TIMESTAMP";
+      const query = `UPDATE reporting_rosters SET ${setClause.slice(0, -2)} WHERE id = $1 RETURNING *`;
+      const res = await executeQuery(query, [id, ...values]);
+      return res.rows[0];
+    } catch (err) {
+      console.error("[DbRepo] Error in updateRoster:", err);
+      throw err;
+    }
+  }
+
+  static async getRosterMembers(rosterId: string, options?: { active_only?: boolean }): Promise<any[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      let members = state.reporting_roster_members || [];
+      members = members.filter(m => m.roster_id === rosterId);
+      if (options?.active_only) {
+        members = members.filter(m => !m.removed_at);
+      }
+      // Map display fields
+      const result: any[] = [];
+      for (const m of members) {
+        const b = state.beneficiaries.find(bx => bx.id === m.beneficiary_id) as any;
+        result.push({
+          ...m,
+          trainee_name: b ? `${b.firstName} ${b.lastName}` : "Unknown",
+          tvet_id: b?.id || b?.tvet_id || "N/A",
+          skill: b?.skillSector || "N/A",
+          cohort: b?.cohort || "N/A"
+        });
+      }
+      return result.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    }
+
+    try {
+      let query = `
+        SELECT rm.*, 
+               (b.first_name || ' ' || b.last_name) as trainee_name,
+               b.id as tvet_id,
+               b.skill_sector as skill,
+               b.cohort as cohort
+        FROM reporting_roster_members rm
+        JOIN beneficiaries b ON rm.beneficiary_id = b.id
+        WHERE rm.roster_id = $1
+      `;
+      const params: any[] = [rosterId];
+      if (options?.active_only) {
+        query += " AND rm.removed_at IS NULL";
+      }
+      query += " ORDER BY rm.sort_order ASC, rm.created_at ASC";
+      const res = await executeQuery(query, params);
+      return res.rows;
+    } catch (err) {
+      console.error("[DbRepo] Error in getRosterMembers:", err);
+      return [];
+    }
+  }
+
+  static async getActiveOfficialReportingRosterMembers(tspId: string): Promise<any[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      const rosters = (state.reporting_rosters || []).filter(r => r.tsp_id === tspId && r.is_active !== false);
+      if (rosters.length === 0) return [];
+      const rosterId = rosters[0].id;
+      const members = (state.reporting_roster_members || []).filter(m => m.roster_id === rosterId && !m.removed_at);
+      const bIds = members.map(m => m.beneficiary_id);
+      let list = (state.beneficiaries || []).filter(b => bIds.includes(b.id));
+      const memberOrder = new Map(members.map((m, i) => [m.beneficiary_id, i]));
+      list = [...list].sort((a, b) => (memberOrder.get(a.id) ?? 0) - (memberOrder.get(b.id) ?? 0));
+      return list;
+    }
+
+    try {
+      const rosterRes = await executeQuery(
+        "SELECT id FROM reporting_rosters WHERE tsp_id = $1 AND is_active = TRUE ORDER BY created_at DESC LIMIT 1",
+        [tspId]
+      );
+      if (rosterRes.rows.length === 0) return [];
+      const rosterId = rosterRes.rows[0].id;
+
+      const query = `
+        SELECT b.*, rm.sort_order
+        FROM reporting_roster_members rm
+        JOIN beneficiaries b ON rm.beneficiary_id = b.id
+        WHERE rm.roster_id = $1 AND rm.removed_at IS NULL AND b.deleted_at IS NULL
+        ORDER BY rm.sort_order ASC, rm.created_at ASC
+      `;
+      const res = await executeQuery(query, [rosterId]);
+      return res.rows;
+    } catch (err) {
+      console.error("[DbRepo] Error in getActiveOfficialReportingRosterMembers:", err);
+      return [];
+    }
+  }
+
+  static async addRosterMembers(rosterId: string, beneficiaryIds: string[], userEmail: string): Promise<void> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      if (!state.reporting_roster_members) state.reporting_roster_members = [];
+      const roster = state.reporting_rosters?.find(r => r.id === rosterId);
+      if (!roster) throw new Error("Roster not found");
+      
+      const activeMembers = state.reporting_roster_members.filter(m => m.roster_id === rosterId && !m.removed_at);
+      if (activeMembers.length + beneficiaryIds.length > roster.allocation_limit) {
+        throw new Error(`Roster limit exceeded. Cannot exceed limit of ${roster.allocation_limit}.`);
+      }
+
+      for (const bId of beneficiaryIds) {
+        // Check if already active member
+        const exists = activeMembers.some(m => m.beneficiary_id === bId);
+        if (exists) continue;
+
+        const maxSort = activeMembers.reduce((max, m) => Math.max(max, m.sort_order || 0), 0);
+        state.reporting_roster_members.push({
+          id: `rm_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+          roster_id: rosterId,
+          beneficiary_id: bId,
+          sort_order: maxSort + 1,
+          selected_at: new Date().toISOString(),
+          selected_by: userEmail,
+          effective_from: new Date().toISOString(),
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        });
+      }
+      saveJsonState(state);
+      return;
+    }
+
+    try {
+      // 1. Get limit
+      const rRes = await executeQuery("SELECT allocation_limit FROM reporting_rosters WHERE id = $1", [rosterId]);
+      if (rRes.rows.length === 0) throw new Error("Roster not found");
+      const limit = rRes.rows[0].allocation_limit;
+
+      // 2. Count active
+      const activeCountRes = await executeQuery("SELECT COUNT(*) as count FROM reporting_roster_members WHERE roster_id = $1 AND removed_at IS NULL", [rosterId]);
+      const currentActive = parseInt(activeCountRes.rows[0].count, 10);
+      if (currentActive + beneficiaryIds.length > limit) {
+        throw new Error(`Roster limit exceeded. Cannot exceed limit of ${limit}.`);
+      }
+
+      // 3. Get max sort order
+      const maxSortRes = await executeQuery("SELECT COALESCE(MAX(sort_order), 0) as max_sort FROM reporting_roster_members WHERE roster_id = $1", [rosterId]);
+      let maxSort = parseInt(maxSortRes.rows[0].max_sort, 10);
+
+      for (const bId of beneficiaryIds) {
+        maxSort++;
+        const id = `rm_${crypto.randomUUID()}`;
+        await executeQuery(`
+          INSERT INTO reporting_roster_members (id, roster_id, beneficiary_id, sort_order, selected_by)
+          VALUES ($1, $2, $3, $4, $5)
+          ON CONFLICT (roster_id, beneficiary_id) DO UPDATE SET removed_at = NULL, removed_by = NULL, sort_order = $4, updated_at = CURRENT_TIMESTAMP
+        `, [id, rosterId, bId, maxSort, userEmail]);
+      }
+    } catch (err) {
+      console.error("[DbRepo] Error in addRosterMembers:", err);
+      throw err;
+    }
+  }
+
+  static async removeRosterMembers(rosterId: string, beneficiaryIds: string[], userEmail: string, reason?: string): Promise<void> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      const members = state.reporting_roster_members || [];
+      for (const bId of beneficiaryIds) {
+        const m = members.find(mx => mx.roster_id === rosterId && mx.beneficiary_id === bId && !mx.removed_at);
+        if (m) {
+          m.removed_at = new Date().toISOString();
+          m.removed_by = userEmail;
+          m.removal_reason = reason;
+          m.updated_at = new Date().toISOString();
+        }
+      }
+      saveJsonState(state);
+      return;
+    }
+
+    try {
+      for (const bId of beneficiaryIds) {
+        await executeQuery(`
+          UPDATE reporting_roster_members
+          SET removed_at = CURRENT_TIMESTAMP,
+              removed_by = $3,
+              removal_reason = $4,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE roster_id = $1 AND beneficiary_id = $2 AND removed_at IS NULL
+        `, [rosterId, bId, userEmail, reason || "Manual Exclude"]);
+      }
+    } catch (err) {
+      console.error("[DbRepo] Error in removeRosterMembers:", err);
+      throw err;
+    }
+  }
+
+  static async replaceRosterMember(rosterId: string, removedBeneficiaryId: string, replacementBeneficiaryId: string, userEmail: string, reason: string): Promise<void> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      const members = state.reporting_roster_members || [];
+      const roster = state.reporting_rosters?.find(r => r.id === rosterId);
+      if (!roster) throw new Error("Roster not found");
+
+      // Check if replacement is already in roster
+      const isReplacementActive = members.some(m => m.roster_id === rosterId && m.beneficiary_id === replacementBeneficiaryId && !m.removed_at);
+      if (isReplacementActive) throw new Error("Replacement trainee is already an active member of this roster");
+
+      // 1. Remove old member
+      const oldMember = members.find(m => m.roster_id === rosterId && m.beneficiary_id === removedBeneficiaryId && !m.removed_at);
+      let sortOrder = 0;
+      if (oldMember) {
+        oldMember.removed_at = new Date().toISOString();
+        oldMember.removed_by = userEmail;
+        oldMember.removal_reason = `Replaced by ${replacementBeneficiaryId}. Reason: ${reason}`;
+        oldMember.updated_at = new Date().toISOString();
+        sortOrder = oldMember.sort_order;
+      }
+
+      // 2. Add new member
+      state.reporting_roster_members.push({
+        id: `rm_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+        roster_id: rosterId,
+        beneficiary_id: replacementBeneficiaryId,
+        sort_order: sortOrder || 1,
+        selected_at: new Date().toISOString(),
+        selected_by: userEmail,
+        effective_from: new Date().toISOString(),
+        replacement_for_member_id: oldMember?.id || null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      });
+
+      saveJsonState(state);
+      return;
+    }
+
+    try {
+      const rRes = await executeQuery("SELECT * FROM reporting_rosters WHERE id = $1", [rosterId]);
+      if (rRes.rows.length === 0) throw new Error("Roster not found");
+
+      // Check if replacement is already active
+      const repRes = await executeQuery("SELECT id FROM reporting_roster_members WHERE roster_id = $1 AND beneficiary_id = $2 AND removed_at IS NULL", [rosterId, replacementBeneficiaryId]);
+      if (repRes.rows.length > 0) throw new Error("Replacement trainee is already active in this roster");
+
+      // Get sort_order and id of the member being removed
+      const oldRes = await executeQuery("SELECT id, sort_order FROM reporting_roster_members WHERE roster_id = $1 AND beneficiary_id = $2 AND removed_at IS NULL", [rosterId, removedBeneficiaryId]);
+      if (oldRes.rows.length === 0) throw new Error("Trainee to be replaced is not active in this roster");
+      const oldMemberId = oldRes.rows[0].id;
+      const sortOrder = oldRes.rows[0].sort_order;
+
+      // Mark old as removed
+      await executeQuery(`
+        UPDATE reporting_roster_members
+        SET removed_at = CURRENT_TIMESTAMP,
+            removed_by = $3,
+            removal_reason = $4,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+      `, [oldMemberId, userEmail, `Replaced. Reason: ${reason}`]);
+
+      // Insert new
+      const newId = `rm_${crypto.randomUUID()}`;
+      await executeQuery(`
+        INSERT INTO reporting_roster_members (id, roster_id, beneficiary_id, sort_order, selected_by, replacement_for_member_id)
+        VALUES ($1, $2, $3, $4, $5, $6)
+      `, [newId, rosterId, replacementBeneficiaryId, sortOrder, userEmail, oldMemberId]);
+
+    } catch (err) {
+      console.error("[DbRepo] Error in replaceRosterMember:", err);
+      throw err;
+    }
+  }
+
+  static async updateRosterSortOrderBatch(rosterId: string, orders: { beneficiary_id: string; sort_order: number }[]): Promise<void> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      const members = state.reporting_roster_members || [];
+      for (const order of orders) {
+        const m = members.find(mx => mx.roster_id === rosterId && mx.beneficiary_id === order.beneficiary_id && !mx.removed_at);
+        if (m) {
+          m.sort_order = order.sort_order;
+          m.updated_at = new Date().toISOString();
+        }
+      }
+      saveJsonState(state);
+      return;
+    }
+
+    try {
+      for (const order of orders) {
+        await executeQuery(`
+          UPDATE reporting_roster_members
+          SET sort_order = $3, updated_at = CURRENT_TIMESTAMP
+          WHERE roster_id = $1 AND beneficiary_id = $2 AND removed_at IS NULL
+        `, [rosterId, order.beneficiary_id, order.sort_order]);
+      }
+    } catch (err) {
+      console.error("[DbRepo] Error in updateRosterSortOrderBatch:", err);
+      throw err;
+    }
+  }
+
   /**
    * Retrieves all registered dynamic custom fields
    */
@@ -5114,6 +5910,18 @@ export class DbRepo {
           failed_login_attempts: 0
         };
       }
+      if (normalizedEmail === "imo.admin@tvet.local") {
+        return {
+          id: "user_imo_sta",
+          email: normalizedEmail,
+          password_hash: bcrypt.hashSync("ChangeMe123!", 10),
+          role: "STA",
+          tenant_id: "55555555-5555-5555-5555-555555555555",
+          tenant_tier: "STA",
+          state_id: "bc183dd7-3e5e-461c-8f23-b9e888339146",
+          failed_login_attempts: 0
+        };
+      }
       if (normalizedEmail === "tsp.admin@tvet.local") {
         return {
           id: "user_tsp",
@@ -5123,6 +5931,19 @@ export class DbRepo {
           tenant_id: "tsp_tenant_default",
           tenant_tier: "TSP",
           state_id: "state_imo_id_default",
+          tsp_id: "00000000-0000-0000-0000-000000000001",
+          failed_login_attempts: 0
+        };
+      }
+      if (normalizedEmail === "uniqueideasproject@gmail.com") {
+        return {
+          id: "user_unique_tsp",
+          email: normalizedEmail,
+          password_hash: bcrypt.hashSync("ChangeMe123!", 10),
+          role: "TSP_ADMIN",
+          tenant_id: "tsp_tenant_default",
+          tenant_tier: "TSP",
+          state_id: "bc183dd7-3e5e-461c-8f23-b9e888339146",
           tsp_id: "00000000-0000-0000-0000-000000000001",
           failed_login_attempts: 0
         };
@@ -5215,6 +6036,9 @@ export class DbRepo {
       if (id === "user_ro") return { id: "user_ro", email: "reviewer@ideas-tvet.ng", role: "REVIEW_OFFICER" };
       if (id === "user_fed") return { id: "user_fed", email: "fed.admin@tvet.local", role: "FED", tenant_id: "fed_tenant_default", tenant_tier: "FED" };
       if (id === "user_sta") return { id: "user_sta", email: "state.admin@tvet.local", role: "STA", tenant_id: "55555555-5555-5555-5555-555555555555", tenant_tier: "STA", state_id: "66666666-6666-6666-6666-666666666666" };
+      if (id === "user_imo_sta") return { id: "user_imo_sta", email: "imo.admin@tvet.local", role: "STA", tenant_id: "55555555-5555-5555-5555-555555555555", tenant_tier: "STA", state_id: "bc183dd7-3e5e-461c-8f23-b9e888339146" };
+      if (id === "user_tsp") return { id: "user_tsp", email: "tsp.admin@tvet.local", role: "TSP_ADMIN", tenant_id: "tsp_tenant_default", tenant_tier: "TSP", state_id: "state_imo_id_default", tsp_id: "00000000-0000-0000-0000-000000000001" };
+      if (id === "user_unique_tsp") return { id: "user_unique_tsp", email: "uniqueideasproject@gmail.com", role: "TSP_ADMIN", tenant_id: "tsp_tenant_default", tenant_tier: "TSP", state_id: "bc183dd7-3e5e-461c-8f23-b9e888339146", tsp_id: "00000000-0000-0000-0000-000000000001" };
       return null;
     }
 
@@ -6330,7 +7154,9 @@ export class DbRepo {
         beneficiariesList = beneficiariesList.filter(b => b.stateId === options.stateId);
       }
       if (options?.tspId) {
-        beneficiariesList = beneficiariesList.filter(b => b.tspId === options.tspId);
+        const rosterMembers = await DbRepo.getActiveOfficialReportingRosterMembers(options.tspId);
+        const rosterIds = rosterMembers.map(m => m.id);
+        beneficiariesList = beneficiariesList.filter(b => rosterIds.includes(b.id));
       }
       
       const summary = { total: 0, pending: 0, underReview: 0, admitted: 0, rejected: 0 };
@@ -6391,20 +7217,26 @@ export class DbRepo {
       const params: any[] = [];
       let paramCount = 1;
 
-      if (options?.tenantId) {
-        whereClause += `AND b.tenant_id = $${paramCount} `;
+      if (options?.tenantId && !options?.tspId) {
+        whereClause += `AND b.tenant_id::text = $${paramCount} `;
         params.push(options.tenantId);
         paramCount++;
       }
-      if (options?.stateId) {
-        whereClause += `AND b.state_id = $${paramCount} `;
+      if (options?.stateId && !options?.tspId) {
+        whereClause += `AND b.state_id::text = $${paramCount} `;
         params.push(options.stateId);
         paramCount++;
       }
       if (options?.tspId) {
-        whereClause += `AND b.tsp_id = $${paramCount} `;
-        params.push(options.tspId);
-        paramCount++;
+        const rosterMembers = await DbRepo.getActiveOfficialReportingRosterMembers(options.tspId);
+        const rosterIds = rosterMembers.map(m => m.id);
+        if (rosterIds.length > 0) {
+          whereClause += `AND b.id = ANY($${paramCount}) `;
+          params.push(rosterIds);
+          paramCount++;
+        } else {
+          whereClause += `AND b.id = 'NOT_FOUND_ROSTER_EMPTY' `;
+        }
       }
 
       // Direct high-efficiency groupings in Postgres
@@ -6639,14 +7471,16 @@ export class DbRepo {
       const stateData = loadJsonState();
       let list = stateData.beneficiaries as Beneficiary[];
 
-      if (options.tenantId) {
+      if (options.tenantId && !options.tspId) {
         list = list.filter(b => b.tenantId === options.tenantId);
       }
-      if (options.stateId) {
+      if (options.stateId && !options.tspId) {
         list = list.filter(b => b.stateId === options.stateId);
       }
       if (options.tspId) {
-        list = list.filter(b => b.tspId === options.tspId);
+        const rosterMembers = await DbRepo.getActiveOfficialReportingRosterMembers(options.tspId);
+        const rosterIds = rosterMembers.map(m => m.id);
+        list = list.filter(b => rosterIds.includes(b.id));
       }
       if (options.beneficiaryId) {
         list = list.filter(b => b.id === options.beneficiaryId);
@@ -6679,7 +7513,7 @@ export class DbRepo {
         list = list.filter(b => b.skillSector === sector);
       }
       if (tsp !== "all") {
-        list = list.filter(b => b.tsp === tsp);
+        list = list.filter(b => b.tsp === tsp || b.tspId === tsp || (b as any).tsp_id === tsp);
       }
       if (state !== "all") {
         list = list.filter(b => b.state === state);
@@ -6799,7 +7633,7 @@ export class DbRepo {
       }
 
       if (tsp !== "all") {
-        queryWhere += `AND b.tsp = $${paramCount} `;
+        queryWhere += `AND (b.tsp_id::text = $${paramCount} OR b.tsp = $${paramCount}) `;
         params.push(tsp);
         paramCount++;
       }
@@ -6811,20 +7645,26 @@ export class DbRepo {
       }
 
       // Append optional role/tenancy isolation filters (Task 012)
-      if (options.tenantId) {
-        queryWhere += `AND b.tenant_id = $${paramCount} `;
+      if (options.tenantId && !options.tspId) {
+        queryWhere += `AND b.tenant_id::text = $${paramCount} `;
         params.push(options.tenantId);
         paramCount++;
       }
-      if (options.stateId) {
-        queryWhere += `AND b.state_id = $${paramCount} `;
+      if (options.stateId && !options.tspId) {
+        queryWhere += `AND b.state_id::text = $${paramCount} `;
         params.push(options.stateId);
         paramCount++;
       }
       if (options.tspId) {
-        queryWhere += `AND b.tsp_id = $${paramCount} `;
-        params.push(options.tspId);
-        paramCount++;
+        const rosterMembers = await DbRepo.getActiveOfficialReportingRosterMembers(options.tspId);
+        const rosterIds = rosterMembers.map(m => m.id);
+        if (rosterIds.length > 0) {
+          queryWhere += `AND b.id = ANY($${paramCount}) `;
+          params.push(rosterIds);
+          paramCount++;
+        } else {
+          queryWhere += `AND b.id = 'NOT_FOUND_ROSTER_EMPTY' `;
+        }
       }
       if (options.beneficiaryId) {
         queryWhere += `AND b.id = $${paramCount} `;
@@ -8055,14 +8895,15 @@ export class DbRepo {
     }
 
     if (batch && batch !== "all" && batch !== "ALL") {
-      whereClause += ` AND (b.batch ILIKE $${valIndex} OR tp.batch_id ILIKE $${valIndex})`;
+      whereClause += ` AND (b.batch ILIKE $${valIndex} OR tb.id::text = $${valIndex} OR tb.batch_number ILIKE $${valIndex})`;
       values.push(`%${batch}%`);
       valIndex++;
     }
 
     if (cohort && cohort !== "all" && cohort !== "ALL") {
-      whereClause += ` AND tp.cohort_id ILIKE $${valIndex++}`;
-      values.push(`%${cohort}%`);
+      whereClause += ` AND (tb.cohort_id::text = $${valIndex} OR c.cohort_name ILIKE $${valIndex})`;
+      values.push(cohort.includes('-') ? cohort : `%${cohort}%`);
+      valIndex++;
     }
 
     if (gender && gender !== "all" && gender !== "ALL") {
@@ -8076,6 +8917,9 @@ export class DbRepo {
         `SELECT COUNT(*) as count 
          FROM beneficiaries b
          LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
+         LEFT JOIN training_batch_assignments tba ON b.id = tba.beneficiary_id
+         LEFT JOIN training_batches tb ON tba.batch_id = tb.id
+         LEFT JOIN cohorts c ON tb.cohort_id = c.id
          ${whereClause}`,
         values
       );
@@ -8101,16 +8945,19 @@ export class DbRepo {
           COALESCE(b.certification_status, 'NONE') as certification_status,
           COALESCE(b.beneficiary_status, 'ACTIVE') as beneficiary_status,
           b.gender,
+          COALESCE(b.physical_challenge, 'No') as physical_challenge,
           b.nin,
           b.bvn,
           b.bank_name,
           b.bank_account_holder as account_name,
           b.bank_account_number as account_number,
+          COALESCE(b.bank_sort_code, '') as bank_sort_code,
           b.guardian_name,
           b.guardian_phone,
-          b.education_qualification as education_level,
-          'NOT_EMPLOYED' as employment_status,
-          COALESCE(b.beneficiary_status, 'ACTIVE') as training_status,
+          COALESCE(b.guardian_address, '') as guardian_address,
+          COALESCE(tp.education_level, b.education_qualification, 'Secondary') as education_level,
+          COALESCE(tp.employment_status, 'Unemployed') as employment_status,
+          COALESCE(tp.training_status, b.beneficiary_status, 'On-going') as training_status,
           b.skill_sector as sector,
           b.skill_sector as skill,
           b.state,
@@ -8120,11 +8967,15 @@ export class DbRepo {
           pm.last_verified_at,
           pm.remarks as portal_remarks,
           rm.readiness_status,
-          rm.attendance_percentage
+          rm.attendance_percentage,
+          COALESCE(tp.updated_at, b.updated_at) as updated_at
         FROM beneficiaries b
         LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
         LEFT JOIN portal_monitoring pm ON b.id = pm.beneficiary_id
         LEFT JOIN readiness_metrics rm ON b.id = rm.beneficiary_id
+        LEFT JOIN training_batch_assignments tba ON b.id = tba.beneficiary_id
+        LEFT JOIN training_batches tb ON tba.batch_id = tb.id
+        LEFT JOIN cohorts c ON tb.cohort_id = c.id
         ${whereClause}
         ORDER BY b.last_name ASC, b.first_name ASC
         LIMIT $${valIndex} OFFSET $${valIndex + 1}
@@ -8167,16 +9018,19 @@ export class DbRepo {
           COALESCE(b.certification_status, 'NONE') as certification_status,
           COALESCE(b.beneficiary_status, 'ACTIVE') as beneficiary_status,
           b.gender,
+          COALESCE(b.physical_challenge, 'No') as physical_challenge,
           b.nin,
           b.bvn,
           b.bank_name,
           b.bank_account_holder as account_name,
           b.bank_account_number as account_number,
+          COALESCE(b.bank_sort_code, '') as bank_sort_code,
           b.guardian_name,
           b.guardian_phone,
-          b.education_qualification as education_level,
-          'NOT_EMPLOYED' as employment_status,
-          COALESCE(b.beneficiary_status, 'ACTIVE') as training_status,
+          COALESCE(b.guardian_address, '') as guardian_address,
+          COALESCE(tp.education_level, b.education_qualification, 'Secondary') as education_level,
+          COALESCE(tp.employment_status, 'Unemployed') as employment_status,
+          COALESCE(tp.training_status, b.beneficiary_status, 'On-going') as training_status,
           b.skill_sector as sector,
           b.skill_sector as skill,
           b.state,
@@ -8184,7 +9038,8 @@ export class DbRepo {
           pm.still_on_portal,
           pm.still_attending,
           pm.last_verified_at,
-          pm.remarks as portal_remarks
+          pm.remarks as portal_remarks,
+          COALESCE(tp.updated_at, b.updated_at) as updated_at
         FROM beneficiaries b
         LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
         LEFT JOIN portal_monitoring pm ON b.id = pm.beneficiary_id
@@ -8217,14 +9072,17 @@ export class DbRepo {
           state = COALESCE($10, state),
           tsp = COALESCE($11, tsp),
           beneficiary_status = COALESCE($12, beneficiary_status),
+          gender = COALESCE($13, gender),
+          physical_challenge = COALESCE($14, physical_challenge),
+          bank_sort_code = COALESCE($15, bank_sort_code),
           updated_at = NOW()
-        WHERE id = $13
+        WHERE id = $16
       `, [
         updates.nin,
         updates.bvn,
         updates.bank_name,
-        updates.account_name,
-        updates.account_number,
+        updates.account_name || updates.bank_account_holder,
+        updates.account_number || updates.bank_account_number,
         updates.guardian_name,
         updates.guardian_phone,
         updates.education_level || updates.education_qualification,
@@ -8232,21 +9090,30 @@ export class DbRepo {
         updates.state,
         updates.tsp,
         updates.training_status || updates.beneficiary_status,
+        updates.gender || updates.sex,
+        updates.physical_challenge || updates.pwd,
+        updates.bank_sort_code || updates.bankSortCode,
         beneficiaryId
       ]);
 
-      // 2. Insert or update thin pointer in trainee_profiles to maintain TVET ID
+      // 2. Insert or update thin pointer in trainee_profiles
       await executeQuery(`
-        INSERT INTO trainee_profiles (beneficiary_id, tvet_id, updated_at)
-        VALUES ($1, $2, NOW())
+        INSERT INTO trainee_profiles (beneficiary_id, tvet_id, employment_status, training_status, education_level, updated_at)
+        VALUES ($1, $2, $3, $4, $5, NOW())
         ON CONFLICT (beneficiary_id) DO UPDATE SET
           tvet_id = COALESCE($2, trainee_profiles.tvet_id),
+          employment_status = COALESCE($3, trainee_profiles.employment_status),
+          training_status = COALESCE($4, trainee_profiles.training_status),
+          education_level = COALESCE($5, trainee_profiles.education_level),
           updated_at = NOW()
       `, [
         beneficiaryId,
         (updates.tvet_id && updates.tvet_id !== 'ID-TVE-26-IDEAS-' && !updates.tvet_id.endsWith('IDEAS-'))
           ? updates.tvet_id
-          : (beneficiaryId.startsWith('IDEAS-') ? 'ID-TVE-26-' + beneficiaryId.replace('IDEAS-', '') : beneficiaryId)
+          : (beneficiaryId.startsWith('IDEAS-') ? 'ID-TVE-26-' + beneficiaryId.replace('IDEAS-', '') : beneficiaryId),
+        updates.employment_status || "Unemployed",
+        updates.training_status || updates.beneficiary_status,
+        updates.education_level || updates.education_qualification
       ]);
 
       // Fetch the updated complete view to return
@@ -8429,13 +9296,14 @@ export class DbRepo {
         values.push(`%${params.skill}%`);
       }
       if (params.batch && params.batch !== "all") {
-        whereClause += ` AND (b.batch ILIKE $${pIdx} OR tp.batch_id ILIKE $${pIdx})`;
+        whereClause += ` AND (b.batch ILIKE $${pIdx} OR tb.id::text = $${pIdx} OR tb.batch_number ILIKE $${pIdx})`;
         values.push(`%${params.batch}%`);
         pIdx++;
       }
       if (params.cohort && params.cohort !== "all") {
-        whereClause += ` AND tp.cohort_id ILIKE $${pIdx++}`;
-        values.push(`%${params.cohort}%`);
+        whereClause += ` AND (tb.cohort_id::text = $${pIdx} OR c.cohort_name ILIKE $${pIdx})`;
+        values.push(params.cohort.includes('-') ? params.cohort : `%${params.cohort}%`);
+        pIdx++;
       }
       if (params.gender && params.gender !== "all") {
         whereClause += ` AND b.gender ILIKE $${pIdx++}`;
@@ -8460,6 +9328,9 @@ export class DbRepo {
         FROM beneficiaries b
         LEFT JOIN trainee_attendance ta ON ${joinOn}
         LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
+        LEFT JOIN training_batch_assignments tba ON b.id = tba.beneficiary_id
+        LEFT JOIN training_batches tb ON tba.batch_id = tb.id
+        LEFT JOIN cohorts c ON tb.cohort_id = c.id
         ${whereClause}
       `;
       const countRes = await executeQuery(countQuery, values);
@@ -8484,8 +9355,8 @@ export class DbRepo {
             WHEN b.id LIKE 'IDEAS-%' THEN 'ID-TVE-26-' || REPLACE(b.id, 'IDEAS-', '')
             ELSE b.id
           END as tvet_id,
-          tp.batch_id as batch,
-          tp.cohort_id as cohort,
+          COALESCE(tb.id::text, b.batch) as batch,
+          tb.cohort_id::text as cohort,
           ta.id as attendance_id,
           COALESCE(ta.attendance_date::text, ${date ? `'${date}'` : 'NULL'}) as attendance_date,
           COALESCE(ta.status, 'UNMARKED') as status,
@@ -8499,6 +9370,9 @@ export class DbRepo {
         FROM beneficiaries b
         LEFT JOIN trainee_attendance ta ON ${joinOn}
         LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
+        LEFT JOIN training_batch_assignments tba ON b.id = tba.beneficiary_id
+        LEFT JOIN training_batches tb ON tba.batch_id = tb.id
+        LEFT JOIN cohorts c ON tb.cohort_id = c.id
         ${whereClause}
         ORDER BY b.last_name ASC, b.first_name ASC
         LIMIT $${pIdx++} OFFSET $${pIdx++}
@@ -8760,7 +9634,27 @@ export class DbRepo {
     verified_by?: string;
   }): Promise<any> {
     const pool = getPgPool();
-    if (!pool || !isPgActive) return null;
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      const beneficiary: any = state.beneficiaries?.find(b => b.id === beneficiaryId);
+      if (beneficiary) {
+        if (updates.still_on_portal !== undefined) beneficiary.still_on_portal = updates.still_on_portal;
+        if (updates.still_attending !== undefined) beneficiary.still_attending = updates.still_attending;
+        if (updates.remarks !== undefined) beneficiary.remarks = updates.remarks;
+        beneficiary.last_verified_at = new Date().toISOString();
+        beneficiary.verified_by = updates.verified_by || "TSP Officer";
+        saveJsonState(state);
+        return {
+          beneficiary_id: beneficiaryId,
+          still_on_portal: beneficiary.still_on_portal,
+          still_attending: beneficiary.still_attending,
+          remarks: beneficiary.remarks,
+          verified_by: beneficiary.verified_by,
+          last_verified_at: beneficiary.last_verified_at
+        };
+      }
+      return null;
+    }
     try {
       const res = await executeQuery(`
         INSERT INTO portal_monitoring (
@@ -11142,4 +12036,9 @@ export class DbRepo {
     }
   }
 }
+
+export async function getActiveOfficialReportingRosterMembers(tspId: string): Promise<any[]> {
+  return DbRepo.getActiveOfficialReportingRosterMembers(tspId);
+}
+
 
