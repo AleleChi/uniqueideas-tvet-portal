@@ -120,7 +120,7 @@ export function BulkAnnex9UpdateView({ session, showToast }: { session: any; sho
   const [showBankDropdown, setShowBankDropdown] = useState(false);
 
   // Active Tab State
-  const [activeTab, setActiveTab] = useState<"general" | "bank_reconciliation">("general");
+  const [activeTab, setActiveTab] = useState<"general" | "bank_reconciliation" | "canonical_reconciliation">("general");
 
   // Bank Reconciliation states
   const [reconSearch, setReconSearch] = useState("");
@@ -134,6 +134,85 @@ export function BulkAnnex9UpdateView({ session, showToast }: { session: any; sho
   const [reconTsps, setReconTsps] = useState<any[]>([]);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [auditLoading, setAuditLoading] = useState(false);
+
+  // Safe Autofill modal states
+  const [isIndividualModalOpen, setIsIndividualModalOpen] = useState(false);
+  const [selectedIndividualTrainee, setSelectedIndividualTrainee] = useState<any | null>(null);
+  const [individualReason, setIndividualReason] = useState("");
+  const [isAutofillingIndividual, setIsAutofillingIndividual] = useState(false);
+
+  const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
+  const [isAutofillingBulk, setIsAutofillingBulk] = useState(false);
+  const [bulkResultCounts, setBulkResultCounts] = useState<{ updated: number; unchanged: number; skipped: number; failed: number } | null>(null);
+
+  const handleIndividualAutofill = async () => {
+    if (!selectedIndividualTrainee) return;
+    if (!individualReason.trim()) {
+      showToast("Please provide a reason or authorization comment.", "error");
+      return;
+    }
+
+    setIsAutofillingIndividual(true);
+    try {
+      const res = await authFetch("/api/bank-reconciliation/individual-autofill", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          beneficiaryId: selectedIndividualTrainee.beneficiary_id,
+          reason: individualReason
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to autofill sort code.");
+
+      showToast(data.message || `Successfully autofilled sort code to ${data.newSortCode}`, "success");
+      setIsIndividualModalOpen(false);
+      setSelectedIndividualTrainee(null);
+      setIndividualReason("");
+      
+      // Refresh
+      fetchReconciliationPreview();
+      fetchAuditLogs();
+    } catch (err: any) {
+      showToast(err.message || "Failed to execute individual autofill", "error");
+    } finally {
+      setIsAutofillingIndividual(false);
+    }
+  };
+
+  const handleBulkAutofill = async () => {
+    if (selectedReconIds.length === 0) return;
+    if (!authRef.trim()) {
+      showToast("Please provide an authority reference or reason for bulk autofill.", "error");
+      return;
+    }
+
+    setIsAutofillingBulk(true);
+    try {
+      const res = await authFetch("/api/bank-reconciliation/bulk-autofill", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          beneficiaryIds: selectedReconIds,
+          reason: authRef
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Bulk autofill operation failed.");
+
+      setBulkResultCounts(data.counts);
+      setSelectedReconIds([]);
+      setIsBulkModalOpen(true); // Open result dialog
+      
+      // Refresh
+      fetchReconciliationPreview();
+      fetchAuditLogs();
+    } catch (err: any) {
+      showToast(err.message || "Failed to execute bulk autofill", "error");
+    } finally {
+      setIsAutofillingBulk(false);
+    }
+  };
 
   // Lists of available filters (fetched dynamically or matched against known categories)
   const cohortOptions = ["all", "Batch 2026-C", "Cohort 1", "Cohort 2"];
@@ -544,6 +623,19 @@ export function BulkAnnex9UpdateView({ session, showToast }: { session: any; sho
             LIVE AUDIT
           </span>
         </button>
+        <button
+          onClick={() => setActiveTab("canonical_reconciliation")}
+          className={`px-5 py-3 text-xs font-bold uppercase font-mono tracking-wider border-b-2 transition flex items-center gap-2 ${
+            activeTab === "canonical_reconciliation"
+              ? "border-indigo-600 text-indigo-600"
+              : "border-transparent text-slate-500 hover:text-slate-700"
+          }`}
+        >
+          <span>Canonical Identity Comparison & Audit</span>
+          <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[9px] font-extrabold">
+            NEW
+          </span>
+        </button>
       </div>
 
       {activeTab === "general" ? (
@@ -863,7 +955,7 @@ export function BulkAnnex9UpdateView({ session, showToast }: { session: any; sho
           )}
         </div>
       </div>
-      ) : (
+      ) : activeTab === "bank_reconciliation" ? (
         /* BANK SORT CODE RECONCILIATION MANAGER TAB */
         <div className="grid grid-cols-1 xl:grid-cols-4 gap-6 items-start">
           {/* Action / Settings Panel */}
@@ -900,18 +992,34 @@ export function BulkAnnex9UpdateView({ session, showToast }: { session: any; sho
                   </span>
                 </div>
 
+                <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 text-emerald-800 text-[11px] leading-normal space-y-1">
+                  <div className="flex items-center gap-1.5 font-bold uppercase font-mono tracking-wider text-[10px] text-emerald-700">
+                    <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
+                    Safe Autofill Active
+                  </div>
+                  <p>Restored safe alignment. This action updates only incorrect/missing bank sort codes with canonical values, while preserving trainee bank identity and names.</p>
+                </div>
                 <button
                   type="button"
-                  disabled={selectedReconIds.length === 0 || reconCommitting || !authRef.trim()}
-                  onClick={handleCommitReconciliation}
-                  className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-2 transition cursor-pointer shadow-md"
+                  onClick={handleBulkAutofill}
+                  disabled={selectedReconIds.length === 0 || !authRef.trim() || isAutofillingBulk}
+                  className={`w-full py-2.5 px-4 text-xs font-bold rounded-lg flex items-center justify-center gap-2 transition ${
+                    selectedReconIds.length === 0 || !authRef.trim() || isAutofillingBulk
+                      ? "bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed"
+                      : "bg-indigo-600 hover:bg-indigo-700 text-white shadow-md active:translate-y-[1px] cursor-pointer"
+                  }`}
                 >
-                  {reconCommitting ? (
-                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  {isAutofillingBulk ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      Autofilling Sort Codes...
+                    </>
                   ) : (
-                    <CheckCircle className="w-4 h-4" />
+                    <>
+                      <CheckCircle className="w-4 h-4" />
+                      Autofill Official ({selectedReconIds.length})
+                    </>
                   )}
-                  Reconcile & Verify Selected
                 </button>
               </div>
             </div>
@@ -1111,9 +1219,25 @@ export function BulkAnnex9UpdateView({ session, showToast }: { session: any; sho
                               )}
                             </td>
                             <td className="p-3 text-left">
-                              <span className="text-[11px] text-slate-500 max-w-[200px] block leading-normal font-medium">
-                                {item.proposed_action}
-                              </span>
+                              <div className="space-y-1.5">
+                                <span className="text-[11px] text-slate-500 max-w-[200px] block leading-normal font-medium">
+                                  {item.proposed_action}
+                                </span>
+                                {item.status === "MISMATCH" && item.is_verified && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedIndividualTrainee(item);
+                                      setIndividualReason(`Official alignment of bank sort code to directory standard: ${item.approved_sort_code}`);
+                                      setIsIndividualModalOpen(true);
+                                    }}
+                                    className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 border border-indigo-250 text-indigo-700 rounded text-[10px] font-bold flex items-center gap-1 cursor-pointer transition active:translate-y-[0.5px]"
+                                  >
+                                    <RefreshCw className="w-2.5 h-2.5" />
+                                    Autofill Official
+                                  </button>
+                                )}
+                              </div>
                             </td>
                             <td className="p-3 text-left">
                               <span className={`px-2 py-0.5 rounded font-black text-[9px] uppercase font-mono border ${
@@ -1212,6 +1336,88 @@ export function BulkAnnex9UpdateView({ session, showToast }: { session: any; sho
                 </table>
               </div>
             </div>
+          </div>
+        </div>
+      ) : (
+        /* CANONICAL IDENTITY COMPARISON & AUDIT TAB */
+        <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs space-y-6 text-left animate-in fade-in duration-350">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+            <div className="space-y-1">
+              <h3 className="text-base font-bold uppercase font-mono tracking-wider text-slate-800 flex items-center gap-2">
+                <Users className="w-5 h-5 text-indigo-600" />
+                Canonical Data Reconciliation Center
+              </h3>
+              <p className="text-xs text-slate-400">
+                Administrators can audit and verify that trainee profiles dynamically align with their canonical single source of truth database record.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="px-3 py-1 bg-emerald-50 border border-emerald-100 text-emerald-700 text-xs font-bold rounded-lg flex items-center gap-1">
+                <CheckCircle className="w-3.5 h-3.5" />
+                Single Source of Truth Active
+              </span>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto border border-slate-200 rounded-xl">
+            <table className="w-full text-xs text-slate-600 font-sans divide-y divide-slate-250">
+              <thead className="bg-slate-50 text-slate-500 font-mono text-[10px] uppercase font-bold">
+                <tr>
+                  <th className="px-4 py-3 text-left">Trainee / TVET ID</th>
+                  <th className="px-4 py-3 text-left">NIN / BVN Alignment</th>
+                  <th className="px-4 py-3 text-left">Email Address (Canonical)</th>
+                  <th className="px-4 py-3 text-left">Bank Profile Alignment</th>
+                  <th className="px-4 py-3 text-center">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-150 bg-white">
+                {trainees.map((t: any) => {
+                  const hasEmail = t.email && t.email.trim() !== "";
+                  const hasBank = t.bank_name && t.account_number;
+                  const bvnMatched = t.bvn && t.bvn.length === 11;
+                  const ninMatched = t.nin && t.nin.length === 11;
+                  
+                  return (
+                    <tr key={t.id} className="hover:bg-slate-50/50 transition">
+                      <td className="px-4 py-3">
+                        <div className="font-bold text-slate-800">{t.last_name}, {t.first_name}</div>
+                        <div className="text-[10px] text-slate-400 font-mono mt-0.5">{t.tvet_id || t.id}</div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-col gap-0.5 font-mono text-[10px]">
+                          <span className={ninMatched ? "text-slate-600" : "text-rose-500 font-bold"}>
+                            NIN: {t.nin || "Missing"}
+                          </span>
+                          <span className={bvnMatched ? "text-slate-600" : "text-rose-500 font-bold"}>
+                            BVN: {t.bvn || "Missing"}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="font-mono text-indigo-600 bg-indigo-50 border border-indigo-100/50 px-2 py-0.5 rounded text-[10px] font-medium block w-fit">
+                          {t.email || "No Email Registered"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        {hasBank ? (
+                          <div className="space-y-0.5">
+                            <div className="font-bold text-slate-700 text-[10px] uppercase">{t.bank_name}</div>
+                            <div className="text-slate-400 font-mono text-[9px]">Acc: {t.account_number} | {t.account_name || "Name Pending"}</div>
+                          </div>
+                        ) : (
+                          <span className="text-rose-500 font-bold text-[10px]">No Bank Configured</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded-full">
+                          Aligned
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
@@ -1523,7 +1729,7 @@ export function BulkAnnex9UpdateView({ session, showToast }: { session: any; sho
                             key={b.name}
                             onClick={() => {
                               setEditBankName(b.name);
-                              setEditBankSortCode(b.sortCode);
+                              // Automatic sort code write is disabled per forensic audit safety directive
                               setBankSearch(b.name);
                               setShowBankDropdown(false);
                             }}
@@ -1539,10 +1745,10 @@ export function BulkAnnex9UpdateView({ session, showToast }: { session: any; sho
                     <label className="block text-[10px] font-bold text-slate-550 uppercase font-mono mb-1">Bank Sort Code</label>
                     <input
                       type="text"
-                      readOnly
                       value={editBankSortCode}
-                      className="w-full px-2.5 py-1.5 bg-slate-100 border border-slate-250 rounded-lg outline-none font-mono font-medium text-slate-500"
-                      placeholder="Auto-filled"
+                      onChange={(e) => setEditBankSortCode(e.target.value.replace(/\D/g, ""))}
+                      className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-250 rounded-lg outline-none font-mono font-medium text-slate-700 focus:bg-white focus:border-indigo-500"
+                      placeholder="Enter Sort Code manually"
                     />
                   </div>
                   <div>
@@ -1637,6 +1843,154 @@ export function BulkAnnex9UpdateView({ session, showToast }: { session: any; sho
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Individual Autofill Confirmation Modal */}
+      {isIndividualModalOpen && selectedIndividualTrainee && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
+          <div className="bg-white border border-slate-200 rounded-2xl max-w-lg w-full shadow-2xl p-6 text-left space-y-4 scale-in duration-200">
+            <div className="flex items-start justify-between">
+              <div className="space-y-1">
+                <h3 className="text-sm font-bold uppercase font-mono tracking-wider text-slate-800">
+                  Verify & Autofill Sort Code
+                </h3>
+                <p className="text-[11px] text-slate-400">
+                  You are about to align the sort code for this trainee with the federally approved directory.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsIndividualModalOpen(false);
+                  setSelectedIndividualTrainee(null);
+                }}
+                className="text-slate-400 hover:text-slate-600 font-bold font-mono text-xs cursor-pointer p-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="bg-slate-50 p-4 rounded-xl border border-slate-150 space-y-3.5 text-xs font-mono">
+              <div className="flex justify-between items-baseline border-b border-slate-100 pb-1.5">
+                <span className="text-[10px] text-slate-400 uppercase font-bold">Trainee Name:</span>
+                <span className="font-bold text-slate-800">{selectedIndividualTrainee.last_name}, {selectedIndividualTrainee.first_name}</span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <span className="text-[10px] text-slate-400 uppercase font-bold block">Current (Reported)</span>
+                  <div className="space-y-1 bg-amber-50/50 p-2 rounded-lg border border-amber-100">
+                    <div className="text-[10.5px] font-bold text-amber-800 truncate">{selectedIndividualTrainee.current_bank_name}</div>
+                    <div className="text-[10.5px] font-bold text-slate-500">Sort Code: {selectedIndividualTrainee.current_sort_code || "N/A"}</div>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <span className="text-[10px] text-slate-400 uppercase font-bold block">Approved (Directory Match)</span>
+                  <div className="space-y-1 bg-emerald-50/50 p-2 rounded-lg border border-emerald-100">
+                    <div className="text-[10.5px] font-bold text-emerald-800 truncate">{selectedIndividualTrainee.matched_canonical_bank_name}</div>
+                    <div className="text-[10.5px] font-bold text-indigo-700">Sort Code: {selectedIndividualTrainee.approved_sort_code}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-[10px] font-bold text-slate-600 uppercase font-mono">
+                Audit Reason / Reference
+              </label>
+              <textarea
+                rows={3}
+                value={individualReason}
+                onChange={(e) => setIndividualReason(e.target.value)}
+                placeholder="Please enter compliance reference or justification..."
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-250 rounded-xl outline-none font-medium text-slate-700 focus:bg-white focus:border-indigo-500 text-xs resize-none"
+              />
+            </div>
+
+            <div className="flex gap-2 justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsIndividualModalOpen(false);
+                  setSelectedIndividualTrainee(null);
+                }}
+                disabled={isAutofillingIndividual}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg cursor-pointer transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleIndividualAutofill}
+                disabled={isAutofillingIndividual || !individualReason.trim()}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 cursor-pointer shadow-md transition active:translate-y-[0.5px] disabled:opacity-50"
+              >
+                {isAutofillingIndividual ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    Executing...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle className="w-3.5 h-3.5" />
+                    Confirm & Autofill
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Results Outcome Modal */}
+      {isBulkModalOpen && bulkResultCounts && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
+          <div className="bg-white border border-slate-200 rounded-2xl max-w-md w-full shadow-2xl p-6 text-center space-y-4 scale-in duration-200">
+            <div className="mx-auto w-12 h-12 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center">
+              <CheckCircle className="w-6 h-6" />
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-sm font-bold uppercase font-mono tracking-wider text-slate-800">
+                Bulk Alignment Completed
+              </h3>
+              <p className="text-[11px] text-slate-400">
+                The safe sort-code bulk-autofill operation completed successfully.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3.5 font-mono text-xs">
+              <div className="p-3 bg-indigo-50/50 border border-indigo-100 rounded-xl">
+                <span className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Updated</span>
+                <span className="text-xl font-bold text-indigo-700">{bulkResultCounts.updated}</span>
+              </div>
+              <div className="p-3 bg-emerald-50/50 border border-emerald-100 rounded-xl">
+                <span className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Unchanged</span>
+                <span className="text-xl font-bold text-emerald-700">{bulkResultCounts.unchanged}</span>
+              </div>
+              <div className="p-3 bg-slate-50 border border-slate-150 rounded-xl">
+                <span className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Skipped</span>
+                <span className="text-xl font-bold text-slate-500">{bulkResultCounts.skipped}</span>
+              </div>
+              <div className="p-3 bg-rose-50/50 border border-rose-100 rounded-xl">
+                <span className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Failed</span>
+                <span className="text-xl font-bold text-rose-700">{bulkResultCounts.failed}</span>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setIsBulkModalOpen(false);
+                setBulkResultCounts(null);
+              }}
+              className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg cursor-pointer transition active:translate-y-[0.5px]"
+            >
+              Close & Review Roster
+            </button>
           </div>
         </div>
       )}

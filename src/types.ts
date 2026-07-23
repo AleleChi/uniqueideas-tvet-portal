@@ -578,5 +578,62 @@ export interface ReportingRosterMember {
   updated_at?: string;
 }
 
+export interface InstitutionalPartner {
+  id: string;
+  organisation_name: string;
+  short_name: string;
+  slug: string;
+  category: string;
+  description?: string;
+  website_url?: string;
+  logo_original_url: string;
+  logo_optimized_url: string;
+  logo_alt_text: string;
+  logo_variant?: "colour" | "monochrome" | "dark" | "light";
+  background_mode?: "transparent" | "light" | "dark";
+  display_scale?: number;
+  display_order: number;
+  status: "draft" | "published";
+  is_featured?: boolean;
+  created_by?: string;
+  updated_by?: string;
+  created_at?: string;
+  updated_at?: string;
+  published_at?: string;
+}
+
+export interface PublicSiteSettings {
+  id?: string;
+  supportEmail: string;
+  supportPhone: string;
+  dialablePhone: string;
+  altPhone?: string;
+  officeHoursDays: string;
+  openingTime: string;
+  closingTime: string;
+  timezone: string;
+  publicHolidayNote: string;
+  officeName: string;
+  addressLine1: string;
+  addressLine2: string;
+  city: string;
+  stateFct: string;
+  country: string;
+  postalCode?: string;
+  mapUrl?: string;
+  footerDescription: string;
+  copyright: string;
+  privacyPolicyUrl: string;
+  termsOfServiceUrl: string;
+  accessibilityUrl?: string;
+  version: number;
+  status: "DRAFT" | "PUBLISHED";
+  updatedBy?: string;
+  publishedBy?: string;
+  updatedAt?: string;
+  publishedAt?: string;
+}
+
+
 
 

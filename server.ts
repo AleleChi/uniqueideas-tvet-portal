@@ -38,6 +38,7 @@ import { CampaignAudienceService } from "./src/backend/campaign.service";
 import { EmailCampaignQueue, activeCampaignWorkers } from "./src/backend/queue";
 import { NIGERIAN_STATES_AND_LGAS } from "./src/utils/nigerianLgasData";
 import { NIGERIAN_ZONES } from "./src/utils/nigerianStates";
+import { resolveOfficialBankMatch } from "./src/backend/bankReconciliation.service";
 
 console.log("[BOOT] server.ts loaded");
 
@@ -746,6 +747,188 @@ app.get("/api/health", async (req, res) => {
     res.json({ status: "ok" });
   } else {
     res.json({ status: "unavailable" });
+  }
+});
+
+// --- INSTITUTIONAL PARTNERS LOGOS ENDPOINTS ---
+
+// 1. Public route to fetch published active partners (no auth needed)
+app.get("/api/public/institutional-partners", async (req, res) => {
+  try {
+    const partners = await DbRepo.getInstitutionalPartners({ active_only: true });
+    res.json(partners);
+  } catch (err: any) {
+    console.error("[API] Failed to fetch public institutional partners:", err);
+    res.status(500).json({ error: "Failed to fetch institutional partners" });
+  }
+});
+
+// 2. Admin route to fetch all partners (both draft and published)
+app.get("/api/admin/institutional-partners", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const partners = await DbRepo.getInstitutionalPartners({ active_only: false });
+    res.json(partners);
+  } catch (err: any) {
+    console.error("[API] Failed to fetch admin institutional partners:", err);
+    res.status(500).json({ error: "Failed to fetch institutional partners" });
+  }
+});
+
+// 3. Admin route to create a new partner
+app.post("/api/admin/institutional-partners", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { organisation_name, short_name, slug, category, description, website_url, logo_original_url, logo_optimized_url, logo_alt_text, logo_variant, background_mode, display_scale, display_order, status, is_featured } = req.body;
+    
+    if (!organisation_name || !short_name || !slug || !category || !logo_original_url || !logo_optimized_url || !logo_alt_text) {
+      return res.status(400).json({ error: "Missing required fields for creating institutional partner" });
+    }
+
+    // Check slug uniqueness
+    const existing = await DbRepo.getInstitutionalPartnerBySlug(slug);
+    if (existing) {
+      return res.status(400).json({ error: `An institutional partner with slug '${slug}' already exists` });
+    }
+
+    const partner = await DbRepo.createInstitutionalPartner({
+      organisation_name,
+      short_name,
+      slug,
+      category,
+      description,
+      website_url,
+      logo_original_url,
+      logo_optimized_url,
+      logo_alt_text,
+      logo_variant,
+      background_mode,
+      display_scale: display_scale !== undefined ? parseFloat(display_scale) : 1.0,
+      display_order: display_order !== undefined ? parseInt(display_order) : 0,
+      status: status || "draft",
+      is_featured: is_featured !== false
+    });
+
+    res.status(201).json(partner);
+  } catch (err: any) {
+    console.error("[API] Failed to create institutional partner:", err);
+    res.status(500).json({ error: err.message || "Failed to create institutional partner" });
+  }
+});
+
+// 4. Admin route to update an existing partner
+app.put("/api/admin/institutional-partners/:id", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    const existing = await DbRepo.getInstitutionalPartnerById(id);
+    if (!existing) {
+      return res.status(404).json({ error: "Institutional partner not found" });
+    }
+
+    const { slug } = req.body;
+    if (slug && slug !== existing.slug) {
+      const existingSlug = await DbRepo.getInstitutionalPartnerBySlug(slug);
+      if (existingSlug && existingSlug.id !== id) {
+        return res.status(400).json({ error: `An institutional partner with slug '${slug}' already exists` });
+      }
+    }
+
+    const updated = await DbRepo.updateInstitutionalPartner(id, req.body);
+    res.json(updated);
+  } catch (err: any) {
+    console.error("[API] Failed to update institutional partner:", err);
+    res.status(500).json({ error: err.message || "Failed to update institutional partner" });
+  }
+});
+
+// 5. Admin route to delete a partner
+app.delete("/api/admin/institutional-partners/:id", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    const existing = await DbRepo.getInstitutionalPartnerById(id);
+    if (!existing) {
+      return res.status(404).json({ error: "Institutional partner not found" });
+    }
+
+    const success = await DbRepo.deleteInstitutionalPartner(id);
+    res.json({ success });
+  } catch (err: any) {
+    console.error("[API] Failed to delete institutional partner:", err);
+    res.status(500).json({ error: "Failed to delete institutional partner" });
+  }
+});
+
+// 6. Admin route to update ordering of partners (drag and drop)
+app.post("/api/admin/institutional-partners/reorder", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { orderedIds } = req.body;
+    if (!Array.isArray(orderedIds)) {
+      return res.status(400).json({ error: "Missing or invalid orderedIds array in request body" });
+    }
+
+    const success = await DbRepo.updateInstitutionalPartnersOrder(orderedIds);
+    res.json({ success });
+  } catch (err: any) {
+    console.error("[API] Failed to reorder institutional partners:", err);
+    res.status(500).json({ error: "Failed to reorder institutional partners" });
+  }
+});
+
+// 7. Admin logo image processing and upload
+app.post("/api/admin/institutional-partners/upload", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES]), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { fileContent, slug } = req.body;
+    if (!fileContent || !slug) {
+      return res.status(400).json({ error: "Missing required parameters: fileContent and slug" });
+    }
+
+    const validation = validateAndGetUploadBuffer(fileContent, false);
+    if (validation.error) {
+      return res.status(400).json({ error: validation.error });
+    }
+
+    // Image processing using Jimp
+    const image = await Jimp.read(validation.buffer);
+
+    // Transparency Check
+    let hasTransparency = false;
+    image.scan(0, 0, image.bitmap.width, image.bitmap.height, function(x, y, idx) {
+      if (this.bitmap.data[idx + 3] < 255) {
+        hasTransparency = true;
+      }
+    });
+
+    // Strip empty margins
+    try {
+      image.autocrop();
+    } catch (cropErr) {
+      console.warn("[Upload] Jimp autocrop failed or not applicable:", cropErr);
+    }
+
+    // Generate monochrome variation
+    const mono = image.clone();
+    try {
+      mono.greyscale();
+    } catch (monoErr) {
+      console.warn("[Upload] Jimp monochrome conversion failed:", monoErr);
+    }
+
+    // Convert back to buffers
+    const originalBuffer = await image.getBuffer("image/png");
+    const monoBuffer = await mono.getBuffer("image/png");
+
+    // Upload both variations to Cloudinary
+    const originalUrl = await CloudinaryService.uploadDocument(originalBuffer, `${slug}-color.png`, "institutional_partners", "image/png");
+    const optimizedUrl = await CloudinaryService.uploadDocument(monoBuffer, `${slug}-mono.png`, "institutional_partners", "image/png");
+
+    res.json({
+      logo_original_url: originalUrl,
+      logo_optimized_url: optimizedUrl,
+      has_transparency: hasTransparency,
+      width: image.bitmap.width,
+      height: image.bitmap.height
+    });
+  } catch (err: any) {
+    console.error("[API] Failed processing and uploading institutional partner logo:", err);
+    res.status(500).json({ error: err.message || "Failed processing and uploading logo image" });
   }
 });
 
@@ -3268,6 +3451,51 @@ app.put("/api/organization-settings", requireAuth, requireRole(["SUPER_ADMIN", "
   }
 });
 
+// Public Site Settings Resources (Public Contact & Footer)
+app.get("/api/public/site-settings", async (req, res) => {
+  try {
+    const settings = await DbRepo.getPublicSiteSettings();
+    res.setHeader("Cache-Control", "public, max-age=60");
+    res.json(settings);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/federal/site-settings", requireAuth, requireRole(FED_ROLES), async (req, res) => {
+  try {
+    const settings = await DbRepo.getFederalSiteSettings();
+    res.json(settings);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/federal/site-settings/draft", requireAuth, requireRole(FED_ROLES), async (req: AuthenticatedRequest, res) => {
+  try {
+    const draftData = req.body;
+    const userEmail = req.user?.email || "fed_admin@ideas-tvet.ng";
+    const updatedDraft = await DbRepo.updateDraftSiteSettings(draftData, userEmail);
+    res.json({ success: true, draft: updatedDraft });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/federal/site-settings/publish", requireAuth, requireRole(FED_ROLES), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { expectedVersion, ...publishData } = req.body;
+    const userEmail = req.user?.email || "fed_admin@ideas-tvet.ng";
+    const published = await DbRepo.publishSiteSettings(publishData, expectedVersion, userEmail);
+    res.json({ success: true, published });
+  } catch (e: any) {
+    if (e.code === "CONFLICT" || e.message?.includes("updated by another administrator")) {
+      return res.status(409).json({ error: "CONFLICT", message: e.message });
+    }
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Helper to verify a secure template URL using HEAD request
 async function verifyTemplateUrl(url: string): Promise<boolean> {
   if (!url) return false;
@@ -3956,10 +4184,9 @@ app.post("/api/trainees/bulk-compliance-update", requireAuth, requireRole(["SUPE
 
 app.get("/api/bank-reconciliation/preview", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   const pool = getPgPool();
-  if (!pool) return res.status(500).json({ error: "Database not connected" });
-
+  
   try {
-    const { getReconciliationPreview } = await import("./src/backend/bankReconciliation.service");
+    const { getReconciliationPreview, resolveOfficialBankMatch } = await import("./src/backend/bankReconciliation.service");
     
     // Scoping check: if the user is a TSP, force query scoping to their own tspId
     let tspId = req.query.tspId as string || "all";
@@ -3970,8 +4197,65 @@ app.get("/api/bank-reconciliation/preview", requireAuth, requireRole(["SUPER_ADM
     const search = req.query.search as string || "";
     const status = req.query.status as string || "all";
 
-    const preview = await getReconciliationPreview(pool, { tspId, search, status });
-    res.json(preview);
+    if (pool && isPgActive) {
+      const preview = await getReconciliationPreview(pool, { tspId, search, status });
+      res.json(preview);
+    } else {
+      // Fallback JSON mode
+      let beneficiaries = await DbRepo.getBeneficiaries({ tspId });
+      if (search) {
+        const s = search.toLowerCase();
+        beneficiaries = beneficiaries.filter(b => 
+          (b.firstName || "").toLowerCase().includes(s) || 
+          (b.lastName || "").toLowerCase().includes(s) || 
+          b.id.toLowerCase().includes(s)
+        );
+      }
+      const previewItems = beneficiaries.map(b => {
+        const rawBank = b.bankName || "";
+        const currentSort = b.bankSortCode || "";
+        const match = resolveOfficialBankMatch(rawBank, currentSort);
+
+        let status: "MATCHED" | "MISMATCH" | "UNMATCHED" = "UNMATCHED";
+        let proposedAction = "Manual Mapping Required";
+
+        if (match.status === "MATCHED") {
+          status = "MATCHED";
+          proposedAction = "No action needed (Fully Reconciled)";
+        } else if (match.status === "MISMATCH" || match.status === "MISSING") {
+          status = "MISMATCH";
+          proposedAction = `Update Sort Code to '${match.approvedSortCode}'`;
+        } else if (match.status === "INVALID_FORMAT") {
+          status = "MISMATCH";
+          proposedAction = `Update Sort Code to '${match.approvedSortCode}' (Current format is invalid)`;
+        } else {
+          proposedAction = "No matched canonical bank found. Correct bank name first.";
+        }
+
+        const is_verified = status === "MATCHED" || (status === "MISMATCH" && match.approvedSortCode !== "N/A");
+
+        return {
+          beneficiary_id: b.id,
+          first_name: b.firstName || "",
+          last_name: b.lastName || "",
+          tvet_id: (b as any).tvetId || (b as any).tvet_id || b.id,
+          current_bank_name: rawBank,
+          matched_canonical_bank_name: match.canonicalBankName,
+          matched_canonical_bank_id: match.canonicalBankId,
+          current_sort_code: currentSort,
+          approved_sort_code: match.approvedSortCode,
+          status,
+          proposed_action: proposedAction,
+          is_verified
+        };
+      });
+
+      let filtered = previewItems;
+      if (status && status !== "all") {
+        filtered = previewItems.filter(item => item.status.toLowerCase() === status.toLowerCase());
+      }
+      res.json(filtered);
+    }
   } catch (err: any) {
     console.error("Error in GET /api/bank-reconciliation/preview:", err);
     res.status(500).json({ error: err.message });
@@ -3979,58 +4263,49 @@ app.get("/api/bank-reconciliation/preview", requireAuth, requireRole(["SUPER_ADM
 });
 
 app.post("/api/bank-reconciliation/commit", requireAuth, requireRole(["SUPER_ADMIN", ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
-  const pool = getPgPool();
-  if (!pool) return res.status(500).json({ error: "Database not connected" });
-
-  try {
-    const { commitReconciliation } = await import("./src/backend/bankReconciliation.service");
-    
-    const { beneficiaryIds, reason } = req.body;
-    if (!beneficiaryIds || !Array.isArray(beneficiaryIds) || beneficiaryIds.length === 0) {
-      return res.status(400).json({ error: "No trainee records selected for reconciliation." });
-    }
-
-    // Scoping check: if user is TSP, force scope to their tspId
-    let tspId: string | null = null;
-    if (req.user!.role === "TSP" || req.user!.role.startsWith("TSP")) {
-      tspId = req.user!.tspId || null;
-    }
-
-    const changedBy = req.user!.email || "system";
-    const commitReason = reason || "Approved Annex 9 Bank Sort Code Reconciliation";
-
-    const result = await commitReconciliation(pool, beneficiaryIds, tspId, changedBy, commitReason);
-    
-    if (result.success) {
-      await logAction(
-        req.user!.email,
-        "BANK_RECONCILIATION_COMMITTED",
-        `Successfully reconciled ${result.reconciledCount} trainee bank accounts.`
-      );
-      res.json(result);
-    } else {
-      res.status(400).json({ error: "Reconciliation failed", details: result.errors });
-    }
-  } catch (err: any) {
-    console.error("Error in POST /api/bank-reconciliation/commit:", err);
-    res.status(500).json({ error: err.message });
-  }
+  return res.status(403).json({ error: "Bulk bank reconciliation is temporarily paused for active forensic audit." });
 });
 
 app.get("/api/bank-reconciliation/audit-logs", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   const pool = getPgPool();
-  if (!pool) return res.status(500).json({ error: "Database not connected" });
 
   try {
-    const { getAuditTrail } = await import("./src/backend/bankReconciliation.service");
-    
-    let tspId: string | undefined = undefined;
-    if (req.user!.role === "TSP" || req.user!.role.startsWith("TSP")) {
-      tspId = req.user!.tspId || undefined;
-    }
+    if (pool && isPgActive) {
+      const { getAuditTrail } = await import("./src/backend/bankReconciliation.service");
+      
+      let tspId: string | undefined = undefined;
+      if (req.user!.role === "TSP" || req.user!.role.startsWith("TSP")) {
+        tspId = req.user!.tspId || undefined;
+      }
 
-    const logs = await getAuditTrail(pool, { tspId, limit: 100 });
-    res.json(logs);
+      const logs = await getAuditTrail(pool, { tspId, limit: 100 });
+      res.json(logs);
+    } else {
+      // JSON mode: load from auditLogs
+      const { loadJsonState } = await import("./src/backend/db");
+      const state = loadJsonState();
+      const logs = (state.auditLogs || [])
+        .filter((l: any) => l.action === "BANK_AUTOFILL_SORT_CODE" || l.action === "BULK_BANK_AUTOFILL_SORT_CODE")
+        .slice(0, 100)
+        .map((l: any) => ({
+          id: l.id,
+          operation_id: l.id,
+          beneficiary_id: l.details?.match(/ID ([a-zA-Z0-9_-]+)/)?.[1] || "",
+          tvet_id: l.details?.match(/ID ([a-zA-Z0-9_-]+)/)?.[1] || "",
+          current_bank_name: l.details?.match(/for ([^;]+)/)?.[1] || "N/A",
+          matched_canonical_bank_name: "N/A",
+          old_sort_code: "N/A",
+          new_sort_code: l.details?.match(/to ([0-9]+)/)?.[1] || "N/A",
+          match_method: "AUTOFILL",
+          changed_by: l.username,
+          changed_at: l.timestamp,
+          reason: l.details || "Autofilled sort code",
+          first_name: l.details?.match(/trainee ([a-zA-Z0-9]+)/)?.[1] || "",
+          last_name: l.details?.match(/trainee [a-zA-Z0-9]+ ([a-zA-Z0-9]+)/)?.[1] || "",
+          tsp_name: "Fallback TSP"
+        }));
+      res.json(logs);
+    }
   } catch (err: any) {
     console.error("Error in GET /api/bank-reconciliation/audit-logs:", err);
     res.status(500).json({ error: err.message });
@@ -4039,11 +4314,20 @@ app.get("/api/bank-reconciliation/audit-logs", requireAuth, requireRole(["SUPER_
 
 app.get("/api/bank-reconciliation/banks", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   const pool = getPgPool();
-  if (!pool) return res.status(500).json({ error: "Database not connected" });
 
   try {
-    const result = await pool.query("SELECT id, canonical_bank_name, approved_sort_code FROM bank_directory WHERE is_active = TRUE ORDER BY canonical_bank_name ASC");
-    res.json(result.rows);
+    if (pool && isPgActive) {
+      const result = await pool.query("SELECT id, canonical_bank_name, approved_sort_code FROM bank_directory WHERE is_active = TRUE ORDER BY canonical_bank_name ASC");
+      res.json(result.rows);
+    } else {
+      const { CANONICAL_BANKS } = await import("./src/backend/bankReconciliation.service");
+      const mapped = CANONICAL_BANKS.map(b => ({
+        id: b.name,
+        canonical_bank_name: b.name,
+        approved_sort_code: b.sortCode
+      }));
+      res.json(mapped);
+    }
   } catch (err: any) {
     console.error("Error in GET /api/bank-reconciliation/banks:", err);
     res.status(500).json({ error: err.message });
@@ -4052,13 +4336,461 @@ app.get("/api/bank-reconciliation/banks", requireAuth, requireRole(["SUPER_ADMIN
 
 app.get("/api/bank-reconciliation/tsps", requireAuth, requireRole(["SUPER_ADMIN", ...FED_ROLES, ...STA_ROLES, ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
   const pool = getPgPool();
-  if (!pool) return res.status(500).json({ error: "Database not connected" });
 
   try {
-    const result = await pool.query("SELECT id, name FROM tsps ORDER BY name ASC");
-    res.json(result.rows);
+    if (pool && isPgActive) {
+      const result = await pool.query("SELECT id, name FROM tsps ORDER BY name ASC");
+      res.json(result.rows);
+    } else {
+      // Load TSPs from loadJsonState
+      const { loadJsonState } = await import("./src/backend/db");
+      const state = loadJsonState();
+      // Compile TSPs from beneficiaries
+      const tspMap = new Map();
+      (state.beneficiaries || []).forEach((b: any) => {
+        if (b.tspId && b.tspName) {
+          tspMap.set(b.tspId, b.tspName);
+        }
+      });
+      if (tspMap.size === 0) {
+        tspMap.set("00000000-0000-0000-0000-000000000001", "Pilot TSP");
+      }
+      const tsps = Array.from(tspMap.entries()).map(([id, name]) => ({ id, name }));
+      res.json(tsps);
+    }
   } catch (err: any) {
     console.error("Error in GET /api/bank-reconciliation/tsps:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Single bank match resolution endpoint
+app.post("/api/bank-reconciliation/resolve", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { bankName, bankSortCode } = req.body;
+    const { resolveOfficialBankMatch } = await import("./src/backend/bankReconciliation.service");
+    const result = resolveOfficialBankMatch(bankName, bankSortCode);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Individual SAFE sort-code autofill endpoint
+app.post("/api/bank-reconciliation/individual-autofill", requireAuth, requireRole(["SUPER_ADMIN", ...TSP_ROLES, ...FED_ROLES, ...STA_ROLES]), async (req: AuthenticatedRequest, res) => {
+  const { beneficiaryId, reason } = req.body;
+  if (!beneficiaryId) {
+    return res.status(400).json({ error: "Beneficiary ID is required." });
+  }
+
+  try {
+    const { resolveOfficialBankMatch } = await import("./src/backend/bankReconciliation.service");
+    const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
+    if (!beneficiary) {
+      return res.status(404).json({ error: "Trainee profile not found." });
+    }
+
+    const rawBank = beneficiary.bankName || "";
+    const rawSort = beneficiary.bankSortCode || "";
+
+    const match = resolveOfficialBankMatch(rawBank, "000"); // lookup official code
+    if (match.status === "BANK_NOT_FOUND" || match.approvedSortCode === "N/A") {
+      return res.status(422).json({ error: `Cannot autofill: Bank Name '${rawBank}' is not recognized in the approved directory.` });
+    }
+
+    const oldSortCode = rawSort;
+    const newSortCode = match.approvedSortCode;
+
+    // Update only bank sort code
+    const updatedBeneficiary = {
+      ...beneficiary,
+      bankSortCode: newSortCode,
+      updatedAt: new Date().toISOString()
+    };
+
+    await DbRepo.upsertBeneficiary(updatedBeneficiary);
+
+    // Also write to audit trail if postgres is active
+    const pool = getPgPool();
+    if (pool && isPgActive) {
+      const operationId = crypto.randomUUID();
+      try {
+        await pool.query(`
+          INSERT INTO bank_reconciliation_audit (
+            operation_id, beneficiary_id, tvet_id, tsp_id, current_bank_name,
+            matched_canonical_bank_id, old_sort_code, new_sort_code,
+            match_method, changed_by, reason
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        `, [
+          operationId,
+          beneficiaryId,
+          (beneficiary as any).tvetId || (beneficiary as any).tvet_id || beneficiary.id,
+          (beneficiary as any).tspId || (beneficiary as any).tsp_id || (beneficiary as any).tsp || "",
+          rawBank,
+          match.canonicalBankId,
+          oldSortCode,
+          newSortCode,
+          match.matchType,
+          req.user!.email,
+          reason || "Individual Sort Code Autofill"
+        ]);
+      } catch (auditErr) {
+        console.error("Failed to insert SQL audit log:", auditErr);
+      }
+    }
+
+    // Always write standard system audit log
+    const operatorEmail = req.user!.email;
+    const newLog: AuditLog = {
+      id: "log_autofill_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+      timestamp: new Date().toISOString(),
+      username: operatorEmail,
+      role: req.user!.role,
+      action: "BANK_AUTOFILL_SORT_CODE",
+      details: `Autofilled sort code to ${newSortCode} (was ${oldSortCode}) for trainee ${beneficiary.firstName} ${beneficiary.lastName} (ID ${beneficiaryId}); Reason: ${reason || "Individual Sort Code Autofill"}`
+    };
+    await DbRepo.saveAuditLog(newLog);
+
+    res.json({
+      success: true,
+      updated: true,
+      beneficiaryId,
+      oldSortCode,
+      newSortCode,
+      message: `Successfully autofilled sort code to '${newSortCode}'.`
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Single bank sort-code preview endpoint
+app.post("/api/bank-reconciliation/bank-sort-code/autofill-preview", requireAuth, requireRole(["SUPER_ADMIN", ...TSP_ROLES, ...FED_ROLES, ...STA_ROLES]), async (req: AuthenticatedRequest, res) => {
+  const { beneficiaryId } = req.body;
+  if (!beneficiaryId) {
+    return res.status(400).json({ error: "Beneficiary ID is required." });
+  }
+
+  try {
+    const { resolveOfficialBankMatch } = await import("./src/backend/bankReconciliation.service");
+    const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
+    if (!beneficiary) {
+      return res.status(404).json({ error: "Trainee profile not found." });
+    }
+
+    // Tenant isolation verification
+    const user = req.user;
+    const isFederal = user!.role === "SUPER_ADMIN" || FED_ROLES.includes(user!.role);
+    if (!isFederal) {
+      let userTspId = user!.tspId || (user as any).tsp_id;
+      if (!userTspId && (user!.role.startsWith("TSP") || user!.role === "TSP_ADMIN")) {
+        userTspId = "00000000-0000-0000-0000-000000000001";
+      }
+      const bTspId = beneficiary.tspId || (beneficiary as any).tsp_id || "00000000-0000-0000-0000-000000000001";
+      if (userTspId && bTspId !== userTspId) {
+        return res.status(403).json({ error: "Access Denied: Tenant isolation active. This beneficiary belongs to another organization." });
+      }
+    }
+
+    // Resolve canonical banks
+    const pool = getPgPool();
+    let canonicalBanks: any[] | undefined = undefined;
+    let aliases: any[] | undefined = undefined;
+    if (pool && isPgActive) {
+      const banksRes = await pool.query("SELECT id, canonical_bank_name, approved_sort_code FROM bank_directory WHERE is_active = TRUE");
+      canonicalBanks = banksRes.rows;
+      const aliasesRes = await pool.query(`
+        SELECT ba.alias, bd.id, bd.canonical_bank_name, bd.approved_sort_code 
+        FROM bank_aliases ba
+        JOIN bank_directory bd ON ba.bank_directory_id = bd.id
+        WHERE ba.is_active = TRUE AND bd.is_active = TRUE
+      `);
+      aliases = aliasesRes.rows;
+    }
+
+    const rawBank = beneficiary.bankName || "";
+    const rawSort = beneficiary.bankSortCode || "";
+
+    const match = resolveOfficialBankMatch(rawBank, rawSort, canonicalBanks, aliases);
+
+    const tvetId = beneficiary.customFields?.tvet_id || (beneficiary as any).custom_fields?.tvet_id || (beneficiary as any).tvetId || (beneficiary as any).tvet_id || beneficiary.id;
+    const traineeName = `${beneficiary.firstName} ${beneficiary.lastName}`;
+
+    const proposedChanges = (match.status === "MISMATCH" || match.status === "MISSING")
+      ? [
+          {
+            field: "bankSortCode",
+            from: rawSort,
+            to: match.approvedSortCode
+          }
+        ]
+      : [];
+
+    res.json({
+      beneficiaryId: beneficiary.id,
+      tvetId,
+      traineeName,
+      savedBankName: rawBank,
+      canonicalBankName: match.canonicalBankName,
+      savedSortCode: rawSort,
+      approvedSortCode: match.approvedSortCode,
+      status: match.status,
+      reason: match.reason,
+      proposedChanges,
+      rowVersion: String((beneficiary as any).workflowVersion || (beneficiary as any).workflow_version || 1),
+      source: "APPROVED_OFFICIAL_BANK_DIRECTORY",
+      // Extra details for expanded modal
+      skillSector: beneficiary.skillSector || "N/A",
+      program: beneficiary.program || "IDEAS-TVET",
+      tsp: beneficiary.tsp || "Unique Technology Nig. Ltd",
+      rosterStatus: beneficiary.beneficiaryStatus || beneficiary.status || "ACTIVE",
+      accountName: beneficiary.bankAccountHolder || traineeName,
+      accountNumber: beneficiary.bankAccountNumber || "",
+      bvn: beneficiary.bvn || "",
+      lastUpdatedDate: beneficiary.updatedAt || beneficiary.createdAt || "",
+      verificationStatus: beneficiary.beneficiaryStatus || beneficiary.status || "ACTIVE"
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Single bank sort-code commit endpoint
+app.post("/api/bank-reconciliation/bank-sort-code/autofill-commit", requireAuth, requireRole(["SUPER_ADMIN", ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  const { beneficiaryId, expectedRowVersion, approvedSortCode, operationId, reason } = req.body;
+  if (!beneficiaryId) {
+    return res.status(400).json({ error: "Beneficiary ID is required." });
+  }
+
+  try {
+    const { resolveOfficialBankMatch } = await import("./src/backend/bankReconciliation.service");
+    const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId);
+    if (!beneficiary) {
+      return res.status(404).json({ error: "Trainee profile not found." });
+    }
+
+    // Tenant isolation verification
+    const user = req.user;
+    const isFederal = user!.role === "SUPER_ADMIN" || FED_ROLES.includes(user!.role);
+    if (!isFederal) {
+      let userTspId = user!.tspId || (user as any).tsp_id;
+      if (!userTspId && (user!.role.startsWith("TSP") || user!.role === "TSP_ADMIN")) {
+        userTspId = "00000000-0000-0000-0000-000000000001";
+      }
+      const bTspId = beneficiary.tspId || (beneficiary as any).tsp_id || "00000000-0000-0000-0000-000000000001";
+      if (userTspId && bTspId !== userTspId) {
+        return res.status(403).json({ error: "Access Denied: Tenant isolation active. This beneficiary belongs to another organization." });
+      }
+    }
+
+    const currentVersion = String((beneficiary as any).workflowVersion || 1);
+    if (currentVersion !== String(expectedRowVersion)) {
+      return res.status(409).json({
+        error: "BANK_RECORD_CHANGED",
+        message: "This beneficiary's bank details changed after the preview. Reload the latest record before saving."
+      });
+    }
+
+    const rawBank = beneficiary.bankName || "";
+    const rawSort = beneficiary.bankSortCode || "";
+
+    // Resolve canonical banks
+    const pool = getPgPool();
+    let canonicalBanks: any[] | undefined = undefined;
+    let aliases: any[] | undefined = undefined;
+    if (pool && isPgActive) {
+      const banksRes = await pool.query("SELECT id, canonical_bank_name, approved_sort_code FROM bank_directory WHERE is_active = TRUE");
+      canonicalBanks = banksRes.rows;
+      const aliasesRes = await pool.query(`
+        SELECT ba.alias, bd.id, bd.canonical_bank_name, bd.approved_sort_code 
+        FROM bank_aliases ba
+        JOIN bank_directory bd ON ba.bank_directory_id = bd.id
+        WHERE ba.is_active = TRUE AND bd.is_active = TRUE
+      `);
+      aliases = aliasesRes.rows;
+    }
+
+    const match = resolveOfficialBankMatch(rawBank, rawSort, canonicalBanks, aliases);
+    if (match.status !== "MISMATCH" && match.status !== "MISSING") {
+      return res.status(400).json({ error: `Cannot commit sort code update: Trainee's bank status is currently '${match.status}' (reconciliation is not required or possible).` });
+    }
+
+    if (!match.approvedSortCode || match.approvedSortCode === "N/A") {
+      return res.status(400).json({ error: "Cannot commit sort code update: Approved sort code does not exist for this bank." });
+    }
+
+    const newSortCode = match.approvedSortCode;
+    if (newSortCode !== approvedSortCode) {
+      return res.status(422).json({ error: `Proposed approved sort code '${approvedSortCode}' does not match server resolved code '${newSortCode}'.` });
+    }
+
+    // Update only sort code, incrementing version
+    const updatedBeneficiary = {
+      ...beneficiary,
+      bankSortCode: newSortCode,
+      workflowVersion: ((beneficiary as any).workflowVersion || 1) + 1,
+      updatedAt: new Date().toISOString()
+    };
+
+    await DbRepo.upsertBeneficiary(updatedBeneficiary);
+
+    // Audit logs insertion
+    const opId = operationId || crypto.randomUUID();
+    if (pool && isPgActive) {
+      try {
+        await pool.query(`
+          INSERT INTO bank_reconciliation_audit (
+            operation_id, beneficiary_id, tvet_id, tsp_id, current_bank_name,
+            matched_canonical_bank_id, old_sort_code, new_sort_code,
+            match_method, changed_by, reason
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        `, [
+          opId,
+          beneficiaryId,
+          (beneficiary as any).tvetId || (beneficiary as any).tvet_id || beneficiary.id,
+          (beneficiary as any).tspId || (beneficiary as any).tsp_id || (beneficiary as any).tsp || "",
+          rawBank,
+          match.canonicalBankId,
+          rawSort,
+          newSortCode,
+          match.matchType,
+          req.user!.email,
+          reason || "Official bank sort-code reconciliation"
+        ]);
+      } catch (auditErr) {
+        console.error("Failed to insert SQL audit log in commit:", auditErr);
+      }
+    }
+
+    const operatorEmail = req.user!.email;
+    const newLog: AuditLog = {
+      id: "log_autofill_commit_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+      timestamp: new Date().toISOString(),
+      username: operatorEmail,
+      role: req.user!.role,
+      action: "BANK_AUTOFILL_SORT_CODE",
+      details: `Committed sort code ${newSortCode} (was ${rawSort}) for trainee (ID ${beneficiaryId}); Reason: ${reason || "Official bank sort-code reconciliation"}`
+    };
+    await DbRepo.saveAuditLog(newLog);
+
+    res.json({
+      success: true,
+      updated: true,
+      beneficiaryId,
+      oldSortCode: rawSort,
+      newSortCode,
+      message: `Successfully autofilled sort code to '${newSortCode}'.`,
+      record: updatedBeneficiary
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Bulk SAFE sort-code autofill endpoint
+app.post("/api/bank-reconciliation/bulk-autofill", requireAuth, requireRole(["SUPER_ADMIN", ...TSP_ROLES]), async (req: AuthenticatedRequest, res) => {
+  const { beneficiaryIds, reason } = req.body;
+  if (!beneficiaryIds || !Array.isArray(beneficiaryIds) || beneficiaryIds.length === 0) {
+    return res.status(400).json({ error: "A list of Beneficiary IDs is required." });
+  }
+
+  try {
+    const { resolveOfficialBankMatch } = await import("./src/backend/bankReconciliation.service");
+    
+    let updated = 0;
+    let unchanged = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    const pool = getPgPool();
+    const operationId = crypto.randomUUID();
+
+    for (const bId of beneficiaryIds) {
+      try {
+        const beneficiary = await DbRepo.getBeneficiaryById(bId);
+        if (!beneficiary) {
+          failed++;
+          continue;
+        }
+
+        const rawBank = beneficiary.bankName || "";
+        const rawSort = beneficiary.bankSortCode || "";
+
+        const match = resolveOfficialBankMatch(rawBank, rawSort);
+        if (match.status === "BANK_NOT_FOUND" || match.approvedSortCode === "N/A") {
+          skipped++;
+          continue;
+        }
+
+        if (match.status === "MATCHED") {
+          unchanged++;
+          continue;
+        }
+
+        // It is MISMATCH, MISSING, or INVALID_FORMAT -> Perform safe sort-code update
+        const updatedBeneficiary = {
+          ...beneficiary,
+          bankSortCode: match.approvedSortCode,
+          updatedAt: new Date().toISOString()
+        };
+
+        await DbRepo.upsertBeneficiary(updatedBeneficiary);
+
+        // Audit SQL
+        if (pool && isPgActive) {
+          try {
+            await pool.query(`
+              INSERT INTO bank_reconciliation_audit (
+                operation_id, beneficiary_id, tvet_id, tsp_id, current_bank_name,
+                matched_canonical_bank_id, old_sort_code, new_sort_code,
+                match_method, changed_by, reason
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            `, [
+              operationId,
+              bId,
+              (beneficiary as any).tvetId || (beneficiary as any).tvet_id || beneficiary.id,
+              (beneficiary as any).tspId || (beneficiary as any).tsp_id || (beneficiary as any).tsp || "",
+              rawBank,
+              match.canonicalBankId,
+              rawSort,
+              match.approvedSortCode,
+              match.matchType,
+              req.user!.email,
+              reason || "Bulk Sort Code Autofill"
+            ]);
+          } catch (auditErr) {
+            console.error("Failed to insert bulk SQL audit log:", auditErr);
+          }
+        }
+
+        // System audit log
+        const newLog: AuditLog = {
+          id: "log_bulk_autofill_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+          timestamp: new Date().toISOString(),
+          username: req.user!.email,
+          role: req.user!.role,
+          action: "BULK_BANK_AUTOFILL_SORT_CODE",
+          details: `Bulk autofilled sort code to ${match.approvedSortCode} (was ${rawSort}) for trainee ${beneficiary.firstName} ${beneficiary.lastName} (ID ${bId})`
+        };
+        await DbRepo.saveAuditLog(newLog);
+
+        updated++;
+      } catch (innerErr) {
+        console.error(`Failed to autofill beneficiary ${bId}:`, innerErr);
+        failed++;
+      }
+    }
+
+    res.json({
+      success: true,
+      counts: {
+        updated,
+        unchanged,
+        skipped,
+        failed
+      }
+    });
+  } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -4226,6 +4958,13 @@ app.put("/api/trainees/:beneficiaryId", requireAuth, requireRole(["SUPER_ADMIN",
 
     const original = await DbRepo.getTraineeProfileByBeneficiaryId(beneficiaryId);
     if (!original) return res.status(404).json({ error: "Trainee profile not found" });
+
+    // IMMEDIATE PRODUCTION SAFETY ACTION: Block updating bank details during audit
+    const bankFields = ["bank_name", "account_number", "account_name", "bank_sort_code", "bvn", "nin"];
+    const isTryingToModifyBankField = bankFields.some(field => req.body[field] !== undefined && String(req.body[field]).trim() !== String((original as any)[field] || "").trim());
+    if (isTryingToModifyBankField) {
+      return res.status(403).json({ error: "IMMEDIATE PRODUCTION SAFETY ACTION: Trainee bank edits are temporarily blocked during the bank-data integrity audit." });
+    }
 
     const updated = await DbRepo.updateTraineeProfile(beneficiaryId, req.body);
     
@@ -7993,6 +8732,96 @@ async function handleAnnex9OfficialExport(req: AuthenticatedRequest, res: any) {
       rosterId: req.query.rosterId as string || undefined,
     };
 
+    // Run dynamic canonical preflight check to ensure bank data integrity
+    const reportData = await getAnnex9ReportData({
+      month: options.month,
+      tspId: options.tspId,
+      state: options.state,
+      lga: options.lga,
+      skill: options.skill,
+      cohort: options.cohort,
+      gender: options.gender,
+      status: options.status,
+      rosterId: options.rosterId,
+      useActiveRoster: options.useActiveRoster
+    });
+
+    const preflightErrors: Array<{ beneficiaryId: string; name: string; reason: string }> = [];
+
+    const traineeIds = reportData.records.map(r => r.id).filter(Boolean);
+    const bankDetailsList = await DbRepo.getCanonicalBeneficiaryBankDetailsBatch(traineeIds, user);
+    const bankDetailsMap = new Map(bankDetailsList.map(bd => [bd.beneficiaryId, bd]));
+
+    for (const t of reportData.records) {
+      const bId = t.id;
+      if (!bId) continue;
+
+      const bankDetails = bankDetailsMap.get(bId);
+      if (!bankDetails) {
+        preflightErrors.push({
+          beneficiaryId: bId,
+          name: `${t.first_name} ${t.last_name}`,
+          reason: "Bank data cannot be resolved: No bank record exists in database for this trainee ID."
+        });
+        continue;
+      }
+
+      if (bankDetails.verificationStatus === "BANK_DATA_CONFLICT") {
+        preflightErrors.push({
+          beneficiaryId: bId,
+          name: `${t.first_name} ${t.last_name}`,
+          tvetId: bankDetails.tvetId || bId,
+          reason: `DATA IDENTITY CONFLICT: ${bankDetails.conflictDetails}`,
+          conflictBeneficiaries: bankDetails.conflictBeneficiaries,
+          accountNumber: bankDetails.accountNumber
+        } as any);
+        continue;
+      }
+
+      if (!bankDetails.accountNumber || !bankDetails.bankName) {
+        preflightErrors.push({
+          beneficiaryId: bId,
+          name: `${t.first_name} ${t.last_name}`,
+          reason: "Bank data is incomplete: Missing account number or bank name."
+        });
+        continue;
+      }
+
+      // Check for mismatch between the report row's bank details and the canonical database profile
+      const cleanCanonicalAcc = String(bankDetails.accountNumber).trim();
+      const cleanReportAcc = String(t.account_number || "").trim();
+      if (cleanCanonicalAcc !== cleanReportAcc) {
+        preflightErrors.push({
+          beneficiaryId: bId,
+          name: `${t.first_name} ${t.last_name}`,
+          reason: `Report value differs from canonical profile. Report: '${cleanReportAcc}', Canonical: '${cleanCanonicalAcc}'`
+        });
+      }
+    }
+
+    if (preflightErrors.length > 0) {
+      await logAction(
+        user.email,
+        "ANNEX9_EXPORT_BLOCKED",
+        `Annex 9 export blocked due to bank-data integrity preflight failures. Count: ${preflightErrors.length}`
+      );
+      return res.status(422).json({
+        success: false,
+        error: "Annex 9 export blocked due to bank-data integrity preflight failures.",
+        conflicts: preflightErrors
+      });
+    }
+
+    if (req.query.format === "csv") {
+      const csvContent = await generateAnnex9AttendanceCSV(options);
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="Annex_9_Official_Attendance_${options.month || "all"}.csv"`
+      );
+      return res.send(csvContent);
+    }
+
     const workbook = await generateOfficialAnnex9Workbook(options);
     res.setHeader(
       "Content-Type",
@@ -8002,8 +8831,8 @@ async function handleAnnex9OfficialExport(req: AuthenticatedRequest, res: any) {
       "Content-Disposition",
       `attachment; filename="Annex_9_Official_Workbook_${options.month || "all"}.xlsx"`
     );
-    await workbook.xlsx.write(res);
-    return res.end();
+    const buffer = await workbook.xlsx.writeBuffer();
+    return res.send(buffer);
   } catch (err: any) {
     console.error("Official Annex 9 export error:", err);
     res.status(500).json({ success: false, error: err.message });
@@ -9661,8 +10490,8 @@ app.get("/api/annex9/export", requireAuth, requireRole(["SUPER_ADMIN", ...FED_RO
       "Content-Disposition",
       'attachment; filename="Annex_9_Government_Export.xlsx"'
     );
-    await workbook.xlsx.write(res);
-    res.end();
+    const buffer = await workbook.xlsx.writeBuffer();
+    return res.send(buffer);
   } catch (e: any) {
     console.error("Export error:", e);
     res.status(500).json({ error: "Failed to generate Excel export", details: e.message });
@@ -9762,8 +10591,8 @@ app.get("/api/tsp/attendance/export-annex9", requireAuth, requireRole(["SUPER_AD
         "Content-Disposition",
         `attachment; filename="Annex_9_Attendance_Export_${options.month || new Date().toISOString().split('T')[0]}.xlsx"`
       );
-      await workbook.xlsx.write(res);
-      res.end();
+      const buffer = await workbook.xlsx.writeBuffer();
+      return res.send(buffer);
     }
   } catch (err: any) {
     console.error("TSP attendance export error:", err);
@@ -13860,6 +14689,19 @@ app.post("/api/rosters/:id/sort", requireAuth, async (req: AuthenticatedRequest,
   }
 });
 
+app.get("/api/beneficiaries/:id/bank-details", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    const bankDetails = await DbRepo.getCanonicalBeneficiaryBankDetails(id, req.user);
+    if (!bankDetails) {
+      return res.status(404).json({ error: "Beneficiary bank details not found" });
+    }
+    res.json(bankDetails);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/api/beneficiaries/:id", requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const { id } = req.params;
@@ -13895,6 +14737,50 @@ app.get("/api/beneficiaries/:id", requireAuth, async (req: AuthenticatedRequest,
     }
 
     res.json(maskPII(b, req.user));
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/beneficiaries/:id/canonical", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    
+    const b = await DbRepo.getBeneficiaryById(id);
+    if (!b) {
+      return res.status(404).json({ error: "Beneficiary record not found" });
+    }
+
+    const isFederal = req.user && (req.user.role === "SUPER_ADMIN" || FED_ROLES.includes(req.user.role));
+    if (req.user && !isFederal) {
+      if (req.user.role === "TRAINEE" && req.user.beneficiaryId !== id) {
+        return res.status(403).json({ error: "Access Denied. A trainee candidate can only access their personal profile." });
+      }
+      
+      let userTspId = req.user.tspId || (req.user as any).tsp_id;
+      let userStateId = req.user.stateId || (req.user as any).state_id;
+      const isTsp = TSP_ROLES.includes(req.user.role) || (req.user.role && req.user.role.startsWith("TSP"));
+      if (isTsp) {
+        if (!userTspId) userTspId = "00000000-0000-0000-0000-000000000001";
+        userStateId = undefined; // Bypass state restrictions
+      }
+      
+      const bTspId = b.tspId || (b as any).tsp_id || "00000000-0000-0000-0000-000000000001";
+      const bStateId = b.stateId || (b as any).state_id || "state_imo_id_default";
+
+      if (userTspId && bTspId !== userTspId) {
+        return res.status(403).json({ error: "Access Denied: Tenant isolation active. This beneficiary belongs to another organization." });
+      }
+      if (userStateId && bStateId !== userStateId) {
+        return res.status(403).json({ error: "Access Denied: State division active. This beneficiary belongs to another state." });
+      }
+    }
+
+    const canonicalProfile = await DbRepo.getCanonicalEditableBeneficiaryProfile(id, req.user);
+    if (!canonicalProfile) {
+      return res.status(404).json({ error: "Beneficiary canonical record not found" });
+    }
+    res.json(canonicalProfile);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -14375,12 +15261,124 @@ app.put("/api/beneficiaries/:id", requireAuth, async (req: AuthenticatedRequest,
     if (original) {
       const data = req.body;
       
+      // Concurrency/Row version protection
+      const currentVersion = String((original as any).workflowVersion || (original as any).workflow_version || 1);
+      const expectedVersion = data.expectedRowVersion;
+      if (expectedVersion && String(currentVersion) !== String(expectedVersion)) {
+        return res.status(409).json({ 
+          error: "CONCURRENCY_CONFLICT", 
+          message: "This trainee's record was changed after you started editing. Please reload." 
+        });
+      }
+
+      // Check for modification of sensitive payment details (Account Holder, Account Number, BVN, NIN)
+      const sensitiveBankFields = ["bankAccountHolder", "bankAccountNumber", "bvn", "nin"];
+      const isTryingToModifySensitiveField = sensitiveBankFields.some(field => {
+        if (data[field] === undefined) return false;
+        
+        const submitted = String(data[field]).trim();
+        const origVal = (original as any)[field];
+        const origStr = String(origVal || "").trim();
+        
+        // If both are empty, no change
+        if (!submitted && !origStr) return false;
+        
+        // If they are exactly equal, no change
+        if (submitted === origStr) return false;
+        
+        // If the submitted value is the masked version of the original value, no change
+        const maskedOrig = maskPIIValue(origStr);
+        if (submitted === maskedOrig) return false;
+        
+        // Also check if the submitted value is a masked pattern containing asterisks
+        if (submitted.includes("*")) {
+          // If the last 4 digits match, treat it as unmodified masked value
+          const last4Orig = origStr.slice(-4);
+          const last4Sub = submitted.slice(-4);
+          if (last4Orig && last4Orig === last4Sub) {
+            return false;
+          }
+        }
+        
+        return true;
+      });
+
+      // If they are trying to modify sensitive bank details, we block it with the audit block
+      if (isTryingToModifySensitiveField) {
+        return res.status(403).json({ 
+          error: "IMMEDIATE PRODUCTION SAFETY ACTION: Trainee bank edits are temporarily blocked during the bank-data integrity audit." 
+        });
+      }
+
+      // Strictly preserve original bank sensitive fields
+      data.bankAccountHolder = original.bankAccountHolder;
+      data.bankAccountNumber = original.bankAccountNumber;
+      data.bvn = original.bvn;
+      data.nin = original.nin;
+
+      // Handle sort code and bank name update
+      const bankNameChanged = data.bankName !== undefined && String(data.bankName).trim() !== String(original.bankName || "").trim();
+      const bankSortCodeChanged = data.bankSortCode !== undefined && String(data.bankSortCode).trim() !== String(original.bankSortCode || "").trim();
+
+      if (bankSortCodeChanged || bankNameChanged) {
+        // Validate Bank Name and Sort Code pair server-side
+        const submittedBankName = data.bankName !== undefined ? data.bankName : (original.bankName || "");
+        const submittedSortCode = data.bankSortCode !== undefined ? data.bankSortCode : (original.bankSortCode || "");
+
+        const pool = getPgPool();
+        let canonicalBanks: any[] | undefined = undefined;
+        let aliases: any[] | undefined = undefined;
+        if (pool && isPgActive) {
+          const banksRes = await pool.query("SELECT id, canonical_bank_name, approved_sort_code FROM bank_directory WHERE is_active = TRUE");
+          canonicalBanks = banksRes.rows;
+          const aliasesRes = await pool.query(`
+            SELECT ba.alias, bd.id, bd.canonical_bank_name, bd.approved_sort_code 
+            FROM bank_aliases ba
+            JOIN bank_directory bd ON ba.bank_directory_id = bd.id
+            WHERE ba.is_active = TRUE AND bd.is_active = TRUE
+          `);
+          aliases = aliasesRes.rows;
+        }
+
+        const match = resolveOfficialBankMatch(submittedBankName, submittedSortCode, canonicalBanks, aliases);
+
+        // Update workflow version
+        data.workflowVersion = ((original as any).workflowVersion || 1) + 1;
+
+        // Insert into bank_reconciliation_audit
+        if (pool && isPgActive) {
+          try {
+            const opId = crypto.randomUUID();
+            await pool.query(`
+              INSERT INTO bank_reconciliation_audit (
+                operation_id, beneficiary_id, tvet_id, tsp_id, current_bank_name,
+                matched_canonical_bank_id, old_sort_code, new_sort_code,
+                match_method, changed_by, reason
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            `, [
+              opId,
+              original.id,
+              original.customFields?.tvet_id || (original as any).tvet_id || original.id,
+              original.tspId || "00000000-0000-0000-0000-000000000001",
+              submittedBankName,
+              match.canonicalBankId,
+              original.bankSortCode || "",
+              submittedSortCode,
+              match.matchType || "MANUAL_RECONCILIATION",
+              req.user!.email,
+              data.reconciliationReason || "Official bank sort-code reconciliation"
+            ]);
+          } catch (auditErr) {
+            console.error("Failed to insert bank reconciliation audit log:", auditErr);
+          }
+        }
+      }
+
       // Lock check: prevent modification to locked form fields unless SUPER_ADMIN
       if ((original.admissionFormStatus === "CONFIRMED" || original.admissionFormStatus === "LOCKED" || original.admissionFormCompleted) && req.user!.role !== "SUPER_ADMIN") {
         const lockedFields = [
           "guardianName", "guardianAddress", "guardianPhone", 
-          "physicalChallenge", "bankAccountHolder", "bankName", 
-          "bankSortCode", "bankAccountNumber", "bvn", "admissionFormStatus", "admissionFormCompleted"
+          "physicalChallenge", "admissionFormStatus", "admissionFormCompleted"
         ];
         const isTryingToModifyLockedField = lockedFields.some(field => data[field] !== undefined && data[field] !== (original as any)[field]);
         if (isTryingToModifyLockedField) {
@@ -17543,7 +18541,8 @@ app.get("/api/quality-accreditation/report", requireAuth, async (req: Authentica
 
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       res.setHeader("Content-Disposition", `attachment; filename=ideas_tvet_qa_${type}_report.xlsx`);
-      await workbook.xlsx.write(res);
+      const buffer = await workbook.xlsx.writeBuffer();
+      return res.send(buffer);
     } else if (format === "pdf") {
       let html = `
         <!DOCTYPE html>
@@ -17868,7 +18867,8 @@ app.get("/api/financials-roi/report", requireAuth, async (req: AuthenticatedRequ
 
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       res.setHeader("Content-Disposition", `attachment; filename=ideas_tvet_financials_${type}_report.xlsx`);
-      await workbook.xlsx.write(res);
+      const buffer = await workbook.xlsx.writeBuffer();
+      return res.send(buffer);
     } else if (format === "pdf") {
       const html = `
         <!DOCTYPE html>
@@ -17985,7 +18985,8 @@ app.get("/api/executive-m-and-e/export-report", requireAuth, async (req, res) =>
     if (format === "excel") {
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       res.setHeader("Content-Disposition", `attachment; filename=ideas_tvet_m_and_e_${type}_report.xlsx`);
-      await workbook.xlsx.write(res);
+      const buffer = await workbook.xlsx.writeBuffer();
+      return res.send(buffer);
     } else if (format === "pdf") {
       const titleStr = `${type.toString().toUpperCase()} M&E PROGRESS REPORT`;
       const html = `
@@ -18231,33 +19232,50 @@ app.get("/api/export/excel", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFF
     <tbody>
   `;
 
-    for (const b of filtered) {
-      const formattedDate = b.createdAt ? new Date(b.createdAt).toLocaleDateString("en-GB") : "N/A";
-      let embedSrc = "";
-      if (b.hasPhoto) {
-        const photo = await DbRepo.getBeneficiaryPhotoOnly(b.id);
-        if (photo) {
-          embedSrc = await optimizeExportPhoto(photo);
-        }
+    const chunkSize = 25;
+    for (let i = 0; i < filtered.length; i += chunkSize) {
+      const chunk = filtered.slice(i, i + chunkSize);
+      const chunkIds = chunk.map(b => b.id);
+      const photosMap = await DbRepo.getBeneficiaryPhotosBatch(chunkIds);
+
+      // Process photo optimization for the chunk in parallel using Promise.all to respect bounded concurrency
+      const optimizedChunkPhotos = await Promise.all(
+        chunk.map(async b => {
+          let embedSrc = "";
+          if (b.hasPhoto) {
+            const photo = photosMap[b.id];
+            if (photo) {
+              embedSrc = await optimizeExportPhoto(photo);
+            }
+          }
+          return { id: b.id, embedSrc };
+        })
+      );
+
+      const optimizedMap = new Map(optimizedChunkPhotos.map(o => [o.id, o.embedSrc]));
+
+      for (const b of chunk) {
+        const formattedDate = b.createdAt ? new Date(b.createdAt).toLocaleDateString("en-GB") : "N/A";
+        const embedSrc = optimizedMap.get(b.id) || "";
+        
+        html += `
+        <tr>
+          <td align="center" valign="middle" height="60">
+            ${embedSrc ? `<img class="photo-img" src="${embedSrc}" width="50" height="50" />` : `<span style="font-size: 9px; color:#64748b; font-weight: bold;">NO PHOTO</span>`}
+          </td>
+          <td>${b.firstName}</td>
+          <td>${b.lastName}</td>
+          <td style="mso-number-format:'@';">${b.nin}</td>
+          <td style="mso-number-format:'@';">${b.bvn}</td>
+          <td>${b.state}</td>
+          <td>${b.city}</td>
+          <td>${b.tsp || "Unique Technology Nig. Ltd"}</td>
+          <td>${b.skillSector || "Computer Hardware and Cell Phone Repairs"}</td>
+          <td style="font-weight: bold; color: #312e81;">${b.admissionStatus || "Draft"}</td>
+          <td>${formattedDate}</td>
+        </tr>
+      `;
       }
-      
-      html += `
-      <tr>
-        <td align="center" valign="middle" height="60">
-          ${embedSrc ? `<img class="photo-img" src="${embedSrc}" width="50" height="50" />` : `<span style="font-size: 9px; color:#64748b; font-weight: bold;">NO PHOTO</span>`}
-        </td>
-        <td>${b.firstName}</td>
-        <td>${b.lastName}</td>
-        <td style="mso-number-format:'@';">${b.nin}</td>
-        <td style="mso-number-format:'@';">${b.bvn}</td>
-        <td>${b.state}</td>
-        <td>${b.city}</td>
-        <td>${b.tsp || "Unique Technology Nig. Ltd"}</td>
-        <td>${b.skillSector || "Computer Hardware and Cell Phone Repairs"}</td>
-        <td style="font-weight: bold; color: #312e81;">${b.admissionStatus || "Draft"}</td>
-        <td>${formattedDate}</td>
-      </tr>
-    `;
     }
 
     if (filtered.length === 0) {
@@ -18651,20 +19669,36 @@ app.get("/api/export/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFIC
                 <tbody>
     `;
 
-    for (let index = 0; index < filtered.length; index++) {
-      const b = filtered[index];
-      const lga = b.customFields?.["Local Government Area (LGA)"] || b.customFields?.["lga"] || b.customFields?.["LGA"] || b.customFields?.["cf_lga"] || "N/A";
-      const age = b.customFields?.["Age"] || b.customFields?.["age"] || b.customFields?.["Date of Birth"] || b.customFields?.["dob"] || "N/A";
-      
-      let embedSrc = "";
-      if (b.hasPhoto) {
-        const photo = await DbRepo.getBeneficiaryPhotoOnly(b.id);
-        if (photo) {
-          embedSrc = await optimizeExportPhoto(photo);
-        }
-      }
+    const chunkSize = 25;
+    for (let i = 0; i < filtered.length; i += chunkSize) {
+      const chunk = filtered.slice(i, i + chunkSize);
+      const chunkIds = chunk.map(b => b.id);
+      const photosMap = await DbRepo.getBeneficiaryPhotosBatch(chunkIds);
 
-      html += `
+      // Process photo optimization for the chunk in parallel using Promise.all to respect bounded concurrency
+      const optimizedChunkPhotos = await Promise.all(
+        chunk.map(async b => {
+          let embedSrc = "";
+          if (b.hasPhoto) {
+            const photo = photosMap[b.id];
+            if (photo) {
+              embedSrc = await optimizeExportPhoto(photo);
+            }
+          }
+          return { id: b.id, embedSrc };
+        })
+      );
+
+      const optimizedMap = new Map(optimizedChunkPhotos.map(o => [o.id, o.embedSrc]));
+
+      for (let j = 0; j < chunk.length; j++) {
+        const b = chunk[j];
+        const index = i + j;
+        const lga = b.customFields?.["Local Government Area (LGA)"] || b.customFields?.["lga"] || b.customFields?.["LGA"] || b.customFields?.["cf_lga"] || "N/A";
+        const age = b.customFields?.["Age"] || b.customFields?.["age"] || b.customFields?.["Date of Birth"] || b.customFields?.["dob"] || "N/A";
+        const embedSrc = optimizedMap.get(b.id) || "";
+
+        html += `
                   <tr style="page-break-inside: avoid; break-inside: avoid;">
                     <td style="border: 1.5px solid #000000; padding: 12px; text-align: center; font-weight: bold; font-family: monospace; font-size: 11px; vertical-align: middle; color: #1e293b; background-color: #ffffff;">
                       ${index + 1}
@@ -18718,7 +19752,8 @@ app.get("/api/export/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFIC
                       </table>
                     </td>
                   </tr>
-      `;
+        `;
+      }
     }
 
     html += `
@@ -18944,17 +19979,34 @@ app.get("/api/export/word", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFI
         <tbody>
     `;
 
-    for (let index = 0; index < filtered.length; index++) {
-      const b = filtered[index];
-      let embedSrc = "";
-      if (b.hasPhoto) {
-        const photo = await DbRepo.getBeneficiaryPhotoOnly(b.id);
-        if (photo) {
-          embedSrc = await optimizeExportPhoto(photo);
-        }
-      }
+    const chunkSize = 25;
+    for (let i = 0; i < filtered.length; i += chunkSize) {
+      const chunk = filtered.slice(i, i + chunkSize);
+      const chunkIds = chunk.map(b => b.id);
+      const photosMap = await DbRepo.getBeneficiaryPhotosBatch(chunkIds);
 
-      html += `
+      // Process photo optimization for the chunk in parallel using Promise.all to respect bounded concurrency
+      const optimizedChunkPhotos = await Promise.all(
+        chunk.map(async b => {
+          let embedSrc = "";
+          if (b.hasPhoto) {
+            const photo = photosMap[b.id];
+            if (photo) {
+              embedSrc = await optimizeExportPhoto(photo);
+            }
+          }
+          return { id: b.id, embedSrc };
+        })
+      );
+
+      const optimizedMap = new Map(optimizedChunkPhotos.map(o => [o.id, o.embedSrc]));
+
+      for (let j = 0; j < chunk.length; j++) {
+        const b = chunk[j];
+        const index = i + j;
+        const embedSrc = optimizedMap.get(b.id) || "";
+
+        html += `
           <tr style="page-break-inside: avoid; break-inside: avoid;">
             <td style="border: 1.5pt solid #000000; padding: 10pt; text-align: center; font-weight: bold; font-family: monospace; font-size: 11pt; vertical-align: middle; color: #1e293b; background-color: #ffffff;">
               ${index + 1}
@@ -19008,7 +20060,7 @@ app.get("/api/export/word", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFI
                   <td style="padding: 4pt; width: 140pt; font-weight: bold; color: #475569;">Highest Qualification:</td>
                   <td style="padding: 4pt; font-weight: bold; color: #000000;">${b.educationQualification || "N/A"}</td>
                 </tr>
-
+ 
                 <!-- SECTION B -->
                 <tr style="background-color: #000000;"><td colspan="2" style="padding: 4pt 8pt; color: #ffffff; font-weight: bold; font-size: 9pt; text-transform: uppercase;">SECTION B: PARENT/GUARDIAN INFORMATION</td></tr>
                 <tr style="border-bottom: 1px dashed #cccccc;">
@@ -19023,14 +20075,14 @@ app.get("/api/export/word", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFI
                   <td style="padding: 4pt; width: 140pt; font-weight: bold; color: #475569;">Phone of Parent/Guardian:</td>
                   <td style="padding: 4pt; font-weight: bold; color: #000000;">${b.guardianPhone || "N/A"}</td>
                 </tr>
-
+ 
                 <!-- SECTION C -->
                 <tr style="background-color: #000000;"><td colspan="2" style="padding: 4pt 8pt; color: #ffffff; font-weight: bold; font-size: 9pt; text-transform: uppercase;">SECTION C: SPECIAL NEEDS</td></tr>
                 <tr style="border-bottom: 1px dashed #cccccc;">
                   <td style="padding: 4pt; width: 140pt; font-weight: bold; color: #475569;">Physical Challenge:</td>
                   <td style="padding: 4pt; font-weight: bold; color: #000000;">${b.physicalChallenge || "None"}</td>
                 </tr>
-
+ 
                 <!-- SECTION D -->
                 <tr style="background-color: #000000;"><td colspan="2" style="padding: 4pt 8pt; color: #ffffff; font-weight: bold; font-size: 9pt; text-transform: uppercase;">SECTION D: BANK DETAILS</td></tr>
                 <tr style="border-bottom: 1px dashed #cccccc;">
@@ -19054,10 +20106,11 @@ app.get("/api/export/word", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN_OFFI
                   <td style="padding: 4pt; font-weight: bold; color: #000000;">${b.bankAccountNumber || "N/A"}</td>
                 </tr>
               </table>
-
+ 
             </td>
           </tr>
-      `;
+        `;
+      }
     }
 
     html += `
@@ -19165,17 +20218,26 @@ app.post("/api/export/album/pdf", requireAuth, requireRole(["SUPER_ADMIN", "ADMI
       const chunkIds = chunk.map(b => b.id);
       const photosMap = await DbRepo.getBeneficiaryPhotosBatch(chunkIds);
 
+      // Process photo optimization for the chunk in parallel using Promise.all to respect bounded concurrency
+      const optimizedChunkPhotos = await Promise.all(
+        chunk.map(async b => {
+          let embedSrc = "";
+          const photo = photosMap[b.id];
+          if (photo) {
+            embedSrc = await optimizeExportPhoto(photo);
+          }
+          return { id: b.id, embedSrc };
+        })
+      );
+
+      const optimizedMap = new Map(optimizedChunkPhotos.map(o => [o.id, o.embedSrc]));
+
       for (let j = 0; j < chunk.length; j++) {
         const b = chunk[j];
         const index = i + j;
         const lga = b.customFields?.["Local Government Area (LGA)"] || b.customFields?.["lga"] || b.customFields?.["LGA"] || b.customFields?.["cf_lga"] || "N/A";
         const age = b.customFields?.["Age"] || b.customFields?.["age"] || b.customFields?.["Date of Birth"] || b.customFields?.["dob"] || "N/A";
-
-        let embedSrc = "";
-        const photo = photosMap[b.id];
-        if (photo) {
-          embedSrc = await optimizeExportPhoto(photo);
-        }
+        const embedSrc = optimizedMap.get(b.id) || "";
 
         rowsHtml += `
                   <tr style="page-break-inside: avoid; break-inside: avoid;">

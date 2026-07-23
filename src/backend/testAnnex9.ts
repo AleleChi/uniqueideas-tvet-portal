@@ -74,6 +74,56 @@ async function runTests() {
     failed++;
   }
 
+  // --- TEST CASE 3: Canonical Bank Matcher & Sort-Code Normalization ---
+  try {
+    console.log("\n--- Test Case 3: Canonical Bank Matcher & Normalization ---");
+    const { resolveOfficialBankMatch, normalizeSortCode } = await import("./bankReconciliation.service.js");
+
+    // Check normalization
+    assert(normalizeSortCode(33) === "033", "numeric 33 normalizes to '033'");
+    assert(normalizeSortCode("33") === "033", "string '33' normalizes to '033'");
+    assert(normalizeSortCode("033") === "033", "string '033' normalizes to '033'");
+    assert(normalizeSortCode(70) === "070", "numeric 70 normalizes to '070'");
+    assert(normalizeSortCode("070") === "070", "string '070' normalizes to '070'");
+    assert(normalizeSortCode("1234") === "INVALID_FORMAT", "'1234' is INVALID_FORMAT");
+    assert(normalizeSortCode("abc") === "INVALID_FORMAT", "non-numeric is INVALID_FORMAT");
+
+    // Check UBA aliases
+    assert(resolveOfficialBankMatch("UBA", "033").status === "MATCHED", "UBA + '033' is MATCHED");
+    assert(resolveOfficialBankMatch("UBA PLC", "033").status === "MATCHED", "UBA PLC + '033' is MATCHED");
+    assert(resolveOfficialBankMatch("United Bank for Africa", "033").status === "MATCHED", "United Bank for Africa + '033' is MATCHED");
+    assert(resolveOfficialBankMatch("United Bank Of Africa", "033").status === "MATCHED", "United Bank Of Africa + '033' is MATCHED");
+    assert(resolveOfficialBankMatch("United Bank For Africa", "033").status === "MATCHED", "United Bank For Africa + '033' is MATCHED");
+    assert(resolveOfficialBankMatch("United Bank of Africa Plc", "033").status === "MATCHED", "United Bank of Africa Plc + '033' is MATCHED");
+
+    // Check Fidelity aliases
+    assert(resolveOfficialBankMatch("Fidelity Bank", "070").status === "MATCHED", "Fidelity Bank + '070' is MATCHED");
+    assert(resolveOfficialBankMatch("Fidelity Bank PLC", "070").status === "MATCHED", "Fidelity Bank PLC + '070' is MATCHED");
+    assert(resolveOfficialBankMatch("FIDELITY BANK PLC", "070").status === "MATCHED", "FIDELITY BANK PLC + '070' is MATCHED");
+
+    // Check Union Bank aliases
+    assert(resolveOfficialBankMatch("Union Bank", "032").status === "MATCHED", "Union Bank + '032' is MATCHED");
+    assert(resolveOfficialBankMatch("Union Bank of Nigeria", "032").status === "MATCHED", "Union Bank of Nigeria + '032' is MATCHED");
+    assert(resolveOfficialBankMatch("Union Bank Of Nigeria", "032").status === "MATCHED", "Union Bank Of Nigeria + '032' is MATCHED");
+    assert(resolveOfficialBankMatch("UNION BANK OF NIG. PLC", "032").status === "MATCHED", "UNION BANK OF NIG. PLC + '032' is MATCHED");
+
+    // Check other banks
+    assert(resolveOfficialBankMatch("Access Bank", "044").status === "MATCHED", "Access Bank + '044' is MATCHED");
+    assert(resolveOfficialBankMatch("Guaranty Trust Bank", "058").status === "MATCHED", "Guaranty Trust Bank + '058' is MATCHED");
+    assert(resolveOfficialBankMatch("GTBank", "058").status === "MATCHED", "GTBank + '058' is MATCHED");
+    assert(resolveOfficialBankMatch("GTB", "058").status === "MATCHED", "GTB + '058' is MATCHED");
+    assert(resolveOfficialBankMatch("Ecobank", "050").status === "MATCHED", "Ecobank + '050' is MATCHED");
+    assert(resolveOfficialBankMatch("Ecobank Nigeria", "050").status === "MATCHED", "Ecobank Nigeria + '050' is MATCHED");
+
+    // Check mismatches
+    assert(resolveOfficialBankMatch("Fidelity Bank", "123").status === "MISMATCH", "Fidelity Bank + '123' is MISMATCH");
+    assert(resolveOfficialBankMatch("UBA", "123").status === "MISMATCH", "UBA + '123' is MISMATCH");
+
+  } catch (err: any) {
+    console.error("Test Case 3 failed with error:", err);
+    failed++;
+  }
+
   // --- SUMMARY ---
   console.log("\n========================================");
   console.log(`🏁 TEST RUN SUMMARY: ${passed} passed, ${failed} failed`);

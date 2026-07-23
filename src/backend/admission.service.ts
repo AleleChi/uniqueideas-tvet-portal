@@ -30,6 +30,19 @@ export class AdmissionService {
   }
 
   /**
+   * Shared Canonical Beneficiary Email Resolver
+   * Follows strict precedence: (1) Canonical beneficiary/profile email, 
+   * (2) Verified admission/application email (only if canonical is missing).
+   */
+  static async resolveCanonicalBeneficiaryEmail(beneficiaryId: string): Promise<{
+    email: string | null;
+    sourceField: string | null;
+    validationStatus: "VALID" | "INVALID" | "MISSING";
+  }> {
+    return DbRepo.resolveCanonicalBeneficiaryEmail(beneficiaryId);
+  }
+
+  /**
    * Translates incoming string references resiliently.
    */
   static async resolveBeneficiaryIdResiliently(inputKey: string, pool: any): Promise<string | null> {
@@ -333,14 +346,17 @@ export class AdmissionService {
           console.error("[sendOfferLetter] Failed to upsert admissions record:", admInsErr);
         }
 
+        const emailResolve = await DbRepo.resolveCanonicalBeneficiaryEmail(resolvedId);
+        const activeEmail = emailResolve.email || "pending@dispatch.net";
+
         try {
           await client.query(
             `INSERT INTO document_dispatches (
                id, beneficiary_id, document_type, email_address, status, secure_token, sent_at, expires_at, created_at, updated_at
              ) VALUES (
                gen_random_uuid(), $1, 'ADMISSION_LETTER', $2, 'SENT', $3, NOW(), NOW() + INTERVAL '10 days', NOW(), NOW()
-             ) ON CONFLICT (secure_token) DO UPDATE SET updated_at = NOW()`,
-            [resolvedId, 'pending@dispatch.net', tokenRes.secureToken]
+             ) ON CONFLICT (secure_token) DO UPDATE SET updated_at = NOW(), email_address = $2`,
+            [resolvedId, activeEmail, tokenRes.secureToken]
           );
         } catch (dispErr) {
           console.error("[sendAdmissionOffer] Dispatch row pre-registration warning:", dispErr);
@@ -452,7 +468,8 @@ export class AdmissionService {
     }
 
     // Send the email instantly with in-memory buffers to maintain sub-second response times
-    const toEmail = beneficiary.email || "uniqueideasproject@gmail.com";
+    const resolvedEmailResult = await DbRepo.resolveCanonicalBeneficiaryEmail(resolvedId);
+    const toEmail = resolvedEmailResult.email || "uniqueideasproject@gmail.com";
     console.log(`[AdmissionService] Transmitting email instantly to: ${toEmail}. PDFs attached: ${!pdfRendererUnavailable}`);
     const emailSendStart = performance.now();
     const mailResult = await EmailService.sendAdmissionEmail(

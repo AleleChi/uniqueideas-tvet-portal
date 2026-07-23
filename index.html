@@ -119,7 +119,15 @@
           }
 
           try {
-            if (!window.ethereum) {
+            var desc = Object.getOwnPropertyDescriptor(window, 'ethereum');
+            if (!desc || desc.configurable) {
+              Object.defineProperty(window, 'ethereum', {
+                value: _safeProvider,
+                writable: true,
+                configurable: true,
+                enumerable: true
+              });
+            } else if (desc.writable || typeof desc.set === 'function') {
               window.ethereum = _safeProvider;
             }
           } catch (err) {
@@ -127,11 +135,19 @@
           }
 
           try {
-            window.web3 = {
-              get currentProvider() {
-                return window.ethereum;
-              }
-            };
+            var web3Desc = Object.getOwnPropertyDescriptor(window, 'web3');
+            if (!web3Desc || web3Desc.configurable) {
+              Object.defineProperty(window, 'web3', {
+                value: {
+                  get currentProvider() {
+                    return window.ethereum;
+                  }
+                },
+                writable: true,
+                configurable: true,
+                enumerable: true
+              });
+            }
           } catch (err) {
             console.warn('[SHIELD] Unable to define window.web3 safely:', err);
           }

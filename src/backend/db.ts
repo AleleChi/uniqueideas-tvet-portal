@@ -8,6 +8,7 @@ import fs from "fs";
 import path from "path";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
 
 // Monkeypatch pg.Client and pg.Pool to automatically map the legacy "state_imo_id_default" to the real Imo UUID in all queries
 const originalClientQuery = pg.Client.prototype.query;
@@ -29,7 +30,7 @@ pg.Pool.prototype.query = function (this: any, sql: any, params: any, cb?: any) 
   }
   return originalPoolQuery.call(this, sql, params, cb);
 } as any;
-import { Beneficiary, ProgramStatus, AuditLog, CustomField, OrganizationSettings, TrainingProgram, WorkflowHistory, InstitutionLetterhead, AdmissionFormTemplate } from "../types";
+import { Beneficiary, ProgramStatus, AuditLog, CustomField, OrganizationSettings, TrainingProgram, WorkflowHistory, InstitutionLetterhead, AdmissionFormTemplate, PublicSiteSettings } from "../types";
 import { requestStorage } from "./request-storage";
 import { NIGERIAN_STATES_AND_LGAS } from "../utils/nigerianLgasData";
 
@@ -94,6 +95,34 @@ export function calculateAge(dob: string | undefined | null): number | null {
   } catch {
     return null;
   }
+}
+
+export function isSameBank(bankA: string, bankB: string): boolean {
+  const norm = (b: string) => {
+    let n = (b || "").trim().toUpperCase();
+    if (n.includes("ZENITH")) return "ZENITH";
+    if (n.includes("ACCESS")) return "ACCESS";
+    if (n.includes("GUARANTY") || n.includes("GTB") || n.includes("GT BANK") || n.includes("GTBANK")) return "GTB";
+    if (n.includes("UNITED BANK FOR AFRICA") || n.includes("UBA")) return "UBA";
+    if (n.includes("FIRST BANK") || n.includes("FBN") || n.includes("FIRSTBANK")) return "FIRSTBANK";
+    if (n.includes("FIDELITY")) return "FIDELITY";
+    if (n.includes("UNION BANK") || n.includes("UNIONBANK")) return "UNION";
+    if (n.includes("STERLING")) return "STERLING";
+    if (n.includes("WEMA")) return "WEMA";
+    if (n.includes("ECOBANK")) return "ECOBANK";
+    if (n.includes("STANBIC")) return "STANBIC";
+    if (n.includes("KEYSTONE")) return "KEYSTONE";
+    if (n.includes("POLARIS")) return "POLARIS";
+    if (n.includes("FCMB") || n.includes("FIRST CITY")) return "FCMB";
+    return n.replace(/[^A-Z0-9]/g, "");
+  };
+  return norm(bankA) === norm(bankB);
+}
+
+export function normalizeAccountNumber(acc: string): string {
+  if (!acc) return "";
+  const cleaned = acc.trim().replace(/[\s-]/g, "");
+  return cleaned;
 }
 
 export function getDynamicEligibility(b: any): { age: number | null; eligibilityStatus: "ELIGIBLE" | "OVER_AGE" | "UNKNOWN_DOB" | "OVERRIDDEN" } {
@@ -613,6 +642,43 @@ const SCHEMA_DDL = `
     training_start_date VARCHAR(100),
     training_end_date VARCHAR(100),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- Public Site Settings table
+  CREATE TABLE IF NOT EXISTS public_site_settings (
+    id VARCHAR(50) PRIMARY KEY,
+    setting_group VARCHAR(50) NOT NULL DEFAULT 'public_site',
+    setting_key VARCHAR(50) NOT NULL DEFAULT 'main',
+    support_email VARCHAR(255) NOT NULL DEFAULT 'support@ideas-tvet.ng',
+    support_phone VARCHAR(100) NOT NULL DEFAULT '+234 (0) 90 3242 5592',
+    dialable_phone VARCHAR(100) NOT NULL DEFAULT '+2349032425592',
+    alt_phone VARCHAR(100) DEFAULT '',
+    office_hours_days VARCHAR(255) NOT NULL DEFAULT 'Monday to Friday',
+    opening_time VARCHAR(50) NOT NULL DEFAULT '8:30 AM',
+    closing_time VARCHAR(50) NOT NULL DEFAULT '5:00 PM',
+    timezone VARCHAR(50) NOT NULL DEFAULT 'GMT+1',
+    public_holiday_note VARCHAR(255) NOT NULL DEFAULT 'excluding public holidays',
+    office_name VARCHAR(255) NOT NULL DEFAULT 'Federal Ministry of Education Headquarters',
+    address_line1 TEXT NOT NULL DEFAULT 'Plot 245 Samuel Ademulegun Avenue',
+    address_line2 TEXT NOT NULL DEFAULT 'Central Business District',
+    city VARCHAR(100) NOT NULL DEFAULT 'Abuja',
+    state_fct VARCHAR(100) NOT NULL DEFAULT 'FCT',
+    country VARCHAR(100) NOT NULL DEFAULT 'Nigeria',
+    postal_code VARCHAR(50) DEFAULT '',
+    map_url TEXT DEFAULT '',
+    footer_description TEXT NOT NULL DEFAULT 'Supporting practical training, clearer admissions and better access to technical skills.',
+    copyright TEXT NOT NULL DEFAULT 'Federal Ministry of Education · National IDEAS Initiative Project',
+    privacy_policy_url TEXT NOT NULL DEFAULT '#privacy',
+    terms_of_service_url TEXT NOT NULL DEFAULT '#terms',
+    accessibility_url TEXT DEFAULT '',
+    status VARCHAR(20) NOT NULL DEFAULT 'PUBLISHED',
+    version INT NOT NULL DEFAULT 1,
+    updated_by VARCHAR(255) DEFAULT 'system',
+    published_by VARCHAR(255) DEFAULT 'system',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    published_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_public_site_group_key UNIQUE (setting_group, setting_key)
   );
 
   -- Training Programs table
@@ -1143,6 +1209,36 @@ const SCHEMA_DDL = `
   CREATE UNIQUE INDEX IF NOT EXISTS idx_roster_members_active_b ON reporting_roster_members(roster_id, beneficiary_id) WHERE removed_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_reporting_rosters_tsp ON reporting_rosters(tsp_id);
   CREATE INDEX IF NOT EXISTS idx_reporting_rosters_active ON reporting_rosters(is_active);
+
+  -- Create institutional_partners table
+  CREATE TABLE IF NOT EXISTS institutional_partners (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organisation_name VARCHAR(255) NOT NULL,
+    short_name VARCHAR(100) NOT NULL,
+    slug VARCHAR(255) UNIQUE NOT NULL,
+    category VARCHAR(100) NOT NULL,
+    description TEXT,
+    website_url VARCHAR(255),
+    logo_original_url TEXT NOT NULL,
+    logo_optimized_url TEXT NOT NULL,
+    logo_alt_text TEXT NOT NULL,
+    logo_variant VARCHAR(50) DEFAULT 'colour',
+    background_mode VARCHAR(50) DEFAULT 'transparent',
+    display_scale NUMERIC DEFAULT 1.0,
+    display_order INTEGER NOT NULL,
+    status VARCHAR(50) DEFAULT 'draft',
+    is_featured BOOLEAN DEFAULT true,
+    created_by UUID,
+    updated_by UUID,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    published_at TIMESTAMP WITH TIME ZONE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_inst_partners_status ON institutional_partners(status);
+  CREATE INDEX IF NOT EXISTS idx_inst_partners_order ON institutional_partners(display_order);
+  CREATE INDEX IF NOT EXISTS idx_inst_partners_category ON institutional_partners(category);
+  CREATE INDEX IF NOT EXISTS idx_inst_partners_updated_at ON institutional_partners(updated_at);
 `;
 
 /**
@@ -2011,6 +2107,38 @@ export async function initDb(): Promise<void> {
       ) ON CONFLICT (id) DO NOTHING;
     `);
 
+    // Bootstrap default public site settings
+    await pool.query(`
+      INSERT INTO public_site_settings (
+        id, setting_group, setting_key, support_email, support_phone, dialable_phone, alt_phone,
+        office_hours_days, opening_time, closing_time, timezone, public_holiday_note,
+        office_name, address_line1, address_line2, city, state_fct, country, postal_code, map_url,
+        footer_description, copyright, privacy_policy_url, terms_of_service_url, accessibility_url,
+        status, version, updated_by, published_by
+      ) VALUES 
+      (
+        'public_site_published', 'public_site', 'published',
+        'support@ideas-tvet.ng', '+234 (0) 90 3242 5592', '+2349032425592', '',
+        'Monday to Friday', '8:30 AM', '5:00 PM', 'GMT+1', 'excluding public holidays',
+        'Federal Ministry of Education Headquarters', 'Plot 245 Samuel Ademulegun Avenue', 'Central Business District', 'Abuja', 'FCT', 'Nigeria', '', '',
+        'Supporting practical training, clearer admissions and better access to technical skills.',
+        'Federal Ministry of Education · National IDEAS Initiative Project',
+        '#privacy', '#terms', '#accessibility',
+        'PUBLISHED', 1, 'system', 'system'
+      ),
+      (
+        'public_site_draft', 'public_site', 'draft',
+        'support@ideas-tvet.ng', '+234 (0) 90 3242 5592', '+2349032425592', '',
+        'Monday to Friday', '8:30 AM', '5:00 PM', 'GMT+1', 'excluding public holidays',
+        'Federal Ministry of Education Headquarters', 'Plot 245 Samuel Ademulegun Avenue', 'Central Business District', 'Abuja', 'FCT', 'Nigeria', '', '',
+        'Supporting practical training, clearer admissions and better access to technical skills.',
+        'Federal Ministry of Education · National IDEAS Initiative Project',
+        '#privacy', '#terms', '#accessibility',
+        'DRAFT', 1, 'system', 'system'
+      )
+      ON CONFLICT (setting_group, setting_key) DO NOTHING;
+    `);
+
     // Bootstrap default training programs
     await pool.query(`
       INSERT INTO training_programs (id, name, sector, code, total_hours) VALUES
@@ -2845,6 +2973,13 @@ export async function initDb(): Promise<void> {
     } catch (recErr: any) {
       console.error("[DB Init Cache] Silent block of automatic template validation on start up:", recErr.message || recErr);
     }
+
+    // Seed institutional partners on server startup/bootstrap
+    try {
+      await DbRepo.seedInstitutionalPartners(pool);
+    } catch (partnerSeedErr: any) {
+      console.error("[DB Init] Failed to seed institutional partners:", partnerSeedErr.message || partnerSeedErr);
+    }
   } catch (err) {
     console.error("[DB] Failed to initialize PostgreSQL tables/relations:", err);
   } finally {
@@ -2881,6 +3016,7 @@ export function loadJsonState(): {
   eoiApplications?: any[];
   reporting_rosters?: any[];
   reporting_roster_members?: any[];
+  institutional_partners?: any[];
 } {
   try {
     if (fs.existsSync(DB_FILE)) {
@@ -3287,6 +3423,74 @@ export function loadJsonState(): {
       if (!data.reporting_roster_members) {
         data.reporting_roster_members = [];
       }
+      if (!data.institutional_partners || data.institutional_partners.length === 0) {
+        data.institutional_partners = [
+          {
+            id: "277e902b-a45e-4074-b52b-2e970b471ca4",
+            organisation_name: "World Bank",
+            short_name: "World Bank",
+            slug: "world-bank",
+            category: "Development Partner",
+            description: "Supported by leading development and education partners",
+            website_url: "https://www.worldbank.org",
+            logo_original_url: "/worldbank-clean.png",
+            logo_optimized_url: "/worldbank-clean.png",
+            logo_alt_text: "World Bank Group Logo",
+            logo_variant: "colour",
+            background_mode: "transparent",
+            display_scale: 1.0,
+            display_order: 1,
+            status: "published",
+            is_featured: true,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            published_at: new Date().toISOString()
+          },
+          {
+            id: "d4ee711f-50b0-466d-88b9-8ca6fa6b780f",
+            organisation_name: "Federal Ministry of Education",
+            short_name: "FME Nigeria",
+            slug: "federal-ministry-of-education",
+            category: "Government Ministry",
+            description: "National supervisory authority for education standardisation.",
+            website_url: "https://education.gov.ng",
+            logo_original_url: "/fedministry-clean.png",
+            logo_optimized_url: "/fedministry-clean.png",
+            logo_alt_text: "Federal Ministry of Education Nigeria Logo",
+            logo_variant: "colour",
+            background_mode: "transparent",
+            display_scale: 1.0,
+            display_order: 2,
+            status: "published",
+            is_featured: true,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            published_at: new Date().toISOString()
+          },
+          {
+            id: "96d5952c-47fc-4e6f-ad6c-9477e31b79f6",
+            organisation_name: "IDEAS-TVET Initiative",
+            short_name: "IDEAS TVET",
+            slug: "ideas-tvet-initiative",
+            category: "Programme Initiative",
+            description: "Federal Ministry of Education Innovation Development and Effectiveness in the Acquisition of Skills Project.",
+            website_url: "https://ideasproject.gov.ng",
+            logo_original_url: "/ideas-clean.png",
+            logo_optimized_url: "/ideas-clean.png",
+            logo_alt_text: "IDEAS-TVET Initiative Logo",
+            logo_variant: "colour",
+            background_mode: "transparent",
+            display_scale: 1.0,
+            display_order: 3,
+            status: "published",
+            is_featured: true,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            published_at: new Date().toISOString()
+          }
+        ];
+        fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), "utf-8");
+      }
       return data;
     }
   } catch (e) {
@@ -3307,7 +3511,8 @@ export function loadJsonState(): {
     skills: [],
     eoiApplications: [],
     reporting_rosters: [],
-    reporting_roster_members: []
+    reporting_roster_members: [],
+    institutional_partners: []
   };
 }
 
@@ -3330,6 +3535,7 @@ export function saveJsonState(state: {
   eoiApplications?: any[];
   reporting_rosters?: any[];
   reporting_roster_members?: any[];
+  institutional_partners?: any[];
 }) {
   try {
     if (!state.institutionLetterheads) {
@@ -3367,6 +3573,9 @@ export function saveJsonState(state: {
     }
     if (!state.reporting_roster_members) {
       state.reporting_roster_members = [];
+    }
+    if (!state.institutional_partners) {
+      state.institutional_partners = [];
     }
     fs.writeFileSync(DB_FILE, JSON.stringify(state, null, 2), "utf-8");
   } catch (e) {
@@ -5083,6 +5292,536 @@ export class DbRepo {
   }
 
   /**
+   * Shared Canonical Beneficiary Email Resolver
+   * Follows strict precedence: (1) Canonical beneficiary/profile email, 
+   * (2) Verified admission/application email (only if canonical is missing).
+   */
+  static async resolveCanonicalBeneficiaryEmail(beneficiaryId: string): Promise<{
+    email: string | null;
+    sourceField: string | null;
+    validationStatus: "VALID" | "INVALID" | "MISSING";
+  }> {
+    if (!beneficiaryId) {
+      return { email: null, sourceField: null, validationStatus: "MISSING" };
+    }
+
+    // Load the beneficiary by immutable beneficiary ID
+    const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId, { systemContext: true });
+    if (!beneficiary) {
+      return { email: null, sourceField: null, validationStatus: "MISSING" };
+    }
+
+    let email: string | null = null;
+    let sourceField: string | null = null;
+
+    // Precedence 1: Canonical beneficiary/profile email used by the beneficiary profile
+    if (beneficiary.email && typeof beneficiary.email === "string") {
+      const trimmed = beneficiary.email.trim();
+      if (trimmed.length > 0) {
+        email = trimmed;
+        sourceField = "beneficiary.email";
+      }
+    }
+
+    // Precedence 2: Verified custom fields or admission/application email only when canonical email is missing
+    if (!email) {
+      if (beneficiary.customFields && typeof beneficiary.customFields === "object") {
+        const cf = beneficiary.customFields as Record<string, any>;
+        const cfEmail = cf.email || cf.emailAddress || cf.contact_email || cf.contactEmail;
+        if (cfEmail && typeof cfEmail === "string") {
+          const trimmed = cfEmail.trim();
+          if (trimmed.length > 0) {
+            email = trimmed;
+            sourceField = "beneficiary.customFields.email";
+          }
+        }
+      }
+    }
+
+    if (!email) {
+      if (beneficiary.admissionFormData && typeof beneficiary.admissionFormData === "object") {
+        const fd = beneficiary.admissionFormData as Record<string, any>;
+        const fdEmail = fd.email || fd.emailAddress || fd.contact_email || fd.contactEmail;
+        if (fdEmail && typeof fdEmail === "string") {
+          const trimmed = fdEmail.trim();
+          if (trimmed.length > 0) {
+            email = trimmed;
+            sourceField = "beneficiary.admissionFormData.email";
+          }
+        }
+      }
+    }
+
+    if (!email) {
+      return { email: null, sourceField: null, validationStatus: "MISSING" };
+    }
+
+    // Normalize safely: trim whitespace, lowercase, treat blank strings as missing
+    const normalizedEmail = email.trim().toLowerCase();
+    if (normalizedEmail.length === 0) {
+      return { email: null, sourceField: null, validationStatus: "MISSING" };
+    }
+
+    // Validate basic email structure
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const isValid = emailRegex.test(normalizedEmail);
+
+    return {
+      email: normalizedEmail,
+      sourceField,
+      validationStatus: isValid ? "VALID" : "INVALID"
+    };
+  }
+
+  /**
+   * Resolves canonical email from a loaded beneficiary row/object without additional queries.
+   */
+  static resolveCanonicalBeneficiaryEmailForObject(beneficiary: any): {
+    email: string | null;
+    sourceField: string | null;
+    validationStatus: "VALID" | "INVALID" | "MISSING";
+  } {
+    if (!beneficiary) {
+      return { email: null, sourceField: null, validationStatus: "MISSING" };
+    }
+
+    let email: string | null = null;
+    let sourceField: string | null = null;
+
+    // Precedence 1: Direct email attribute
+    const directEmail = beneficiary.email || beneficiary.email_address;
+    if (directEmail && typeof directEmail === "string") {
+      const trimmed = directEmail.trim();
+      if (trimmed.length > 0) {
+        email = trimmed;
+        sourceField = "beneficiary.email";
+      }
+    }
+
+    // Precedence 2: custom_fields email
+    if (!email) {
+      const cf = beneficiary.customFields || beneficiary.custom_fields;
+      if (cf && typeof cf === "object") {
+        const cfEmail = cf.email || cf.emailAddress || cf.contact_email || cf.contactEmail;
+        if (cfEmail && typeof cfEmail === "string") {
+          const trimmed = cfEmail.trim();
+          if (trimmed.length > 0) {
+            email = trimmed;
+            sourceField = "beneficiary.customFields.email";
+          }
+        }
+      }
+    }
+
+    // Precedence 3: admissionFormData email
+    if (!email) {
+      const fd = beneficiary.admissionFormData || beneficiary.admission_form_data;
+      if (fd && typeof fd === "object") {
+        const fdEmail = fd.email || fd.emailAddress || fd.contact_email || fd.contactEmail;
+        if (fdEmail && typeof fdEmail === "string") {
+          const trimmed = fdEmail.trim();
+          if (trimmed.length > 0) {
+            email = trimmed;
+            sourceField = "beneficiary.admissionFormData.email";
+          }
+        }
+      }
+    }
+
+    if (!email) {
+      return { email: null, sourceField: null, validationStatus: "MISSING" };
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    if (normalizedEmail.length === 0) {
+      return { email: null, sourceField: null, validationStatus: "MISSING" };
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const isValid = emailRegex.test(normalizedEmail);
+
+    return {
+      email: normalizedEmail,
+      sourceField,
+      validationStatus: isValid ? "VALID" : "INVALID"
+    };
+  }
+
+  /**
+   * Shared Canonical Beneficiary Profile Service
+   * Resolves the canonical beneficiary details:
+   * - fetches directly from the primary beneficiaries database table.
+   * - resolves the trainee's canonical email using resolveCanonicalBeneficiaryEmail.
+   * - standardizes bank names against the authorized, uppercase Bank Directory list.
+   * - formats the BVN and sort codes as primitive strings, with zero custom-fields snapshot falling-back.
+   */
+  static async getCanonicalBeneficiaryRecord(beneficiaryId: string): Promise<{
+    id: string;
+    firstName: string;
+    lastName: string;
+    otherName: string;
+    gender: string;
+    nin: string;
+    bvn: string;
+    email: string;
+    phoneNumber: string;
+    residentialAddress: string;
+    bankName: string;
+    bankSortCode: string;
+    bankAccountNumber: string;
+    educationQualification: string;
+    dateOfBirth: string;
+    customFields: any;
+    bankAccountHolder: string;
+    state: string;
+    physicalChallenge: string;
+  } | null> {
+    if (!beneficiaryId) return null;
+    const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId, { systemContext: true });
+    if (!beneficiary) return null;
+
+    // Resolve canonical email
+    const emailRes = await DbRepo.resolveCanonicalBeneficiaryEmail(beneficiaryId);
+    const resolvedEmail = emailRes.email || beneficiary.email || "";
+
+    // Normalize bank name against standard/authorized list
+    let normalizedBank = (beneficiary.bankName || "").trim().toUpperCase();
+    if (normalizedBank) {
+      if (normalizedBank.includes("ZENITH")) normalizedBank = "ZENITH BANK PLC";
+      else if (normalizedBank.includes("ACCESS")) normalizedBank = "ACCESS BANK PLC";
+      else if (normalizedBank.includes("GUARANTY") || normalizedBank.includes("GTB") || normalizedBank.includes("GT BANK")) normalizedBank = "GUARANTY TRUST BANK PLC";
+      else if (normalizedBank.includes("UNITED BANK FOR AFRICA") || normalizedBank.includes("UBA")) normalizedBank = "UNITED BANK FOR AFRICA PLC";
+      else if (normalizedBank.includes("FIRST BANK") || normalizedBank.includes("FBN")) normalizedBank = "FIRST BANK OF NIGERIA PLC";
+      else if (normalizedBank.includes("FIDELITY")) normalizedBank = "FIDELITY BANK PLC";
+      else if (normalizedBank.includes("UNION BANK")) normalizedBank = "UNION BANK OF NIGERIA PLC";
+      else if (normalizedBank.includes("STERLING")) normalizedBank = "STERLING BANK PLC";
+      else if (normalizedBank.includes("WEMA")) normalizedBank = "WEMA BANK PLC";
+      else if (normalizedBank.includes("ECOBANK")) normalizedBank = "ECOBANK NIGERIA";
+      else if (normalizedBank.includes("STANBIC")) normalizedBank = "STANBIC IBTC BANK PLC";
+      else if (normalizedBank.includes("KEYSTONE")) normalizedBank = "KEYSTONE BANK LIMITED";
+      else if (normalizedBank.includes("POLARIS")) normalizedBank = "POLARIS BANK";
+      else if (normalizedBank.includes("FCMB") || normalizedBank.includes("FIRST CITY")) normalizedBank = "FIRST CITY MONUMENT BANK PLC";
+    }
+
+    return {
+      id: beneficiary.id,
+      firstName: beneficiary.firstName || "",
+      lastName: beneficiary.lastName || "",
+      otherName: beneficiary.otherName || "",
+      gender: beneficiary.gender || "",
+      nin: String(beneficiary.nin || "").trim(),
+      bvn: String(beneficiary.bvn || "").trim(),
+      email: resolvedEmail,
+      phoneNumber: beneficiary.phoneNumber || "",
+      residentialAddress: beneficiary.residentialAddress || "",
+      bankName: normalizedBank,
+      bankSortCode: String(beneficiary.bankSortCode || "").trim(),
+      bankAccountNumber: String(beneficiary.bankAccountNumber || "").trim(),
+      educationQualification: beneficiary.educationQualification || "",
+      dateOfBirth: beneficiary.dateOfBirth || "",
+      customFields: beneficiary.customFields || {},
+      bankAccountHolder: beneficiary.bankAccountHolder || "",
+      state: beneficiary.state || "",
+      physicalChallenge: beneficiary.physicalChallenge || (beneficiary as any).physical_challenge || ""
+    };
+  }
+
+  /**
+   * Dedicated, production-critical canonical bank-data resolver.
+   * Resolves canonical details, performs ownership check based on authenticated session,
+   * and runs safe read-only queries to detect database-level banking duplicates.
+   */
+  static async getCanonicalBeneficiaryBankDetails(beneficiaryId: string, authenticatedScope?: any): Promise<{
+    beneficiaryId: string;
+    tvetId: string;
+    accountName: string;
+    accountNumber: string;
+    bankName: string;
+    bankSortCode: string;
+    maskedBvn: string;
+    verificationStatus: "ALIGNED" | "BANK_DATA_CONFLICT" | "NOT_CONFIGURED" | "ACCESS_DENIED";
+    rowVersion: number;
+    sourceRecordId: string;
+    conflictDetails?: string;
+    conflictBeneficiaries?: Array<{ id: string; name: string; tvetId: string }>;
+  } | null> {
+    if (!beneficiaryId) return null;
+    const beneficiary = await DbRepo.getBeneficiaryById(beneficiaryId, { systemContext: true });
+    if (!beneficiary) return null;
+
+    // 1 & 2. Verify TSP ownership and trainee scope if authenticatedScope is provided
+    if (authenticatedScope) {
+      const isFederal = authenticatedScope.role === "SUPER_ADMIN" || 
+                        authenticatedScope.role === "FEDERAL_ADMIN" || 
+                        authenticatedScope.role === "FME_ADMIN" || 
+                        authenticatedScope.role === "NUC_ADMIN" || 
+                        authenticatedScope.role === "NBTE_ADMIN";
+                        
+      if (!isFederal) {
+        if (authenticatedScope.role === "TRAINEE" && authenticatedScope.beneficiaryId !== beneficiaryId) {
+          throw new Error("Access Denied. Trainees can only access their own details.");
+        }
+        
+        let userTspId = authenticatedScope.tspId || authenticatedScope.tsp_id;
+        const bTspId = beneficiary.tspId || (beneficiary as any).tsp_id || "00000000-0000-0000-0000-000000000001";
+        
+        if (!userTspId && authenticatedScope.role && (authenticatedScope.role.startsWith("TSP") || authenticatedScope.role === "TSP_ADMIN")) {
+          userTspId = "00000000-0000-0000-0000-000000000001";
+        }
+
+        if (userTspId && bTspId !== userTspId) {
+          throw new Error("Access Denied: Tenant isolation active. This beneficiary belongs to another organization.");
+        }
+      }
+    }
+
+    // 3. Load the canonical record
+    const canon = await DbRepo.getCanonicalBeneficiaryRecord(beneficiaryId);
+    if (!canon) return null;
+
+    const accNum = normalizeAccountNumber(canon.bankAccountNumber || "");
+    let verificationStatus: "ALIGNED" | "BANK_DATA_CONFLICT" | "NOT_CONFIGURED" | "ACCESS_DENIED" = "ALIGNED";
+    let conflictDetails = "";
+    let conflictBeneficiaries: Array<{ id: string; name: string; tvetId: string }> | undefined = undefined;
+
+    if (!accNum || !canon.bankName) {
+      verificationStatus = "NOT_CONFIGURED";
+    } else {
+      // 4. Detect duplicate/conflicting bank records (safe read-only diagnostic query)
+      const pool = getPgPool();
+      if (pool) {
+        const dupRes = await pool.query(
+          "SELECT id, first_name, last_name, bank_name, bank_account_number, custom_fields FROM beneficiaries WHERE REPLACE(REPLACE(bank_account_number, ' ', ''), '-', '') = $1 AND id <> $2 AND deleted_at IS NULL",
+          [accNum, beneficiaryId]
+        );
+        const dups = dupRes.rows.filter((r: any) => {
+          const rAccNum = normalizeAccountNumber(r.bank_account_number || "");
+          return rAccNum === accNum && isSameBank(r.bank_name || "", canon.bankName || "");
+        });
+        if (dups.length > 0) {
+          verificationStatus = "BANK_DATA_CONFLICT";
+          const conflicts = dups.map((r: any) => `${r.last_name || ""} ${r.first_name || ""} (${r.id})`).join(", ");
+          conflictDetails = `Bank account number is also registered to: ${conflicts}`;
+          conflictBeneficiaries = dups.map((r: any) => ({
+            id: r.id,
+            name: `${r.first_name || ""} ${r.last_name || ""}`,
+            tvetId: r.custom_fields?.tvet_id || r.id
+          }));
+        }
+      }
+    }
+
+    const tvetId = (canon as any).customFields?.tvet_id || beneficiary.id;
+
+    return {
+      beneficiaryId,
+      tvetId,
+      accountName: canon.bankAccountHolder || "",
+      accountNumber: canon.bankAccountNumber || "",
+      bankName: canon.bankName || "",
+      bankSortCode: canon.bankSortCode || "",
+      maskedBvn: canon.bvn ? `*** *** ${canon.bvn.slice(-4)}` : "",
+      verificationStatus,
+      rowVersion: beneficiary.workflowVersion || 1,
+      sourceRecordId: beneficiaryId,
+      conflictDetails: conflictDetails || undefined,
+      conflictBeneficiaries
+    };
+  }
+
+  /**
+   * Batch equivalent of getCanonicalBeneficiaryBankDetails.
+   * Leverages set-based queries and in-memory mappings to avoid N+1 query patterns.
+   */
+  static async getCanonicalBeneficiaryBankDetailsBatch(beneficiaryIds: string[], authenticatedScope?: any): Promise<Array<{
+    beneficiaryId: string;
+    tvetId: string;
+    accountName: string;
+    accountNumber: string;
+    bankName: string;
+    bankSortCode: string;
+    maskedBvn: string;
+    verificationStatus: "ALIGNED" | "BANK_DATA_CONFLICT" | "NOT_CONFIGURED" | "ACCESS_DENIED";
+    rowVersion: number;
+    sourceRecordId: string;
+    conflictDetails?: string;
+    conflictBeneficiaries?: Array<{ id: string; name: string; tvetId: string }>;
+  }>> {
+    const ids = beneficiaryIds.filter(Boolean);
+    if (ids.length === 0) return [];
+
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      const results: any[] = [];
+      for (const id of ids) {
+        const beneficiary = (state.beneficiaries || []).find((b: any) => b.id === id);
+        if (!beneficiary) continue;
+        const accNum = (beneficiary.bankAccountNumber || "").trim();
+        let verificationStatus: any = "ALIGNED";
+        let conflictDetails = "";
+        let conflictBeneficiaries: Array<{ id: string; name: string; tvetId: string }> | undefined = undefined;
+        if (!accNum || !beneficiary.bankName) {
+          verificationStatus = "NOT_CONFIGURED";
+        } else {
+          const dups = (state.beneficiaries || []).filter((b: any) => {
+            const bAcc = normalizeAccountNumber(b.bankAccountNumber || "");
+            const targetAcc = normalizeAccountNumber(accNum);
+            return bAcc === targetAcc && b.id !== id && isSameBank(b.bankName || "", beneficiary.bankName || "");
+          });
+          if (dups.length > 0) {
+            verificationStatus = "BANK_DATA_CONFLICT";
+            const conflicts = dups.map((r: any) => `${r.lastName || ""} ${r.firstName || ""} (${r.id})`).join(", ");
+            conflictDetails = `Bank account number is also registered to: ${conflicts}`;
+            conflictBeneficiaries = dups.map((r: any) => ({
+              id: r.id,
+              name: `${r.firstName || ""} ${r.lastName || ""}`,
+              tvetId: r.customFields?.tvet_id || r.id
+            }));
+          }
+        }
+        results.push({
+          beneficiaryId: id,
+          tvetId: beneficiary.customFields?.tvet_id || id,
+          accountName: beneficiary.bankAccountHolder || "",
+          accountNumber: accNum,
+          bankName: beneficiary.bankName || "",
+          bankSortCode: beneficiary.bankSortCode || "",
+          maskedBvn: beneficiary.bvn ? `*** *** ${beneficiary.bvn.slice(-4)}` : "",
+          verificationStatus,
+          rowVersion: beneficiary.workflowVersion || 1,
+          sourceRecordId: id,
+          conflictDetails: conflictDetails || undefined,
+          conflictBeneficiaries
+        });
+      }
+      return results;
+    }
+
+    try {
+      const bQuery = `
+        SELECT b.*, adm.admission_form_data as "admissionFormData"
+        FROM beneficiaries b
+        LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
+        WHERE b.id = ANY($1) AND b.deleted_at IS NULL
+      `;
+      const bRes = await pool.query(bQuery, [ids]);
+      const beneficiaries = bRes.rows;
+
+      const accNums = beneficiaries.map(b => normalizeAccountNumber(b.bank_account_number || "")).filter(Boolean);
+      const conflictMap = new Map<string, any[]>();
+      if (accNums.length > 0) {
+        const dupQuery = `
+          SELECT id, first_name, last_name, bank_account_number, bank_name, custom_fields
+          FROM beneficiaries
+          WHERE REPLACE(REPLACE(bank_account_number, ' ', ''), '-', '') = ANY($1) AND deleted_at IS NULL
+        `;
+        const dupRes = await pool.query(dupQuery, [accNums]);
+        dupRes.rows.forEach(row => {
+          const acc = normalizeAccountNumber(row.bank_account_number || "");
+          if (!conflictMap.has(acc)) {
+            conflictMap.set(acc, []);
+          }
+          conflictMap.get(acc)!.push(row);
+        });
+      }
+
+      const results: any[] = [];
+      for (const b of beneficiaries) {
+        const bId = b.id;
+
+        if (authenticatedScope) {
+          const isFederal = authenticatedScope.role === "SUPER_ADMIN" || 
+                            authenticatedScope.role === "FEDERAL_ADMIN" || 
+                            authenticatedScope.role === "FME_ADMIN" || 
+                            authenticatedScope.role === "NUC_ADMIN" || 
+                            authenticatedScope.role === "NBTE_ADMIN";
+                            
+          if (!isFederal) {
+            if (authenticatedScope.role === "TRAINEE" && authenticatedScope.beneficiaryId !== bId) {
+              continue;
+            }
+            
+            let userTspId = authenticatedScope.tspId || authenticatedScope.tsp_id;
+            const bTspId = b.tsp_id || "00000000-0000-0000-0000-000000000001";
+            
+            if (!userTspId && authenticatedScope.role && (authenticatedScope.role.startsWith("TSP") || authenticatedScope.role === "TSP_ADMIN")) {
+              userTspId = "00000000-0000-0000-0000-000000000001";
+            }
+
+            if (userTspId && bTspId !== userTspId) {
+              continue;
+            }
+          }
+        }
+
+        const accNum = normalizeAccountNumber(b.bank_account_number || "");
+        let verificationStatus: "ALIGNED" | "BANK_DATA_CONFLICT" | "NOT_CONFIGURED" | "ACCESS_DENIED" = "ALIGNED";
+        let conflictDetails = "";
+        let conflictBeneficiaries: Array<{ id: string; name: string; tvetId: string }> | undefined = undefined;
+
+        if (!accNum || !b.bank_name) {
+          verificationStatus = "NOT_CONFIGURED";
+        } else {
+          const dups = (conflictMap.get(accNum) || []).filter(r => r.id !== bId && isSameBank(r.bank_name || "", b.bank_name || ""));
+          if (dups.length > 0) {
+            verificationStatus = "BANK_DATA_CONFLICT";
+            const conflicts = dups.map(r => `${r.last_name || ""} ${r.first_name || ""} (${r.id})`).join(", ");
+            conflictDetails = `Bank account number is also registered to: ${conflicts}`;
+            conflictBeneficiaries = dups.map(r => ({
+              id: r.id,
+              name: `${r.first_name || ""} ${r.last_name || ""}`,
+              tvetId: r.custom_fields?.tvet_id || r.id
+            }));
+          }
+        }
+
+        let tvetId = b.id;
+        if (b.custom_fields && typeof b.custom_fields === "object") {
+          tvetId = b.custom_fields.tvet_id || b.id;
+        }
+
+        let normalizedBank = (b.bank_name || "").trim().toUpperCase();
+        if (normalizedBank) {
+          if (normalizedBank.includes("ZENITH")) normalizedBank = "ZENITH BANK PLC";
+          else if (normalizedBank.includes("ACCESS")) normalizedBank = "ACCESS BANK PLC";
+          else if (normalizedBank.includes("GUARANTY") || normalizedBank.includes("GTB") || normalizedBank.includes("GT BANK")) normalizedBank = "GUARANTY TRUST BANK PLC";
+          else if (normalizedBank.includes("UNITED BANK FOR AFRICA") || normalizedBank.includes("UBA")) normalizedBank = "UNITED BANK FOR AFRICA PLC";
+          else if (normalizedBank.includes("FIRST BANK") || normalizedBank.includes("FBN")) normalizedBank = "FIRST BANK OF NIGERIA PLC";
+          else if (normalizedBank.includes("FIDELITY")) normalizedBank = "FIDELITY BANK PLC";
+          else if (normalizedBank.includes("UNION BANK")) normalizedBank = "UNION BANK OF NIGERIA PLC";
+          else if (normalizedBank.includes("STERLING")) normalizedBank = "STERLING BANK PLC";
+          else if (normalizedBank.includes("WEMA")) normalizedBank = "WEMA BANK PLC";
+          else if (normalizedBank.includes("ECOBANK")) normalizedBank = "ECOBANK NIGERIA";
+          else if (normalizedBank.includes("STANBIC")) normalizedBank = "STANBIC IBTC BANK PLC";
+          else if (normalizedBank.includes("KEYSTONE")) normalizedBank = "KEYSTONE BANK LIMITED";
+          else if (normalizedBank.includes("POLARIS")) normalizedBank = "POLARIS BANK";
+          else if (normalizedBank.includes("FCMB") || normalizedBank.includes("FIRST CITY")) normalizedBank = "FIRST CITY MONUMENT BANK PLC";
+        }
+
+        results.push({
+          beneficiaryId: bId,
+          tvetId,
+          accountName: b.bank_account_holder || "",
+          accountNumber: b.bank_account_number || "",
+          bankName: normalizedBank,
+          bankSortCode: b.bank_sort_code || "",
+          maskedBvn: b.bvn ? `*** *** ${b.bvn.slice(-4)}` : "",
+          verificationStatus,
+          rowVersion: b.workflow_version || 1,
+          sourceRecordId: bId,
+          conflictDetails: conflictDetails || undefined,
+          conflictBeneficiaries
+        });
+      }
+      return results;
+    } catch (err: any) {
+      console.error("[getCanonicalBeneficiaryBankDetailsBatch] error:", err);
+      return [];
+    }
+  }
+
+  /**
    * Retrieves a single beneficiary profile using its unique identifier.
    * Performs an optimized single query with child record hydration.
    */
@@ -5312,6 +6051,69 @@ export class DbRepo {
       const state = loadJsonState();
       return state.beneficiaries.find(b => b.id === id) || null;
     }
+  }
+
+  /**
+   * Retrieves the secure, canonical editable beneficiary profile containing unmasked values for authorized users,
+   * or a masked value contract for unauthorized users.
+   */
+  static async getCanonicalEditableBeneficiaryProfile(beneficiaryId: string, user: any): Promise<any | null> {
+    const b = await DbRepo.getBeneficiaryById(beneficiaryId);
+    if (!b) return null;
+
+    const canSeePII = user && (user.role === "SUPER_ADMIN" || user.role === "FEDERAL_SUPER_ADMIN");
+    const realNin = b.nin || "";
+    const realBvn = b.bvn || "";
+
+    const ninMasked = realNin ? ("*******" + realNin.trim().slice(-4)) : "";
+    const bvnMasked = realBvn ? ("*******" + realBvn.trim().slice(-4)) : "";
+
+    return {
+      id: b.id,
+      firstName: b.firstName,
+      lastName: b.lastName,
+      otherName: b.otherName || "",
+      skillSector: b.skillSector || "",
+      gender: b.gender || "",
+      phoneNumber: b.phoneNumber || "",
+      email: b.email || "",
+      residentialAddress: b.residentialAddress || "",
+      state: b.state || "",
+      city: b.city || "",
+      batch: b.batch || "",
+      customFields: b.customFields || {},
+      tsp: b.tsp || "",
+      program: b.program || "",
+      status: b.status || "",
+      guardianName: b.guardianName || "",
+      guardianAddress: b.guardianAddress || "",
+      guardianPhone: b.guardianPhone || "",
+      physicalChallenge: b.physicalChallenge || "",
+      bankAccountHolder: b.bankAccountHolder || "",
+      bankName: b.bankName || "",
+      bankSortCode: b.bankSortCode || "",
+      bankAccountNumber: b.bankAccountNumber || "",
+      educationQualification: b.educationQualification || "",
+      dateOfBirth: b.dateOfBirth || "",
+      photo: b.photo || null,
+      updatedAt: b.updatedAt,
+      workflowVersion: b.workflowVersion || 1,
+      state_id: b.state_id || (b as any).stateId || null,
+      lga_id: b.lga_id || (b as any).lgaId || null,
+      training_center_id: b.training_center_id || (b as any).trainingCenterId || null,
+
+      // NIN state/value contract
+      nin: canSeePII ? realNin : "",
+      ninMasked: ninMasked,
+      ninIsSet: !!realNin,
+      ninUnchanged: !canSeePII && !!realNin,
+
+      // BVN state/value contract
+      bvn: canSeePII ? realBvn : "",
+      bvnMasked: bvnMasked,
+      bvnIsSet: !!realBvn,
+      bvnUnchanged: !canSeePII && !!realBvn,
+    };
   }
 
   /**
@@ -6499,6 +7301,334 @@ export class DbRepo {
   }
 
   /**
+   * Public Site Settings Methods
+   */
+  static async getPublicSiteSettings(): Promise<PublicSiteSettings> {
+    const defaultPublicSettings: PublicSiteSettings = {
+      supportEmail: "support@ideas-tvet.ng",
+      supportPhone: "+234 (0) 90 3242 5592",
+      dialablePhone: "+2349032425592",
+      altPhone: "",
+      officeHoursDays: "Monday to Friday",
+      openingTime: "8:30 AM",
+      closingTime: "5:00 PM",
+      timezone: "GMT+1",
+      publicHolidayNote: "excluding public holidays",
+      officeName: "Federal Ministry of Education Headquarters",
+      addressLine1: "Plot 245 Samuel Ademulegun Avenue",
+      addressLine2: "Central Business District",
+      city: "Abuja",
+      stateFct: "FCT",
+      country: "Nigeria",
+      postalCode: "",
+      mapUrl: "",
+      footerDescription: "Supporting practical training, clearer admissions and better access to technical skills.",
+      copyright: "Federal Ministry of Education · National IDEAS Initiative Project",
+      privacyPolicyUrl: "#privacy",
+      termsOfServiceUrl: "#terms",
+      accessibilityUrl: "#accessibility",
+      version: 1,
+      status: "PUBLISHED",
+      updatedBy: "system",
+      publishedBy: "system"
+    };
+
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return defaultPublicSettings;
+    }
+
+    try {
+      const res = await executeQuery("SELECT * FROM public_site_settings WHERE setting_key = 'published' LIMIT 1");
+      if (res.rows.length > 0) {
+        const row = res.rows[0];
+        return {
+          id: row.id,
+          supportEmail: row.support_email || defaultPublicSettings.supportEmail,
+          supportPhone: row.support_phone || defaultPublicSettings.supportPhone,
+          dialablePhone: row.dialable_phone || defaultPublicSettings.dialablePhone,
+          altPhone: row.alt_phone || "",
+          officeHoursDays: row.office_hours_days || defaultPublicSettings.officeHoursDays,
+          openingTime: row.opening_time || defaultPublicSettings.openingTime,
+          closingTime: row.closing_time || defaultPublicSettings.closingTime,
+          timezone: row.timezone || defaultPublicSettings.timezone,
+          publicHolidayNote: row.public_holiday_note || defaultPublicSettings.publicHolidayNote,
+          officeName: row.office_name || defaultPublicSettings.officeName,
+          addressLine1: row.address_line1 || defaultPublicSettings.addressLine1,
+          addressLine2: row.address_line2 || defaultPublicSettings.addressLine2,
+          city: row.city || defaultPublicSettings.city,
+          stateFct: row.state_fct || defaultPublicSettings.stateFct,
+          country: row.country || defaultPublicSettings.country,
+          postalCode: row.postal_code || "",
+          mapUrl: row.map_url || "",
+          footerDescription: row.footer_description || defaultPublicSettings.footerDescription,
+          copyright: row.copyright || defaultPublicSettings.copyright,
+          privacyPolicyUrl: row.privacy_policy_url || defaultPublicSettings.privacyPolicyUrl,
+          termsOfServiceUrl: row.terms_of_service_url || defaultPublicSettings.termsOfServiceUrl,
+          accessibilityUrl: row.accessibility_url || "",
+          version: row.version ? parseInt(row.version) : 1,
+          status: row.status || "PUBLISHED",
+          updatedBy: row.updated_by || "system",
+          publishedBy: row.published_by || "system",
+          updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : new Date().toISOString(),
+          publishedAt: row.published_at ? new Date(row.published_at).toISOString() : new Date().toISOString()
+        };
+      }
+      return defaultPublicSettings;
+    } catch (e) {
+      console.error("[DbRepo] Failed to load public site settings:", e);
+      return defaultPublicSettings;
+    }
+  }
+
+  static async getFederalSiteSettings(): Promise<{ published: PublicSiteSettings; draft: PublicSiteSettings }> {
+    const defaultPublicSettings: PublicSiteSettings = {
+      supportEmail: "support@ideas-tvet.ng",
+      supportPhone: "+234 (0) 90 3242 5592",
+      dialablePhone: "+2349032425592",
+      altPhone: "",
+      officeHoursDays: "Monday to Friday",
+      openingTime: "8:30 AM",
+      closingTime: "5:00 PM",
+      timezone: "GMT+1",
+      publicHolidayNote: "excluding public holidays",
+      officeName: "Federal Ministry of Education Headquarters",
+      addressLine1: "Plot 245 Samuel Ademulegun Avenue",
+      addressLine2: "Central Business District",
+      city: "Abuja",
+      stateFct: "FCT",
+      country: "Nigeria",
+      postalCode: "",
+      mapUrl: "",
+      footerDescription: "Supporting practical training, clearer admissions and better access to technical skills.",
+      copyright: "Federal Ministry of Education · National IDEAS Initiative Project",
+      privacyPolicyUrl: "#privacy",
+      termsOfServiceUrl: "#terms",
+      accessibilityUrl: "#accessibility",
+      version: 1,
+      status: "PUBLISHED",
+      updatedBy: "system",
+      publishedBy: "system"
+    };
+
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return { published: defaultPublicSettings, draft: { ...defaultPublicSettings, status: "DRAFT" } };
+    }
+
+    try {
+      const res = await executeQuery("SELECT * FROM public_site_settings WHERE setting_key IN ('published', 'draft')");
+      let published: PublicSiteSettings = defaultPublicSettings;
+      let draft: PublicSiteSettings = { ...defaultPublicSettings, status: "DRAFT" };
+      for (const row of res.rows) {
+        const item: PublicSiteSettings = {
+          id: row.id,
+          supportEmail: row.support_email || defaultPublicSettings.supportEmail,
+          supportPhone: row.support_phone || defaultPublicSettings.supportPhone,
+          dialablePhone: row.dialable_phone || defaultPublicSettings.dialablePhone,
+          altPhone: row.alt_phone || "",
+          officeHoursDays: row.office_hours_days || defaultPublicSettings.officeHoursDays,
+          openingTime: row.opening_time || defaultPublicSettings.openingTime,
+          closingTime: row.closing_time || defaultPublicSettings.closingTime,
+          timezone: row.timezone || defaultPublicSettings.timezone,
+          publicHolidayNote: row.public_holiday_note || defaultPublicSettings.publicHolidayNote,
+          officeName: row.office_name || defaultPublicSettings.officeName,
+          addressLine1: row.address_line1 || defaultPublicSettings.addressLine1,
+          addressLine2: row.address_line2 || defaultPublicSettings.addressLine2,
+          city: row.city || defaultPublicSettings.city,
+          stateFct: row.state_fct || defaultPublicSettings.stateFct,
+          country: row.country || defaultPublicSettings.country,
+          postalCode: row.postal_code || "",
+          mapUrl: row.map_url || "",
+          footerDescription: row.footer_description || defaultPublicSettings.footerDescription,
+          copyright: row.copyright || defaultPublicSettings.copyright,
+          privacyPolicyUrl: row.privacy_policy_url || defaultPublicSettings.privacyPolicyUrl,
+          termsOfServiceUrl: row.terms_of_service_url || defaultPublicSettings.termsOfServiceUrl,
+          accessibilityUrl: row.accessibility_url || "",
+          version: row.version ? parseInt(row.version) : 1,
+          status: row.status || "PUBLISHED",
+          updatedBy: row.updated_by || "system",
+          publishedBy: row.published_by || "system",
+          updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : new Date().toISOString(),
+          publishedAt: row.published_at ? new Date(row.published_at).toISOString() : new Date().toISOString()
+        };
+        if (row.setting_key === 'published') published = item;
+        else if (row.setting_key === 'draft') draft = item;
+      }
+      return { published, draft };
+    } catch (e) {
+      console.error("[DbRepo] Failed to load federal site settings:", e);
+      return { published: defaultPublicSettings, draft: { ...defaultPublicSettings, status: "DRAFT" } };
+    }
+  }
+
+  static async updateDraftSiteSettings(s: Partial<PublicSiteSettings>, userEmail: string): Promise<PublicSiteSettings> {
+    const current = await DbRepo.getFederalSiteSettings();
+    const newDraft: PublicSiteSettings = {
+      ...current.draft,
+      ...s,
+      status: "DRAFT",
+      updatedBy: userEmail,
+      updatedAt: new Date().toISOString()
+    };
+
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return newDraft;
+    }
+
+    try {
+      await executeQuery(
+        `INSERT INTO public_site_settings (
+          id, setting_group, setting_key, support_email, support_phone, dialable_phone, alt_phone,
+          office_hours_days, opening_time, closing_time, timezone, public_holiday_note,
+          office_name, address_line1, address_line2, city, state_fct, country, postal_code, map_url,
+          footer_description, copyright, privacy_policy_url, terms_of_service_url, accessibility_url,
+          status, version, updated_by, updated_at
+        ) VALUES (
+          'public_site_draft', 'public_site', 'draft', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, 'DRAFT', $23, $24, NOW()
+        ) ON CONFLICT (setting_group, setting_key) DO UPDATE SET
+          support_email = EXCLUDED.support_email,
+          support_phone = EXCLUDED.support_phone,
+          dialable_phone = EXCLUDED.dialable_phone,
+          alt_phone = EXCLUDED.alt_phone,
+          office_hours_days = EXCLUDED.office_hours_days,
+          opening_time = EXCLUDED.opening_time,
+          closing_time = EXCLUDED.closing_time,
+          timezone = EXCLUDED.timezone,
+          public_holiday_note = EXCLUDED.public_holiday_note,
+          office_name = EXCLUDED.office_name,
+          address_line1 = EXCLUDED.address_line1,
+          address_line2 = EXCLUDED.address_line2,
+          city = EXCLUDED.city,
+          state_fct = EXCLUDED.state_fct,
+          country = EXCLUDED.country,
+          postal_code = EXCLUDED.postal_code,
+          map_url = EXCLUDED.map_url,
+          footer_description = EXCLUDED.footer_description,
+          copyright = EXCLUDED.copyright,
+          privacy_policy_url = EXCLUDED.privacy_policy_url,
+          terms_of_service_url = EXCLUDED.terms_of_service_url,
+          accessibility_url = EXCLUDED.accessibility_url,
+          status = 'DRAFT',
+          updated_by = EXCLUDED.updated_by,
+          updated_at = NOW()`,
+        [
+          newDraft.supportEmail, newDraft.supportPhone, newDraft.dialablePhone, newDraft.altPhone || '',
+          newDraft.officeHoursDays, newDraft.openingTime, newDraft.closingTime, newDraft.timezone, newDraft.publicHolidayNote,
+          newDraft.officeName, newDraft.addressLine1, newDraft.addressLine2, newDraft.city, newDraft.stateFct, newDraft.country, newDraft.postalCode || '', newDraft.mapUrl || '',
+          newDraft.footerDescription, newDraft.copyright, newDraft.privacyPolicyUrl, newDraft.termsOfServiceUrl, newDraft.accessibilityUrl || '',
+          newDraft.version || 1, userEmail
+        ]
+      );
+      return newDraft;
+    } catch (e) {
+      console.error("[DbRepo] Failed to save draft site settings:", e);
+      throw e;
+    }
+  }
+
+  static async publishSiteSettings(s: Partial<PublicSiteSettings>, expectedVersion: number | undefined, userEmail: string): Promise<PublicSiteSettings> {
+    const current = await DbRepo.getFederalSiteSettings();
+    if (expectedVersion !== undefined && current.published.version > expectedVersion) {
+      const err: any = new Error("Settings have been updated by another administrator since you loaded the page. Please refresh and review before publishing.");
+      err.code = "CONFLICT";
+      throw err;
+    }
+
+    const nextVersion = (current.published.version || 1) + 1;
+    const nowIso = new Date().toISOString();
+
+    const published: PublicSiteSettings = {
+      ...current.draft,
+      ...s,
+      version: nextVersion,
+      status: "PUBLISHED",
+      updatedBy: userEmail,
+      publishedBy: userEmail,
+      updatedAt: nowIso,
+      publishedAt: nowIso
+    };
+
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      return published;
+    }
+
+    try {
+      await executeQuery(
+        `INSERT INTO public_site_settings (
+          id, setting_group, setting_key, support_email, support_phone, dialable_phone, alt_phone,
+          office_hours_days, opening_time, closing_time, timezone, public_holiday_note,
+          office_name, address_line1, address_line2, city, state_fct, country, postal_code, map_url,
+          footer_description, copyright, privacy_policy_url, terms_of_service_url, accessibility_url,
+          status, version, updated_by, published_by, updated_at, published_at
+        ) VALUES (
+          'public_site_published', 'public_site', 'published', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, 'PUBLISHED', $23, $24, $24, NOW(), NOW()
+        ) ON CONFLICT (setting_group, setting_key) DO UPDATE SET
+          support_email = EXCLUDED.support_email,
+          support_phone = EXCLUDED.support_phone,
+          dialable_phone = EXCLUDED.dialable_phone,
+          alt_phone = EXCLUDED.alt_phone,
+          office_hours_days = EXCLUDED.office_hours_days,
+          opening_time = EXCLUDED.opening_time,
+          closing_time = EXCLUDED.closing_time,
+          timezone = EXCLUDED.timezone,
+          public_holiday_note = EXCLUDED.public_holiday_note,
+          office_name = EXCLUDED.office_name,
+          address_line1 = EXCLUDED.address_line1,
+          address_line2 = EXCLUDED.address_line2,
+          city = EXCLUDED.city,
+          state_fct = EXCLUDED.state_fct,
+          country = EXCLUDED.country,
+          postal_code = EXCLUDED.postal_code,
+          map_url = EXCLUDED.map_url,
+          footer_description = EXCLUDED.footer_description,
+          copyright = EXCLUDED.copyright,
+          privacy_policy_url = EXCLUDED.privacy_policy_url,
+          terms_of_service_url = EXCLUDED.terms_of_service_url,
+          accessibility_url = EXCLUDED.accessibility_url,
+          status = 'PUBLISHED',
+          version = EXCLUDED.version,
+          updated_by = EXCLUDED.updated_by,
+          published_by = EXCLUDED.published_by,
+          updated_at = NOW(),
+          published_at = NOW()`,
+        [
+          published.supportEmail, published.supportPhone, published.dialablePhone, published.altPhone || '',
+          published.officeHoursDays, published.openingTime, published.closingTime, published.timezone, published.publicHolidayNote,
+          published.officeName, published.addressLine1, published.addressLine2, published.city, published.stateFct, published.country, published.postalCode || '', published.mapUrl || '',
+          published.footerDescription, published.copyright, published.privacyPolicyUrl, published.termsOfServiceUrl, published.accessibilityUrl || '',
+          nextVersion, userEmail
+        ]
+      );
+
+      await executeQuery(
+        `UPDATE public_site_settings SET
+          support_email = $1, support_phone = $2, dialable_phone = $3, alt_phone = $4,
+          office_hours_days = $5, opening_time = $6, closing_time = $7, timezone = $8, public_holiday_note = $9,
+          office_name = $10, address_line1 = $11, address_line2 = $12, city = $13, state_fct = $14, country = $15, postal_code = $16, map_url = $17,
+          footer_description = $18, copyright = $19, privacy_policy_url = $20, terms_of_service_url = $21, accessibility_url = $22,
+          version = $23, updated_by = $24, updated_at = NOW()
+        WHERE setting_key = 'draft'`,
+        [
+          published.supportEmail, published.supportPhone, published.dialablePhone, published.altPhone || '',
+          published.officeHoursDays, published.openingTime, published.closingTime, published.timezone, published.publicHolidayNote,
+          published.officeName, published.addressLine1, published.addressLine2, published.city, published.stateFct, published.country, published.postalCode || '', published.mapUrl || '',
+          published.footerDescription, published.copyright, published.privacyPolicyUrl, published.termsOfServiceUrl, published.accessibilityUrl || '',
+          nextVersion, userEmail
+        ]
+      );
+
+      await DbRepo.saveAuditLog(userEmail, "PUBLISH_PUBLIC_SITE_SETTINGS", `Published version ${nextVersion} of public contact and footer settings`);
+      return published;
+    } catch (e) {
+      console.error("[DbRepo] Failed to publish site settings:", e);
+      throw e;
+    }
+  }
+
+  /**
    * Training Programs Retrieval
    */
   static async getTrainingPrograms(): Promise<TrainingProgram[]> {
@@ -7420,6 +8550,68 @@ export class DbRepo {
   }
 
   /**
+   * Resolves canonical email synchronously from a query row object (PG or JSON).
+   */
+  static resolveEmailFromRow(row: any): {
+    email: string | null;
+    sourceField: string | null;
+    validationStatus: "VALID" | "INVALID" | "MISSING";
+  } {
+    let email: string | null = null;
+    let sourceField: string | null = null;
+
+    if (row.email && typeof row.email === "string") {
+      const trimmed = row.email.trim();
+      if (trimmed.length > 0) {
+        email = trimmed;
+        sourceField = "beneficiary.email";
+      }
+    }
+
+    const cf = row.custom_fields || row.customFields;
+    if (!email && cf && typeof cf === "object") {
+      const cfEmail = cf.email || cf.emailAddress || cf.contact_email || cf.contactEmail;
+      if (cfEmail && typeof cfEmail === "string") {
+        const trimmed = cfEmail.trim();
+        if (trimmed.length > 0) {
+          email = trimmed;
+          sourceField = "beneficiary.customFields.email";
+        }
+      }
+    }
+
+    const fd = row.admission_form_data || row.admissionFormData;
+    if (!email && fd && typeof fd === "object") {
+      const fdEmail = fd.email || fd.emailAddress || fd.contact_email || fd.contactEmail;
+      if (fdEmail && typeof fdEmail === "string") {
+        const trimmed = fdEmail.trim();
+        if (trimmed.length > 0) {
+          email = trimmed;
+          sourceField = "beneficiary.admissionFormData.email";
+        }
+      }
+    }
+
+    if (!email) {
+      return { email: null, sourceField: null, validationStatus: "MISSING" };
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    if (normalizedEmail.length === 0) {
+      return { email: null, sourceField: null, validationStatus: "MISSING" };
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const isValid = emailRegex.test(normalizedEmail);
+
+    return {
+      email: normalizedEmail,
+      sourceField,
+      validationStatus: isValid ? "VALID" : "INVALID"
+    };
+  }
+
+  /**
    * Fetch paginated list of admissions with selective non-photo column projections and role/tenancy filters
    */
   static async getAdmissionsPaged(options: {
@@ -7536,33 +8728,39 @@ export class DbRepo {
       const totalPages = Math.ceil(totalCount / pageSize) || 1;
       const sliced = list.slice(offset, offset + pageSize);
 
-      const rows = sliced.map(b => ({
-        id: b.id,
-        referenceNumber: b.admissionFormRef || b.admissionRef || "DRAFT",
-        name: `${b.lastName}, ${b.firstName}`,
-        sector: b.skillSector,
-        tsp: b.tsp,
-        admissionStatus: b.admissionStatus || "Pending",
-        hasPhoto: b.photo ? (b.photo.length > 5) : false,
-        state: b.state,
-        batch: b.batch,
-        createdAt: b.createdAt,
-        admissionFormRef: b.admissionFormRef || b.admissionRef || "",
-        admissionFormStatus: b.admissionFormStatus || "NOT_GENERATED",
-        admissionFormGeneratedAt: b.admissionFormGeneratedAt || null,
-        admissionFormViewedAt: b.admissionFormViewedAt || null,
-        admissionFormConfirmedAt: b.admissionFormConfirmedAt || null,
-        gender: b.gender || "Male",
-        bvn: b.bvn || "",
-        guardianName: b.guardianName || "",
-        guardianPhone: b.guardianPhone || "",
-        address: b.residentialAddress || "",
-        bankName: b.bankName || "",
-        accountNumber: b.bankAccountNumber || "",
-        nin: b.nin || "",
-        dateOfBirth: b.dateOfBirth || "",
-        photo: b.photo || ""
-      }));
+      const rows = sliced.map(b => {
+        const resolvedEmail = DbRepo.resolveEmailFromRow(b);
+        return {
+          id: b.id,
+          referenceNumber: b.admissionFormRef || b.admissionRef || "DRAFT",
+          name: `${b.lastName}, ${b.firstName}`,
+          email: resolvedEmail.email || "",
+          emailSourceField: resolvedEmail.sourceField,
+          emailValidationStatus: resolvedEmail.validationStatus,
+          sector: b.skillSector,
+          tsp: b.tsp,
+          admissionStatus: b.admissionStatus || "Pending",
+          hasPhoto: b.photo ? (b.photo.length > 5) : false,
+          state: b.state,
+          batch: b.batch,
+          createdAt: b.createdAt,
+          admissionFormRef: b.admissionFormRef || b.admissionRef || "",
+          admissionFormStatus: b.admissionFormStatus || "NOT_GENERATED",
+          admissionFormGeneratedAt: b.admissionFormGeneratedAt || null,
+          admissionFormViewedAt: b.admissionFormViewedAt || null,
+          admissionFormConfirmedAt: b.admissionFormConfirmedAt || null,
+          gender: b.gender || "Male",
+          bvn: b.bvn || "",
+          guardianName: b.guardianName || "",
+          guardianPhone: b.guardianPhone || "",
+          address: b.residentialAddress || "",
+          bankName: b.bankName || "",
+          accountNumber: b.bankAccountNumber || "",
+          nin: b.nin || "",
+          dateOfBirth: b.dateOfBirth || "",
+          photo: b.photo || ""
+        };
+      });
 
       return { rows, totalCount, page, pageSize, totalPages };
     }
@@ -7596,7 +8794,10 @@ export class DbRepo {
         "b.bank_account_number as account_number",
         "b.nin",
         "b.date_of_birth",
-        "b.photo"
+        "b.photo",
+        "b.email",
+        "b.custom_fields",
+        "adm.admission_form_data"
       ];
 
       let queryWhere = "WHERE b.deleted_at IS NULL ";
@@ -7719,33 +8920,39 @@ export class DbRepo {
       `;
 
       const rowsRes = await executeQuery(pagedStr, paginationParams);
-      const rows = rowsRes.rows.map(r => ({
-        id: r.id,
-        referenceNumber: r.reference_number,
-        name: `${r.last_name}, ${r.first_name}`,
-        sector: r.skill_sector,
-        tsp: r.tsp,
-        admissionStatus: r.admission_status,
-        hasPhoto: !!r.has_photo,
-        state: r.state,
-        batch: r.batch,
-        createdAt: r.created_at.toISOString(),
-        admissionFormRef: r.admission_form_ref || r.reference_number || "",
-        admissionFormStatus: r.admission_form_status || "NOT_GENERATED",
-        admissionFormGeneratedAt: r.admission_form_generated_at ? r.admission_form_generated_at.toISOString() : null,
-        admissionFormViewedAt: r.admission_form_viewed_at ? r.admission_form_viewed_at.toISOString() : null,
-        admissionFormConfirmedAt: r.admission_form_confirmed_at ? r.admission_form_confirmed_at.toISOString() : null,
-        gender: r.gender || "Male",
-        bvn: r.bvn || "",
-        guardianName: r.guardian_name || "",
-        guardianPhone: r.guardian_phone || "",
-        address: r.address || "",
-        bankName: r.bank_name || "",
-        accountNumber: r.account_number || "",
-        nin: r.nin || "",
-        dateOfBirth: r.date_of_birth || "",
-        photo: r.photo || ""
-      }));
+      const rows = rowsRes.rows.map(r => {
+        const resolvedEmail = DbRepo.resolveEmailFromRow(r);
+        return {
+          id: r.id,
+          referenceNumber: r.reference_number,
+          name: `${r.last_name}, ${r.first_name}`,
+          email: resolvedEmail.email || "",
+          emailSourceField: resolvedEmail.sourceField,
+          emailValidationStatus: resolvedEmail.validationStatus,
+          sector: r.skill_sector,
+          tsp: r.tsp,
+          admissionStatus: r.admission_status,
+          hasPhoto: !!r.has_photo,
+          state: r.state,
+          batch: r.batch,
+          createdAt: r.created_at.toISOString(),
+          admissionFormRef: r.admission_form_ref || r.reference_number || "",
+          admissionFormStatus: r.admission_form_status || "NOT_GENERATED",
+          admissionFormGeneratedAt: r.admission_form_generated_at ? r.admission_form_generated_at.toISOString() : null,
+          admissionFormViewedAt: r.admission_form_viewed_at ? r.admission_form_viewed_at.toISOString() : null,
+          admissionFormConfirmedAt: r.admission_form_confirmed_at ? r.admission_form_confirmed_at.toISOString() : null,
+          gender: r.gender || "Male",
+          bvn: r.bvn || "",
+          guardianName: r.guardian_name || "",
+          guardianPhone: r.guardian_phone || "",
+          address: r.address || "",
+          bankName: r.bank_name || "",
+          accountNumber: r.account_number || "",
+          nin: r.nin || "",
+          dateOfBirth: r.date_of_birth || "",
+          photo: r.photo || ""
+        };
+      });
 
       return { rows, totalCount, page, pageSize, totalPages };
     } catch (e) {
@@ -8984,8 +10191,33 @@ export class DbRepo {
       const fetchValues = [...values, limit, offset];
       const res = await executeQuery(queryStr, fetchValues);
 
+      const mappedProfiles = await Promise.all(res.rows.map(async (row: any) => {
+        const canon = await DbRepo.getCanonicalBeneficiaryRecord(row.beneficiary_id);
+        if (canon) {
+          return {
+            ...row,
+            first_name: canon.firstName,
+            last_name: canon.lastName,
+            other_name: canon.otherName,
+            gender: canon.gender,
+            email: canon.email,
+            phone_number: canon.phoneNumber,
+            residential_address: canon.residentialAddress,
+            bank_name: canon.bankName,
+            bank_sort_code: canon.bankSortCode,
+            bvn: canon.bvn,
+            nin: canon.nin,
+            account_name: canon.bankAccountHolder,
+            account_number: canon.bankAccountNumber,
+            physical_challenge: canon.physicalChallenge || row.physical_challenge,
+            education_qualification: canon.educationQualification || row.education_qualification,
+          };
+        }
+        return row;
+      }));
+
       return {
-        profiles: res.rows,
+        profiles: mappedProfiles,
         total
       };
     } catch (err: any) {
@@ -9045,7 +10277,30 @@ export class DbRepo {
         LEFT JOIN portal_monitoring pm ON b.id = pm.beneficiary_id
         WHERE b.id = $1
       `, [beneficiaryId]);
-      return res.rows[0] || null;
+      const row = res.rows[0];
+      if (!row) return null;
+      const canon = await DbRepo.getCanonicalBeneficiaryRecord(beneficiaryId);
+      if (canon) {
+        return {
+          ...row,
+          first_name: canon.firstName,
+          last_name: canon.lastName,
+          other_name: canon.otherName,
+          gender: canon.gender,
+          email: canon.email,
+          phone_number: canon.phoneNumber,
+          residential_address: canon.residentialAddress,
+          bank_name: canon.bankName,
+          bank_sort_code: canon.bankSortCode,
+          bvn: canon.bvn,
+          nin: canon.nin,
+          account_name: canon.bankAccountHolder,
+          account_number: canon.bankAccountNumber,
+          physical_challenge: canon.physicalChallenge || row.physical_challenge,
+          education_qualification: canon.educationQualification || row.education_qualification,
+        };
+      }
+      return row;
     } catch (e) {
       console.error("[DB Repo] getTraineeProfileByBeneficiaryId error:", e);
       return null;
@@ -12033,6 +13288,370 @@ export class DbRepo {
     } catch (err) {
       console.error("[DB Repo] getComplianceHistory error:", err);
       return [];
+    }
+  }
+
+  static async seedInstitutionalPartners(pool: pg.Pool): Promise<void> {
+    try {
+      const res = await pool.query("SELECT COUNT(*)::int as count FROM institutional_partners");
+      if (res.rows[0]?.count === 0) {
+        console.log("[DB SEED] Seeding baseline institutional partners into PostgreSQL...");
+        const partners = [
+          {
+            id: "277e902b-a45e-4074-b52b-2e970b471ca4",
+            organisation_name: "World Bank",
+            short_name: "World Bank",
+            slug: "world-bank",
+            category: "Development Partner",
+            description: "Supported by leading development and education partners",
+            website_url: "https://www.worldbank.org",
+            logo_original_url: "/worldbank-clean.png",
+            logo_optimized_url: "/worldbank-clean.png",
+            logo_alt_text: "World Bank Group Logo",
+            logo_variant: "colour",
+            background_mode: "transparent",
+            display_scale: 1.0,
+            display_order: 1,
+            status: "published",
+            is_featured: true,
+            published_at: new Date()
+          },
+          {
+            id: "d4ee711f-50b0-466d-88b9-8ca6fa6b780f",
+            organisation_name: "Federal Ministry of Education",
+            short_name: "FME Nigeria",
+            slug: "federal-ministry-of-education",
+            category: "Government Ministry",
+            description: "National supervisory authority for education standardisation.",
+            website_url: "https://education.gov.ng",
+            logo_original_url: "/fedministry-clean.png",
+            logo_optimized_url: "/fedministry-clean.png",
+            logo_alt_text: "Federal Ministry of Education Nigeria Logo",
+            logo_variant: "colour",
+            background_mode: "transparent",
+            display_scale: 1.0,
+            display_order: 2,
+            status: "published",
+            is_featured: true,
+            published_at: new Date()
+          },
+          {
+            id: "96d5952c-47fc-4e6f-ad6c-9477e31b79f6",
+            organisation_name: "IDEAS-TVET Initiative",
+            short_name: "IDEAS TVET",
+            slug: "ideas-tvet-initiative",
+            category: "Programme Initiative",
+            description: "Federal Ministry of Education Innovation Development and Effectiveness in the Acquisition of Skills Project.",
+            website_url: "https://ideasproject.gov.ng",
+            logo_original_url: "/ideas-clean.png",
+            logo_optimized_url: "/ideas-clean.png",
+            logo_alt_text: "IDEAS-TVET Initiative Logo",
+            logo_variant: "colour",
+            background_mode: "transparent",
+            display_scale: 1.0,
+            display_order: 3,
+            status: "published",
+            is_featured: true,
+            published_at: new Date()
+          }
+        ];
+
+        for (const p of partners) {
+          await pool.query(
+            `INSERT INTO institutional_partners (
+              id, organisation_name, short_name, slug, category, description, website_url, 
+              logo_original_url, logo_optimized_url, logo_alt_text, logo_variant, 
+              background_mode, display_scale, display_order, status, is_featured, published_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+            [
+              p.id, p.organisation_name, p.short_name, p.slug, p.category, p.description, p.website_url,
+              p.logo_original_url, p.logo_optimized_url, p.logo_alt_text, p.logo_variant,
+              p.background_mode, p.display_scale, p.display_order, p.status, p.is_featured, p.published_at
+            ]
+          );
+        }
+        console.log("[DB SEED] Seeding baseline institutional partners complete.");
+      }
+    } catch (e: any) {
+      console.error("[DB SEED] Error seeding institutional partners:", e.message || e);
+    }
+  }
+
+  static async getInstitutionalPartners(options?: { active_only?: boolean }): Promise<any[]> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      let list = state.institutional_partners || [];
+      if (options?.active_only) {
+        list = list.filter(p => p.status === "published");
+      }
+      return list.sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
+    }
+
+    try {
+      let query = `
+        SELECT id, organisation_name as "organisation_name", short_name as "short_name", slug, category, 
+               description, website_url as "website_url", logo_original_url as "logo_original_url", 
+               logo_optimized_url as "logo_optimized_url", logo_alt_text as "logo_alt_text", 
+               logo_variant as "logo_variant", background_mode as "background_mode", 
+               display_scale as "display_scale", display_order as "display_order", 
+               status, is_featured as "is_featured", created_at as "created_at", 
+               updated_at as "updated_at", published_at as "published_at"
+        FROM institutional_partners
+      `;
+      const params: any[] = [];
+      if (options?.active_only) {
+        query += " WHERE status = 'published'";
+      }
+      query += " ORDER BY display_order ASC, created_at DESC";
+      const res = await executeQuery(query, params);
+      return res.rows.map(r => ({
+        ...r,
+        display_scale: parseFloat(r.display_scale || 1.0)
+      }));
+    } catch (e) {
+      console.error("[DbRepo] getInstitutionalPartners error:", e);
+      return [];
+    }
+  }
+
+  static async getInstitutionalPartnerById(id: string): Promise<any | null> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      return (state.institutional_partners || []).find(p => p.id === id) || null;
+    }
+
+    try {
+      const res = await executeQuery(`SELECT * FROM institutional_partners WHERE id = $1`, [id]);
+      if (!res.rows[0]) return null;
+      const r = res.rows[0];
+      return {
+        ...r,
+        display_scale: parseFloat(r.display_scale || 1.0)
+      };
+    } catch (e) {
+      console.error("[DbRepo] getInstitutionalPartnerById error:", e);
+      return null;
+    }
+  }
+
+  static async getInstitutionalPartnerBySlug(slug: string): Promise<any | null> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      return (state.institutional_partners || []).find(p => p.slug === slug) || null;
+    }
+
+    try {
+      const res = await executeQuery(`SELECT * FROM institutional_partners WHERE slug = $1`, [slug]);
+      if (!res.rows[0]) return null;
+      const r = res.rows[0];
+      return {
+        ...r,
+        display_scale: parseFloat(r.display_scale || 1.0)
+      };
+    } catch (e) {
+      console.error("[DbRepo] getInstitutionalPartnerBySlug error:", e);
+      return null;
+    }
+  }
+
+  static async createInstitutionalPartner(p: any): Promise<any> {
+    const pool = getPgPool();
+    const id = p.id || crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    const publishedAt = p.status === "published" ? new Date().toISOString() : null;
+
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      if (!state.institutional_partners) state.institutional_partners = [];
+      const newPartner = {
+        id,
+        organisation_name: p.organisation_name,
+        short_name: p.short_name,
+        slug: p.slug,
+        category: p.category,
+        description: p.description || "",
+        website_url: p.website_url || "",
+        logo_original_url: p.logo_original_url,
+        logo_optimized_url: p.logo_optimized_url,
+        logo_alt_text: p.logo_alt_text,
+        logo_variant: p.logo_variant || "colour",
+        background_mode: p.background_mode || "transparent",
+        display_scale: parseFloat(p.display_scale || 1.0),
+        display_order: parseInt(p.display_order || 0),
+        status: p.status || "draft",
+        is_featured: p.is_featured !== false,
+        created_at: createdAt,
+        updated_at: createdAt,
+        published_at: publishedAt
+      };
+      state.institutional_partners.push(newPartner);
+      saveJsonState(state);
+      return newPartner;
+    }
+
+    try {
+      const query = `
+        INSERT INTO institutional_partners (
+          id, organisation_name, short_name, slug, category, description, website_url, 
+          logo_original_url, logo_optimized_url, logo_alt_text, logo_variant, 
+          background_mode, display_scale, display_order, status, is_featured, published_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        RETURNING *
+      `;
+      const res = await executeQuery(query, [
+        id, p.organisation_name, p.short_name, p.slug, p.category, p.description || "", p.website_url || "",
+        p.logo_original_url, p.logo_optimized_url, p.logo_alt_text, p.logo_variant || "colour",
+        p.background_mode || "transparent", parseFloat(p.display_scale || 1.0), parseInt(p.display_order || 0),
+        p.status || "draft", p.is_featured !== false, publishedAt
+      ]);
+      return res.rows[0];
+    } catch (e) {
+      console.error("[DbRepo] createInstitutionalPartner error:", e);
+      throw e;
+    }
+  }
+
+  static async updateInstitutionalPartner(id: string, p: any): Promise<any> {
+    const pool = getPgPool();
+    const updatedAt = new Date().toISOString();
+    const publishedAt = p.status === "published" ? new Date().toISOString() : null;
+
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      if (!state.institutional_partners) state.institutional_partners = [];
+      const index = state.institutional_partners.findIndex(item => item.id === id);
+      if (index === -1) throw new Error("Partner not found");
+      
+      const current = state.institutional_partners[index];
+      const updatedPartner = {
+        ...current,
+        organisation_name: p.organisation_name !== undefined ? p.organisation_name : current.organisation_name,
+        short_name: p.short_name !== undefined ? p.short_name : current.short_name,
+        slug: p.slug !== undefined ? p.slug : current.slug,
+        category: p.category !== undefined ? p.category : current.category,
+        description: p.description !== undefined ? p.description : current.description,
+        website_url: p.website_url !== undefined ? p.website_url : current.website_url,
+        logo_original_url: p.logo_original_url !== undefined ? p.logo_original_url : current.logo_original_url,
+        logo_optimized_url: p.logo_optimized_url !== undefined ? p.logo_optimized_url : current.logo_optimized_url,
+        logo_alt_text: p.logo_alt_text !== undefined ? p.logo_alt_text : current.logo_alt_text,
+        logo_variant: p.logo_variant !== undefined ? p.logo_variant : current.logo_variant,
+        background_mode: p.background_mode !== undefined ? p.background_mode : current.background_mode,
+        display_scale: p.display_scale !== undefined ? parseFloat(p.display_scale) : current.display_scale,
+        display_order: p.display_order !== undefined ? parseInt(p.display_order) : current.display_order,
+        status: p.status !== undefined ? p.status : current.status,
+        is_featured: p.is_featured !== undefined ? p.is_featured : current.is_featured,
+        updated_at: updatedAt,
+        published_at: p.status === "published" ? (current.published_at || publishedAt) : (p.status === "draft" ? null : current.published_at)
+      };
+      state.institutional_partners[index] = updatedPartner;
+      saveJsonState(state);
+      return updatedPartner;
+    }
+
+    try {
+      const setFields: string[] = [];
+      const values: any[] = [id];
+      let valIndex = 2;
+
+      const mappings: Record<string, string> = {
+        organisation_name: "organisation_name",
+        short_name: "short_name",
+        slug: "slug",
+        category: "category",
+        description: "description",
+        website_url: "website_url",
+        logo_original_url: "logo_original_url",
+        logo_optimized_url: "logo_optimized_url",
+        logo_alt_text: "logo_alt_text",
+        logo_variant: "logo_variant",
+        background_mode: "background_mode",
+        display_scale: "display_scale",
+        display_order: "display_order",
+        status: "status",
+        is_featured: "is_featured"
+      };
+
+      for (const [key, dbCol] of Object.entries(mappings)) {
+        if (p[key] !== undefined) {
+          setFields.push(`${dbCol} = $${valIndex}`);
+          let val = p[key];
+          if (key === "display_scale") val = parseFloat(val);
+          if (key === "display_order") val = parseInt(val);
+          values.push(val);
+          valIndex++;
+        }
+      }
+
+      setFields.push(`updated_at = $${valIndex}`);
+      values.push(updatedAt);
+      valIndex++;
+
+      if (p.status !== undefined) {
+        if (p.status === "published") {
+          setFields.push(`published_at = COALESCE(published_at, $${valIndex})`);
+          values.push(new Date());
+          valIndex++;
+        } else if (p.status === "draft") {
+          setFields.push(`published_at = NULL`);
+        }
+      }
+
+      const query = `UPDATE institutional_partners SET ${setFields.join(", ")} WHERE id = $1 RETURNING *`;
+      const res = await executeQuery(query, values);
+      return res.rows[0];
+    } catch (e) {
+      console.error("[DbRepo] updateInstitutionalPartner error:", e);
+      throw e;
+    }
+  }
+
+  static async deleteInstitutionalPartner(id: string): Promise<boolean> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      if (!state.institutional_partners) state.institutional_partners = [];
+      const index = state.institutional_partners.findIndex(p => p.id === id);
+      if (index === -1) return false;
+      state.institutional_partners.splice(index, 1);
+      saveJsonState(state);
+      return true;
+    }
+
+    try {
+      const res = await executeQuery(`DELETE FROM institutional_partners WHERE id = $1`, [id]);
+      return (res.rowCount || 0) > 0;
+    } catch (e) {
+      console.error("[DbRepo] deleteInstitutionalPartner error:", e);
+      return false;
+    }
+  }
+
+  static async updateInstitutionalPartnersOrder(orderedIds: string[]): Promise<boolean> {
+    const pool = getPgPool();
+    if (!pool || !isPgActive) {
+      const state = loadJsonState();
+      if (!state.institutional_partners) state.institutional_partners = [];
+      for (const item of state.institutional_partners) {
+        const orderIndex = orderedIds.indexOf(item.id);
+        if (orderIndex !== -1) {
+          item.display_order = orderIndex + 1;
+        }
+      }
+      saveJsonState(state);
+      return true;
+    }
+
+    try {
+      for (let i = 0; i < orderedIds.length; i++) {
+        await executeQuery(`UPDATE institutional_partners SET display_order = $1 WHERE id = $2`, [i + 1, orderedIds[i]]);
+      }
+      return true;
+    } catch (e) {
+      console.error("[DbRepo] updateInstitutionalPartnersOrder error:", e);
+      return false;
     }
   }
 }

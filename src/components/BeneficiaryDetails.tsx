@@ -82,6 +82,54 @@ export function BeneficiaryDetails({
   );
   const [isUpdatingLetter, setIsUpdatingLetter] = useState(false);
 
+  // Dynamic, canonical bank details states
+  const [bankDetails, setBankDetails] = useState<any | null>(null);
+  const [loadingBankDetails, setLoadingBankDetails] = useState(false);
+  const [bankDetailsError, setBankDetailsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (activeTab === "banking" && beneficiary.id) {
+      setBankDetails(null);
+      setBankDetailsError(null);
+      setLoadingBankDetails(true);
+
+      authFetch(`/api/beneficiaries/${beneficiary.id}/bank-details`)
+        .then(async (res) => {
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.error || `HTTP error ${res.status}`);
+          }
+          return res.json();
+        })
+        .then((data) => {
+          // Double check: identity verification
+          if (data.beneficiaryId !== beneficiary.id) {
+            logActionToBackend("DATA_IDENTITY_CONFLICT", `Identity mismatch: Requested ${beneficiary.id} but received bank details for ${data.beneficiaryId}`);
+            throw new Error("DATA IDENTITY CONFLICT: Returned beneficiary ID does not match current beneficiary.");
+          }
+          if (data.tvetId && beneficiary.id) {
+            const expectedTvetId = (beneficiary as any).tvetId || (beneficiary as any).tvet_id || beneficiary.customFields?.tvet_id || beneficiary.id;
+            if (expectedTvetId && data.tvetId !== expectedTvetId) {
+              logActionToBackend("DATA_IDENTITY_CONFLICT", `TVET ID mismatch: Expected ${expectedTvetId} but received ${data.tvetId}`);
+              throw new Error("DATA IDENTITY CONFLICT: Returned TVET ID does not match current beneficiary.");
+            }
+          }
+          setBankDetails(data);
+        })
+        .catch((err) => {
+          console.error("Failed to load canonical bank details:", err);
+          setBankDetailsError(err.message);
+        })
+        .finally(() => {
+          setLoadingBankDetails(false);
+        });
+    } else {
+      // Clear previous bank state when not on the banking tab or beneficiary changes
+      setBankDetails(null);
+      setBankDetailsError(null);
+    }
+  }, [activeTab, beneficiary.id]);
+
   useEffect(() => {
     setSelectedLetterStatus((beneficiary.acceptanceLetterStatus as any) || "NOT_SUBMITTED");
     setRemarksInput(beneficiary.acceptanceLetterRemarks || "");
@@ -5871,39 +5919,82 @@ export function BeneficiaryDetails({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs font-mono">
-                <div className="p-4 bg-slate-50/70 border rounded-xl space-y-2 text-left">
-                  <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-wider">Registered Clearing Bank Name</span>
-                  <div className="flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full bg-indigo-600 animate-pulse"></span>
-                    <span className="font-sans font-bold text-slate-800 text-sm">Zenith Bank PLC</span>
+              {/* Added a visible identity line */}
+              <div className="bg-slate-50 border border-slate-150 rounded-lg p-3 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 text-xs font-mono text-slate-600">
+                <span>Bank details for: <strong className="text-slate-800 font-sans">{beneficiary.firstName} {beneficiary.lastName}</strong></span>
+                <span>TVET ID: <strong className="text-indigo-600">{beneficiary.id}</strong></span>
+              </div>
+
+              {loadingBankDetails ? (
+                <div className="space-y-4 animate-pulse py-6">
+                  <div className="h-4 bg-slate-200 rounded w-1/3"></div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="h-16 bg-slate-100 rounded-xl"></div>
+                    <div className="h-16 bg-slate-100 rounded-xl"></div>
+                    <div className="h-16 bg-slate-100 rounded-xl"></div>
+                    <div className="h-16 bg-slate-100 rounded-xl"></div>
                   </div>
                 </div>
-
-                <div className="p-4 bg-slate-50/70 border rounded-xl space-y-2 text-left">
-                  <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-wider">Primary Clearing Account digits</span>
-                  <span className="font-bold text-slate-800 text-base block font-mono">2038472910</span>
+              ) : bankDetailsError ? (
+                <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl text-left font-sans text-rose-800 text-xs space-y-2">
+                  <div className="font-bold uppercase tracking-wider flex items-center gap-1.5 text-rose-900">
+                    <AlertTriangle className="h-4 w-4 text-rose-600" /> DATA IDENTITY CONFLICT
+                  </div>
+                  <p className="font-mono text-[10px] bg-white p-2.5 border border-rose-150 rounded text-rose-700">
+                    {bankDetailsError}
+                  </p>
+                  <p>Access to these banking details has been suspended due to an unresolved system exception or administrative integrity conflict.</p>
                 </div>
+              ) : bankDetails ? (
+                <>
+                  {bankDetails.verificationStatus === "BANK_DATA_CONFLICT" && (
+                    <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-left font-sans text-amber-800 text-xs space-y-1.5">
+                      <div className="font-bold uppercase tracking-wider flex items-center gap-1.5 text-amber-950 text-[10px]">
+                        <AlertTriangle className="h-4 w-4 text-amber-600 animate-pulse" /> BANK DATA DUPLICATION CONFLICT
+                      </div>
+                      <p className="text-[10px] font-mono leading-relaxed bg-white border border-amber-150 p-2.5 rounded text-amber-900">
+                        {bankDetails.conflictDetails}
+                      </p>
+                    </div>
+                  )}
 
-                <div className="p-4 bg-slate-50/70 border rounded-xl space-y-2 text-left">
-                  <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-wider">Bank Verification Number (BVN)</span>
-                  <span className="font-bold text-slate-800 text-sm block font-mono">
-                    {beneficiary.bvn ? `*** *** ${beneficiary.bvn.slice(-4)}` : "2223847392"}
-                  </span>
-                </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs font-mono">
+                    <div className="p-4 bg-slate-50/70 border rounded-xl space-y-2 text-left">
+                      <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-wider">Registered Clearing Bank Name</span>
+                      <div className="flex items-center gap-2">
+                        <span className="h-2 w-2 rounded-full bg-indigo-600 animate-pulse"></span>
+                        <span className="font-sans font-bold text-slate-800 text-sm">{bankDetails.bankName || "N/A"}</span>
+                      </div>
+                    </div>
 
-                <div className="p-4 bg-slate-50/70 border rounded-xl space-y-2 text-left">
-                  <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-wider">Clearing Name match audit Status</span>
-                  <span className="font-bold text-emerald-700 text-xs font-sans block flex items-center gap-1">
-                    <CheckCircle className="h-3.5 w-3.5" /> Approved Trainee Name Exact Match
-                  </span>
-                </div>
+                    <div className="p-4 bg-slate-50/70 border rounded-xl space-y-2 text-left">
+                      <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-wider">Primary Clearing Account digits</span>
+                      <span className="font-bold text-slate-800 text-base block font-mono">{bankDetails.accountNumber || "N/A"}</span>
+                    </div>
 
-                <div className="p-4 bg-[#e6f4ea] border border-emerald-200 rounded-xl md:col-span-2 space-y-1.5 text-left text-slate-800 text-xs leading-relaxed font-sans">
-                  <h5 className="font-bold text-emerald-800 uppercase text-[10px] tracking-wide font-mono">Automatic TVET Allowance Stipend program</h5>
-                  <p>Central Federal Ministry clearance confirms this candidate registers active, compliant photos and logs daily attendance coordinates correctly. Monthly stipend payments of ₦30,000 are scheduled for automatic clearing delivery to the verified Zenith bank account details listed above.</p>
-                </div>
-              </div>
+                    <div className="p-4 bg-slate-50/70 border rounded-xl space-y-2 text-left">
+                      <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-wider">Bank Verification Number (BVN)</span>
+                      <span className="font-bold text-slate-800 text-sm block font-mono">
+                        {bankDetails.maskedBvn || "N/A"}
+                      </span>
+                    </div>
+
+                    <div className="p-4 bg-slate-50/70 border rounded-xl space-y-2 text-left">
+                      <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-wider">Clearing Name match audit Status</span>
+                      <span className="font-bold text-emerald-700 text-xs font-sans block flex items-center gap-1">
+                        <CheckCircle className="h-3.5 w-3.5" /> {bankDetails.accountName ? `Approved Name: ${bankDetails.accountName}` : "Approved Trainee Name Exact Match"}
+                      </span>
+                    </div>
+
+                    <div className="p-4 bg-[#e6f4ea] border border-emerald-200 rounded-xl md:col-span-2 space-y-1.5 text-left text-slate-800 text-xs leading-relaxed font-sans">
+                      <h5 className="font-bold text-emerald-800 uppercase text-[10px] tracking-wide font-mono">Automatic TVET Allowance Stipend program</h5>
+                      <p>Central Federal Ministry clearance confirms this candidate registers active, compliant photos and logs daily attendance coordinates correctly. Monthly stipend payments of ₦30,000 are scheduled for automatic clearing delivery to the verified {bankDetails.bankName || "registered"} bank account details listed above.</p>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <p className="text-slate-500 py-6">No bank records could be verified for this trainee candidate.</p>
+              )}
             </div>
           )}
 

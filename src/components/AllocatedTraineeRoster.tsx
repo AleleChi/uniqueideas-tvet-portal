@@ -5,10 +5,13 @@ import {
   X, ChevronRight, Calendar, User, Layers, RefreshCw, Plus, Trash2, 
   Lock, Unlock, ArrowUp, ArrowDown, Shuffle, ClipboardList, Sparkles, 
   UserCheck, AlertCircle, Upload, FileText, CheckCircle, AlertOctagon,
-  ArrowRight, Eye
+  ArrowRight, Eye, Edit3, Mail, ArrowLeft
 } from "lucide-react";
 import { authFetch } from "../utils/authFetch";
 import { TraineeAdmissionDetailsModal } from "./TraineeAdmissionDetailsModal";
+import { BeneficiaryDetails } from "./BeneficiaryDetails";
+import { NewEnrollmentForm } from "./NewEnrollmentForm";
+import { Beneficiary } from "../types";
 
 interface AllocatedTraineeRosterProps {
   session: any;
@@ -81,6 +84,53 @@ export default function AllocatedTraineeRoster({ session, showToast }: Allocated
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const hasLoadedFromStorage = useRef(false);
+
+  // Deep dive actions and canonical overlays
+  const [activeBeneficiary, setActiveBeneficiary] = useState<any | null>(null);
+  const [activeDetailsTab, setActiveDetailsTab] = useState<string>("overview");
+  const [viewMode, setViewMode] = useState<"roster" | "view_details" | "edit_details">("roster");
+  const [openDropdownRowId, setOpenDropdownRowId] = useState<string | null>(null);
+
+  const fetchAndOpenBeneficiary = async (beneficiaryId: string, nextMode: "view_details" | "edit_details", tab = "overview") => {
+    setActionLoadingId(beneficiaryId);
+    setOpenDropdownRowId(null);
+    try {
+      const res = await authFetch(`/api/beneficiaries/${beneficiaryId}`);
+      if (!res.ok) {
+        throw new Error("Unable to retrieve beneficiary profile from server.");
+      }
+      const data = await res.json();
+      setActiveBeneficiary(data);
+      setActiveDetailsTab(tab);
+      setViewMode(nextMode);
+    } catch (err: any) {
+      showToast(err.message || "Failed to load beneficiary profile.", "error");
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  const handleUpdateBeneficiary = async (formData: Partial<Beneficiary>) => {
+    if (activeBeneficiary) {
+      try {
+        const response = await authFetch(`/api/beneficiaries/${activeBeneficiary.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(formData)
+        });
+        if (!response.ok) {
+          const errData = await response.json();
+          throw new Error(errData.error || "Failed to update beneficiary details.");
+        }
+        showToast("Beneficiary details successfully updated.", "success");
+        setViewMode("roster");
+        setActiveBeneficiary(null);
+        fetchRosterData(); // refresh roster list
+      } catch (err: any) {
+        showToast(err.message || "Failed to save beneficiary changes.", "error");
+      }
+    }
+  };
 
   // Load saved selection from localStorage once rosterId is available
   useEffect(() => {
@@ -586,6 +636,65 @@ export default function AllocatedTraineeRoster({ session, showToast }: Allocated
 
   const isAllPageSelected = trainees.length > 0 && trainees.every(t => selectedRowIds.has(t.beneficiaryId));
 
+  if (viewMode === "view_details" && activeBeneficiary) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setViewMode("roster")}
+            className="flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs transition cursor-pointer"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>Back to Roster</span>
+          </button>
+          <span className="text-slate-400 font-mono text-xs">/</span>
+          <span className="text-slate-500 font-bold text-xs font-mono">Dossier Overview</span>
+        </div>
+        <BeneficiaryDetails
+          beneficiary={activeBeneficiary}
+          onBack={() => setViewMode("roster")}
+          onTriggerBiometrics={() => {}}
+          onEdit={() => setViewMode("edit_details")}
+          onUpdate={async (data) => {
+            const updated = { ...activeBeneficiary, ...data };
+            setActiveBeneficiary(updated);
+          }}
+          session={session}
+          initialTab={activeDetailsTab as any}
+        />
+      </div>
+    );
+  }
+
+  if (viewMode === "edit_details" && activeBeneficiary) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setViewMode("roster")}
+            className="flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs transition cursor-pointer"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>Back to Roster</span>
+          </button>
+          <span className="text-slate-400 font-mono text-xs">/</span>
+          <span className="text-slate-500 font-bold text-xs font-mono">Edit Beneficiary Profile</span>
+        </div>
+        <NewEnrollmentForm
+          key={activeBeneficiary ? `edit-${activeBeneficiary.id}` : "new-enrollment"}
+          customFields={[]}
+          beneficiary={activeBeneficiary}
+          onCancel={() => setViewMode("roster")}
+          onSave={handleUpdateBeneficiary}
+          onTriggerCapture={() => {}}
+          preloadedPhoto={activeBeneficiary?.photo || null}
+        />
+      </div>
+    );
+  }
+
   return (
     <div id="roster-module-container" className="space-y-6">
       
@@ -1045,21 +1154,9 @@ export default function AllocatedTraineeRoster({ session, showToast }: Allocated
 
                       {/* Clear per-row Action */}
                       <td className="py-3 px-4 text-right pr-6">
-                        <div className="flex items-center justify-end gap-2">
+                        <div className="flex items-center justify-end gap-2 relative">
                           <button
                             type="button"
-                            onClick={() => setSelectedAdmissionCandidate({
-                              id: row.beneficiaryId,
-                              fullName: row.fullName,
-                              tvetId: row.tvetId
-                            })}
-                            title="Open candidate detailed dossier profile"
-                            className="p-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 border border-indigo-100 rounded-xl flex items-center justify-center transition cursor-pointer"
-                          >
-                            <Eye className="w-3.5 h-3.5" />
-                          </button>
-
-                          <button
                             disabled={isActionLoading}
                             onClick={() => handleToggleSelection(row.beneficiaryId, row.isSelected)}
                             className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-bold text-xxs transition-all shadow-xxs ${
@@ -1073,15 +1170,96 @@ export default function AllocatedTraineeRoster({ session, showToast }: Allocated
                             ) : row.isSelected ? (
                               <>
                                 <XCircle className="w-3.5 h-3.5" />
-                                <span>Remove from Reports</span>
+                                <span>Remove</span>
                               </>
                             ) : (
                               <>
                                 <CheckCircle2 className="w-3.5 h-3.5" />
-                                <span>Select for Reports</span>
+                                <span>Select</span>
                               </>
                             )}
                           </button>
+
+                          <div className="relative">
+                            <button
+                              type="button"
+                              disabled={isActionLoading}
+                              onClick={() => setOpenDropdownRowId(openDropdownRowId === row.beneficiaryId ? null : row.beneficiaryId)}
+                              title="Trainee Actions"
+                              className="p-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-600 rounded-xl flex items-center justify-center transition cursor-pointer disabled:opacity-50"
+                            >
+                              <ChevronDown className="w-4 h-4" />
+                            </button>
+
+                            {openDropdownRowId === row.beneficiaryId && (
+                              <>
+                                <div className="fixed inset-0 z-10" onClick={() => setOpenDropdownRowId(null)} />
+                                <div className="absolute right-0 mt-2 w-56 rounded-xl bg-white border border-slate-150 shadow-lg py-1.5 z-[99] text-left font-sans text-xs divide-y divide-slate-50">
+                                  <div className="py-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => fetchAndOpenBeneficiary(row.beneficiaryId, "view_details", "overview")}
+                                      className="w-full px-3 py-2 text-slate-700 hover:bg-slate-50 flex items-center gap-2 font-medium"
+                                    >
+                                      <Eye className="w-3.5 h-3.5 text-indigo-500" />
+                                      <span>View Beneficiary Details</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => fetchAndOpenBeneficiary(row.beneficiaryId, "edit_details")}
+                                      className="w-full px-3 py-2 text-slate-700 hover:bg-slate-50 flex items-center gap-2 font-medium"
+                                    >
+                                      <Edit3 className="w-3.5 h-3.5 text-amber-500" />
+                                      <span>Edit Beneficiary Details</span>
+                                    </button>
+                                  </div>
+                                  <div className="py-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => fetchAndOpenBeneficiary(row.beneficiaryId, "view_details", "overview")}
+                                      className="w-full px-3 py-2 text-slate-700 hover:bg-slate-50 flex items-center gap-2 font-medium"
+                                    >
+                                      <User className="w-3.5 h-3.5 text-emerald-500" />
+                                      <span>Open Full Profile</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => fetchAndOpenBeneficiary(row.beneficiaryId, "view_details", "attendance")}
+                                      className="w-full px-3 py-2 text-slate-700 hover:bg-slate-50 flex items-center gap-2 font-medium"
+                                    >
+                                      <Calendar className="w-3.5 h-3.5 text-blue-500" />
+                                      <span>View Attendance</span>
+                                    </button>
+                                  </div>
+                                  <div className="py-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setOpenDropdownRowId(null);
+                                        setSelectedAdmissionCandidate({
+                                          id: row.beneficiaryId,
+                                          fullName: row.fullName,
+                                          tvetId: row.tvetId
+                                        });
+                                      }}
+                                      className="w-full px-3 py-2 text-slate-700 hover:bg-slate-50 flex items-center gap-2 font-medium"
+                                    >
+                                      <FileText className="w-3.5 h-3.5 text-rose-500" />
+                                      <span>View Admissions & Letters</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => fetchAndOpenBeneficiary(row.beneficiaryId, "view_details", "communications")}
+                                      className="w-full px-3 py-2 text-slate-700 hover:bg-slate-50 flex items-center gap-2 font-medium"
+                                    >
+                                      <Mail className="w-3.5 h-3.5 text-purple-500" />
+                                      <span>View Communication History</span>
+                                    </button>
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                          </div>
                         </div>
                       </td>
 

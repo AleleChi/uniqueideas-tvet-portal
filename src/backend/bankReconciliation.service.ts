@@ -187,6 +187,274 @@ export function normalizeBankName(name: string): string {
     .replace(/[^a-z0-9]/g, ""); // strip punctuation and spaces
 }
 
+export const CANONICAL_BANKS = [
+  { name: "Access Bank", sortCode: "044150149" },
+  { name: "Zenith Bank", sortCode: "057150143" },
+  { name: "Guaranty Trust Bank", sortCode: "058150125" },
+  { name: "United Bank for Africa", sortCode: "033150111" },
+  { name: "First Bank of Nigeria", sortCode: "011150148" },
+  { name: "Fidelity Bank", sortCode: "070150003" },
+  { name: "Union Bank of Nigeria", sortCode: "032150007" },
+  { name: "Stanbic IBTC Bank", sortCode: "039150002" },
+  { name: "Sterling Bank", sortCode: "232150008" },
+  { name: "Wema Bank", sortCode: "035150103" },
+  { name: "Ecobank Nigeria", sortCode: "050150010" },
+  { name: "Keystone Bank", sortCode: "082150017" },
+  { name: "Polaris Bank", sortCode: "076150001" },
+  { name: "First City Monument Bank", sortCode: "214150018" },
+  { name: "Providus Bank", sortCode: "101150001" },
+  { name: "Jaiz Bank", sortCode: "301150001" },
+  { name: "Taj Bank", sortCode: "302150001" },
+  { name: "Globus Bank", sortCode: "103150001" },
+  { name: "SunTrust Bank", sortCode: "100150001" },
+  { name: "Signature Bank", sortCode: "107150001" }
+];
+
+export const STANDARD_ALIASES = [
+  { canonical: "Guaranty Trust Bank", alias: "GTB" },
+  { canonical: "Guaranty Trust Bank", alias: "GTBank" },
+  { canonical: "Guaranty Trust Bank", alias: "Guaranty Trust Bank PLC" },
+  { canonical: "Guaranty Trust Bank", alias: "Guaranty Trust Bank Plc" },
+  { canonical: "United Bank for Africa", alias: "UBA" },
+  { canonical: "United Bank for Africa", alias: "UBA PLC" },
+  { canonical: "United Bank for Africa", alias: "UBA Plc" },
+  { canonical: "United Bank for Africa", alias: "United Bank For Africa Plc" },
+  { canonical: "United Bank for Africa", alias: "United Bank For Africa PLC" },
+  { canonical: "United Bank for Africa", alias: "United Bank Of Africa" },
+  { canonical: "United Bank for Africa", alias: "United Bank of Africa" },
+  { canonical: "United Bank for Africa", alias: "United Bank of Africa Plc" },
+  { canonical: "United Bank for Africa", alias: "United Bank of Africa PLC" },
+  { canonical: "United Bank for Africa", alias: "United Bank For Africa" },
+  { canonical: "First Bank of Nigeria", alias: "First Bank" },
+  { canonical: "First Bank of Nigeria", alias: "FBN" },
+  { canonical: "First Bank of Nigeria", alias: "First Bank of Nigeria Plc" },
+  { canonical: "First Bank of Nigeria", alias: "First Bank of Nigeria PLC" },
+  { canonical: "First City Monument Bank", alias: "FCMB" },
+  { canonical: "First City Monument Bank", alias: "First City Monument Bank Plc" },
+  { canonical: "First City Monument Bank", alias: "First City Monument Bank PLC" },
+  { canonical: "Stanbic IBTC Bank", alias: "Stanbic" },
+  { canonical: "Stanbic IBTC Bank", alias: "Stanbic IBTC" },
+  { canonical: "Stanbic IBTC Bank", alias: "Stanbic IBTC Bank Plc" },
+  { canonical: "Ecobank Nigeria", alias: "Ecobank" },
+  { canonical: "Ecobank Nigeria", alias: "Eco Bank" },
+  { canonical: "Ecobank Nigeria", alias: "Ecobank Plc" },
+  { canonical: "Union Bank of Nigeria", alias: "Union Bank" },
+  { canonical: "Union Bank of Nigeria", alias: "UBN" },
+  { canonical: "Union Bank of Nigeria", alias: "Union Bank of Nigeria Plc" },
+  { canonical: "Zenith Bank", alias: "Zenith Bank Plc" },
+  { canonical: "Zenith Bank", alias: "Zenith" },
+  { canonical: "Zenith Bank", alias: "Zenith Bank PLC" },
+  { canonical: "Access Bank", alias: "Access Bank Plc" },
+  { canonical: "Access Bank", alias: "Access" },
+  { canonical: "Access Bank", alias: "Access Bank PLC" }
+];
+
+export interface BankMatchResult {
+  canonicalBankId: string | null;
+  canonicalBankName: string;
+  savedBankName: string;
+  savedSortCode: string;
+  approvedSortCode: string;
+  normalizedSavedSortCode: string;
+  matchType: "CANONICAL" | "ALIAS" | "FUZZY" | "NONE";
+  status: "MATCHED" | "MISMATCH" | "MISSING" | "REVIEW_REQUIRED" | "BANK_NOT_FOUND" | "INVALID_FORMAT";
+  reason: string;
+  canAutofill: boolean;
+}
+
+export const APPROVED_MAPPINGS: Record<string, { name: string; code: string }> = {
+  "accessbank": { name: "ACCESS BANK PLC", code: "044150149" },
+  "access": { name: "ACCESS BANK PLC", code: "044150149" },
+  "accessbankplc": { name: "ACCESS BANK PLC", code: "044150149" },
+
+  "ecobanknigeria": { name: "ECOBANK NIGERIA", code: "050150010" },
+  "ecobank": { name: "ECOBANK NIGERIA", code: "050150010" },
+  "ecobankplc": { name: "ECOBANK NIGERIA", code: "050150010" },
+  "ecobanknigplc": { name: "ECOBANK NIGERIA", code: "050150010" },
+
+  "fidelitybank": { name: "FIDELITY BANK PLC", code: "070150003" },
+  "fidelitybankplc": { name: "FIDELITY BANK PLC", code: "070150003" },
+
+  "firstbankofnigeria": { name: "FIRST BANK OF NIGERIA PLC", code: "011150148" },
+  "firstbank": { name: "FIRST BANK OF NIGERIA PLC", code: "011150148" },
+  "fbn": { name: "FIRST BANK OF NIGERIA PLC", code: "011150148" },
+  "firstbankofnigeriaplc": { name: "FIRST BANK OF NIGERIA PLC", code: "011150148" },
+
+  "firstcitymonumentbank": { name: "FIRST CITY MONUMENT BANK PLC", code: "214150018" },
+  "fcmb": { name: "FIRST CITY MONUMENT BANK PLC", code: "214150018" },
+  "firstcitymonumentbankplc": { name: "FIRST CITY MONUMENT BANK PLC", code: "214150018" },
+
+  "guarantytrustbank": { name: "GUARANTY TRUST BANK PLC", code: "058150125" },
+  "gtbank": { name: "GUARANTY TRUST BANK PLC", code: "058150125" },
+  "gtb": { name: "GUARANTY TRUST BANK PLC", code: "058150125" },
+  "guarantytrustbankplc": { name: "GUARANTY TRUST BANK PLC", code: "058150125" },
+
+  "stanbicibtcbank": { name: "STANBIC IBTC BANK PLC", code: "039150002" },
+  "stanbicibtc": { name: "STANBIC IBTC BANK PLC", code: "039150002" },
+  "stanbic": { name: "STANBIC IBTC BANK PLC", code: "039150002" },
+  "stanbicibtcbankplc": { name: "STANBIC IBTC BANK PLC", code: "039150002" },
+
+  "standardcharteredbank": { name: "STANDARD CHARTERED BANK PLC", code: "068150015" },
+  "standardchartered": { name: "STANDARD CHARTERED BANK PLC", code: "068150015" },
+
+  "sterlingbank": { name: "STERLING BANK PLC", code: "232150008" },
+  "sterling": { name: "STERLING BANK PLC", code: "232150008" },
+  "sterlingbankplc": { name: "STERLING BANK PLC", code: "232150008" },
+
+  "unitedbankforafrica": { name: "UNITED BANK FOR AFRICA PLC", code: "033150111" },
+  "uba": { name: "UNITED BANK FOR AFRICA PLC", code: "033150111" },
+  "ubaplc": { name: "UNITED BANK FOR AFRICA PLC", code: "033150111" },
+  "unitedbankofafrica": { name: "UNITED BANK FOR AFRICA PLC", code: "033150111" },
+  "unitedbankofafricaplc": { name: "UNITED BANK FOR AFRICA PLC", code: "033150111" },
+  "unitedbankforafricaplc": { name: "UNITED BANK FOR AFRICA PLC", code: "033150111" },
+
+  "unionbankofnigeria": { name: "UNION BANK OF NIG. PLC", code: "032150007" },
+  "unionbank": { name: "UNION BANK OF NIG. PLC", code: "032150007" },
+  "ubn": { name: "UNION BANK OF NIG. PLC", code: "032150007" },
+  "unionbankofnigeriaplc": { name: "UNION BANK OF NIG. PLC", code: "032150007" },
+  "unionbankofnigplc": { name: "UNION BANK OF NIG. PLC", code: "032150007" },
+
+  "unitybank": { name: "UNITY BANK PLC", code: "215150115" },
+  "unity": { name: "UNITY BANK PLC", code: "215150115" },
+  "unitybankplc": { name: "UNITY BANK PLC", code: "215150115" },
+
+  "wemabank": { name: "WEMA BANK PLC", code: "035150103" },
+  "wema": { name: "WEMA BANK PLC", code: "035150103" },
+  "wemabankplc": { name: "WEMA BANK PLC", code: "035150103" },
+
+  "zenithbank": { name: "ZENITH BANK PLC", code: "057150143" },
+  "zenith": { name: "ZENITH BANK PLC", code: "057150143" },
+  "zenithbankplc": { name: "ZENITH BANK PLC", code: "057150143" }
+};
+
+export function normalizeSortCode(value: any): string | null {
+  if (value === null || value === undefined) return null;
+  const trimmed = String(value).trim();
+  if (trimmed === "") return null;
+  
+  if (/\D/.test(trimmed)) {
+    return "INVALID_FORMAT";
+  }
+  
+  if (trimmed.length === 9) {
+    return trimmed;
+  }
+  
+  if (trimmed.length >= 1 && trimmed.length <= 3) {
+    return trimmed.padStart(3, "0");
+  }
+  
+  return "INVALID_FORMAT";
+}
+
+/**
+ * Single authoritative bank matching and sort code validation logic.
+ */
+export function resolveOfficialBankMatch(
+  bankName: string,
+  savedSortCode: string,
+  dbBanks?: any[],
+  dbAliases?: any[]
+): BankMatchResult {
+  const rawBankName = String(bankName || "").trim();
+  const rawSavedSort = String(savedSortCode || "").trim();
+
+  // Normalize bank name
+  const cleanBankName = normalizeBankName(rawBankName);
+
+  // 1. Resolve canonical bank name and approved sort code
+  let resolvedBankName = "N/A";
+  let approvedSortCode = "N/A";
+  let matchType: "CANONICAL" | "ALIAS" | "FUZZY" | "NONE" = "NONE";
+
+  if (cleanBankName) {
+    const foundMapping = APPROVED_MAPPINGS[cleanBankName];
+    if (foundMapping) {
+      resolvedBankName = foundMapping.name;
+      approvedSortCode = foundMapping.code;
+      matchType = "ALIAS";
+    } else {
+      // Fallback check in CANONICAL_BANKS
+      for (const b of CANONICAL_BANKS) {
+        const canonName = b.name;
+        const normCanon = normalizeBankName(canonName);
+        if (cleanBankName.includes(normCanon) || normCanon.includes(cleanBankName)) {
+          // Map to standard names we expect
+          let mappedName = canonName;
+          if (canonName === "Fidelity Bank") mappedName = "FIDELITY BANK PLC";
+          else if (canonName === "Union Bank of Nigeria") mappedName = "UNION BANK OF NIG. PLC";
+          else if (canonName === "United Bank for Africa") mappedName = "UNITED BANK FOR AFRICA PLC";
+          else if (canonName === "First Bank of Nigeria") mappedName = "FIRST BANK OF NIGERIA PLC";
+          else if (canonName === "First City Monument Bank") mappedName = "FIRST CITY MONUMENT BANK PLC";
+          else if (canonName === "Guaranty Trust Bank") mappedName = "GUARANTY TRUST BANK PLC";
+          else if (canonName === "Stanbic IBTC Bank") mappedName = "STANBIC IBTC BANK PLC";
+          else if (canonName === "Sterling Bank") mappedName = "STERLING BANK PLC";
+          else if (canonName === "Wema Bank") mappedName = "WEMA BANK PLC";
+          else if (canonName === "Zenith Bank") mappedName = "ZENITH BANK PLC";
+          else if (canonName === "Ecobank Nigeria") mappedName = "ECOBANK NIGERIA";
+          else if (canonName === "Access Bank") mappedName = "ACCESS BANK PLC";
+
+          resolvedBankName = mappedName;
+          approvedSortCode = b.sortCode;
+          matchType = "FUZZY";
+          break;
+        }
+      }
+    }
+  }
+
+  // 2. Normalize saved sort code
+  const normalizedSavedSortCode = normalizeSortCode(rawSavedSort);
+
+  // 3. Determine status, reason, canAutofill
+  let status: BankMatchResult["status"];
+  let reason = "";
+  let canAutofill = false;
+
+  if (!cleanBankName || rawBankName.toLowerCase() === "n/a") {
+    status = "BANK_NOT_FOUND";
+    reason = "Trainee bank name is empty or not provided.";
+  } else if (resolvedBankName === "N/A") {
+    status = "REVIEW_REQUIRED";
+    reason = `The saved Bank Name '${rawBankName}' could not be matched safely to the approved official bank directory. Manual review required.`;
+  } else if (!rawSavedSort) {
+    status = "MISSING";
+    reason = "Bank sort code is missing.";
+    canAutofill = approvedSortCode !== "N/A";
+  } else if (normalizedSavedSortCode === "INVALID_FORMAT" || !normalizedSavedSortCode) {
+    status = "INVALID_FORMAT";
+    reason = "Sort code format is invalid (must be a 3-digit number).";
+    canAutofill = approvedSortCode !== "N/A";
+  } else {
+    const isMatched = normalizedSavedSortCode === approvedSortCode ||
+                    (normalizedSavedSortCode.length === 9 && approvedSortCode.length === 3 && normalizedSavedSortCode.startsWith(approvedSortCode)) ||
+                    (normalizedSavedSortCode.length === 3 && approvedSortCode.length === 9 && approvedSortCode.startsWith(normalizedSavedSortCode)) ||
+                    (normalizedSavedSortCode.length === 9 && approvedSortCode.length === 9 && normalizedSavedSortCode.substring(0, 3) === approvedSortCode.substring(0, 3));
+    if (isMatched) {
+      status = "MATCHED";
+      reason = "SAVED_CODE_EQUALS_APPROVED_CODE";
+      canAutofill = false;
+    } else {
+      status = "MISMATCH";
+      reason = `Sort code does not match official bank sort code '${approvedSortCode}'.`;
+      canAutofill = approvedSortCode !== "N/A";
+    }
+  }
+
+  return {
+    canonicalBankId: resolvedBankName !== "N/A" ? resolvedBankName : null,
+    canonicalBankName: resolvedBankName,
+    savedBankName: rawBankName,
+    savedSortCode: rawSavedSort,
+    approvedSortCode,
+    normalizedSavedSortCode: normalizedSavedSortCode || rawSavedSort,
+    matchType,
+    status,
+    reason,
+    canAutofill
+  };
+}
+
 /**
  * Matches a raw bank name against the canonical database directory or known aliases.
  */
@@ -196,54 +464,32 @@ export async function matchBankName(rawName: string, pool: any): Promise<{
   approved_sort_code: string;
   match_method: "CANONICAL" | "ALIAS" | "FUZZY" | "NONE";
 } | null> {
-  const cleanRaw = normalizeBankName(rawName);
-  if (!cleanRaw) return null;
-
-  // 1. Direct canonical match (ignoring spaces/case/special characters)
-  const allBanks = await pool.query("SELECT id, canonical_bank_name, approved_sort_code FROM bank_directory WHERE is_active = TRUE");
-  for (const b of allBanks.rows) {
-    if (normalizeBankName(b.canonical_bank_name) === cleanRaw) {
-      return {
-        id: b.id,
-        canonical_bank_name: b.canonical_bank_name,
-        approved_sort_code: b.approved_sort_code,
-        match_method: "CANONICAL"
-      };
-    }
+  // Fetch from database
+  let dbBanks: any[] = [];
+  let dbAliases: any[] = [];
+  try {
+    const allBanks = await pool.query("SELECT id, canonical_bank_name, approved_sort_code FROM bank_directory WHERE is_active = TRUE");
+    dbBanks = allBanks.rows;
+    const allAliases = await pool.query(`
+      SELECT ba.alias, bd.id, bd.canonical_bank_name, bd.approved_sort_code 
+      FROM bank_aliases ba
+      JOIN bank_directory bd ON ba.bank_directory_id = bd.id
+      WHERE ba.is_active = TRUE AND bd.is_active = TRUE
+    `);
+    dbAliases = allAliases.rows;
+  } catch (err) {
+    // fallback to static
   }
 
-  // 2. Direct alias match
-  const allAliases = await pool.query(`
-    SELECT ba.alias, bd.id, bd.canonical_bank_name, bd.approved_sort_code 
-    FROM bank_aliases ba
-    JOIN bank_directory bd ON ba.bank_directory_id = bd.id
-    WHERE ba.is_active = TRUE AND bd.is_active = TRUE
-  `);
-  for (const a of allAliases.rows) {
-    if (normalizeBankName(a.alias) === cleanRaw) {
-      return {
-        id: a.id,
-        canonical_bank_name: a.canonical_bank_name,
-        approved_sort_code: a.approved_sort_code,
-        match_method: "ALIAS"
-      };
-    }
+  const match = resolveOfficialBankMatch(rawName, "000", dbBanks, dbAliases); // dummy sort code to find the bank
+  if (match.status !== "BANK_NOT_FOUND" && match.canonicalBankName !== "N/A") {
+    return {
+      id: match.canonicalBankId || "",
+      canonical_bank_name: match.canonicalBankName,
+      approved_sort_code: match.approvedSortCode,
+      match_method: match.matchType === "NONE" ? "NONE" : match.matchType
+    };
   }
-
-  // 3. Substring / Fuzzy match
-  for (const b of allBanks.rows) {
-    const normCanonical = normalizeBankName(b.canonical_bank_name);
-    // If raw name contains canonical name or vice versa (e.g. "Access Bank Plc" vs "Access Bank")
-    if (cleanRaw.includes(normCanonical) || normCanonical.includes(cleanRaw)) {
-      return {
-        id: b.id,
-        canonical_bank_name: b.canonical_bank_name,
-        approved_sort_code: b.approved_sort_code,
-        match_method: "FUZZY"
-      };
-    }
-  }
-
   return null;
 }
 
@@ -317,68 +563,28 @@ export async function getReconciliationPreview(
   `);
   const aliases = aliasesRes.rows;
 
-  // Local matching function for performance within loop
-  const localMatch = (rawName: string) => {
-    const cleanRaw = normalizeBankName(rawName);
-    if (!cleanRaw) return null;
-
-    for (const b of canonicalBanks) {
-      if (normalizeBankName(b.canonical_bank_name) === cleanRaw) {
-        return { ...b, method: "CANONICAL" };
-      }
-    }
-
-    for (const a of aliases) {
-      if (normalizeBankName(a.alias) === cleanRaw) {
-        return { id: a.id, canonical_bank_name: a.canonical_bank_name, approved_sort_code: a.approved_sort_code, method: "ALIAS" };
-      }
-    }
-
-    for (const b of canonicalBanks) {
-      const normCanonical = normalizeBankName(b.canonical_bank_name);
-      if (cleanRaw.includes(normCanonical) || normCanonical.includes(cleanRaw)) {
-        return { ...b, method: "FUZZY" };
-      }
-    }
-
-    return null;
-  };
-
   for (const row of result.rows) {
     const rawBank = row.bank_name || "";
     const currentSort = row.bank_sort_code || "";
-    const match = localMatch(rawBank);
+    const match = resolveOfficialBankMatch(rawBank, currentSort, canonicalBanks, aliases);
 
-    let matchedName = "N/A";
-    let matchedId: string | null = null;
-    let approvedSort = "N/A";
     let status: "MATCHED" | "MISMATCH" | "UNMATCHED" = "UNMATCHED";
     let proposedAction = "Manual Mapping Required";
 
-    if (match) {
-      matchedName = match.canonical_bank_name;
-      matchedId = match.id;
-      approvedSort = match.approved_sort_code;
-
-      const cleanCurrent = String(currentSort || "").trim();
-      const cleanApproved = String(approvedSort || "").trim();
-      const isMatch = cleanCurrent === cleanApproved || 
-                      (cleanCurrent.length === 3 && cleanApproved.startsWith(cleanCurrent)) ||
-                      (cleanApproved.length === 3 && cleanCurrent.startsWith(cleanApproved));
-
-      if (isMatch) {
-        status = "MATCHED";
-        proposedAction = "No action needed (Fully Reconciled)";
-      } else {
-        status = "MISMATCH";
-        proposedAction = `Update Sort Code to '${approvedSort}'`;
-      }
+    if (match.status === "MATCHED") {
+      status = "MATCHED";
+      proposedAction = "No action needed (Fully Reconciled)";
+    } else if (match.status === "MISMATCH" || match.status === "MISSING") {
+      status = "MISMATCH";
+      proposedAction = `Update Sort Code to '${match.approvedSortCode}'`;
+    } else if (match.status === "INVALID_FORMAT") {
+      status = "MISMATCH";
+      proposedAction = `Update Sort Code to '${match.approvedSortCode}' (Current format is invalid)`;
     } else {
       proposedAction = "No matched canonical bank found. Correct bank name first.";
     }
 
-    // Determine if verified or correctable (i.e. we have approved sort code)
-    const is_verified = status === "MATCHED" || (status === "MISMATCH" && approvedSort !== "N/A");
+    const is_verified = status === "MATCHED" || (status === "MISMATCH" && match.approvedSortCode !== "N/A");
 
     previewItems.push({
       beneficiary_id: row.beneficiary_id,
@@ -386,10 +592,10 @@ export async function getReconciliationPreview(
       last_name: row.last_name,
       tvet_id: row.tvet_id,
       current_bank_name: rawBank,
-      matched_canonical_bank_name: matchedName,
-      matched_canonical_bank_id: matchedId,
+      matched_canonical_bank_name: match.canonicalBankName,
+      matched_canonical_bank_id: match.canonicalBankId,
       current_sort_code: currentSort,
-      approved_sort_code: approvedSort,
+      approved_sort_code: match.approvedSortCode,
       status,
       proposed_action: proposedAction,
       is_verified

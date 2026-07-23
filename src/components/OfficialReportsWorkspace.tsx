@@ -13,13 +13,23 @@ import { authFetch } from "../utils/authFetch";
 interface OfficialReportsWorkspaceProps {
   session: any;
   onNavigateToTab: (tab: any) => void;
+  onSelectBeneficiary?: (id: string) => void;
 }
 
-export function OfficialReportsWorkspace({ session, onNavigateToTab }: OfficialReportsWorkspaceProps) {
+export function OfficialReportsWorkspace({ session, onNavigateToTab, onSelectBeneficiary }: OfficialReportsWorkspaceProps) {
   const [totalCount, setTotalCount] = useState<number>(195);
   const [rosterCount, setRosterCount] = useState<number>(100);
   const [loading, setLoading] = useState<boolean>(true);
   const [exportLoading, setExportLoading] = useState<string | null>(null);
+  const [preflightConflicts, setPreflightConflicts] = useState<Array<{ 
+    beneficiaryId: string; 
+    name: string; 
+    reason: string;
+    tvetId?: string;
+    accountNumber?: string;
+    conflictBeneficiaries?: Array<{ id: string; name: string; tvetId: string }>;
+  }> | null>(null);
+  const [showConflictModal, setShowConflictModal] = useState<boolean>(false);
 
   useEffect(() => {
     async function loadStats() {
@@ -49,7 +59,21 @@ export function OfficialReportsWorkspace({ session, onNavigateToTab }: OfficialR
     try {
       setExportLoading(filename);
       const response = await authFetch(url);
-      if (!response.ok) throw new Error("Export failed");
+      if (!response.ok) {
+        if (response.status === 422) {
+          try {
+            const data = await response.json();
+            if (data.conflicts && Array.isArray(data.conflicts)) {
+              setPreflightConflicts(data.conflicts);
+              setShowConflictModal(true);
+              return;
+            }
+          } catch (e) {
+            console.error("Failed to parse 422 conflicts:", e);
+          }
+        }
+        throw new Error("Export failed");
+      }
       const blob = await response.blob();
       const downloadUrl = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -60,7 +84,7 @@ export function OfficialReportsWorkspace({ session, onNavigateToTab }: OfficialR
       link.parentNode?.removeChild(link);
     } catch (err) {
       console.error("Download failed:", err);
-      alert("Download failed. Please make sure the server is fully started and try again.");
+      alert("Download failed. Please check the preflight integrity report and try again.");
     } finally {
       setExportLoading(null);
     }
@@ -74,7 +98,21 @@ export function OfficialReportsWorkspace({ session, onNavigateToTab }: OfficialR
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ forceRoster: true })
       });
-      if (!response.ok) throw new Error("Export failed");
+      if (!response.ok) {
+        if (response.status === 422) {
+          try {
+            const data = await response.json();
+            if (data.conflicts && Array.isArray(data.conflicts)) {
+              setPreflightConflicts(data.conflicts);
+              setShowConflictModal(true);
+              return;
+            }
+          } catch (e) {
+            console.error("Failed to parse POST 422 conflicts:", e);
+          }
+        }
+        throw new Error("Export failed");
+      }
       const blob = await response.blob();
       const downloadUrl = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -85,7 +123,7 @@ export function OfficialReportsWorkspace({ session, onNavigateToTab }: OfficialR
       link.parentNode?.removeChild(link);
     } catch (err) {
       console.error("Post export failed:", err);
-      alert("Export failed. Please check server logs and try again.");
+      alert("Export failed. Please check the preflight integrity report and try again.");
     } finally {
       setExportLoading(null);
     }
@@ -288,6 +326,136 @@ export function OfficialReportsWorkspace({ session, onNavigateToTab }: OfficialR
           </div>
         </div>
       </div>
+
+      {/* Preflight Conflicts Dialog / Modal */}
+      {showConflictModal && preflightConflicts && (
+        <div id="preflight_conflict_modal" className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-fade-in">
+          <div className="bg-white border border-slate-200 rounded-2xl max-w-2xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[85vh] animate-scale-up">
+            {/* Modal Header */}
+            <div className="p-6 border-b border-slate-100 flex items-start gap-4">
+              <div className="h-10 w-10 rounded-full bg-red-50 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5 text-red-600" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-slate-900">
+                  Bank-Data Integrity Preflight Failures
+                </h3>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  The official ledger export cannot be compiled because the backend preflight checker detected active data-integrity or profile-completeness conflicts. Correct these issues inside the database profile to proceed.
+                </p>
+              </div>
+            </div>
+
+            {/* Modal Content - List of conflicts */}
+            <div className="p-6 overflow-y-auto space-y-3 flex-1 bg-slate-50/50">
+              <div className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider mb-2">
+                Identified Conflicts ({preflightConflicts.length})
+              </div>
+              {preflightConflicts.map((c, idx) => {
+                const isProvenDuplicate = c.conflictBeneficiaries && c.conflictBeneficiaries.length > 0;
+                return (
+                  <div key={idx} className="p-4 bg-white border border-slate-200 rounded-xl space-y-3 shadow-xs">
+                    <div className="flex justify-between items-center border-b border-slate-100 pb-2 flex-wrap gap-2">
+                      <span className="font-extrabold text-[10px] tracking-wider uppercase text-slate-800">
+                        {isProvenDuplicate ? "Confirmed Duplicate Account Number" : "Bank Data Verification Required"}
+                      </span>
+                      {c.accountNumber && (
+                        <span className="font-mono text-[9px] bg-slate-150 text-slate-700 px-2.5 py-1 rounded-md font-bold">
+                          Evidence: *** *** {c.accountNumber.slice(-4)}
+                        </span>
+                      )}
+                    </div>
+                    
+                    {isProvenDuplicate ? (
+                      <div className="space-y-3">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          {/* Trainee A */}
+                          <div className="p-3 bg-indigo-50/40 border border-indigo-100 rounded-lg flex flex-col justify-between gap-2">
+                            <div>
+                              <div className="text-[9px] font-extrabold text-indigo-700 uppercase tracking-wider">Trainee A</div>
+                              <div className="font-bold text-xs text-slate-800 mt-0.5">{c.name}</div>
+                              <div className="font-mono text-[9px] text-slate-500 font-semibold mt-0.5">TVET ID: {c.tvetId || c.beneficiaryId}</div>
+                            </div>
+                            {onSelectBeneficiary && (
+                              <button
+                                onClick={() => {
+                                  setShowConflictModal(false);
+                                  onSelectBeneficiary(c.beneficiaryId);
+                                }}
+                                className="mt-1 self-start px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[9px] rounded-md uppercase tracking-wider transition duration-100 cursor-pointer"
+                              >
+                                View Trainee A
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Trainee B */}
+                          {c.conflictBeneficiaries!.map((cb, cbIdx) => (
+                            <div key={cbIdx} className="p-3 bg-emerald-50/40 border border-emerald-100 rounded-lg flex flex-col justify-between gap-2">
+                              <div>
+                                <div className="text-[9px] font-extrabold text-emerald-700 uppercase tracking-wider">Trainee B</div>
+                                <div className="font-bold text-xs text-slate-800 mt-0.5">{cb.name}</div>
+                                <div className="font-mono text-[9px] text-slate-500 font-semibold mt-0.5">TVET ID: {cb.tvetId || cb.id}</div>
+                              </div>
+                              {onSelectBeneficiary && (
+                                <button
+                                  onClick={() => {
+                                    setShowConflictModal(false);
+                                    onSelectBeneficiary(cb.id);
+                                  }}
+                                  className="mt-1 self-start px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[9px] rounded-md uppercase tracking-wider transition duration-100 cursor-pointer"
+                                >
+                                  View Trainee B
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                        
+                        <p className="text-xs text-slate-650 leading-relaxed bg-slate-50/70 p-2.5 rounded-lg border border-slate-150 font-medium">
+                          {c.reason}
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="flex justify-between items-center">
+                          <span className="font-bold text-xs text-slate-800">{c.name}</span>
+                          <span className="font-mono text-[9px] bg-red-50 text-red-700 px-2.5 py-1 rounded-md font-bold border border-red-100">
+                            ID: {c.beneficiaryId}
+                          </span>
+                        </div>
+                        <p className="text-xs text-red-650 font-medium leading-relaxed bg-red-50/20 p-2.5 rounded-lg border border-red-50">
+                          {c.reason}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
+              <button
+                onClick={() => setShowConflictModal(false)}
+                className="px-4 py-2 border border-slate-200 rounded-xl hover:bg-slate-100 text-xs font-bold text-slate-700 cursor-pointer transition"
+              >
+                Cancel & Close
+              </button>
+              <button
+                onClick={() => {
+                  setShowConflictModal(false);
+                  onNavigateToTab("annex9-completion");
+                }}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer transition"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                Launch Correction Module
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

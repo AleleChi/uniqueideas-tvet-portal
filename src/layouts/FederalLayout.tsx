@@ -78,6 +78,13 @@ export function FederalLayout({
       ]
     },
     {
+      group: "WEBSITE MANAGEMENT",
+      items: [
+        { label: "Public Contact & Footer", path: "/federal/site-settings", icon: Sliders },
+        { label: "Partner Logos", path: "/federal/partners", icon: Landmark }
+      ]
+    },
+    {
       group: "OPERATIONS",
       items: [
         { label: "Documents", path: "/federal/documents", icon: FolderOpen },

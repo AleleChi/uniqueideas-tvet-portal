@@ -22,12 +22,12 @@ interface TraineeAdmissionDetailsModalProps {
 export function TraineeAdmissionDetailsModal({ candidate, onClose }: TraineeAdmissionDetailsModalProps) {
   const candidateId = candidate.beneficiaryId || candidate.id;
   const displayName = candidate.fullName || candidate.name || "Trainee Candidate";
-  const displayEmail = candidate.email || "No Email Registered";
   const displayTvetId = candidate.tvetId || candidate.id;
 
   // States
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [resolvedEmail, setResolvedEmail] = useState<string | null>(null);
   
   const [admissionStatus, setAdmissionStatus] = useState<string>("Not Started");
   const [secureLink, setSecureLink] = useState<string | null>(null);
@@ -39,6 +39,8 @@ export function TraineeAdmissionDetailsModal({ candidate, onClose }: TraineeAdmi
   const [sendingOffer, setSendingOffer] = useState(false);
   const [generatingAcceptance, setGeneratingAcceptance] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  const displayEmail = resolvedEmail || candidate.email || "No Email Registered";
 
   // Fetch all data
   const loadAllData = async () => {
@@ -53,6 +55,9 @@ export function TraineeAdmissionDetailsModal({ candidate, onClose }: TraineeAdmi
         const found = data.rows?.find((r: any) => r.id === candidateId || r.beneficiaryId === candidateId);
         if (found) {
           setAdmissionStatus(found.admissionStatus || found.step || "Not Started");
+          if (found.email) {
+            setResolvedEmail(found.email);
+          }
         }
       }
 

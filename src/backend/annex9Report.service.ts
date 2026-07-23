@@ -299,7 +299,7 @@ export async function getAnnex9ReportData(options: Annex9ReportOptions): Promise
     const expectedDays = Math.max(uniqueDates.size, 20); // Default to standard 20 days if no marked ones
 
     // Map to Annex9Record
-    let records: Annex9Record[] = traineesList.map((b: any) => {
+    let records: Annex9Record[] = await Promise.all(traineesList.map(async (b: any) => {
       const attLogs = (b.attendanceLogs || []).filter((att: any) => att.date && String(att.date).startsWith(targetMonth));
       
       let present = 0;
@@ -330,6 +330,28 @@ export async function getAnnex9ReportData(options: Annex9ReportOptions): Promise
         }
       }
 
+      // Resolve email and bank name canonical values entirely in-memory to prevent N+1 queries
+      const emailRes = DbRepo.resolveCanonicalBeneficiaryEmailForObject(b);
+      const resolvedEmail = emailRes.email || b.email || b.email_address || "";
+
+      let normalizedBank = (b.bankName || b.bank_name || "").trim().toUpperCase();
+      if (normalizedBank) {
+        if (normalizedBank.includes("ZENITH")) normalizedBank = "ZENITH BANK PLC";
+        else if (normalizedBank.includes("ACCESS")) normalizedBank = "ACCESS BANK PLC";
+        else if (normalizedBank.includes("GUARANTY") || normalizedBank.includes("GTB") || normalizedBank.includes("GT BANK")) normalizedBank = "GUARANTY TRUST BANK PLC";
+        else if (normalizedBank.includes("UNITED BANK FOR AFRICA") || normalizedBank.includes("UBA")) normalizedBank = "UNITED BANK FOR AFRICA PLC";
+        else if (normalizedBank.includes("FIRST BANK") || normalizedBank.includes("FBN")) normalizedBank = "FIRST BANK OF NIGERIA PLC";
+        else if (normalizedBank.includes("FIDELITY")) normalizedBank = "FIDELITY BANK PLC";
+        else if (normalizedBank.includes("UNION BANK")) normalizedBank = "UNION BANK OF NIGERIA PLC";
+        else if (normalizedBank.includes("STERLING")) normalizedBank = "STERLING BANK PLC";
+        else if (normalizedBank.includes("WEMA")) normalizedBank = "WEMA BANK PLC";
+        else if (normalizedBank.includes("ECOBANK")) normalizedBank = "ECOBANK NIGERIA";
+        else if (normalizedBank.includes("STANBIC")) normalizedBank = "STANBIC IBTC BANK PLC";
+        else if (normalizedBank.includes("KEYSTONE")) normalizedBank = "KEYSTONE BANK LIMITED";
+        else if (normalizedBank.includes("POLARIS")) normalizedBank = "POLARIS BANK";
+        else if (normalizedBank.includes("FCMB") || normalizedBank.includes("FIRST CITY")) normalizedBank = "FIRST CITY MONUMENT BANK PLC";
+      }
+
       return {
         id: b.id,
         tvet_id: b.customFields?.tvet_id || b.id,
@@ -344,9 +366,9 @@ export async function getAnnex9ReportData(options: Annex9ReportOptions): Promise
         bvn: b.bvn || "",
         account_name: b.bankAccountHolder || b.bank_account_holder || "",
         account_number: b.bankAccountNumber || b.bank_account_number || "",
-        bank_name: b.bankName || b.bank_name || "",
+        bank_name: normalizedBank,
         bank_sort_code: b.bankSortCode || b.bank_sort_code || "",
-        email: b.email || "",
+        email: resolvedEmail,
         state: b.state || "",
         lga: b.customFields?.lga || b.city || "",
         guardian_name: b.guardianName || b.guardian_name || "",
@@ -370,7 +392,7 @@ export async function getAnnex9ReportData(options: Annex9ReportOptions): Promise
         still_attending: b.still_attending !== undefined ? b.still_attending : true,
         remarks: b.remarks || (totalMarked > 0 ? `Attendance rate ${attendance_percentage}%.` : "No Record")
       };
-    });
+    }));
 
     // Apply memory-level filtering and pagination if stipendStatus is specified
     if (options.stipendStatus && options.stipendStatus !== "all") {
@@ -439,7 +461,7 @@ export async function getAnnex9ReportData(options: Annex9ReportOptions): Promise
       COALESCE(b.bvn, '') as bvn,
       COALESCE(b.guardian_name, '') as guardian_name,
       COALESCE(b.guardian_phone, '') as guardian_phone,
-      COALESCE(b.batch, '') as cohort,
+      b.batch as cohort,
       COALESCE(b.alumni_employment_status, '') as employment_status,
       CASE 
         WHEN tp.tvet_id IS NOT NULL AND tp.tvet_id != '' AND tp.tvet_id NOT LIKE '%IDEAS-' AND tp.tvet_id NOT LIKE 'ID-TVE-26-IDEAS-%' AND LENGTH(tp.tvet_id) > 8 THEN tp.tvet_id
@@ -452,10 +474,12 @@ export async function getAnnex9ReportData(options: Annex9ReportOptions): Promise
       pm.last_verified_at,
       pm.verified_by,
       pm.remarks as monitoring_remarks,
+      adm.admission_form_data as "admissionFormData",
       COUNT(*) OVER() as total_count
     FROM beneficiaries b
     LEFT JOIN trainee_profiles tp ON b.id = tp.beneficiary_id
     LEFT JOIN portal_monitoring pm ON b.id = pm.beneficiary_id
+    LEFT JOIN admissions adm ON b.id = adm.beneficiary_id AND adm.deleted_at IS NULL
     WHERE b.deleted_at IS NULL AND b.status IN ('VERIFIED', 'ACCEPTED', 'ENROLLED', 'TRAINING', 'IN_TRAINING', 'PENDING_PHOTO', 'ADMITTED', 'ACTIVE', 'ELIGIBLE', 'CERTIFIED', 'ALUMNI', 'GRADUATED', 'COMPLETED', 'ONBOARDED')
   `;
 
@@ -565,7 +589,7 @@ export async function getAnnex9ReportData(options: Annex9ReportOptions): Promise
   }
 
   // 4. Map the results, applying our strict attendance and missing-record calculation formula.
-  let records: Annex9Record[] = result.rows.map(row => {
+  let records: Annex9Record[] = await Promise.all(result.rows.map(async row => {
     const stats = attendanceMap.get(row.id) || { present: 0, late: 0, excused: 0, holiday: 0 };
     
     const present = stats.present;
@@ -593,24 +617,46 @@ export async function getAnnex9ReportData(options: Annex9ReportOptions): Promise
       }
     }
 
+    // Resolve email and bank name canonical values entirely in-memory to prevent N+1 queries
+    const emailRes = DbRepo.resolveCanonicalBeneficiaryEmailForObject(row);
+    const resolvedEmail = emailRes.email || row.email || "";
+
+    let normalizedBank = (row.bank_name || "").trim().toUpperCase();
+    if (normalizedBank) {
+      if (normalizedBank.includes("ZENITH")) normalizedBank = "ZENITH BANK PLC";
+      else if (normalizedBank.includes("ACCESS")) normalizedBank = "ACCESS BANK PLC";
+      else if (normalizedBank.includes("GUARANTY") || normalizedBank.includes("GTB") || normalizedBank.includes("GT BANK")) normalizedBank = "GUARANTY TRUST BANK PLC";
+      else if (normalizedBank.includes("UNITED BANK FOR AFRICA") || normalizedBank.includes("UBA")) normalizedBank = "UNITED BANK FOR AFRICA PLC";
+      else if (normalizedBank.includes("FIRST BANK") || normalizedBank.includes("FBN")) normalizedBank = "FIRST BANK OF NIGERIA PLC";
+      else if (normalizedBank.includes("FIDELITY")) normalizedBank = "FIDELITY BANK PLC";
+      else if (normalizedBank.includes("UNION BANK")) normalizedBank = "UNION BANK OF NIGERIA PLC";
+      else if (normalizedBank.includes("STERLING")) normalizedBank = "STERLING BANK PLC";
+      else if (normalizedBank.includes("WEMA")) normalizedBank = "WEMA BANK PLC";
+      else if (normalizedBank.includes("ECOBANK")) normalizedBank = "ECOBANK NIGERIA";
+      else if (normalizedBank.includes("STANBIC")) normalizedBank = "STANBIC IBTC BANK PLC";
+      else if (normalizedBank.includes("KEYSTONE")) normalizedBank = "KEYSTONE BANK LIMITED";
+      else if (normalizedBank.includes("POLARIS")) normalizedBank = "POLARIS BANK";
+      else if (normalizedBank.includes("FCMB") || normalizedBank.includes("FIRST CITY")) normalizedBank = "FIRST CITY MONUMENT BANK PLC";
+    }
+
     return {
       id: row.id,
-      tvet_id: row.tvet_id,
-      first_name: row.first_name,
-      last_name: row.last_name,
-      other_name: row.other_name,
+      tvet_id: row.tvet_id || row.id,
+      first_name: row.first_name || "",
+      last_name: row.last_name || "",
+      other_name: row.other_name || "",
       gender: normalizeSex(row.gender),
-      date_of_birth: row.date_of_birth,
+      date_of_birth: row.date_of_birth || "",
       physical_challenge: normalizePwd(row.physical_challenge),
-      phone_number: row.phone_number,
-      nin: row.nin,
-      bvn: row.bvn,
-      account_name: row.account_name,
-      account_number: row.account_number,
-      bank_name: row.bank_name,
-      bank_sort_code: row.bank_sort_code,
-      email: row.email,
-      state: row.state,
+      phone_number: row.phone_number || "",
+      nin: row.nin || "",
+      bvn: row.bvn || "",
+      account_name: row.account_name || "",
+      account_number: row.account_number || "",
+      bank_name: normalizedBank,
+      bank_sort_code: row.bank_sort_code || "",
+      email: resolvedEmail,
+      state: row.state || "",
       lga: row.lga,
       guardian_name: row.guardian_name,
       guardian_address: row.guardian_address,
@@ -635,7 +681,7 @@ export async function getAnnex9ReportData(options: Annex9ReportOptions): Promise
       verified_by: row.verified_by,
       remarks: row.monitoring_remarks || (totalMarked > 0 ? `Attendance rate ${attendance_percentage}%.` : "No Record")
     };
-  });
+  }));
 
   // Apply memory-level filtering and pagination if stipendStatus is specified
   if (options.stipendStatus && options.stipendStatus !== "all") {

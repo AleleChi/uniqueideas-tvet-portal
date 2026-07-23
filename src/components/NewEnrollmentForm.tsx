@@ -8,6 +8,7 @@ import { Camera, Upload, AlertCircle, Sparkles, Trash2, Check, ArrowRight, Shiel
 import { Beneficiary, Gender, ProgramStatus, CustomField } from "../types";
 import { useNotification } from "./NotificationContext";
 import { authFetch } from "../utils/authFetch";
+import { SkeletonLoader } from "./SkeletonLoader";
 
 interface NewEnrollmentFormProps {
   key?: string | number;
@@ -105,6 +106,13 @@ export function NewEnrollmentForm({
   const [ninVerified, setNinVerified] = useState(!!beneficiary);
   const [verifyingNin, setVerifyingNin] = useState(false);
 
+  // Canonical hydration and Pattern B state variables
+  const [loading, setLoading] = useState(!!beneficiary);
+  const [ninUnchanged, setNinUnchanged] = useState(false);
+  const [bvnUnchanged, setBvnUnchanged] = useState(false);
+  const [ninMasked, setNinMasked] = useState("");
+  const [bvnMasked, setBvnMasked] = useState("");
+
   // National Location Infrastructure States (Task 017-C)
   const [dbStates, setDbStates] = useState<any[]>([]);
   const [dbLgas, setDbLgas] = useState<any[]>([]);
@@ -133,46 +141,134 @@ export function NewEnrollmentForm({
   });
 
   useEffect(() => {
-    // Fetch system-wide states
-    authFetch("/api/locations/states")
-      .then(res => res.json())
-      .then(data => {
-        setDbStates(data);
-        // If we don't have selectedStateId but have state name string, sync them
-        if (state && !selectedStateId) {
-          const match = data.find((st: any) => st.name.toLowerCase() === state.toLowerCase() || st.state_code === state);
-          if (match) setSelectedStateId(match.id);
-        }
-      })
-      .catch(err => console.error("Error fetching states: ", err));
+    if (!beneficiary) {
+      setLoading(false);
+      // Create mode: fetch States and Centers normally
+      authFetch("/api/locations/states")
+        .then(res => res.json())
+        .then(data => {
+          setDbStates(data);
+          if (state && !selectedStateId) {
+            const match = data.find((st: any) => st.name.toLowerCase() === state.toLowerCase() || st.state_code === state);
+            if (match) setSelectedStateId(match.id);
+          }
+        })
+        .catch(err => console.error("Error fetching states: ", err));
 
-    // Fetch system-wide training centers
-    authFetch("/api/training-centers")
-      .then(res => res.json())
-      .then(data => {
-        setDbTrainingCenters(data);
+      authFetch("/api/training-centers")
+        .then(res => res.json())
+        .then(data => {
+          setDbTrainingCenters(data);
+        })
+        .catch(err => console.error("Error fetching centers: ", err));
+      return;
+    }
+
+    // Edit mode: fetch canonical profile along with States and Centers
+    setLoading(true);
+    Promise.all([
+      authFetch("/api/locations/states").then(res => res.json()),
+      authFetch("/api/training-centers").then(res => res.json()),
+      authFetch(`/api/beneficiaries/${beneficiary.id}/canonical`).then(res => res.json())
+    ])
+      .then(([statesData, centersData, canonicalData]) => {
+        if (canonicalData.id !== beneficiary.id) {
+          console.error("TVET ID mismatch during form hydration.");
+        }
+
+        setDbStates(statesData);
+        setDbTrainingCenters(centersData);
+
+        // Populate fields from canonical record
+        setLastName(canonicalData.lastName || "");
+        setFirstName(canonicalData.firstName || "");
+        setOtherName(canonicalData.otherName || "");
+        setSkillSector(canonicalData.skillSector || "Computer Hardware and Cell Phone Repairs");
+        
+        setNin(canonicalData.nin || "");
+        setNinMasked(canonicalData.ninMasked || "");
+        setNinUnchanged(canonicalData.ninUnchanged || false);
+        setNinVerified(canonicalData.ninIsSet || false);
+
+        setBvn(canonicalData.bvn || "");
+        setBvnMasked(canonicalData.bvnMasked || "");
+        setBvnUnchanged(canonicalData.bvnUnchanged || false);
+
+        setGender(canonicalData.gender as Gender || Gender.MALE);
+        setState(canonicalData.state || "Imo");
+        setCity(canonicalData.city || "Owerri");
+        setEmail(canonicalData.email || "");
+        setPhoneNumber(canonicalData.phoneNumber || "");
+        if (canonicalData.residentialAddress) {
+          setResidentialAddress(canonicalData.residentialAddress);
+        }
+        setBatch(canonicalData.batch || `Batch ${new Date().getFullYear()}-C`);
+        
+        setGuardianName(canonicalData.guardianName || "");
+        setGuardianAddress(canonicalData.guardianAddress || "");
+        setGuardianPhone(canonicalData.guardianPhone || "");
+        setPhysicalChallenge(canonicalData.physicalChallenge || "");
+        setBankAccountHolder(canonicalData.bankAccountHolder || "");
+        setBankName(canonicalData.bankName || "");
+        setBankSortCode(canonicalData.bankSortCode || "");
+        setBankAccountNumber(canonicalData.bankAccountNumber || "");
+        setEducationQualification(canonicalData.educationQualification || "");
+        setDateOfBirth(canonicalData.dateOfBirth || "");
+        setBankSearch(canonicalData.bankName || "");
+
+        if (canonicalData.customFields) {
+          setCustomFieldValues(canonicalData.customFields);
+        }
+
+        const stateIdVal = canonicalData.state_id || "";
+        setSelectedStateId(stateIdVal);
+
+        const lgaIdVal = canonicalData.lga_id || "";
+        setSelectedLgaId(lgaIdVal);
+
+        const tcIdVal = canonicalData.training_center_id || "";
+        setSelectedTcId(tcIdVal);
+
+        if (stateIdVal) {
+          authFetch(`/api/locations/states/${stateIdVal}/lgas`)
+            .then(res => res.json())
+            .then(lgasData => {
+              setDbLgas(lgasData);
+              if (lgaIdVal) {
+                setSelectedLgaId(lgaIdVal);
+              } else if (canonicalData.city) {
+                const match = lgasData.find((lg: any) => lg.name.toLowerCase() === canonicalData.city.toLowerCase() || canonicalData.city.toLowerCase().includes(lg.name.toLowerCase()));
+                if (match) setSelectedLgaId(match.id);
+              }
+            })
+            .catch(err => console.error("Error fetching state lgas: ", err));
+        }
+
+        setLoading(false);
       })
-      .catch(err => console.error("Error fetching centers: ", err));
-  }, []);
+      .catch(err => {
+        console.error("Error during form hydration: ", err);
+        setLoading(false);
+      });
+  }, [beneficiary?.id]);
 
   useEffect(() => {
-    if (selectedStateId) {
-      // Fetch corresponding state LGAs
+    // This is for create mode State changes, or when selectedStateId changes dynamically
+    if (selectedStateId && !loading) {
       authFetch(`/api/locations/states/${selectedStateId}/lgas`)
         .then(res => res.json())
         .then(data => {
           setDbLgas(data);
-          // If we don't have selectedLgaId but have city or LGA details, sync them
           if (city && !selectedLgaId) {
             const match = data.find((lg: any) => lg.name.toLowerCase() === city.toLowerCase() || city.toLowerCase().includes(lg.name.toLowerCase()));
             if (match) setSelectedLgaId(match.id);
           }
         })
         .catch(err => console.error("Error fetching state lgas: ", err));
-    } else {
+    } else if (!selectedStateId && !loading) {
       setDbLgas([]);
     }
-  }, [selectedStateId]);
+  }, [selectedStateId, loading]);
 
   // Core Validator Function
   const validateField = (name: string, value: string): string => {
@@ -218,6 +314,9 @@ export function NewEnrollmentForm({
         }
         break;
       case "nin":
+        if (ninUnchanged) {
+          return "";
+        }
         if (!value.trim()) {
           error = "National Identity Number (NIN) is required.";
         } else if (!/^\d+$/.test(value)) {
@@ -291,6 +390,9 @@ export function NewEnrollmentForm({
         }
         break;
       case "bvn":
+        if (bvnUnchanged) {
+          return "";
+        }
         if (!value.trim()) {
           error = "BVN is required.";
         } else if (!/^\d+$/.test(value)) {
@@ -404,7 +506,7 @@ export function NewEnrollmentForm({
       return;
     }
 
-    if (!ninVerified) {
+    if (!ninUnchanged && !ninVerified) {
       showToast("NIN verification is mandatory. Please click 'Verify NIN' to validate candidate identifiers.", "warning");
       return;
     }
@@ -417,13 +519,11 @@ export function NewEnrollmentForm({
     showToast("Saving...", "info");
 
     try {
-      await onSave({
+      const savePayload: Partial<Beneficiary> = {
         firstName,
         lastName,
         otherName,
         skillSector,
-        nin,
-        bvn,
         gender,
         state,
         city,
@@ -447,7 +547,16 @@ export function NewEnrollmentForm({
         state_id: selectedStateId || null,
         lga_id: selectedLgaId || null,
         training_center_id: selectedTcId || null
-      });
+      };
+
+      if (!ninUnchanged) {
+        savePayload.nin = nin;
+      }
+      if (!bvnUnchanged) {
+        savePayload.bvn = bvn;
+      }
+
+      await onSave(savePayload);
     } catch (err: any) {
       showToast(err.message || "An exception occurred while saving beneficiary profile.", "error");
     } finally {
@@ -466,6 +575,10 @@ export function NewEnrollmentForm({
     }
     return `${base} border-slate-200 focus:bg-white focus:border-indigo-600`;
   };
+
+  if (loading) {
+    return <SkeletonLoader label="Hydrating Secure TVET Trainee Canonical Record..." />;
+  }
 
   return (
     <div className="space-y-6 font-sans select-none max-w-7xl mx-auto animate-in fade-in duration-300">
@@ -571,36 +684,64 @@ export function NewEnrollmentForm({
               {/* NIN Verification Block */}
               <div className="space-y-1.5 md:col-span-2 text-left font-sans">
                 <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">National Identity Number (NIN)</label>
-                <div className="flex gap-2">
-                  <input 
-                    type="text" 
-                    placeholder="44923301825"
-                    maxLength={11}
-                    value={nin}
-                    onChange={(e) => {
-                      // Only allow numeric input
-                      const val = e.target.value.replace(/\D/g, "");
-                      handleFieldChange("nin", val, setNin);
-                      if (val !== beneficiary?.nin) {
+                {ninUnchanged ? (
+                  <div className="flex gap-2 items-center">
+                    <div className="relative flex-1">
+                      <input 
+                        type="text" 
+                        disabled
+                        value={ninMasked}
+                        className="w-full bg-slate-100 border border-slate-200 rounded-lg py-2 px-3 text-slate-500 text-xs focus:outline-none transition font-semibold font-mono"
+                      />
+                      <div className="absolute right-2.5 top-1/2 -translate-y-1/2 flex items-center gap-1 text-[10px] text-slate-400 font-mono font-medium">
+                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
+                        SECURED
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNin("");
+                        setNinUnchanged(false);
                         setNinVerified(false);
-                      }
-                    }}
-                    onBlur={() => handleFieldBlur("nin", nin)}
-                    className={inputClass("nin")}
-                  />
-                  <button
-                    type="button"
-                    onClick={handleVerifyNin}
-                    disabled={verifyingNin || ninVerified}
-                    className={`px-4 py-2 text-[10px] font-bold font-mono uppercase tracking-wide rounded-lg flex items-center gap-1.5 cursor-pointer transition ${
-                      ninVerified 
-                        ? "bg-slate-100 border border-slate-200 text-emerald-600 cursor-default font-semibold" 
-                        : "bg-indigo-950 text-white hover:bg-slate-900 shadow-sm font-semibold hover:scale-101 active:scale-98"
-                    }`}
-                  >
-                    {verifyingNin ? "Checking..." : ninVerified ? "✓ Verified" : "Verify NIN"}
-                  </button>
-                </div>
+                      }}
+                      className="px-3.5 py-2 text-[10px] font-bold font-mono uppercase tracking-wide rounded-lg bg-indigo-50 hover:bg-indigo-100 border border-indigo-100 text-indigo-700 cursor-pointer transition font-semibold"
+                    >
+                      Replace NIN
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex gap-2">
+                    <input 
+                      type="text" 
+                      placeholder="44923301825"
+                      maxLength={11}
+                      value={nin}
+                      onChange={(e) => {
+                        // Only allow numeric input
+                        const val = e.target.value.replace(/\D/g, "");
+                        handleFieldChange("nin", val, setNin);
+                        if (val !== beneficiary?.nin) {
+                          setNinVerified(false);
+                        }
+                      }}
+                      onBlur={() => handleFieldBlur("nin", nin)}
+                      className={inputClass("nin")}
+                    />
+                    <button
+                      type="button"
+                      onClick={handleVerifyNin}
+                      disabled={verifyingNin || ninVerified}
+                      className={`px-4 py-2 text-[10px] font-bold font-mono uppercase tracking-wide rounded-lg flex items-center gap-1.5 cursor-pointer transition ${
+                        ninVerified 
+                          ? "bg-slate-100 border border-slate-200 text-emerald-600 cursor-default font-semibold" 
+                          : "bg-indigo-950 text-white hover:bg-slate-900 shadow-sm font-semibold hover:scale-101 active:scale-98"
+                      }`}
+                    >
+                      {verifyingNin ? "Checking..." : ninVerified ? "✓ Verified" : "Verify NIN"}
+                    </button>
+                  </div>
+                )}
                 {errors.nin && touched.nin && (
                   <p className="text-[10px] text-rose-500 font-medium flex items-center gap-1 mt-1">
                     <AlertCircle className="w-3 h-3 flex-shrink-0" />
@@ -972,18 +1113,45 @@ export function NewEnrollmentForm({
               {/* BVN */}
               <div className="space-y-1.5 text-left font-sans">
                 <label className="text-[10px] font-bold font-mono text-slate-500 uppercase">Bank Verification Number (BVN)</label>
-                <input 
-                  type="text" 
-                  placeholder="22149583904"
-                  maxLength={11}
-                  value={bvn}
-                  onChange={(e) => {
-                    const val = e.target.value.replace(/\D/g, "");
-                    handleFieldChange("bvn", val, setBvn);
-                  }}
-                  onBlur={() => handleFieldBlur("bvn", bvn)}
-                  className={inputClass("bvn")}
-                />
+                {bvnUnchanged ? (
+                  <div className="flex gap-2 items-center">
+                    <div className="relative flex-1">
+                      <input 
+                        type="text" 
+                        disabled
+                        value={bvnMasked}
+                        className="w-full bg-slate-100 border border-slate-200 rounded-lg py-2 px-3 text-slate-500 text-xs focus:outline-none transition font-semibold font-mono"
+                      />
+                      <div className="absolute right-2.5 top-1/2 -translate-y-1/2 flex items-center gap-1 text-[10px] text-slate-400 font-mono font-medium">
+                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
+                        SECURED
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBvn("");
+                        setBvnUnchanged(false);
+                      }}
+                      className="px-3.5 py-2 text-[10px] font-bold font-mono uppercase tracking-wide rounded-lg bg-indigo-50 hover:bg-indigo-100 border border-indigo-100 text-indigo-700 cursor-pointer transition font-semibold"
+                    >
+                      Replace BVN
+                    </button>
+                  </div>
+                ) : (
+                  <input 
+                    type="text" 
+                    placeholder="22149583904"
+                    maxLength={11}
+                    value={bvn}
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/\D/g, "");
+                      handleFieldChange("bvn", val, setBvn);
+                    }}
+                    onBlur={() => handleFieldBlur("bvn", bvn)}
+                    className={inputClass("bvn")}
+                  />
+                )}
                 {errors.bvn && touched.bvn && (
                   <p className="text-[10px] text-rose-500 font-medium flex items-center gap-1 mt-1">
                     <AlertCircle className="w-3 h-3 flex-shrink-0" />

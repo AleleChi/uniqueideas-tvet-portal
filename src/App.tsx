@@ -92,6 +92,8 @@ import { AssessmentsPage } from "./pages/federal/AssessmentsPage";
 import { GraduationPage } from "./pages/federal/GraduationPage";
 import { ProgrammesPage } from "./pages/federal/ProgrammesPage";
 import { InternshipPage } from "./pages/federal/InternshipPage";
+import PartnersPage from "./pages/federal/PartnersPage";
+import PublicSiteSettingsPage from "./pages/federal/PublicSiteSettingsPage";
 import DocumentsCenter from "./modules/documents";
 import { AdmissionsWorkspace } from "./components/AdmissionsWorkspace";
 import { OfficialReportsWorkspace } from "./components/OfficialReportsWorkspace";
@@ -1014,6 +1016,10 @@ export default function App() {
       fedChild = <TrainingOutcomes session={session} toast={{ success: (m) => showToast(m, "success"), error: (m) => showToast(m, "error") }} />;
     } else if (path === "/federal/documents" || path === "federal/documents") {
       fedChild = <DocumentsCenter />;
+    } else if (path === "/federal/partners" || path === "federal/partners") {
+      fedChild = <PartnersPage />;
+    } else if (path === "/federal/site-settings" || path === "federal/site-settings" || path === "/federal/public-settings" || path === "federal/public-settings") {
+      fedChild = <PublicSiteSettingsPage />;
     } else if (path === "/federal/communications" || path === "federal/communications") {
       fedChild = <BulkCommunications session={session} />;
     } else if (path === "/federal/reports" || path === "federal/reports") {
@@ -1305,7 +1311,23 @@ export default function App() {
 
           {activeTab === "official-reports" && (
             <React.Suspense fallback={<SkeletonLoader label="Loading Official Reports & Exports..." />}>
-              <OfficialReportsWorkspace session={session} onNavigateToTab={(tab) => setActiveTab(tab)} />
+              <OfficialReportsWorkspace 
+                session={session} 
+                onNavigateToTab={(tab) => setActiveTab(tab)} 
+                onSelectBeneficiary={(id) => {
+                  const b = beneficiaries.find(x => x.id === id);
+                  if (b) {
+                    handleSelectBeneficiary(b);
+                    setRegistryViewMode("details");
+                    setSubTabMode("beneficiaries");
+                  } else {
+                    handleSelectBeneficiary({ id } as any);
+                    setRegistryViewMode("details");
+                    setSubTabMode("beneficiaries");
+                  }
+                  setActiveTab("registry");
+                }}
+              />
             </React.Suspense>
           )}
 
